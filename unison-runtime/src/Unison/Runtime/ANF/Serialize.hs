@@ -656,6 +656,8 @@ pOpCode op = case op of
   COMI -> 128
   DRPN -> 129
   TRNC -> 130
+  RREF -> 131
+  WREF -> 132
 
 pOpAssoc :: [(POp, Word16)]
 pOpAssoc = map (\op -> (op, pOpCode op)) [minBound .. maxBound]

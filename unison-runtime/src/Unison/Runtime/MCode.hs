@@ -402,6 +402,8 @@ data BPrim1
   -- debug
   | DBTX -- debug text
   | SDBL -- sandbox link list
+  | -- Refs
+    RREF -- Ref.read
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data BPrim2
@@ -437,6 +439,8 @@ data BPrim2
   -- code
   | SDBX -- sandbox
   | SDBV -- sandbox Value
+  -- Refs
+  | WREF -- Ref.write
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data MLit
@@ -1327,6 +1331,9 @@ emitPOp ANF.SDBV = emitBP2 SDBV
 emitPOp ANF.EROR = emitBP2 THRO
 emitPOp ANF.TRCE = emitBP2 TRCE
 emitPOp ANF.DBTX = emitBP1 DBTX
+-- Refs
+emitPOp ANF.RREF = emitBP1 RREF
+emitPOp ANF.WREF = emitBP2 WREF
 -- non-prim translations
 emitPOp ANF.BLDS = Seq
 emitPOp ANF.FORK = \case

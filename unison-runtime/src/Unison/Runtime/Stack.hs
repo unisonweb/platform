@@ -127,9 +127,11 @@ where
 
 import Control.Monad.Primitive
 import Data.Char qualified as Char
+import Data.IORef (IORef)
 import Data.Kind (Constraint)
 import Data.Primitive (sizeOf)
 import Data.Primitive.ByteArray qualified as BA
+import Data.Tagged (Tagged (..))
 import Data.Word
 import GHC.Exts as L (IsList (..))
 import Unison.Prelude
@@ -609,6 +611,8 @@ data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
   -- unboxed side is garbage and should not be compared.
   -- See universalEq.
   deriving (Show)
+
+instance BuiltinForeign (IORef Val) where foreignRef = Tagged Ty.refRef
 
 -- | A nulled out value you can use when filling empty arrays, etc.
 emptyVal :: Val

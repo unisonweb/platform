@@ -1416,6 +1416,9 @@ data POp
   | TFRC -- try force
   | SDBL -- sandbox link list
   | SDBV -- sandbox check for Values
+  -- Refs
+  | RREF -- Ref.read
+  | WREF -- Ref.write
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 type ANormal = ABTN.Term ANormalF
