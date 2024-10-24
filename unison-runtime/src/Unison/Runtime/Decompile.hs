@@ -35,10 +35,13 @@ import Unison.Runtime.IOSource (iarrayFromListRef, ibarrayFromBytesRef)
 import Unison.Runtime.MCode (CombIx (..))
 import Unison.Runtime.Stack
   ( Closure (..),
+    TypedUnboxed (..),
     getTUInt,
     pattern DataC,
     pattern PApV,
   )
+-- for Int -> Double
+
 import Unison.Syntax.NamePrinter (prettyReference)
 import Unison.Term
   ( Term,
@@ -73,7 +76,6 @@ import Unison.Util.Bytes qualified as By
 import Unison.Util.Pretty (indentN, lines, lit, syntaxToColor, wrap)
 import Unison.Util.Text qualified as Text
 import Unison.Var (Var)
--- for Int -> Double
 import Prelude hiding (lines)
 
 con :: (Var v) => Reference -> Word64 -> Term v ()
@@ -144,6 +146,7 @@ renderDecompError Cont = "A continuation value was encountered"
 renderDecompError Exn = "An exception value was encountered"
 
 decompile ::
+  forall v.
   (Var v) =>
   (Reference -> Maybe Reference) ->
   (Word64 -> Word64 -> Maybe (Term v ())) ->
@@ -161,29 +164,36 @@ decompile backref topTerms = \case
   (DataC rf _ [Right b])
     | rf == anyRef ->
         app () (builtin () "Any.Any") <$> decompile backref topTerms b
-  (DataC rf (maskTags -> ct) vs)
-    -- Only match lists of boxed args.
-    | ([], bs) <- partitionEithers vs ->
-        apps' (con rf ct) <$> traverse (decompile backref topTerms) bs
-  (PApV (CIx rf rt k) _ (partitionEithers -> ([], bs)))
+  (DataC rf (maskTags -> ct) vs) ->
+    apps' (con rf ct) <$> traverse decompUB vs
+  (PApV (CIx rf rt k) _ vs)
     | rf == Builtin "jumpCont" ->
         err Cont $ bug "<Continuation>"
     | Builtin nm <- rf ->
-        apps' (builtin () nm) <$> traverse (decompile backref topTerms) bs
+        apps' (builtin () nm) <$> traverse decompUB vs
     | Just t <- topTerms rt k ->
         Term.etaReduceEtaVars . substitute t
-          <$> traverse (decompile backref topTerms) bs
+          <$> traverse decompUB vs
     | k > 0,
       Just _ <- topTerms rt 0 ->
         err (UnkLocal rf k) $ bug "<Unknown>"
     | otherwise -> err (UnkComb rf) $ ref () rf
   (PAp (CIx rf _ _) _ _) ->
     err (BadPAp rf) $ bug "<Unknown>"
-  (DataC rf _ _) -> err (BadData rf) $ bug "<Data>"
   BlackHole -> err Exn $ bug "<Exception>"
   (Captured {}) -> err Cont $ bug "<Continuation>"
   (Foreign f) ->
     decompileForeign backref topTerms f
+  where
+    decompileTypedUnboxed = \case
+      UnboxedNat i -> pure (nat () $ fromIntegral i)
+      UnboxedInt i -> pure (int () $ fromIntegral i)
+      UnboxedDouble i -> pure (float () i)
+      UnboxedChar i -> pure (char () i)
+      TypedUnboxed i _ -> err (BadUnboxed anyRef) $ nat () $ fromIntegral i
+
+    decompUB :: (Either TypedUnboxed Closure) -> DecompResult v
+    decompUB = either decompileTypedUnboxed (decompile backref topTerms)
 
 tag2bool :: (Var v) => Word64 -> DecompResult v
 tag2bool 0 = pure (boolean () False)

@@ -44,7 +44,15 @@ module Unison.Runtime.Stack
     USeg,
     BSeg,
     SegList,
-    TypedUnboxed (..),
+    TypedUnboxed
+      ( TypedUnboxed,
+        getTUInt,
+        getTUTag,
+        UnboxedChar,
+        UnboxedNat,
+        UnboxedInt,
+        UnboxedDouble
+      ),
     traceK,
     frameDataSize,
     marshalToForeign,
@@ -372,6 +380,26 @@ unpackUnboxedClosure expectedTag = \case
     | tag == expectedTag -> Just i
   _ -> Nothing
 {-# INLINE unpackUnboxedClosure #-}
+
+pattern UnboxedChar :: Char -> TypedUnboxed
+pattern UnboxedChar c <- TypedUnboxed (Char.chr -> c) ((== TT.charTag) -> True)
+  where
+    UnboxedChar c = TypedUnboxed (Char.ord c) TT.charTag
+
+pattern UnboxedNat :: Word64 -> TypedUnboxed
+pattern UnboxedNat n <- TypedUnboxed (toEnum -> n) ((== TT.natTag) -> True)
+  where
+    UnboxedNat n = TypedUnboxed (fromEnum n) TT.natTag
+
+pattern UnboxedInt :: Int -> TypedUnboxed
+pattern UnboxedInt i <- TypedUnboxed i ((== TT.intTag) -> True)
+  where
+    UnboxedInt i = TypedUnboxed i TT.intTag
+
+pattern UnboxedDouble :: Double -> TypedUnboxed
+pattern UnboxedDouble d <- TypedUnboxed (intToDouble -> d) ((== TT.floatTag) -> True)
+  where
+    UnboxedDouble d = TypedUnboxed (doubleToInt d) TT.floatTag
 
 splitTaggedUnboxed :: TypedUnboxed -> (Int, Closure)
 splitTaggedUnboxed (TypedUnboxed i t) = (i, UnboxedTypeTag t)

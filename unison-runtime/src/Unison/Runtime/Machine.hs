@@ -1226,10 +1226,10 @@ uprim1 !stk COMN !i = do
 
 uprim2 :: Stack -> UPrim2 -> Int -> Int -> IO Stack
 uprim2 !stk ADDI !i !j = do
-  m <- upeekOff stk i
+  (m, t) <- peekOff stk i
   n <- upeekOff stk j
   stk <- bump stk
-  pokeI stk (m + n)
+  upokeT stk (m + n) t
   pure stk
 uprim2 !stk SUBI !i !j = do
   m <- upeekOff stk i
