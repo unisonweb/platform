@@ -44,6 +44,8 @@ module Unison.Runtime.Stack
     USeg,
     BSeg,
     SegList,
+    Elem (..),
+    USeq,
     TypedUnboxed
       ( TypedUnboxed,
         getTUInt,
@@ -101,8 +103,7 @@ module Unison.Runtime.Stack
     bpeekOff,
     bpoke,
     bpokeOff,
-    upoke,
-    upokeOff,
+    pokeOff,
     upokeT,
     upokeOffT,
     unsafePokeIasN,
@@ -195,6 +196,9 @@ instance Ord K where
 
 newtype Closure = Closure {unClosure :: (GClosure (RComb Closure))}
   deriving stock (Show, Eq, Ord)
+
+-- | Implementation for Unison sequences.
+type USeq = Seq Elem
 
 type IxClosure = GClosure CombIx
 
@@ -598,15 +602,15 @@ instance Show Stack where
 
 type UElem = Int
 
-type TypedUElem = (Int, Closure {- This closure should always be a UnboxedTypeTag -})
+-- | A runtime value, which is either a boxed or unboxed value, but we may not know which.
+data Elem = Elem !UElem !BElem
+  deriving (Show)
 
 type USeg = ByteArray
 
 type BElem = Closure
 
 type BSeg = Array Closure
-
-type Elem = (UElem, BElem)
 
 type Seg = (USeg, BSeg)
 
@@ -621,7 +625,7 @@ peek :: Stack -> IO Elem
 peek stk = do
   u <- upeek stk
   b <- bpeek stk
-  pure (u, b)
+  pure (Elem u b)
 {-# INLINE peek #-}
 
 peekI :: Stack -> IO Int
@@ -644,7 +648,7 @@ peekOff :: Stack -> Off -> IO Elem
 peekOff stk i = do
   u <- upeekOff stk i
   b <- bpeekOff stk i
-  pure (u, b)
+  pure $ Elem u b
 {-# INLINE peekOff #-}
 
 bpeekOff :: Stack -> Off -> IO BElem
@@ -655,19 +659,17 @@ upeekOff :: Stack -> Off -> IO UElem
 upeekOff (Stack _ _ sp ustk _) i = readByteArray ustk (sp - i)
 {-# INLINE upeekOff #-}
 
--- | Store an unboxed value and null out the boxed stack at that location, both so we know there's no value there,
--- and so garbage collection can clean up any value that was referenced there.
-upoke :: Stack -> TypedUElem -> IO ()
-upoke !stk@(Stack _ _ sp ustk _) !(u, t) = do
-  bpoke stk t
-  writeByteArray ustk sp u
-{-# INLINE upoke #-}
-
 upokeT :: Stack -> UElem -> PackedTag -> IO ()
 upokeT !stk@(Stack _ _ sp ustk _) !u !t = do
   bpoke stk (UnboxedTypeTag t)
   writeByteArray ustk sp u
 {-# INLINE upokeT #-}
+
+poke :: Stack -> Elem -> IO ()
+poke (Stack _ _ sp ustk bstk) (Elem u b) = do
+  writeByteArray ustk sp u
+  writeArray bstk sp b
+{-# INLINE poke #-}
 
 -- | Sometimes we get back an int from a foreign call which we want to use as a Nat.
 -- If we know it's positive and smaller than 2^63 then we can safely store the Int directly as a Nat without
@@ -678,7 +680,7 @@ unsafePokeIasN stk n = do
 {-# INLINE unsafePokeIasN #-}
 
 pokeTU :: Stack -> TypedUnboxed -> IO ()
-pokeTU stk !(TypedUnboxed u t) = upoke stk (u, UnboxedTypeTag t)
+pokeTU stk !(TypedUnboxed u t) = poke stk (Elem u (UnboxedTypeTag t))
 {-# INLINE pokeTU #-}
 
 -- | Store an unboxed tag to later match on.
@@ -712,11 +714,11 @@ bpoke :: Stack -> BElem -> IO ()
 bpoke (Stack _ _ sp _ bstk) b = writeArray bstk sp b
 {-# INLINE bpoke #-}
 
-upokeOff :: Stack -> Off -> TypedUElem -> IO ()
-upokeOff stk i (u, t) = do
+pokeOff :: Stack -> Off -> Elem -> IO ()
+pokeOff stk i (Elem u t) = do
   bpokeOff stk i t
   writeByteArray (ustk stk) (sp stk - i) u
-{-# INLINE upokeOff #-}
+{-# INLINE pokeOff #-}
 
 upokeOffT :: Stack -> Off -> UElem -> PackedTag -> IO ()
 upokeOffT stk i u t = do
@@ -725,7 +727,7 @@ upokeOffT stk i u t = do
 {-# INLINE upokeOffT #-}
 
 pokeOffTU :: Stack -> Off -> TypedUnboxed -> IO ()
-pokeOffTU stk i (TypedUnboxed u t) = upokeOff stk i (u, UnboxedTypeTag t)
+pokeOffTU stk i (TypedUnboxed u t) = pokeOff stk i (Elem u (UnboxedTypeTag t))
 {-# INLINE pokeOffTU #-}
 
 bpokeOff :: Stack -> Off -> BElem -> IO ()
@@ -1007,16 +1009,16 @@ peekOffBi :: (BuiltinForeign b) => Stack -> Int -> IO b
 peekOffBi stk i = unwrapForeign . marshalToForeign <$> bpeekOff stk i
 {-# INLINE peekOffBi #-}
 
-peekOffS :: Stack -> Int -> IO (Seq Closure)
+peekOffS :: Stack -> Int -> IO USeq
 peekOffS stk i =
   unwrapForeign . marshalToForeign <$> bpeekOff stk i
 {-# INLINE peekOffS #-}
 
-pokeS :: Stack -> Seq Closure -> IO ()
+pokeS :: Stack -> USeq -> IO ()
 pokeS stk s = bpoke stk (Foreign $ Wrap Ty.listRef s)
 {-# INLINE pokeS #-}
 
-pokeOffS :: Stack -> Int -> Seq Closure -> IO ()
+pokeOffS :: Stack -> Int -> USeq -> IO ()
 pokeOffS stk i s = bpokeOff stk i (Foreign $ Wrap Ty.listRef s)
 {-# INLINE pokeOffS #-}
 
@@ -1075,8 +1077,8 @@ closureTermRefs f = \case
   (Captured k _ (_useg, bseg)) ->
     contTermRefs f k <> foldMap (closureTermRefs f) bseg
   (Foreign fo)
-    | Just (cs :: Seq Closure) <- maybeUnwrapForeign Ty.listRef fo ->
-        foldMap (closureTermRefs f) cs
+    | Just (cs :: USeq) <- maybeUnwrapForeign Ty.listRef fo ->
+        foldMap (\(Elem _i clos) -> closureTermRefs f clos) cs
   _ -> mempty
 
 contTermRefs :: (Monoid m) => (Reference -> m) -> K -> m

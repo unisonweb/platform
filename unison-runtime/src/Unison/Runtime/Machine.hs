@@ -369,7 +369,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 CACH i)
       stk <- bump stk
       pokeS
         stk
-        (Sq.fromList $ Foreign . Wrap Rf.termLinkRef . Ref <$> unknown)
+        (Sq.fromList $ RTValue 0 . Foreign . Wrap Rf.termLinkRef . Ref <$> unknown)
       pure (denv, stk, k)
 exec !env !denv !_activeThreads !stk !k _ (BPrim1 CVLD i)
   | sandboxed env = die "attempted to use sandboxed operation: validate"
@@ -436,7 +436,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 LOAD i)
         Left miss -> do
           pokeOffS stk 1 $
             Sq.fromList $
-              Foreign . Wrap Rf.termLinkRef . Ref <$> miss
+              RTValue 0 . Foreign . Wrap Rf.termLinkRef . Ref <$> miss
           pokeTag stk 0
         Right x -> do
           bpokeOff stk 1 x
@@ -1717,14 +1717,14 @@ bprim2 !stk TAKS i j = do
   pokeS stk $ if n < 0 then s else Sq.take n s
   pure stk
 bprim2 !stk CONS i j = do
-  x <- bpeekOff stk i
+  x <- peekOff stk i
   s <- peekOffS stk j
   stk <- bump stk
   pokeS stk $ x Sq.<| s
   pure stk
 bprim2 !stk SNOC i j = do
   s <- peekOffS stk i
-  x <- bpeekOff stk j
+  x <- peekOff stk j
   stk <- bump stk
   pokeS stk $ s Sq.|> x
   pure stk
@@ -1744,7 +1744,7 @@ bprim2 !stk IDXS i j = do
       pure stk
     Just x -> do
       stk <- bump stk
-      bpoke stk x
+      poke stk x
       stk <- bump stk
       pokeTag stk 1
       pure stk
@@ -1965,9 +1965,9 @@ refLookup s m r
       error $ "refLookup:" ++ s ++ ": unknown reference: " ++ show r
 
 decodeCacheArgument ::
-  Sq.Seq Closure -> IO [(Reference, Code)]
+  USeq -> IO [(Reference, Code)]
 decodeCacheArgument s = for (toList s) $ \case
-  DataB2 _ _ (Foreign x) (DataB2 _ _ (Foreign y) _) ->
+  (RTValue _i (DataB2 _ _ (Foreign x) (DataB2 _ _ (Foreign y) _))) ->
     case unwrapForeign x of
       Ref r -> pure (r, unwrapForeign y)
       _ -> die "decodeCacheArgument: Con reference"

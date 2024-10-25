@@ -1515,7 +1515,7 @@ emitClosures grpr grpn rec ctx args k =
           let cix = (CIx grpr grpn n)
            in Ins (Name (Env cix cix) ZArgs) <$> allocate (Var a BX ctx) as k
       | otherwise =
-          internalBug $ "emitClosures: unknown reference: " ++ show a
+          internalBug $ "emitClosures: unknown reference: " ++ show a ++ show grpr
 
 emitArgs :: (Var v) => Word64 -> Ctx v -> [v] -> Args
 emitArgs grpn ctx args

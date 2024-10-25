@@ -36,6 +36,7 @@ import Unison.Runtime.MCode (CombIx (..))
 import Unison.Runtime.Stack
   ( Closure (..),
     TypedUnboxed (..),
+    USeq,
     getTUInt,
     pattern DataC,
     pattern PApV,
@@ -252,5 +253,5 @@ decompileBytes =
 decompileHashAlgorithm :: (Var v) => HashAlgorithm -> Term v ()
 decompileHashAlgorithm (HashAlgorithm r _) = ref () r
 
-unwrapSeq :: Foreign -> Maybe (Seq Closure)
+unwrapSeq :: Foreign -> Maybe USeq
 unwrapSeq = maybeUnwrapForeign listRef
