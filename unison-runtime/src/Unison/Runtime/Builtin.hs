@@ -372,7 +372,7 @@ cmpopn pop _rf =
 -- | Like `cmpop`, but swaps arguments then negates the result.
 cmpopbn :: (Var v) => POp -> Reference -> SuperNormal v
 cmpopbn pop _rf =
-  binop0 3 $ \[x, y, b] ->
+  binop0 1 $ \[x, y, b] ->
       TLetD b UN (TPrm pop [y, x])
       $ notlift b
 
@@ -1310,7 +1310,10 @@ outMaybeNat tag result n =
       [ (0, ([], none)),
         ( 1,
           ( [UN],
-            TAbs result $ some n
+          -- TODO: Fix this?
+            TAbs result
+              . TLetD n BX (TCon Ty.natRef 0 [n])
+              $ some n
           )
         )
       ]
