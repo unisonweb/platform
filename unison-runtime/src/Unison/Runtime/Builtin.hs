@@ -348,36 +348,32 @@ binop' ::
 binop' pop _rfx _rfy _rfr =
   binop0 0 $ \[ x, y] -> TPrm pop [x, y]
 
+-- | Lift a comparison op.
 cmpop :: (Var v) => POp -> Reference -> SuperNormal v
-cmpop pop rf =
-  binop0 3 $ \[x0, y0, x, y, b] ->
-    unbox x0 rf x
-      . unbox y0 rf y
-      . TLetD b UN (TPrm pop [x, y])
+cmpop pop _rf =
+  binop0 1 $ \[x, y, b] ->
+      TLetD b UN (TPrm pop [x, y])
       $ boolift b
 
+-- | Like `cmpop`, but swaps the arguments.
 cmpopb :: (Var v) => POp -> Reference -> SuperNormal v
-cmpopb pop rf =
-  binop0 3 $ \[x0, y0, x, y, b] ->
-    unbox x0 rf x
-      . unbox y0 rf y
-      . TLetD b UN (TPrm pop [y, x])
+cmpopb pop _rf =
+  binop0 1 $ \[ x, y, b] ->
+      TLetD b UN (TPrm pop [y, x])
       $ boolift b
 
+-- | Like `cmpop`, but negates the result.
 cmpopn :: (Var v) => POp -> Reference -> SuperNormal v
-cmpopn pop rf =
-  binop0 3 $ \[x0, y0, x, y, b] ->
-    unbox x0 rf x
-      . unbox y0 rf y
-      . TLetD b UN (TPrm pop [x, y])
+cmpopn pop _rf =
+  binop0 1 $ \[ x, y, b] ->
+      TLetD b UN (TPrm pop [x, y])
       $ notlift b
 
+-- | Like `cmpop`, but swaps arguments then negates the result.
 cmpopbn :: (Var v) => POp -> Reference -> SuperNormal v
-cmpopbn pop rf =
-  binop0 3 $ \[x0, y0, x, y, b] ->
-    unbox x0 rf x
-      . unbox y0 rf y
-      . TLetD b UN (TPrm pop [y, x])
+cmpopbn pop _rf =
+  binop0 3 $ \[x, y, b] ->
+      TLetD b UN (TPrm pop [y, x])
       $ notlift b
 
 addi, subi, muli, divi, modi, shli, shri, powi :: (Var v) => SuperNormal v
@@ -507,20 +503,18 @@ i2f = unop' ITOF Ty.intRef Ty.floatRef
 n2f = unop' NTOF Ty.natRef Ty.floatRef
 
 trni :: (Var v) => SuperNormal v
-trni = unop0 3 $ \[x0, x, z, b] ->
-  unbox x0 Ty.intRef x
-    . TLetD z UN (TLit $ I 0)
+trni = unop0 2 $ \[x, z, b] ->
+    TLetD z UN (TLit $ I 0)
     . TLetD b UN (TPrm LEQI [x, z])
     . TMatch b
     $ MatchIntegral
-      (mapSingleton 1 $ TCon Ty.natRef 0 [z])
-      (Just $ TCon Ty.natRef 0 [x])
+      (mapSingleton 1 $ TVar z)
+      (Just $ TVar x)
 
 modular :: (Var v) => POp -> (Bool -> ANormal v) -> SuperNormal v
 modular pop ret =
-  unop0 3 $ \[x0, x, m, t] ->
-    unbox x0 Ty.intRef x
-      . TLetD t UN (TLit $ I 2)
+  unop0 2 $ \[x, m, t] ->
+      TLetD t UN (TLit $ I 2)
       . TLetD m UN (TPrm pop [x, t])
       . TMatch m
       $ MatchIntegral
@@ -534,42 +528,30 @@ evnn = modular MODN (\b -> if b then fls else tru)
 oddn = modular MODN (\b -> if b then tru else fls)
 
 dropn :: (Var v) => SuperNormal v
-dropn = binop0 4 $ \[x0, y0, x, y, b, r] ->
-  unbox x0 Ty.natRef x
-    . unbox y0 Ty.natRef y
-    . TLetD b UN (TPrm LEQN [x, y])
-    . TLet
-      (Indirect 1)
-      r
-      UN
-      ( TMatch b $
+dropn = binop0 1 $ \[x, y, b] ->
+    TLetD b UN (TPrm LEQN [x, y])
+    $ ( TMatch b $
           MatchIntegral
             (mapSingleton 1 $ TLit $ N 0)
             (Just $ TPrm SUBN [x, y])
       )
-    $ TCon Ty.natRef 0 [r]
 
 appendt, taket, dropt, indext, indexb, sizet, unconst, unsnoct :: (Var v) => SuperNormal v
 appendt = binop0 0 $ \[x, y] -> TPrm CATT [x, y]
-taket = binop0 1 $ \[x0, y, x] ->
-  unbox x0 Ty.natRef x $
+taket = binop0 0 $ \[x, y] ->
     TPrm TAKT [x, y]
-dropt = binop0 1 $ \[x0, y, x] ->
-  unbox x0 Ty.natRef x $
+dropt = binop0 0 $ \[x, y] ->
     TPrm DRPT [x, y]
 
-atb = binop0 4 $ \[n0, b, n, t, r0, r] ->
-  unbox n0 Ty.natRef n
-    . TLetD t UN (TPrm IDXB [n, b])
+atb = binop0 2 $ \[n, b, t,  r] ->
+    TLetD t UN (TPrm IDXB [n, b])
     . TMatch t
     . MatchSum
     $ mapFromList
       [ (0, ([], none)),
         ( 1,
           ( [UN],
-            TAbs r0
-              . TLetD r BX (TCon Ty.natRef 0 [r0])
-              $ some r
+            TAbs r $ some r
           )
         )
       ]
@@ -655,18 +637,11 @@ coerceType fromType toType = unop0 1 $ \[x, r] ->
     TCon toType 0 [r]
 
 takes, drops, sizes, ats, emptys :: (Var v) => SuperNormal v
-takes = binop0 1 $ \[x0, y, x] ->
-  unbox x0 Ty.natRef x $
-    TPrm TAKS [x, y]
-drops = binop0 1 $ \[x0, y, x] ->
-  unbox x0 Ty.natRef x $
-    TPrm DRPS [x, y]
-sizes = unop0 1 $ \[x, r] ->
-  TLetD r UN (TPrm SIZS [x]) $
-    TCon Ty.natRef 0 [r]
-ats = binop0 3 $ \[x0, y, x, t, r] ->
-  unbox x0 Ty.natRef x
-    . TLetD t UN (TPrm IDXS [x, y])
+takes = binop0 0 $ \[x, y] -> TPrm TAKS [x, y]
+drops = binop0 0 $ \[x, y] -> TPrm DRPS [x, y]
+sizes = unop0 0 $ \[x] -> (TPrm SIZS [x])
+ats = binop0 2 $ \[x, y,  t, r] ->
+    TLetD t UN (TPrm IDXS [x, y])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -694,18 +669,16 @@ viewrs = unop0 3 $ \[s, u, i, l] ->
       ]
 
 splitls, splitrs :: (Var v) => SuperNormal v
-splitls = binop0 4 $ \[n0, s, n, t, l, r] ->
-  unbox n0 Ty.natRef n
-    . TLetD t UN (TPrm SPLL [n, s])
+splitls = binop0 3 $ \[n, s, t, l, r] ->
+    TLetD t UN (TPrm SPLL [n, s])
     . TMatch t
     . MatchSum
     $ mapFromList
       [ (0, ([], seqViewEmpty)),
         (1, ([BX, BX], TAbss [l, r] $ seqViewElem l r))
       ]
-splitrs = binop0 4 $ \[n0, s, n, t, l, r] ->
-  unbox n0 Ty.natRef n
-    . TLetD t UN (TPrm SPLR [n, s])
+splitrs = binop0 3 $ \[n, s, t, l, r] ->
+    TLetD t UN (TPrm SPLR [n, s])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -749,27 +722,15 @@ emptyb =
 appendb = binop0 0 $ \[x, y] -> TPrm CATB [x, y]
 
 takeb, dropb, atb, sizeb, flattenb :: SuperNormal Symbol
-takeb = binop0 1 $ \[n0, b, n] ->
-  unbox n0 Ty.natRef n $
-    TPrm TAKB [n, b]
-dropb = binop0 1 $ \[n0, b, n] ->
-  unbox n0 Ty.natRef n $
-    TPrm DRPB [n, b]
-sizeb = unop0 1 $ \[b, n] ->
-  TLetD n UN (TPrm SIZB [b]) $
-    TCon Ty.natRef 0 [n]
+takeb = binop0 0 $ \[n, b] -> TPrm TAKB [n, b]
+dropb = binop0 0 $ \[n, b] -> TPrm DRPB [n, b]
+sizeb = unop0 0 $ \[b] -> (TPrm SIZB [b])
 flattenb = unop0 0 $ \[b] -> TPrm FLTB [b]
 
 i2t, n2t, f2t :: SuperNormal Symbol
-i2t = unop0 1 $ \[n0, n] ->
-  unbox n0 Ty.intRef n $
-    TPrm ITOT [n]
-n2t = unop0 1 $ \[n0, n] ->
-  unbox n0 Ty.natRef n $
-    TPrm NTOT [n]
-f2t = unop0 1 $ \[f0, f] ->
-  unbox f0 Ty.floatRef f $
-    TPrm FTOT [f]
+i2t = unop0 0 $ \[n] -> TPrm ITOT [n]
+n2t = unop0 0 $ \[n] -> TPrm NTOT [n]
+f2t = unop0 0 $ \[f] -> TPrm FTOT [f]
 
 t2i, t2n, t2f :: SuperNormal Symbol
 t2i = unop0 3 $ \[x, t, n0, n] ->
@@ -1088,11 +1049,10 @@ seek'handle instr =
   ([BX, BX, BX],)
     . TAbss [arg1, arg2, arg3]
     . unenum 3 arg2 Ty.seekModeRef seek
-    . unbox arg3 Ty.intRef nat
-    . TLetD result UN (TFOp instr [arg1, seek, nat])
+    . TLetD result UN (TFOp instr [arg1, seek, arg3])
     $ outIoFailUnit stack1 stack2 stack3 unit fail result
   where
-    (arg1, arg2, arg3, seek, nat, stack1, stack2, stack3, unit, fail, result) = fresh
+    (arg1, arg2, arg3, seek,  stack1, stack2, stack3, unit, fail, result) = fresh
 
 no'buf, line'buf, block'buf, sblock'buf :: (Enum e) => e
 no'buf = toEnum $ fromIntegral Ty.bufferModeNoBufferingId
@@ -1113,8 +1073,7 @@ box b u ty = TLetD b BX (TCon ty 0 [u])
 time'zone :: ForeignOp
 time'zone instr =
   ([BX],)
-    . TAbss [bsecs]
-    . unbox bsecs Ty.intRef secs
+    . TAbss [secs]
     . TLets Direct [offset, summer, name] [UN, UN, BX] (TFOp instr [secs])
     . box bsummer summer Ty.natRef
     . box boffset offset Ty.intRef
@@ -1123,7 +1082,7 @@ time'zone instr =
     . TLetD p1 BX (TCon Ty.pairRef 0 [bsummer, p2])
     $ TCon Ty.pairRef 0 [boffset, p1]
   where
-    (secs, bsecs, offset, boffset, summer, bsummer, name, un, p2, p1) = fresh
+    (secs,  offset, boffset, summer, bsummer, name, un, p2, p1) = fresh
 
 start'process :: ForeignOp
 start'process instr =
@@ -1266,11 +1225,10 @@ inBx arg result cont instr =
     $ TLetD result UN (TFOp instr [arg]) cont
 
 -- Nat -> ...
-inNat :: forall v. (Var v) => v -> v -> v -> ANormal v -> FOp -> ([Mem], ANormal v)
-inNat arg nat result cont instr =
+inNat :: forall v. (Var v) =>  v -> v -> ANormal v -> FOp -> ([Mem], ANormal v)
+inNat nat result cont instr =
   ([BX],)
-    . TAbs arg
-    . unbox arg Ty.natRef nat
+    . TAbs nat
     $ TLetD result UN (TFOp instr [nat]) cont
 
 -- Maybe a -> b -> ...
@@ -1315,28 +1273,24 @@ set'echo instr =
     (arg1, arg2, bol, stack1, stack2, stack3, unit, fail, result) = fresh
 
 -- a -> Nat -> ...
-inBxNat :: forall v. (Var v) => v -> v -> v -> v -> ANormal v -> FOp -> ([Mem], ANormal v)
-inBxNat arg1 arg2 nat result cont instr =
+inBxNat :: forall v. (Var v) => v -> v -> v -> ANormal v -> FOp -> ([Mem], ANormal v)
+inBxNat arg1 arg2 result cont instr =
   ([BX, BX],)
     . TAbss [arg1, arg2]
-    . unbox arg2 Ty.natRef nat
-    $ TLetD result UN (TFOp instr [arg1, nat]) cont
+    $ TLetD result UN (TFOp instr [arg1, arg2]) cont
 
 inBxNatNat ::
-  (Var v) => v -> v -> v -> v -> v -> v -> ANormal v -> FOp -> ([Mem], ANormal v)
-inBxNatNat arg1 arg2 arg3 nat1 nat2 result cont instr =
+  (Var v) => v -> v -> v ->  v -> ANormal v -> FOp -> ([Mem], ANormal v)
+inBxNatNat arg1 arg2 arg3 result cont instr =
   ([BX, BX, BX],)
     . TAbss [arg1, arg2, arg3]
-    . unbox arg2 Ty.natRef nat1
-    . unbox arg3 Ty.natRef nat2
-    $ TLetD result UN (TFOp instr [arg1, nat1, nat2]) cont
+    $ TLetD result UN (TFOp instr [arg1, arg2, arg3]) cont
 
-inBxNatBx :: (Var v) => v -> v -> v -> v -> v -> ANormal v -> FOp -> ([Mem], ANormal v)
-inBxNatBx arg1 arg2 arg3 nat result cont instr =
+inBxNatBx :: (Var v) => v -> v -> v -> v -> ANormal v -> FOp -> ([Mem], ANormal v)
+inBxNatBx arg1 arg2 arg3 result cont instr =
   ([BX, BX, BX],)
     . TAbss [arg1, arg2, arg3]
-    . unbox arg2 Ty.natRef nat
-    $ TLetD result UN (TFOp instr [arg1, nat, arg3]) cont
+    $ TLetD result UN (TFOp instr [arg1, arg2, arg3]) cont
 
 -- a -> IOMode -> ...
 inBxIomr :: forall v. (Var v) => v -> v -> v -> v -> ANormal v -> FOp -> ([Mem], ANormal v)
@@ -1714,59 +1668,63 @@ boxBoxBoxToBool =
 -- Works for an type that's packed into a word, just
 -- pass `wordDirect Ty.natRef`, `wordDirect Ty.floatRef`
 -- etc
+--
+-- TODO: Do we still need this?
 wordDirect :: Reference -> ForeignOp
-wordDirect wordType instr =
+wordDirect _wordType instr =
   ([BX],)
-    . TAbss [b1]
-    . unbox b1 wordType ub1
+    . TAbss [ub1]
     $ TFOp instr [ub1]
   where
-    (b1, ub1) = fresh
+    ub1 = fresh1
 
 -- Nat -> Bool
+--
+-- TODO: Do we still need this?
 boxWordToBool :: Reference -> ForeignOp
-boxWordToBool wordType instr =
+boxWordToBool _wordType instr =
   ([BX, BX],)
-    . TAbss [b1, w1]
-    . unbox w1 wordType uw1
+    . TAbss [b1, uw1]
     $ TLetD result UN (TFOp instr [b1, uw1]) (boolift result)
   where
-    (b1, w1, uw1, result) = fresh
+    (b1, uw1, result) = fresh
 
 -- Nat -> Nat -> c
+--
+-- TODO: Do we still need this?
 wordWordDirect :: Reference -> Reference -> ForeignOp
-wordWordDirect word1 word2 instr =
+wordWordDirect _word1 _word2 instr =
   ([BX, BX],)
-    . TAbss [b1, b2]
-    . unbox b1 word1 ub1
-    . unbox b2 word2 ub2
+    . TAbss [ub1, ub2]
     $ TFOp instr [ub1, ub2]
   where
-    (b1, b2, ub1, ub2) = fresh
+    (ub1, ub2) = fresh
 
 -- Nat -> a -> c
 -- Works for an type that's packed into a word, just
 -- pass `wordBoxDirect Ty.natRef`, `wordBoxDirect Ty.floatRef`
 -- etc
+--
+-- TODO: Do we still need this?
 wordBoxDirect :: Reference -> ForeignOp
-wordBoxDirect wordType instr =
+wordBoxDirect _wordType instr =
   ([BX, BX],)
-    . TAbss [b1, b2]
-    . unbox b1 wordType ub1
+    . TAbss [ub1, b2]
     $ TFOp instr [ub1, b2]
   where
-    (b1, b2, ub1) = fresh
+    (b2, ub1) = fresh
 
 -- a -> Nat -> c
 -- works for any second argument type that is packed into a word
+--
+-- TODO: Do we still need this?
 boxWordDirect :: Reference -> ForeignOp
-boxWordDirect wordType instr =
+boxWordDirect _wordType instr =
   ([BX, BX],)
-    . TAbss [b1, b2]
-    . unbox b2 wordType ub2
+    . TAbss [b1, ub2]
     $ TFOp instr [b1, ub2]
   where
-    (b1, b2, ub2) = fresh
+    (b1,  ub2) = fresh
 
 -- a -> b -> c
 boxBoxDirect :: ForeignOp
@@ -1947,12 +1905,10 @@ natNatToBox = wordWordDirect Ty.natRef Ty.natRef
 natNatBoxToBox :: ForeignOp
 natNatBoxToBox instr =
   ([BX, BX, BX],)
-    . TAbss [a1, a2, a3]
-    . unbox a1 Ty.natRef ua1
-    . unbox a2 Ty.natRef ua2
+    . TAbss [ua1, ua2, a3]
     $ TFOp instr [ua1, ua2, a3]
   where
-    (a1, a2, a3, ua1, ua2) = fresh
+    (a3, ua1, ua2) = fresh
 
 -- a -> Nat -> c
 -- Nat only
@@ -1962,63 +1918,60 @@ boxNatToBox = boxWordDirect Ty.natRef
 -- a -> Nat -> Either Failure b
 boxNatToEFBox :: ForeignOp
 boxNatToEFBox =
-  inBxNat arg1 arg2 nat result $
+  inBxNat arg1 arg2 result $
     outIoFail stack1 stack2 stack3 any fail result
   where
-    (arg1, arg2, nat, stack1, stack2, stack3, any, fail, result) = fresh
+    (arg1, arg2, stack1, stack2, stack3, any, fail, result) = fresh
 
 -- a -> Nat ->{Exception} b
 boxNatToExnBox :: ForeignOp
 boxNatToExnBox =
-  inBxNat arg1 arg2 nat result $
+  inBxNat arg1 arg2 result $
     outIoExnBox stack1 stack2 stack3 fail any result
   where
-    (arg1, arg2, nat, stack1, stack2, stack3, any, fail, result) = fresh
+    (arg1, arg2,  stack1, stack2, stack3, any, fail, result) = fresh
 
 -- a -> Nat -> b ->{Exception} ()
 boxNatBoxToExnUnit :: ForeignOp
 boxNatBoxToExnUnit =
-  inBxNatBx arg1 arg2 arg3 nat result $
+  inBxNatBx arg1 arg2 arg3 result $
     outIoExnUnit stack1 stack2 stack3 any fail result
   where
-    (arg1, arg2, arg3, nat, stack1, stack2, stack3, any, fail, result) = fresh
+    (arg1, arg2, arg3,  stack1, stack2, stack3, any, fail, result) = fresh
 
 -- a -> Nat ->{Exception} Nat
 boxNatToExnNat :: ForeignOp
 boxNatToExnNat =
-  inBxNat arg1 arg2 nat result $
+  inBxNat arg1 arg2 result $
     outIoExnNat stack1 stack2 stack3 any fail result
   where
-    (arg1, arg2, nat, stack1, stack2, stack3, any, fail, result) = fresh
+    (arg1, arg2,  stack1, stack2, stack3, any, fail, result) = fresh
 
 -- a -> Nat -> Nat ->{Exception} ()
 boxNatNatToExnUnit :: ForeignOp
 boxNatNatToExnUnit =
-  inBxNatNat arg1 arg2 arg3 nat1 nat2 result $
+  inBxNatNat arg1 arg2 arg3 result $
     outIoExnUnit stack1 stack2 stack3 any fail result
   where
-    (arg1, arg2, arg3, nat1, nat2, result, stack1, stack2, stack3, any, fail) = fresh
+    (arg1, arg2, arg3, result, stack1, stack2, stack3, any, fail) = fresh
 
 -- a -> Nat -> Nat ->{Exception} b
 boxNatNatToExnBox :: ForeignOp
 boxNatNatToExnBox =
-  inBxNatNat arg1 arg2 arg3 nat1 nat2 result $
+  inBxNatNat arg1 arg2 arg3 result $
     outIoExnBox stack1 stack2 stack3 any fail result
   where
-    (arg1, arg2, arg3, nat1, nat2, result, stack1, stack2, stack3, any, fail) = fresh
+    (arg1, arg2, arg3, result, stack1, stack2, stack3, any, fail) = fresh
 
 -- a -> Nat -> b -> Nat -> Nat ->{Exception} ()
 boxNatBoxNatNatToExnUnit :: ForeignOp
 boxNatBoxNatNatToExnUnit instr =
   ([BX, BX, BX, BX, BX],)
-    . TAbss [a0, a1, a2, a3, a4]
-    . unbox a1 Ty.natRef ua1
-    . unbox a3 Ty.natRef ua3
-    . unbox a4 Ty.natRef ua4
+    . TAbss [a0, ua1, a2, ua3, ua4]
     . TLetD result UN (TFOp instr [a0, ua1, a2, ua3, ua4])
     $ outIoExnUnit stack1 stack2 stack3 any fail result
   where
-    (a0, a1, a2, a3, a4, ua1, ua3, ua4, result, stack1, stack2, stack3, any, fail) = fresh
+    (a0,  a2, ua1, ua3, ua4, result, stack1, stack2, stack3, any, fail) = fresh
 
 -- a ->{Exception} Either b c
 boxToExnEBoxBox :: ForeignOp
@@ -2039,7 +1992,7 @@ boxToExnEBoxBox instr =
 -- Nat -> Either Failure ()
 natToEFUnit :: ForeignOp
 natToEFUnit =
-  inNat arg nat result
+  inNat nat result
     . TMatch result
     . MatchSum
     $ mapFromList
@@ -2051,7 +2004,7 @@ natToEFUnit =
         )
       ]
   where
-    (arg, nat, result, fail, stack1, stack2, stack3, unit) = fresh
+    (nat, result, fail, stack1, stack2, stack3, unit) = fresh
 
 -- a -> Either b c
 boxToEBoxBox :: ForeignOp

@@ -958,9 +958,9 @@ buildData !_ !r !t ZArgs = pure $ Enum r t
 buildData !stk !r !t (VArg1 i) = do
   bv <- bpeekOff stk i
   case bv of
-    UnboxedTypeTag t -> do
+    UnboxedTypeTag ut -> do
       uv <- upeekOff stk i
-      pure $ DataU1 r t (TypedUnboxed uv t)
+      pure $ DataU1 r t (TypedUnboxed uv ut)
     _ -> pure $ DataB1 r t bv
 buildData !stk !r !t (VArg2 i j) = do
   b1 <- bpeekOff stk i

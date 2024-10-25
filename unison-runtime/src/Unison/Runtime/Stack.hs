@@ -61,6 +61,8 @@ module Unison.Runtime.Stack
     nullSeg,
     peekD,
     peekOffD,
+    peekC,
+    peekOffC,
     pokeD,
     pokeOffD,
     pokeC,
@@ -919,6 +921,10 @@ peekD :: Stack -> IO Double
 peekD (Stack _ _ sp ustk _) = readByteArray ustk sp
 {-# INLINE peekD #-}
 
+peekC :: Stack -> IO Char
+peekC (Stack _ _ sp ustk _) = Char.chr <$> readByteArray ustk sp
+{-# INLINE peekC #-}
+
 peekOffN :: Stack -> Int -> IO Word64
 peekOffN (Stack _ _ sp ustk _) i = readByteArray ustk (sp - i)
 {-# INLINE peekOffN #-}
@@ -926,6 +932,10 @@ peekOffN (Stack _ _ sp ustk _) i = readByteArray ustk (sp - i)
 peekOffD :: Stack -> Int -> IO Double
 peekOffD (Stack _ _ sp ustk _) i = readByteArray ustk (sp - i)
 {-# INLINE peekOffD #-}
+
+peekOffC :: Stack -> Int -> IO Char
+peekOffC (Stack _ _ sp ustk _) i = Char.chr <$> readByteArray ustk (sp - i)
+{-# INLINE peekOffC #-}
 
 pokeN :: Stack -> Word64 -> IO ()
 pokeN stk@(Stack _ _ sp ustk _) n = do

@@ -17,7 +17,6 @@ import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM (TVar)
 import Control.Exception (evaluate)
 import Data.Atomics (Ticket)
-import Data.Char qualified as Char
 import Data.Foldable (toList)
 import Data.IORef (IORef)
 import Data.Primitive.Array as PA
@@ -90,7 +89,7 @@ mkForeign ev = FF readArgs writeForeign ev
             "mkForeign: too many arguments for foreign function"
 
 instance ForeignConvention Int where
-  readForeign (i : args) stk = (args,) <$> upeekOff stk i
+  readForeign (i : args) stk = (args,) <$> peekOffI stk i
   readForeign [] _ = foreignCCError "Int"
   writeForeign stk i = do
     stk <- bump stk
@@ -118,7 +117,7 @@ instance ForeignConvention Word32 where
   writeForeign = writeForeignAs (fromIntegral :: Word32 -> Word64)
 
 instance ForeignConvention Char where
-  readForeign (i : args) stk = (args,) . Char.chr <$> upeekOff stk i
+  readForeign (i : args) stk = (args,) <$> peekOffC stk i
   readForeign [] _ = foreignCCError "Char"
   writeForeign stk ch = do
     stk <- bump stk
