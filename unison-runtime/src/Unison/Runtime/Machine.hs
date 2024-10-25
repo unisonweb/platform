@@ -1254,10 +1254,10 @@ uprim2 !stk SUBI !i !j = do
   pokeI stk (m - n)
   pure stk
 uprim2 !stk SUBN !i !j = do
-  m <- peekOffN stk i
-  n <- peekOffN stk j
+  m <- peekOffI stk i
+  n <- peekOffI stk j
   stk <- bump stk
-  pokeN stk (m - n)
+  pokeI stk (m - n)
   pure stk
 uprim2 !stk MULI !i !j = do
   m <- upeekOff stk i
