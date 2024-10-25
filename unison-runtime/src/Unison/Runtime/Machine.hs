@@ -1073,14 +1073,24 @@ peekForeign stk i =
 
 uprim1 :: Stack -> UPrim1 -> Int -> IO Stack
 uprim1 !stk DECI !i = do
-  m <- upeekOff stk i
+  m <- peekOffI stk i
   stk <- bump stk
   pokeI stk (m - 1)
   pure stk
+uprim1 !stk DECN !i = do
+  m <- peekOffN stk i
+  stk <- bump stk
+  pokeN stk (m - 1)
+  pure stk
 uprim1 !stk INCI !i = do
-  m <- upeekOff stk i
+  m <- peekOffI stk i
   stk <- bump stk
   pokeI stk (m + 1)
+  pure stk
+uprim1 !stk INCN !i = do
+  m <- peekOffN stk i
+  stk <- bump stk
+  pokeN stk (m + 1)
   pure stk
 uprim1 !stk NEGI !i = do
   m <- upeekOff stk i
@@ -1226,10 +1236,16 @@ uprim1 !stk COMN !i = do
 
 uprim2 :: Stack -> UPrim2 -> Int -> Int -> IO Stack
 uprim2 !stk ADDI !i !j = do
-  (m, t) <- peekOff stk i
+  m <- upeekOff stk i
   n <- upeekOff stk j
   stk <- bump stk
-  upokeT stk (m + n) t
+  pokeI stk (m + n)
+  pure stk
+uprim2 !stk ADDN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  pokeN stk (m + n)
   pure stk
 uprim2 !stk SUBI !i !j = do
   m <- upeekOff stk i
@@ -1237,11 +1253,23 @@ uprim2 !stk SUBI !i !j = do
   stk <- bump stk
   pokeI stk (m - n)
   pure stk
+uprim2 !stk SUBN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  pokeN stk (m - n)
+  pure stk
 uprim2 !stk MULI !i !j = do
   m <- upeekOff stk i
   n <- upeekOff stk j
   stk <- bump stk
   pokeI stk (m * n)
+  pure stk
+uprim2 !stk MULN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  pokeN stk (m * n)
   pure stk
 uprim2 !stk DIVI !i !j = do
   m <- upeekOff stk i
@@ -1261,6 +1289,12 @@ uprim2 !stk SHLI !i !j = do
   stk <- bump stk
   pokeI stk (m `shiftL` n)
   pure stk
+uprim2 !stk SHLN !i !j = do
+  m <- peekOffN stk i
+  n <- upeekOff stk j
+  stk <- bump stk
+  pokeN stk (m `shiftL` n)
+  pure stk
 uprim2 !stk SHRI !i !j = do
   m <- upeekOff stk i
   n <- upeekOff stk j
@@ -1279,9 +1313,21 @@ uprim2 !stk POWI !i !j = do
   stk <- bump stk
   pokeI stk (m ^ n)
   pure stk
+uprim2 !stk POWN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  pokeN stk (m ^ n)
+  pure stk
 uprim2 !stk EQLI !i !j = do
   m <- upeekOff stk i
   n <- upeekOff stk j
+  stk <- bump stk
+  pokeBool stk $ m == n
+  pure stk
+uprim2 !stk EQLN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
   stk <- bump stk
   pokeBool stk $ m == n
   pure stk

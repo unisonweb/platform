@@ -290,101 +290,109 @@ countArgs (VArgV {}) = internalBug "countArgs: DArgV"
 
 data UPrim1
   = -- integral
-    DECI
-  | INCI
-  | NEGI
-  | SGNI -- decrement,increment,negate,signum
-  | LZRO
-  | TZRO
-  | COMN
-  | POPC -- leading/trailingZeroes,complement
+    DECI -- decrement
+  | DECN
+  | INCI -- increment
+  | INCN
+  | NEGI -- negate
+  | SGNI -- signum
+  | LZRO -- leadingZeroes
+  | TZRO -- trailingZeroes
+  | COMN -- complement
+  | POPC -- popCount
   -- floating
-  | ABSF
-  | EXPF
-  | LOGF
-  | SQRT -- abs,exp,log,sqrt
-  | COSF
-  | ACOS
-  | COSH
-  | ACSH -- cos,acos,cosh,acosh
-  | SINF
-  | ASIN
-  | SINH
-  | ASNH -- sin,asin,sinh,asinh
-  | TANF
-  | ATAN
-  | TANH
-  | ATNH -- tan,atan,tanh,atanh
-  | ITOF
-  | NTOF
-  | CEIL
-  | FLOR -- intToFloat,natToFloat,ceiling,floor
-  | TRNF
-  | RNDF -- truncate,round
+  | ABSF -- abs
+  | EXPF -- exp
+  | LOGF -- log
+  | SQRT -- sqrt
+  | COSF -- cos
+  | ACOS -- acos
+  | COSH -- cosh
+  | ACSH -- acosh
+  | SINF -- sin
+  | ASIN -- asin
+  | SINH -- sinh
+  | ASNH -- asinh
+  | TANF -- tan
+  | ATAN -- atan
+  | TANH -- tanh
+  | ATNH -- atanh
+  | ITOF -- intToFloat
+  | NTOF -- natToFloat
+  | CEIL -- ceiling
+  | FLOR -- floor
+  | TRNF -- truncate
+  | RNDF -- round
   deriving (Show, Eq, Ord)
 
 data UPrim2
   = -- integral
-    ADDI
-  | SUBI
+    ADDI -- +
+  | ADDN
+  | SUBI -- -
+  | SUBN
   | MULI
-  | DIVI
-  | MODI -- +,-,*,/,mod
+  | MULN
+  | DIVI -- /
   | DIVN
+  | MODI -- mod
   | MODN
-  | SHLI
-  | SHRI
+  | SHLI -- shiftl
+  | SHLN
+  | SHRI -- shiftr
   | SHRN
-  | POWI -- shiftl,shiftr,shiftr,pow
-  | EQLI
-  | LEQI
-  | LEQN -- ==,<=,<=
-  | ANDN
-  | IORN
-  | XORN -- and,or,xor
+  | POWI -- pow
+  | POWN
+  | EQLI -- ==
+  | EQLN
+  | LEQI -- <=
+  | LEQN
+  | ANDN -- and
+  | IORN -- or
+  | XORN -- xor
   -- floating
-  | EQLF
-  | LEQF -- ==,<=
-  | ADDF
-  | SUBF
+  | EQLF -- ==
+  | LEQF -- <=
+  | ADDF -- +
+  | SUBF -- -
   | MULF
-  | DIVF
-  | ATN2 -- +,-,*,/,atan2
-  | POWF
-  | LOGB
-  | MAXF
-  | MINF -- pow,low,max,min
+  | DIVF -- /
+  | ATN2 -- atan2
+  | POWF -- pow
+  | LOGB -- logBase
+  | MAXF -- max
+  | MINF -- min
   deriving (Show, Eq, Ord)
 
 data BPrim1
   = -- text
-    SIZT
-  | USNC
-  | UCNS -- size,unsnoc,uncons
-  | ITOT
-  | NTOT
-  | FTOT -- intToText,natToText,floatToText
-  | TTOI
-  | TTON
-  | TTOF -- textToInt,textToNat,textToFloat
-  | PAKT
-  | UPKT -- pack,unpack
+    SIZT -- size
+  | USNC -- unsnoc
+  | UCNS -- uncons
+  | ITOT -- intToText
+  | NTOT -- natToText
+  | FTOT -- floatToText
+  | TTOI -- textToInt
+  | TTON -- textToNat
+  | TTOF -- textToFloat
+  | PAKT -- pack
+  | UPKT -- unpack
   -- sequence
-  | VWLS
-  | VWRS
-  | SIZS -- viewl,viewr,size
-  | PAKB
-  | UPKB
-  | SIZB -- pack,unpack,size
+  | VWLS -- viewl
+  | VWRS -- viewr
+  | SIZS -- size
+  | PAKB -- pack
+  | UPKB -- unpack
+  | SIZB -- size
   | FLTB -- flatten
   -- code
-  | MISS
-  | CACH
-  | LKUP
-  | LOAD -- isMissing,cache_,lookup,load
+  | MISS -- isMissing
+  | CACH -- cache
+  | LKUP -- lookup
+  | LOAD -- load
   | CVLD -- validate
-  | VALU
-  | TLTT -- value, Term.Link.toText
+  | VALU -- value
+  | TLTT --  Term.Link.toText
   -- debug
   | DBTX -- debug text
   | SDBL -- sandbox link list
@@ -392,30 +400,30 @@ data BPrim1
 
 data BPrim2
   = -- universal
-    EQLU
-  | CMPU -- ==,compare
+    EQLU -- ==
+  | CMPU -- compare
   -- text
-  | DRPT
-  | CATT
-  | TAKT -- drop,append,take
+  | DRPT -- drop
+  | CATT -- append
+  | TAKT -- take
   | IXOT -- indexof
-  | EQLT
-  | LEQT
-  | LEST -- ==,<=,<
+  | EQLT -- ==
+  | LEQT -- <=
+  | LEST -- <
   -- sequence
-  | DRPS
-  | CATS
-  | TAKS -- drop,append,take
-  | CONS
-  | SNOC
-  | IDXS -- cons,snoc,index
-  | SPLL
-  | SPLR -- splitLeft,splitRight
+  | DRPS -- drop
+  | CATS -- append
+  | TAKS -- take
+  | CONS -- cons
+  | SNOC -- snoc
+  | IDXS -- index
+  | SPLL -- splitLeft
+  | SPLR -- splitRight
   -- bytes
-  | TAKB
-  | DRPB
-  | IDXB
-  | CATB -- take,drop,index,append
+  | TAKB -- take
+  | DRPB -- drop
+  | IDXB -- index
+  | CATB -- append
   | IXOB -- indexof
   -- general
   | THRO -- throw
@@ -1165,31 +1173,31 @@ emitLet rns grpr grpn rec d vcs ctx bnd
 emitPOp :: ANF.POp -> Args -> Instr
 -- Integral
 emitPOp ANF.ADDI = emitP2 ADDI
-emitPOp ANF.ADDN = emitP2 ADDI
+emitPOp ANF.ADDN = emitP2 ADDN
 emitPOp ANF.SUBI = emitP2 SUBI
-emitPOp ANF.SUBN = emitP2 SUBI
+emitPOp ANF.SUBN = emitP2 SUBN
 emitPOp ANF.MULI = emitP2 MULI
-emitPOp ANF.MULN = emitP2 MULI
+emitPOp ANF.MULN = emitP2 MULN
 emitPOp ANF.DIVI = emitP2 DIVI
 emitPOp ANF.DIVN = emitP2 DIVN
 emitPOp ANF.MODI = emitP2 MODI -- TODO: think about how these behave
 emitPOp ANF.MODN = emitP2 MODN -- TODO: think about how these behave
 emitPOp ANF.POWI = emitP2 POWI
-emitPOp ANF.POWN = emitP2 POWI
+emitPOp ANF.POWN = emitP2 POWN
 emitPOp ANF.SHLI = emitP2 SHLI
-emitPOp ANF.SHLN = emitP2 SHLI -- Note: left shift behaves uniformly
+emitPOp ANF.SHLN = emitP2 SHLN -- Note: left shift behaves uniformly
 emitPOp ANF.SHRI = emitP2 SHRI
 emitPOp ANF.SHRN = emitP2 SHRN
 emitPOp ANF.LEQI = emitP2 LEQI
 emitPOp ANF.LEQN = emitP2 LEQN
 emitPOp ANF.EQLI = emitP2 EQLI
-emitPOp ANF.EQLN = emitP2 EQLI
+emitPOp ANF.EQLN = emitP2 EQLN
 emitPOp ANF.SGNI = emitP1 SGNI
 emitPOp ANF.NEGI = emitP1 NEGI
 emitPOp ANF.INCI = emitP1 INCI
-emitPOp ANF.INCN = emitP1 INCI
+emitPOp ANF.INCN = emitP1 INCN
 emitPOp ANF.DECI = emitP1 DECI
-emitPOp ANF.DECN = emitP1 DECI
+emitPOp ANF.DECN = emitP1 DECN
 emitPOp ANF.TZRO = emitP1 TZRO
 emitPOp ANF.LZRO = emitP1 LZRO
 emitPOp ANF.POPC = emitP1 POPC
