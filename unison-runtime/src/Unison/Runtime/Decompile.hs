@@ -35,6 +35,7 @@ import Unison.Runtime.IOSource (iarrayFromListRef, ibarrayFromBytesRef)
 import Unison.Runtime.MCode (CombIx (..))
 import Unison.Runtime.Stack
   ( Closure (..),
+    getTUInt,
     pattern DataC,
     pattern PApV,
   )
@@ -62,13 +63,9 @@ import Unison.Term qualified as Term
 import Unison.Type
   ( anyRef,
     booleanRef,
-    charRef,
-    floatRef,
     iarrayRef,
     ibytearrayRef,
-    intRef,
     listRef,
-    natRef,
     termLinkRef,
     typeLinkRef,
   )
@@ -76,7 +73,7 @@ import Unison.Util.Bytes qualified as By
 import Unison.Util.Pretty (indentN, lines, lit, syntaxToColor, wrap)
 import Unison.Util.Text qualified as Text
 import Unison.Var (Var)
-import Unsafe.Coerce -- for Int -> Double
+-- for Int -> Double
 import Prelude hiding (lines)
 
 con :: (Var v) => Reference -> Word64 -> Term v ()
@@ -153,10 +150,14 @@ decompile ::
   Closure ->
   DecompResult v
 decompile backref topTerms = \case
+  CharClosure c -> pure (char () c)
+  NatClosure n -> pure (nat () n)
+  IntClosure i -> pure (int () (fromIntegral i))
+  DoubleClosure f -> pure (float () f)
   DataC rf (maskTags -> ct) []
     | rf == booleanRef -> tag2bool ct
-  DataC rf (maskTags -> ct) [Left i] ->
-    decompileUnboxed rf ct i
+  DataC rf _ [Left i] ->
+    err (BadUnboxed rf) . nat () $ fromIntegral $ getTUInt i
   (DataC rf _ [Right b])
     | rf == anyRef ->
         app () (builtin () "Any.Any") <$> decompile backref topTerms b
@@ -196,15 +197,6 @@ substitute = align []
     align vts tm [] = substs vts tm
     -- this should not happen
     align vts tm ts = apps' (substs vts tm) ts
-
-decompileUnboxed ::
-  (Var v) => Reference -> Word64 -> Int -> DecompResult v
-decompileUnboxed r _ i
-  | r == natRef = pure . nat () $ fromIntegral i
-  | r == intRef = pure . int () $ fromIntegral i
-  | r == floatRef = pure . float () $ unsafeCoerce i
-  | r == charRef = pure . char () $ toEnum i
-  | otherwise = err (BadUnboxed r) . nat () $ fromIntegral i
 
 decompileForeign ::
   (Var v) =>

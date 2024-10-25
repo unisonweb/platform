@@ -205,6 +205,8 @@ data GClosure comb
     GCaptured !K !Int {-# UNPACK #-} !Seg
   | GForeign !Foreign
   | -- The type tag for the value in the corresponding unboxed stack slot.
+    -- We should consider adding separate constructors for common builtin type tags.
+    --  GHC will optimize nullary constructors into singletons.
     GUnboxedTypeTag !PackedTag
   | GBlackHole
   deriving stock (Show, Functor, Foldable, Traversable)
@@ -249,6 +251,23 @@ pattern Foreign x = Closure (GForeign x)
 pattern BlackHole = Closure GBlackHole
 
 pattern UnboxedTypeTag t = Closure (GUnboxedTypeTag t)
+
+-- We can avoid allocating a closure for common type tags on each poke by having shared top-level closures for them.
+natTypeTag :: Closure
+natTypeTag = UnboxedTypeTag TT.natTag
+{-# NOINLINE natTypeTag #-}
+
+intTypeTag :: Closure
+intTypeTag = UnboxedTypeTag TT.intTag
+{-# NOINLINE intTypeTag #-}
+
+charTypeTag :: Closure
+charTypeTag = UnboxedTypeTag TT.charTag
+{-# NOINLINE charTypeTag #-}
+
+floatTypeTag :: Closure
+floatTypeTag = UnboxedTypeTag TT.floatTag
+{-# NOINLINE floatTypeTag #-}
 
 {-# COMPLETE PAp, Enum, DataU1, DataU2, DataB1, DataB2, DataUB, DataBU, DataG, Captured, Foreign, UnboxedTypeTag, BlackHole #-}
 
@@ -882,26 +901,26 @@ peekOffD (Stack _ _ sp ustk _) i = readByteArray ustk (sp - i)
 
 pokeN :: Stack -> Word64 -> IO ()
 pokeN stk@(Stack _ _ sp ustk _) n = do
-  bpoke stk (UnboxedTypeTag TT.natTag)
+  bpoke stk natTypeTag
   writeByteArray ustk sp n
 {-# INLINE pokeN #-}
 
 pokeD :: Stack -> Double -> IO ()
 pokeD stk@(Stack _ _ sp ustk _) d = do
-  bpoke stk (UnboxedTypeTag TT.floatTag)
+  bpoke stk floatTypeTag
   writeByteArray ustk sp d
 {-# INLINE pokeD #-}
 
 pokeC :: Stack -> Char -> IO ()
 pokeC stk@(Stack _ _ sp ustk _) c = do
-  bpoke stk (UnboxedTypeTag TT.charTag)
+  bpoke stk charTypeTag
   writeByteArray ustk sp (Char.ord c)
 {-# INLINE pokeC #-}
 
 -- | Note: This is for poking an unboxed value that has the UNISON type 'int', not just any unboxed data.
 pokeI :: Stack -> Int -> IO ()
 pokeI stk@(Stack _ _ sp ustk _) i = do
-  bpoke stk (UnboxedTypeTag TT.intTag)
+  bpoke stk intTypeTag
   writeByteArray ustk sp i
 {-# INLINE pokeI #-}
 
@@ -913,19 +932,19 @@ pokeByte stk b = do
 
 pokeOffN :: Stack -> Int -> Word64 -> IO ()
 pokeOffN stk@(Stack _ _ sp ustk _) i n = do
-  bpokeOff stk i (UnboxedTypeTag TT.natTag)
+  bpokeOff stk i natTypeTag
   writeByteArray ustk (sp - i) n
 {-# INLINE pokeOffN #-}
 
 pokeOffD :: Stack -> Int -> Double -> IO ()
 pokeOffD stk@(Stack _ _ sp ustk _) i d = do
-  bpokeOff stk i (UnboxedTypeTag TT.floatTag)
+  bpokeOff stk i floatTypeTag
   writeByteArray ustk (sp - i) d
 {-# INLINE pokeOffD #-}
 
 pokeOffI :: Stack -> Int -> Int -> IO ()
 pokeOffI stk@(Stack _ _ sp ustk _) i n = do
-  bpokeOff stk i (UnboxedTypeTag TT.intTag)
+  bpokeOff stk i intTypeTag
   writeByteArray ustk (sp - i) n
 {-# INLINE pokeOffI #-}
 

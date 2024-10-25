@@ -24,6 +24,7 @@ import Data.Primitive.Array as PA
 import Data.Primitive.ByteArray as PA
 import Data.Sequence qualified as Sq
 import Data.Time.Clock.POSIX (POSIXTime)
+import Data.Word (Word16, Word32, Word64, Word8)
 import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Network.Socket (Socket)
 import Network.UDP (UDPSocket)
@@ -88,12 +89,6 @@ mkForeign ev = FF readArgs writeForeign ev
           internalBug
             "mkForeign: too many arguments for foreign function"
 
--- newtype UnisonInt = UnisonInt Int
-
--- newtype UnisonNat = UnisonNat Word64
-
--- newtype UnisonDouble = UnisonDouble Double
-
 instance ForeignConvention Int where
   readForeign (i : args) stk = (args,) <$> upeekOff stk i
   readForeign [] _ = foreignCCError "Int"
@@ -101,24 +96,26 @@ instance ForeignConvention Int where
     stk <- bump stk
     stk <$ pokeI stk i
 
--- instance ForeignConvention Word64 where
---   readForeign (i : args) stk = (args,) <$> peekOffN stk i
---   readForeign [] _ = foreignCCError "Word64"
---   writeForeign stk n = do
---     stk <- bump stk
---     stk <$ pokeN stk n
+instance ForeignConvention Word64 where
+  readForeign (i : args) stk = (args,) <$> peekOffN stk i
+  readForeign [] _ = foreignCCError "Word64"
+  writeForeign stk n = do
+    stk <- bump stk
+    stk <$ pokeN stk n
 
--- instance ForeignConvention Word8 where
---   readForeign = readForeignAs (fromIntegral :: Word64 -> Word8)
---   writeForeign = writeForeignAs (fromIntegral :: Word8 -> Word64)
+-- We don't have a clear mapping from these types to Unison types, most are just mapped to Nats.
 
--- instance ForeignConvention Word16 where
---   readForeign = readForeignAs (fromIntegral :: Word64 -> Word16)
---   writeForeign = writeForeignAs (fromIntegral :: Word16 -> Word64)
+instance ForeignConvention Word8 where
+  readForeign = readForeignAs (fromIntegral :: Word64 -> Word8)
+  writeForeign = writeForeignAs (fromIntegral :: Word8 -> Word64)
 
--- instance ForeignConvention Word32 where
---   readForeign = readForeignAs (fromIntegral :: Word64 -> Word32)
---   writeForeign = writeForeignAs (fromIntegral :: Word32 -> Word64)
+instance ForeignConvention Word16 where
+  readForeign = readForeignAs (fromIntegral :: Word64 -> Word16)
+  writeForeign = writeForeignAs (fromIntegral :: Word16 -> Word64)
+
+instance ForeignConvention Word32 where
+  readForeign = readForeignAs (fromIntegral :: Word64 -> Word32)
+  writeForeign = writeForeignAs (fromIntegral :: Word32 -> Word64)
 
 instance ForeignConvention Char where
   readForeign (i : args) stk = (args,) . Char.chr <$> upeekOff stk i

@@ -22,6 +22,7 @@ import Unison.Runtime.ANF (PackedTag (..))
 import Unison.Runtime.MCode hiding (MatchT)
 import Unison.Runtime.Serialize
 import Unison.Util.Text qualified as Util.Text
+import Prelude hiding (getChar, putChar)
 
 data CombT = LamT | CachedClosureT
 
@@ -318,24 +319,30 @@ putCombIx (CIx r n i) = putReference r *> pWord n *> pWord i
 getCombIx :: (MonadGet m) => m CombIx
 getCombIx = CIx <$> getReference <*> gWord <*> gWord
 
-data MLitT = MIT | MDT | MTT | MMT | MYT
+data MLitT = MIT | MNT | MCT | MDT | MTT | MMT | MYT
 
 instance Tag MLitT where
   tag2word MIT = 0
-  tag2word MDT = 1
-  tag2word MTT = 2
-  tag2word MMT = 3
-  tag2word MYT = 4
+  tag2word MNT = 1
+  tag2word MCT = 2
+  tag2word MDT = 3
+  tag2word MTT = 4
+  tag2word MMT = 5
+  tag2word MYT = 6
 
   word2tag 0 = pure MIT
-  word2tag 1 = pure MDT
-  word2tag 2 = pure MTT
-  word2tag 3 = pure MMT
-  word2tag 4 = pure MYT
+  word2tag 1 = pure MNT
+  word2tag 2 = pure MCT
+  word2tag 3 = pure MDT
+  word2tag 4 = pure MTT
+  word2tag 5 = pure MMT
+  word2tag 6 = pure MYT
   word2tag n = unknownTag "MLitT" n
 
 putLit :: (MonadPut m) => MLit -> m ()
 putLit (MI i) = putTag MIT *> pInt i
+putLit (MN n) = putTag MNT *> pWord n
+putLit (MC c) = putTag MCT *> putChar c
 putLit (MD d) = putTag MDT *> putFloat d
 putLit (MT t) = putTag MTT *> putText (Util.Text.toText t)
 putLit (MM r) = putTag MMT *> putReferent r
@@ -345,6 +352,8 @@ getLit :: (MonadGet m) => m MLit
 getLit =
   getTag >>= \case
     MIT -> MI <$> gInt
+    MNT -> MN <$> gWord
+    MCT -> MC <$> getChar
     MDT -> MD <$> getFloat
     MTT -> MT . Util.Text.fromText <$> getText
     MMT -> MM <$> getReferent

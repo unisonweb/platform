@@ -2298,7 +2298,7 @@ unitValue :: Closure
 unitValue = Closure.Enum Ty.unitRef (PackedTag 0)
 
 natValue :: Word64 -> Closure
-natValue w =  Closure.DataU1 Ty.natRef (PackedTag 0) (fromIntegral w)
+natValue w =  Closure.NatClosure w
 
 mkForeignTls ::
   forall a r.
@@ -3212,12 +3212,12 @@ declareForeigns = do
     \(beg, end) -> evaluate . TPat.cpattern . TPat.Char . TPat.Not $ TPat.CharRange beg end
   declareForeign Untracked "Text.patterns.charIn" boxDirect . mkForeign $ \ccs -> do
     cs <- for ccs $ \case
-      Closure.DataU1 _ _ i -> pure (toEnum i)
+      Closure.CharClosure c -> pure c
       _ -> die "Text.patterns.charIn: non-character closure"
     evaluate . TPat.cpattern . TPat.Char $ TPat.CharSet cs
   declareForeign Untracked "Text.patterns.notCharIn" boxDirect . mkForeign $ \ccs -> do
     cs <- for ccs $ \case
-      Closure.DataU1 _ _ i -> pure (toEnum i)
+      Closure.CharClosure c -> pure c
       _ -> die "Text.patterns.notCharIn: non-character closure"
     evaluate . TPat.cpattern . TPat.Char . TPat.Not $ TPat.CharSet cs
   declareForeign Untracked "Pattern.many" boxDirect . mkForeign $
@@ -3250,7 +3250,7 @@ declareForeigns = do
   declareForeign Untracked "Char.Class.range" (wordWordDirect charRef charRef) . mkForeign $ \(a, b) -> pure $ TPat.CharRange a b
   declareForeign Untracked "Char.Class.anyOf" boxDirect . mkForeign $ \ccs -> do
     cs <- for ccs $ \case
-      Closure.DataU1 _ _ i -> pure (toEnum i)
+      Closure.CharClosure c -> pure c
       _ -> die "Text.patterns.charIn: non-character closure"
     evaluate $ TPat.CharSet cs
   declareForeign Untracked "Char.Class.alphanumeric" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.AlphaNum)
