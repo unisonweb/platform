@@ -556,7 +556,7 @@ atb = binop0 2 $ \[n, b, t,  r] ->
         )
       ]
 
-indext = binop0 3 $ \[x, y, t, r0, r] ->
+indext = binop0 2 $ \[x, y, t, r] ->
   TLetD t UN (TPrm IXOT [x, y])
     . TMatch t
     . MatchSum
@@ -564,14 +564,12 @@ indext = binop0 3 $ \[x, y, t, r0, r] ->
       [ (0, ([], none)),
         ( 1,
           ( [UN],
-            TAbs r0
-              . TLetD r BX (TCon Ty.natRef 0 [r0])
-              $ some r
+            TAbs r $ some r
           )
         )
       ]
 
-indexb = binop0 3 $ \[x, y, t, i, r] ->
+indexb = binop0 2 $ \[x, y, t, r] ->
   TLetD t UN (TPrm IXOB [x, y])
     . TMatch t
     . MatchSum
@@ -579,16 +577,12 @@ indexb = binop0 3 $ \[x, y, t, i, r] ->
       [ (0, ([], none)),
         ( 1,
           ( [UN],
-            TAbs i
-              . TLetD r BX (TCon Ty.natRef 0 [i])
-              $ some r
+            TAbs r $ some r
           )
         )
       ]
 
-sizet = unop0 1 $ \[x, r] ->
-  TLetD r UN (TPrm SIZT [x]) $
-    TCon Ty.natRef 0 [r]
+sizet = unop0 0 $ \[x] -> TPrm SIZT [x]
 
 unconst = unop0 7 $ \[x, t, c0, c, y, p, u, yp] ->
   TLetD t UN (TPrm UCNS [x])
@@ -747,7 +741,7 @@ t2i = unop0 3 $ \[x, t, n0, n] ->
           )
         )
       ]
-t2n = unop0 3 $ \[x, t, n0, n] ->
+t2n = unop0 2 $ \[x, t, n] ->
   TLetD t UN (TPrm TTON [x])
     . TMatch t
     . MatchSum
@@ -755,9 +749,7 @@ t2n = unop0 3 $ \[x, t, n0, n] ->
       [ (0, ([], none)),
         ( 1,
           ( [UN],
-            TAbs n0
-              . TLetD n BX (TCon Ty.natRef 0 [n0])
-              $ some n
+            TAbs n $ some n
           )
         )
       ]
@@ -1155,8 +1147,7 @@ get'buffering'output eitherResult stack1 stack2 stack3 resultTag anyVar failVar 
                 sblock'buf
                   --> [UN]
                   --> TAbs stack1
-                  . TLetD stack2 BX (TCon Ty.natRef 0 [stack1])
-                  . TLetD successVar BX (TCon Ty.bufferModeRef sblock'buf [stack2])
+                  . TLetD successVar BX (TCon Ty.bufferModeRef sblock'buf [stack1])
                   $ right successVar
               ]
         )
@@ -1183,10 +1174,9 @@ murmur'hash instr =
   ([BX],)
     . TAbss [x]
     . TLetD vl BX (TPrm VALU [x])
-    . TLetD result UN (TFOp instr [vl])
-    $ TCon Ty.natRef 0 [result]
+    $ TFOp instr [vl]
   where
-    (x, vl, result) = fresh
+    (x, vl) = fresh
 
 crypto'hmac :: ForeignOp
 crypto'hmac instr =
@@ -1327,15 +1317,13 @@ outMaybeNat tag result n =
       [ (0, ([], none)),
         ( 1,
           ( [UN],
-            TAbs result
-              . TLetD n BX (TCon Ty.natRef 0 [n])
-              $ some n
+            TAbs result $ some n
           )
         )
       ]
 
-outMaybeNTup :: forall v. (Var v) => v -> v -> v -> v -> v -> v -> v -> ANormal v
-outMaybeNTup a b n u bp p result =
+outMaybeNTup :: forall v. (Var v) => v -> v -> v -> v -> v -> v -> ANormal v
+outMaybeNTup a b u bp p result =
   TMatch result . MatchSum $
     mapFromList
       [ (0, ([], none)),
@@ -1344,8 +1332,7 @@ outMaybeNTup a b n u bp p result =
             TAbss [a, b]
               . TLetD u BX (TCon Ty.unitRef 0 [])
               . TLetD bp BX (TCon Ty.pairRef 0 [b, u])
-              . TLetD n BX (TCon Ty.natRef 0 [a])
-              . TLetD p BX (TCon Ty.pairRef 0 [n, bp])
+              . TLetD p BX (TCon Ty.pairRef 0 [a, bp])
               $ some p
           )
         )
@@ -1385,8 +1372,7 @@ outIoFailNat stack1 stack2 stack3 fail extra result =
         ( 1,
           ([UN],)
             . TAbs stack3
-            . TLetD extra BX (TCon Ty.natRef 0 [stack3])
-            $ right extra
+            $ right stack3
         )
       ]
 
@@ -1430,9 +1416,10 @@ outIoExnNat stack1 stack2 stack3 any fail result =
     mapFromList
       [ exnCase stack1 stack2 stack3 any fail,
         ( 1,
+            -- TODO: Can I simplify this?
           ([UN],)
             . TAbs stack1
-            $ TCon Ty.natRef 0 [stack1]
+            $ TVar stack1
         )
       ]
 
@@ -1603,7 +1590,7 @@ boxToInt = inBx arg result (TCon Ty.intRef 0 [result])
 
 -- a -> Nat
 boxToNat :: ForeignOp
-boxToNat = inBx arg result (TCon Ty.natRef 0 [result])
+boxToNat = inBx arg result (TVar result)
   where
     (arg, result) = fresh
 
@@ -1635,10 +1622,9 @@ boxBoxToNat :: ForeignOp
 boxBoxToNat instr =
   ([BX, BX],)
     . TAbss [arg1, arg2]
-    . TLetD result UN (TFOp instr [arg1, arg2])
-    $ TCon Ty.natRef 0 [result]
+    $ (TFOp instr [arg1, arg2])
   where
-    (arg1, arg2, result) = fresh
+    (arg1, arg2) = fresh
 
 -- a -> b -> Option c
 
@@ -1792,9 +1778,9 @@ boxToMaybeNat = inBx arg tag $ outMaybeNat tag result n
 -- a -> Maybe (Nat, b)
 boxToMaybeNTup :: ForeignOp
 boxToMaybeNTup =
-  inBx arg result $ outMaybeNTup a b c u bp p result
+  inBx arg result $ outMaybeNTup a b u bp p result
   where
-    (arg, a, b, c, u, bp, p, result) = fresh
+    (arg, a, b, u, bp, p, result) = fresh
 
 -- a -> b -> Maybe (c, d)
 boxBoxToMaybeTup :: ForeignOp
