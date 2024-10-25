@@ -584,7 +584,7 @@ indexb = binop0 2 $ \[x, y, t, r] ->
 
 sizet = unop0 0 $ \[x] -> TPrm SIZT [x]
 
-unconst = unop0 7 $ \[x, t, c0, c, y, p, u, yp] ->
+unconst = unop0 6 $ \[x, t, c, y, p, u, yp] ->
   TLetD t UN (TPrm UCNS [x])
     . TMatch t
     . MatchSum
@@ -592,17 +592,16 @@ unconst = unop0 7 $ \[x, t, c0, c, y, p, u, yp] ->
       [ (0, ([], none)),
         ( 1,
           ( [UN, BX],
-            TAbss [c0, y]
+            TAbss [c, y]
               . TLetD u BX (TCon Ty.unitRef 0 [])
               . TLetD yp BX (TCon Ty.pairRef 0 [y, u])
-              . TLetD c BX (TCon Ty.charRef 0 [c0])
               . TLetD p BX (TCon Ty.pairRef 0 [c, yp])
               $ some p
           )
         )
       ]
 
-unsnoct = unop0 7 $ \[x, t, c0, c, y, p, u, cp] ->
+unsnoct = unop0 6 $ \[x, t,  c, y, p, u, cp] ->
   TLetD t UN (TPrm USNC [x])
     . TMatch t
     . MatchSum
@@ -610,9 +609,8 @@ unsnoct = unop0 7 $ \[x, t, c0, c, y, p, u, cp] ->
       [ (0, ([], none)),
         ( 1,
           ( [BX, UN],
-            TAbss [y, c0]
+            TAbss [y, c]
               . TLetD u BX (TCon Ty.unitRef 0 [])
-              . TLetD c BX (TCon Ty.charRef 0 [c0])
               . TLetD cp BX (TCon Ty.pairRef 0 [c, u])
               . TLetD p BX (TCon Ty.pairRef 0 [y, cp])
               $ some p
@@ -727,7 +725,7 @@ n2t = unop0 0 $ \[n] -> TPrm NTOT [n]
 f2t = unop0 0 $ \[f] -> TPrm FTOT [f]
 
 t2i, t2n, t2f :: SuperNormal Symbol
-t2i = unop0 3 $ \[x, t, n0, n] ->
+t2i = unop0 2 $ \[x, t,  n] ->
   TLetD t UN (TPrm TTOI [x])
     . TMatch t
     . MatchSum
@@ -735,9 +733,7 @@ t2i = unop0 3 $ \[x, t, n0, n] ->
       [ (0, ([], none)),
         ( 1,
           ( [UN],
-            TAbs n0
-              . TLetD n BX (TCon Ty.intRef 0 [n0])
-              $ some n
+            TAbs n $ some n
           )
         )
       ]
@@ -753,7 +749,7 @@ t2n = unop0 2 $ \[x, t, n] ->
           )
         )
       ]
-t2f = unop0 3 $ \[x, t, f0, f] ->
+t2f = unop0 2 $ \[x, t, f] ->
   TLetD t UN (TPrm TTOF [x])
     . TMatch t
     . MatchSum
@@ -761,9 +757,7 @@ t2f = unop0 3 $ \[x, t, f0, f] ->
       [ (0, ([], none)),
         ( 1,
           ( [UN],
-            TAbs f0
-              . TLetD f BX (TCon Ty.floatRef 0 [f0])
-              $ some f
+            TAbs f $ some f
           )
         )
       ]
@@ -774,10 +768,9 @@ equ = binop0 1 $ \[x, y, b] ->
     boolift b
 
 cmpu :: SuperNormal Symbol
-cmpu = binop0 2 $ \[x, y, c, i] ->
+cmpu = binop0 1 $ \[x, y, c] ->
   TLetD c UN (TPrm CMPU [x, y])
-    . TLetD i UN (TPrm DECI [c])
-    $ TCon Ty.intRef 0 [i]
+  $ (TPrm DECI [c])
 
 ltu :: SuperNormal Symbol
 ltu = binop0 1 $ \[x, y, c] ->
@@ -1383,8 +1376,7 @@ outIoFailChar stack1 stack2 stack3 fail extra result =
       [ failureCase stack1 stack2 stack3 extra fail,
         ( 1,
           ([UN],)
-            . TAbs stack3
-            . TLetD extra BX (TCon Ty.charRef 0 [stack3])
+            . TAbs extra
             $ right extra
         )
       ]
@@ -1569,8 +1561,7 @@ unitToEFNat =
 -- () -> Int
 unitToInt :: ForeignOp
 unitToInt =
-  inUnit unit result $
-    TCon Ty.intRef 0 [result]
+  inUnit unit result $ TVar result
   where
     (unit, result) = fresh
 
@@ -1583,8 +1574,10 @@ unitToEFBox =
     (unit, stack1, stack2, stack3, fail, any, result) = fresh
 
 -- a -> Int
+--
+-- TODO: Probably don't need all these boxing type wrapper things now.
 boxToInt :: ForeignOp
-boxToInt = inBx arg result (TCon Ty.intRef 0 [result])
+boxToInt = inBx arg result (TVar result)
   where
     (arg, result) = fresh
 
