@@ -57,7 +57,7 @@ module Unison.Runtime.ANF
     GroupRef (..),
     Code (..),
     UBValue,
-    UnboxedValue(..),
+    UnboxedValue (..),
     ValList,
     Value (..),
     Cont (..),
@@ -1244,139 +1244,139 @@ litRef (LY _) = Ty.typeLinkRef
 -- formats that we want to control and version.
 data POp
   = -- Int
-    ADDI
-  | SUBI
+    ADDI -- +
+  | SUBI -- -
   | MULI
-  | DIVI -- +,-,*,/
-  | SGNI
-  | NEGI
-  | MODI -- sgn,neg,mod
-  | POWI
-  | SHLI
-  | SHRI -- pow,shiftl,shiftr
-  | INCI
-  | DECI
-  | LEQI
-  | EQLI -- inc,dec,<=,==
+  | DIVI -- /
+  | SGNI -- sgn
+  | NEGI -- neg
+  | MODI -- mod
+  | POWI -- pow
+  | SHLI -- shiftl
+  | SHRI -- shiftr
+  | INCI -- inc
+  | DECI -- dec
+  | LEQI -- <=
+  | EQLI -- ==
   -- Nat
-  | ADDN
-  | SUBN
+  | ADDN -- +
+  | SUBN -- -
   | MULN
-  | DIVN -- +,-,*,/
-  | MODN
-  | TZRO
-  | LZRO
-  | POPC -- mod,trailing/leadingZeros,popCount
-  | POWN
-  | SHLN
-  | SHRN -- pow,shiftl,shiftr
-  | ANDN
-  | IORN
-  | XORN
-  | COMN -- and,or,xor,complement
-  | INCN
-  | DECN
-  | LEQN
-  | EQLN -- inc,dec,<=,==
+  | DIVN -- /
+  | MODN -- mod
+  | TZRO -- trailingZeros
+  | LZRO -- leadingZeros
+  | POPC -- popCount
+  | POWN -- pow
+  | SHLN -- shiftl
+  | SHRN -- shiftr
+  | ANDN -- and
+  | IORN -- or
+  | XORN -- xor
+  | COMN -- complement
+  | INCN -- inc
+  | DECN -- dec
+  | LEQN -- <=
+  | EQLN -- ==
   -- Float
-  | ADDF
-  | SUBF
+  | ADDF -- +
+  | SUBF -- -
   | MULF
-  | DIVF -- +,-,*,/
-  | MINF
-  | MAXF
-  | LEQF
-  | EQLF -- min,max,<=,==
-  | POWF
-  | EXPF
-  | SQRT
-  | LOGF -- pow,exp,sqrt,log
+  | DIVF -- /
+  | MINF -- min
+  | MAXF -- max
+  | LEQF -- <=
+  | EQLF -- ==
+  | POWF -- pow
+  | EXPF -- exp
+  | SQRT -- sqrt
+  | LOGF -- log
   | LOGB -- logBase
-  | ABSF
-  | CEIL
-  | FLOR
-  | TRNF -- abs,ceil,floor,truncate
+  | ABSF -- abs
+  | CEIL -- ceil
+  | FLOR -- floor
+  | TRNF -- truncate
   | RNDF -- round
   -- Trig
-  | COSF
-  | ACOS
-  | COSH
-  | ACSH -- cos,acos,cosh,acosh
-  | SINF
-  | ASIN
-  | SINH
-  | ASNH -- sin,asin,sinh,asinh
-  | TANF
-  | ATAN
-  | TANH
-  | ATNH -- tan,atan,tanh,atanh
+  | COSF -- cos
+  | ACOS -- acos
+  | COSH -- cosh
+  | ACSH -- acosh
+  | SINF -- sin
+  | ASIN -- asin
+  | SINH -- sinh
+  | ASNH -- asinh
+  | TANF -- tan
+  | ATAN -- atan
+  | TANH -- tanh
+  | ATNH -- atanh
   | ATN2 -- atan2
   -- Text
-  | CATT
-  | TAKT
-  | DRPT
-  | SIZT -- ++,take,drop,size
+  | CATT -- ++
+  | TAKT -- take
+  | DRPT -- drop
+  | SIZT -- size
   | IXOT -- indexOf
-  | UCNS
-  | USNC
-  | EQLT
-  | LEQT -- uncons,unsnoc,==,<=
-  | PAKT
-  | UPKT -- pack,unpack
+  | UCNS -- uncons
+  | USNC -- unsnoc
+  | EQLT -- ==
+  | LEQT -- <=
+  | PAKT -- pack
+  | UPKT -- unpack
   -- Sequence
-  | CATS
-  | TAKS
-  | DRPS
-  | SIZS -- ++,take,drop,size
-  | CONS
-  | SNOC
-  | IDXS
-  | BLDS -- cons,snoc,at,build
-  | VWLS
-  | VWRS
-  | SPLL
-  | SPLR -- viewl,viewr,splitl,splitr
+  | CATS -- ++
+  | TAKS -- take
+  | DRPS -- drop
+  | SIZS -- size
+  | CONS -- cons
+  | SNOC -- snoc
+  | IDXS -- at
+  | BLDS -- build
+  | VWLS -- viewl
+  | VWRS -- viewr
+  | SPLL -- splitl
+  | SPLR -- splitr
   -- Bytes
-  | PAKB
-  | UPKB
-  | TAKB
-  | DRPB -- pack,unpack,take,drop
+  | PAKB -- pack
+  | UPKB -- unpack
+  | TAKB -- take
+  | DRPB -- drop
   | IXOB -- indexOf
-  | IDXB
-  | SIZB
-  | FLTB
-  | CATB -- index,size,flatten,append
+  | IDXB -- index
+  | SIZB -- size
+  | FLTB -- flatten
+  | CATB -- append
   -- Conversion
-  | ITOF
-  | NTOF
-  | ITOT
-  | NTOT
-  | TTOI
-  | TTON
-  | TTOF
-  | FTOT
+  | ITOF -- intToFloat
+  | NTOF -- natToFloat
+  | ITOT -- intToText
+  | NTOT -- natToText
+  | TTOI -- textToInt
+  | TTON -- textToNat
+  | TTOF -- textToFloat
+  | FTOT -- floatToText
   | -- Concurrency
-    FORK
+    FORK -- fork
   | -- Universal operations
-    EQLU
-  | CMPU
-  | EROR
+    EQLU -- ==
+  | CMPU -- compare
+  | EROR -- error
   | -- Code
-    MISS
-  | CACH
-  | LKUP
-  | LOAD -- isMissing,cache_,lookup,load
-  | CVLD
-  | SDBX -- validate, sandbox
-  | VALU
-  | TLTT -- value, Term.Link.toText
+    MISS -- isMissing
+  | CACH -- cache_
+  | LKUP -- lookup
+  | LOAD -- load
+  | CVLD -- validate
+  | SDBX -- sandbox
+  | VALU -- value
+  | TLTT -- Term.Link.toText
   -- Debug
-  | PRNT
-  | INFO
-  | TRCE
-  | DBTX
+  | PRNT -- print
+  | INFO -- info
+  | TRCE -- trace
+  | DBTX -- debugText
   | -- STM
-    ATOM
+    ATOM -- atomically
   | TFRC -- try force
   | SDBL -- sandbox link list
   | SDBV -- sandbox check for Values
