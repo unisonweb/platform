@@ -370,7 +370,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 CACH i)
       stk <- bump stk
       pokeS
         stk
-        (Sq.fromList $ boxedElem . Foreign . Wrap Rf.termLinkRef . Ref <$> unknown)
+        (Sq.fromList $ boxedVal . Foreign . Wrap Rf.termLinkRef . Ref <$> unknown)
       pure (denv, stk, k)
 exec !env !denv !_activeThreads !stk !k _ (BPrim1 CVLD i)
   | sandboxed env = die "attempted to use sandboxed operation: validate"
@@ -437,7 +437,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 LOAD i)
         Left miss -> do
           pokeOffS stk 1 $
             Sq.fromList $
-              boxedElem . Foreign . Wrap Rf.termLinkRef . Ref <$> miss
+              boxedVal . Foreign . Wrap Rf.termLinkRef . Ref <$> miss
           pokeTag stk 0
         Right x -> do
           bpokeOff stk 1 x
@@ -928,7 +928,7 @@ moveArgs !stk (VArgV i) = do
     l = fsize stk - i
 {-# INLINE moveArgs #-}
 
-closureArgs :: Stack -> Args -> IO [Elem]
+closureArgs :: Stack -> Args -> IO [Val]
 closureArgs !_ ZArgs = pure []
 closureArgs !stk (VArg1 i) = do
   x <- peekOff stk i
@@ -1566,9 +1566,9 @@ bprim1 !stk PAKT i = do
   pokeBi stk . Util.Text.pack . toList $ clo2char <$> s
   pure stk
   where
-    clo2char :: Elem -> Char
-    clo2char (Elem _ (CharClosure c)) = c
-    clo2char (Elem c tt) | tt == charTypeTag = Char.chr $ c
+    clo2char :: Val -> Char
+    clo2char (Val _ (CharClosure c)) = c
+    clo2char (Val c tt) | tt == charTypeTag = Char.chr $ c
     clo2char c = error $ "pack text: non-character closure: " ++ show c
 bprim1 !stk UPKT i = do
   t <- peekOffBi stk i
@@ -1576,7 +1576,7 @@ bprim1 !stk UPKT i = do
   pokeS stk
     . Sq.fromList
     -- TODO: Should this be unboxed chars?
-    . fmap (boxedElem . CharClosure)
+    . fmap (boxedVal . CharClosure)
     . Util.Text.unpack
     $ t
   pure stk
@@ -1587,15 +1587,15 @@ bprim1 !stk PAKB i = do
   pure stk
   where
     -- TODO: Should we have a tag for bytes specifically?
-    clo2w8 :: Elem -> Word8
-    clo2w8 (Elem _ (NatClosure n)) = toEnum . fromEnum $ n
-    clo2w8 (Elem n tt) | tt == natTypeTag = toEnum $ n
+    clo2w8 :: Val -> Word8
+    clo2w8 (Val _ (NatClosure n)) = toEnum . fromEnum $ n
+    clo2w8 (Val n tt) | tt == natTypeTag = toEnum $ n
     clo2w8 c = error $ "pack bytes: non-natural closure: " ++ show c
 bprim1 !stk UPKB i = do
   b <- peekOffBi stk i
   stk <- bump stk
   -- TODO: Should this be unboxed nats/bytes?
-  pokeS stk . Sq.fromList . fmap (boxedElem . NatClosure . toEnum @Word64 . fromEnum @Word8) $
+  pokeS stk . Sq.fromList . fmap (boxedVal . NatClosure . toEnum @Word64 . fromEnum @Word8) $
     By.toWord8s b
   pure stk
 bprim1 !stk SIZB i = do
@@ -1972,7 +1972,7 @@ refLookup s m r
 decodeCacheArgument ::
   USeq -> IO [(Reference, Code)]
 decodeCacheArgument s = for (toList s) $ \case
-  (Elem _unboxed (DataB2 _ _ (Foreign x) (DataB2 _ _ (Foreign y) _))) ->
+  (Val _unboxed (DataB2 _ _ (Foreign x) (DataB2 _ _ (Foreign y) _))) ->
     case unwrapForeign x of
       Ref r -> pure (r, unwrapForeign y)
       _ -> die "decodeCacheArgument: Con reference"
@@ -1980,14 +1980,14 @@ decodeCacheArgument s = for (toList s) $ \case
 
 decodeSandboxArgument :: USeq -> IO [Reference]
 decodeSandboxArgument s = fmap join . for (toList s) $ \case
-  Elem _ (Foreign x) -> case unwrapForeign x of
+  Val _ (Foreign x) -> case unwrapForeign x of
     Ref r -> pure [r]
     _ -> pure [] -- constructor
   _ -> die "decodeSandboxArgument: unrecognized value"
 
-encodeSandboxListResult :: [Reference] -> Sq.Seq Elem
+encodeSandboxListResult :: [Reference] -> Sq.Seq Val
 encodeSandboxListResult =
-  Sq.fromList . fmap (boxedElem . Foreign . Wrap Rf.termLinkRef . Ref)
+  Sq.fromList . fmap (boxedVal . Foreign . Wrap Rf.termLinkRef . Ref)
 
 encodeSandboxResult :: Either [Reference] [Reference] -> Closure
 encodeSandboxResult (Left rfs) =

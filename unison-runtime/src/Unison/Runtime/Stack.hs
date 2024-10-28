@@ -44,9 +44,9 @@ module Unison.Runtime.Stack
     USeg,
     BSeg,
     SegList,
-    Elem (..),
-    boxedElem,
-    unboxedElem,
+    Val (..),
+    boxedVal,
+    unboxedVal,
     USeq,
     TypedUnboxed
       ( TypedUnboxed,
@@ -207,7 +207,7 @@ newtype Closure = Closure {unClosure :: (GClosure (RComb Closure))}
   deriving stock (Show, Eq, Ord)
 
 -- | Implementation for Unison sequences.
-type USeq = Seq Elem
+type USeq = Seq Val
 
 type IxClosure = GClosure CombIx
 
@@ -609,23 +609,23 @@ instance Show Stack where
   show (Stack ap fp sp _ _) =
     "Stack " ++ show ap ++ " " ++ show fp ++ " " ++ show sp
 
-type UElem = Int
+type UVal = Int
 
 -- | A runtime value, which is either a boxed or unboxed value, but we may not know which.
-data Elem = Elem {getUnboxedElem :: !UElem, getBoxedElem :: !BElem}
+data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
   deriving (Show)
 
--- | Lift a boxed elem into an Elem
-boxedElem :: BElem -> Elem
-boxedElem = Elem 0
+-- | Lift a boxed val into an Val
+boxedVal :: BVal -> Val
+boxedVal = Val 0
 
--- | Lift an unboxed elem into an Elem
-unboxedElem :: UElem -> Elem
-unboxedElem u = Elem u BlackHole
+-- | Lift an unboxed val into an Val
+unboxedVal :: UVal -> Val
+unboxedVal u = Val u BlackHole
 
 type USeg = ByteArray
 
-type BElem = Closure
+type BVal = Closure
 
 type BSeg = Array Closure
 
@@ -638,11 +638,11 @@ alloc = do
   pure $ Stack {ap = -1, fp = -1, sp = -1, ustk, bstk}
 {-# INLINE alloc #-}
 
-peek :: Stack -> IO Elem
+peek :: Stack -> IO Val
 peek stk = do
   u <- upeek stk
   b <- bpeek stk
-  pure (Elem u b)
+  pure (Val u b)
 {-# INLINE peek #-}
 
 peekI :: Stack -> IO Int
@@ -653,37 +653,37 @@ peekOffI :: Stack -> Off -> IO Int
 peekOffI (Stack _ _ sp ustk _) i = readByteArray ustk (sp - i)
 {-# INLINE peekOffI #-}
 
-bpeek :: Stack -> IO BElem
+bpeek :: Stack -> IO BVal
 bpeek (Stack _ _ sp _ bstk) = readArray bstk sp
 {-# INLINE bpeek #-}
 
-upeek :: Stack -> IO UElem
+upeek :: Stack -> IO UVal
 upeek (Stack _ _ sp ustk _) = readByteArray ustk sp
 {-# INLINE upeek #-}
 
-peekOff :: Stack -> Off -> IO Elem
+peekOff :: Stack -> Off -> IO Val
 peekOff stk i = do
   u <- upeekOff stk i
   b <- bpeekOff stk i
-  pure $ Elem u b
+  pure $ Val u b
 {-# INLINE peekOff #-}
 
-bpeekOff :: Stack -> Off -> IO BElem
+bpeekOff :: Stack -> Off -> IO BVal
 bpeekOff (Stack _ _ sp _ bstk) i = readArray bstk (sp - i)
 {-# INLINE bpeekOff #-}
 
-upeekOff :: Stack -> Off -> IO UElem
+upeekOff :: Stack -> Off -> IO UVal
 upeekOff (Stack _ _ sp ustk _) i = readByteArray ustk (sp - i)
 {-# INLINE upeekOff #-}
 
-upokeT :: Stack -> UElem -> PackedTag -> IO ()
+upokeT :: Stack -> UVal -> PackedTag -> IO ()
 upokeT !stk@(Stack _ _ sp ustk _) !u !t = do
   bpoke stk (UnboxedTypeTag t)
   writeByteArray ustk sp u
 {-# INLINE upokeT #-}
 
-poke :: Stack -> Elem -> IO ()
-poke (Stack _ _ sp ustk bstk) (Elem u b) = do
+poke :: Stack -> Val -> IO ()
+poke (Stack _ _ sp ustk bstk) (Val u b) = do
   writeByteArray ustk sp u
   writeArray bstk sp b
 {-# INLINE poke #-}
@@ -697,7 +697,7 @@ unsafePokeIasN stk n = do
 {-# INLINE unsafePokeIasN #-}
 
 pokeTU :: Stack -> TypedUnboxed -> IO ()
-pokeTU stk !(TypedUnboxed u t) = poke stk (Elem u (UnboxedTypeTag t))
+pokeTU stk !(TypedUnboxed u t) = poke stk (Val u (UnboxedTypeTag t))
 {-# INLINE pokeTU #-}
 
 -- | Store an unboxed tag to later match on.
@@ -727,27 +727,27 @@ pokeBool stk b =
 -- | Store a boxed value.
 -- We don't bother nulling out the unboxed stack,
 -- it's extra work and there's nothing to garbage collect.
-bpoke :: Stack -> BElem -> IO ()
+bpoke :: Stack -> BVal -> IO ()
 bpoke (Stack _ _ sp _ bstk) b = writeArray bstk sp b
 {-# INLINE bpoke #-}
 
-pokeOff :: Stack -> Off -> Elem -> IO ()
-pokeOff stk i (Elem u t) = do
+pokeOff :: Stack -> Off -> Val -> IO ()
+pokeOff stk i (Val u t) = do
   bpokeOff stk i t
   writeByteArray (ustk stk) (sp stk - i) u
 {-# INLINE pokeOff #-}
 
-upokeOffT :: Stack -> Off -> UElem -> PackedTag -> IO ()
+upokeOffT :: Stack -> Off -> UVal -> PackedTag -> IO ()
 upokeOffT stk i u t = do
   bpokeOff stk i (UnboxedTypeTag t)
   writeByteArray (ustk stk) (sp stk - i) u
 {-# INLINE upokeOffT #-}
 
 pokeOffTU :: Stack -> Off -> TypedUnboxed -> IO ()
-pokeOffTU stk i (TypedUnboxed u t) = pokeOff stk i (Elem u (UnboxedTypeTag t))
+pokeOffTU stk i (TypedUnboxed u t) = pokeOff stk i (Val u (UnboxedTypeTag t))
 {-# INLINE pokeOffTU #-}
 
-bpokeOff :: Stack -> Off -> BElem -> IO ()
+bpokeOff :: Stack -> Off -> BVal -> IO ()
 bpokeOff (Stack _ _ sp _ bstk) i b = writeArray bstk (sp - i) b
 {-# INLINE bpokeOff #-}
 
@@ -1095,7 +1095,7 @@ closureTermRefs f = \case
     contTermRefs f k <> foldMap (closureTermRefs f) bseg
   (Foreign fo)
     | Just (cs :: USeq) <- maybeUnwrapForeign Ty.listRef fo ->
-        foldMap (\(Elem _i clos) -> closureTermRefs f clos) cs
+        foldMap (\(Val _i clos) -> closureTermRefs f clos) cs
   _ -> mempty
 
 contTermRefs :: (Monoid m) => (Reference -> m) -> K -> m
