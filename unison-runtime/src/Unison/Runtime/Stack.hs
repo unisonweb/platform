@@ -44,7 +44,13 @@ module Unison.Runtime.Stack
     USeg,
     BSeg,
     SegList,
-    Val (..),
+    Val
+      ( ..,
+        CharVal,
+        NatVal,
+        DoubleVal,
+        IntVal
+      ),
     boxedVal,
     unboxedVal,
     USeq,
@@ -383,6 +389,50 @@ pattern IntClosure i <- (unpackUnboxedClosure TT.intTag -> Just i)
   where
     IntClosure i = DataU1 Ty.intRef TT.intTag (TypedUnboxed i TT.intTag)
 
+matchCharVal :: Val -> Maybe Char
+matchCharVal = \case
+  (Val u (UnboxedTypeTag tt)) | tt == TT.charTag -> Just (Char.chr u)
+  (Val _ (CharClosure c)) -> Just c
+  _ -> Nothing
+
+pattern CharVal :: Char -> Val
+pattern CharVal c <- (matchCharVal -> Just c)
+  where
+    CharVal c = Val (Char.ord c) (UnboxedTypeTag TT.charTag)
+
+matchNatVal :: Val -> Maybe Word64
+matchNatVal = \case
+  (Val u (UnboxedTypeTag tt)) | tt == TT.natTag -> Just (toEnum u)
+  (Val _ (NatClosure n)) -> Just n
+  _ -> Nothing
+
+pattern NatVal :: Word64 -> Val
+pattern NatVal n <- (matchNatVal -> Just n)
+  where
+    NatVal n = Val (fromEnum n) (UnboxedTypeTag TT.natTag)
+
+matchDoubleVal :: Val -> Maybe Double
+matchDoubleVal = \case
+  (Val u (UnboxedTypeTag tt)) | tt == TT.floatTag -> Just (intToDouble u)
+  (Val _ (DoubleClosure d)) -> Just d
+  _ -> Nothing
+
+pattern DoubleVal :: Double -> Val
+pattern DoubleVal d <- (matchDoubleVal -> Just d)
+  where
+    DoubleVal d = Val (doubleToInt d) (UnboxedTypeTag TT.floatTag)
+
+matchIntVal :: Val -> Maybe Int
+matchIntVal = \case
+  (Val u (UnboxedTypeTag tt)) | tt == TT.intTag -> Just u
+  (Val _ (IntClosure i)) -> Just i
+  _ -> Nothing
+
+pattern IntVal :: Int -> Val
+pattern IntVal i <- (matchIntVal -> Just i)
+  where
+    IntVal i = Val i (UnboxedTypeTag TT.intTag)
+
 doubleToInt :: Double -> Int
 doubleToInt d = indexByteArray (BA.byteArrayFromList [d]) 0
 
@@ -419,7 +469,7 @@ pattern UnboxedDouble d <- TypedUnboxed (intToDouble -> d) ((== TT.floatTag) -> 
 splitTaggedUnboxed :: TypedUnboxed -> (Int, Closure)
 splitTaggedUnboxed (TypedUnboxed i t) = (i, UnboxedTypeTag t)
 
-type SegList = [Either TypedUnboxed Closure]
+type SegList = [Val]
 
 pattern PApV :: CombIx -> RCombInfo Closure -> SegList -> Closure
 pattern PApV cix rcomb segs <-
@@ -614,6 +664,14 @@ type UVal = Int
 -- | A runtime value, which is either a boxed or unboxed value, but we may not know which.
 data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
   deriving (Show)
+
+-- | The Eq instance for Val is a little strange because it takes into account the fact that if a Val is boxed, the
+-- unboxed side is garbage and should not be compared.
+instance Eq Val where
+  (Val u (ut@UnboxedTypeTag {})) == (Val v (vt@UnboxedTypeTag {})) = u == v && ut == vt
+  (Val _ (UnboxedTypeTag {})) == (Val _ _) = False
+  (Val _ _) == (Val _ (UnboxedTypeTag {})) = False
+  (Val _ x) == (Val _ y) = x == y
 
 -- | Lift a boxed val into an Val
 boxedVal :: BVal -> Val
