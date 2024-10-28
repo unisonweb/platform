@@ -56,8 +56,6 @@ module Unison.Runtime.ANF
     Tag (..),
     GroupRef (..),
     Code (..),
-    UBValue,
-    UnboxedValue (..),
     ValList,
     Value (..),
     Cont (..),
@@ -90,7 +88,7 @@ module Unison.Runtime.ANF
 where
 
 import Control.Exception (throw)
-import Control.Lens (foldMapOf, folded, snoc, unsnoc, _Right)
+import Control.Lens (snoc, unsnoc)
 import Control.Monad.Reader (ReaderT (..), ask, local)
 import Control.Monad.State (MonadState (..), State, gets, modify, runState)
 import Data.Bifoldable (Bifoldable (..))
@@ -1470,16 +1468,9 @@ type ANFD v = Compose (ANFM v) (Directed ())
 data GroupRef = GR Reference Word64
   deriving (Show)
 
--- | A value which is either unboxed or boxed.
-type UBValue = Either UnboxedValue Value
-
--- | An unboxed value and its packed tag
-data UnboxedValue = UnboxedValue {uvValue :: Word64, uvTag :: PackedTag}
-  deriving (Show)
-
 -- | A list of either unboxed or boxed values.
 -- Each slot is one of unboxed or boxed but not both.
-type ValList = [UBValue]
+type ValList = [Value]
 
 data Value
   = Partial GroupRef ValList
@@ -1537,11 +1528,12 @@ data BLit
   | Quote Value
   | Code Code
   | BArr PA.ByteArray
-  | Pos Word64
+  | Arr (PA.Array Value)
+  | -- Despite the following being in the Boxed Literal type, they all represent unboxed values
+    Pos Word64
   | Neg Word64
   | Char Char
   | Float Double
-  | Arr (PA.Array Value)
   deriving (Show)
 
 groupVars :: ANFM v (Set v)
@@ -1960,11 +1952,11 @@ valueTermLinks = Set.toList . valueLinks f
 
 valueLinks :: (Monoid a) => (Bool -> Reference -> a) -> Value -> a
 valueLinks f (Partial (GR cr _) vs) =
-  f False cr <> foldMapOf (folded . _Right) (valueLinks f) vs
+  f False cr <> foldMap (valueLinks f) vs
 valueLinks f (Data dr _ vs) =
-  f True dr <> foldMapOf (folded . _Right) (valueLinks f) vs
+  f True dr <> foldMap (valueLinks f) vs
 valueLinks f (Cont vs k) =
-  foldMapOf (folded . _Right) (valueLinks f) vs <> contLinks f k
+  foldMap (valueLinks f) vs <> contLinks f k
 valueLinks f (BLit l) = blitLinks f l
 
 contLinks :: (Monoid a) => (Bool -> Reference -> a) -> Cont -> a

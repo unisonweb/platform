@@ -853,22 +853,18 @@ putValue :: (MonadPut m) => Version -> Value -> m ()
 putValue v (Partial gr vs) =
   putTag PartialT
     *> putGroupRef gr
-    *> putFoldable (putUBValue v) vs
+    *> putFoldable (putValue v) vs
 putValue v (Data r t vs) =
   putTag DataT
     *> putReference r
     *> putWord64be t
-    *> putFoldable (putUBValue v) vs
+    *> putFoldable (putValue v) vs
 putValue v (Cont bs k) =
   putTag ContT
-    *> putFoldable (putUBValue v) bs
+    *> putFoldable (putValue v) bs
     *> putCont v k
 putValue v (BLit l) =
   putTag BLitT *> putBLit v l
-
-putUBValue :: (MonadPut m) => Version -> UBValue -> m ()
-putUBValue _v Left {} = exn "putUBValue: Unboxed values no longer supported"
-putUBValue v (Right a) = putValue v a
 
 getValue :: (MonadGet m) => Version -> m Value
 getValue v =
@@ -878,11 +874,11 @@ getValue v =
         vn < 4 -> do
           gr <- getGroupRef
           getList getWord64be >>= assertEmptyUnboxed
-          bs <- getList getUBValue
+          bs <- getList (getValue v)
           pure $ Partial gr bs
       | otherwise -> do
           gr <- getGroupRef
-          vs <- getList getUBValue
+          vs <- getList (getValue v)
           pure $ Partial gr vs
     DataT
       | Transfer vn <- v,
@@ -890,29 +886,26 @@ getValue v =
           r <- getReference
           w <- getWord64be
           getList getWord64be >>= assertEmptyUnboxed
-          vs <- getList getUBValue
+          vs <- getList (getValue v)
           pure $ Data r w vs
       | otherwise -> do
           r <- getReference
           w <- getWord64be
-          vs <- getList getUBValue
+          vs <- getList (getValue v)
           pure $ Data r w vs
     ContT
       | Transfer vn <- v,
         vn < 4 -> do
           getList getWord64be >>= assertEmptyUnboxed
-          bs <- getList getUBValue
+          bs <- getList (getValue v)
           k <- getCont v
           pure $ Cont bs k
       | otherwise -> do
-          bs <- getList getUBValue
+          bs <- getList (getValue v)
           k <- getCont v
           pure $ Cont bs k
     BLitT -> BLit <$> getBLit v
   where
-    -- Only Boxed values are supported.
-    getUBValue :: (MonadGet m) => m UBValue
-    getUBValue = Right <$> getValue v
     assertEmptyUnboxed :: (MonadGet m) => [a] -> m ()
     assertEmptyUnboxed [] = pure ()
     assertEmptyUnboxed _ = exn "getValue: unboxed values no longer supported"

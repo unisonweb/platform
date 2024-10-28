@@ -49,10 +49,11 @@ module Unison.Runtime.Stack
         CharVal,
         NatVal,
         DoubleVal,
-        IntVal
+        IntVal,
+        UnboxedVal,
+        BoxedVal
       ),
     boxedVal,
-    unboxedVal,
     USeq,
     TypedUnboxed
       ( TypedUnboxed,
@@ -314,14 +315,17 @@ traceK begin = dedup (begin, 1)
 splitData :: Closure -> Maybe (Reference, PackedTag, SegList)
 splitData = \case
   (Enum r t) -> Just (r, t, [])
-  (DataU1 r t i) -> Just (r, t, [Left i])
-  (DataU2 r t i j) -> Just (r, t, [Left i, Left j])
-  (DataB1 r t x) -> Just (r, t, [Right x])
-  (DataB2 r t x y) -> Just (r, t, [Right x, Right y])
-  (DataUB r t u b) -> Just (r, t, [Left u, Right b])
-  (DataBU r t b u) -> Just (r, t, [Right b, Left u])
+  (DataU1 r t u) -> Just (r, t, [typedUnboxedToVal u])
+  (DataU2 r t i j) -> Just (r, t, [typedUnboxedToVal i, typedUnboxedToVal j])
+  (DataB1 r t x) -> Just (r, t, [boxedVal x])
+  (DataB2 r t x y) -> Just (r, t, [boxedVal x, boxedVal y])
+  (DataUB r t u b) -> Just (r, t, [typedUnboxedToVal u, boxedVal b])
+  (DataBU r t b u) -> Just (r, t, [boxedVal b, typedUnboxedToVal u])
   (DataG r t seg) -> Just (r, t, segToList seg)
   _ -> Nothing
+
+typedUnboxedToVal :: TypedUnboxed -> Val
+typedUnboxedToVal (TypedUnboxed i t) = Val i (UnboxedTypeTag t)
 
 -- | Converts a list of integers representing an unboxed segment back into the
 -- appropriate segment. Segments are stored backwards in the runtime, so this
@@ -342,12 +346,12 @@ bseg = L.fromList . reverse
 
 formData :: Reference -> PackedTag -> SegList -> Closure
 formData r t [] = Enum r t
-formData r t [Left i] = DataU1 r t i
-formData r t [Left i, Left j] = DataU2 r t i j
-formData r t [Right x] = DataB1 r t x
-formData r t [Right x, Right y] = DataB2 r t x y
-formData r t [Left u, Right b] = DataUB r t u b
-formData r t [Right b, Left u] = DataBU r t b u
+formData r t [UnboxedVal tu] = DataU1 r t tu
+formData r t [UnboxedVal i, UnboxedVal j] = DataU2 r t i j
+formData r t [UnboxedVal u, Val _ b] = DataUB r t u b
+formData r t [Val _ b, UnboxedVal u] = DataBU r t b u
+formData r t [Val _ x] = DataB1 r t x
+formData r t [Val _ x, Val _ y] = DataB2 r t x y
 formData r t segList = DataG r t (segFromList segList)
 
 frameDataSize :: K -> Int
@@ -466,9 +470,6 @@ pattern UnboxedDouble d <- TypedUnboxed (intToDouble -> d) ((== TT.floatTag) -> 
   where
     UnboxedDouble d = TypedUnboxed (doubleToInt d) TT.floatTag
 
-splitTaggedUnboxed :: TypedUnboxed -> (Int, Closure)
-splitTaggedUnboxed (TypedUnboxed i t) = (i, UnboxedTypeTag t)
-
 type SegList = [Val]
 
 pattern PApV :: CombIx -> RCombInfo Closure -> SegList -> Closure
@@ -486,11 +487,7 @@ pattern CapV k a segs <- Captured k a (segToList -> segs)
 -- so this reverses the contents
 segToList :: Seg -> SegList
 segToList (u, b) =
-  zipWith combine (ints u) (bsegToList b)
-  where
-    combine i c = case c of
-      UnboxedTypeTag t -> Left $ TypedUnboxed i t
-      _ -> Right c
+  zipWith Val (ints u) (bsegToList b)
 
 -- | Converts an unboxed segment to a list of integers for a more interchangeable
 -- representation. The segments are stored in backwards order, so this reverses
@@ -505,11 +502,9 @@ ints ba = fmap (indexByteArray ba) [n - 1, n - 2 .. 0]
 segFromList :: SegList -> Seg
 segFromList xs =
   xs
-    <&> ( \case
-            Left tu -> splitTaggedUnboxed tu
-            Right c -> (0, c)
-        )
-    & unzip
+    & foldMap
+      ( \(Val unboxed boxed) -> ([unboxed], [boxed])
+      )
     & \(us, bs) -> (useg us, bseg bs)
 
 {-# COMPLETE DataC, PAp, Captured, Foreign, BlackHole #-}
@@ -665,6 +660,28 @@ type UVal = Int
 data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
   deriving (Show)
 
+valToTypedUnboxed :: Val -> Maybe TypedUnboxed
+valToTypedUnboxed (Val u (UnboxedTypeTag t)) = Just $ TypedUnboxed u t
+valToTypedUnboxed _ = Nothing
+
+-- | TODO: We need to either adjust this to catch `DataU1` closures as well, or stop creating DataU1 closures for
+-- unboxed values in the first place.
+pattern UnboxedVal :: TypedUnboxed -> Val
+pattern UnboxedVal t <- (valToTypedUnboxed -> Just t)
+  where
+    UnboxedVal (TypedUnboxed i t) = Val i (UnboxedTypeTag t)
+
+valToBoxed :: Val -> Maybe Closure
+valToBoxed UnboxedVal {} = Nothing
+valToBoxed (Val _ b) = Just b
+
+pattern BoxedVal :: Closure -> Val
+pattern BoxedVal b <- (valToBoxed -> Just b)
+  where
+    BoxedVal b = Val 0 b
+
+{-# COMPLETE UnboxedVal, BoxedVal #-}
+
 -- | The Eq instance for Val is a little strange because it takes into account the fact that if a Val is boxed, the
 -- unboxed side is garbage and should not be compared.
 instance Eq Val where
@@ -676,10 +693,6 @@ instance Eq Val where
 -- | Lift a boxed val into an Val
 boxedVal :: BVal -> Val
 boxedVal = Val 0
-
--- | Lift an unboxed val into an Val
-unboxedVal :: UVal -> Val
-unboxedVal u = Val u BlackHole
 
 type USeg = ByteArray
 

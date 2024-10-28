@@ -445,7 +445,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 LOAD i)
       pure (denv, stk, k)
 exec !env !denv !_activeThreads !stk !k _ (BPrim1 VALU i) = do
   m <- readTVarIO (tagRefs env)
-  c <- bpeekOff stk i
+  c <- peekOff stk i
   stk <- bump stk
   pokeBi stk =<< reflectValue m c
   pure (denv, stk, k)
@@ -2218,22 +2218,27 @@ reflectValue rty = goV
 
     goIx (CIx r _ i) = ANF.GR r i
 
-    goV :: Closure -> IO ANF.Value
-    goV (PApV cix _rComb args) =
-      ANF.Partial (goIx cix) <$> traverse (bitraverse (pure . typedUnboxedToUnboxedValue) goV) args
-    goV (DataC _ t [Left w]) = ANF.BLit <$> reflectUData t w
-    goV (DataC r t segs) =
-      ANF.Data r (maskTags t) <$> traverse (bitraverse (pure . typedUnboxedToUnboxedValue) goV) segs
-    goV (CapV k _ segs) =
-      ANF.Cont <$> traverse (bitraverse (pure . typedUnboxedToUnboxedValue) goV) segs <*> goK k
-    goV (Foreign f) = ANF.BLit <$> goF f
-    goV BlackHole = die $ err "black hole"
+    goV :: Val -> IO ANF.Value
+    goV = \case
+      -- For back-compatibility we reflect all Unboxed values into boxed literals, we could change this in the future,
+      -- but there's not much of a big reason to.
+      UnboxedVal tu -> ANF.BLit <$> reflectUData tu
+      BoxedVal clos ->
+        case clos of
+          (PApV cix _rComb args) ->
+            ANF.Partial (goIx cix) <$> traverse goV args
+          (DataC r t segs) ->
+            ANF.Data r (maskTags t) <$> traverse goV segs
+          (CapV k _ segs) ->
+            ANF.Cont <$> traverse goV segs <*> goK k
+          (Foreign f) -> ANF.BLit <$> goF f
+          BlackHole -> die $ err "black hole"
 
     goK (CB _) = die $ err "callback continuation"
     goK KE = pure ANF.KE
     goK (Mark a ps de k) = do
       ps <- traverse refTy (EC.setToList ps)
-      de <- traverse (\(k, v) -> (,) <$> refTy k <*> goV v) (mapToList de)
+      de <- traverse (\(k, v) -> (,) <$> refTy k <*> goV (boxedVal v {- TODO: Double check this -})) (mapToList de)
       ANF.Mark (fromIntegral a) ps (M.fromList de) <$> goK k
     goK (Push f a cix _ _rsect k) =
       ANF.Push
@@ -2263,8 +2268,9 @@ reflectValue rty = goV
           ANF.Arr <$> traverse goV a
       | otherwise = die $ err $ "foreign value: " <> (show f)
 
-    reflectUData :: PackedTag -> TypedUnboxed -> IO ANF.BLit
-    reflectUData t (TypedUnboxed v _t)
+    -- For back-compatibility reasons all unboxed values are uplifted to boxed when serializing to ANF.
+    reflectUData :: TypedUnboxed -> IO ANF.BLit
+    reflectUData (TypedUnboxed v t)
       | t == TT.natTag = pure $ ANF.Pos (fromIntegral v)
       | t == TT.charTag = pure $ ANF.Char (toEnum v)
       | t == TT.intTag, v >= 0 = pure $ ANF.Pos (fromIntegral v)
@@ -2274,9 +2280,6 @@ reflectValue rty = goV
 
     intToDouble :: Int -> Double
     intToDouble w = indexByteArray (BA.byteArrayFromList [w]) 0
-
-    typedUnboxedToUnboxedValue :: TypedUnboxed -> ANF.UnboxedValue
-    typedUnboxedToUnboxedValue (TypedUnboxed v t) = ANF.UnboxedValue (fromIntegral v) t
 
 reifyValue :: CCache -> ANF.Value -> IO (Either [Reference] Val)
 reifyValue cc val = do
@@ -2314,18 +2317,22 @@ reifyValue0 (combs, rty, rtm) = goV
         let cix = (CIx r n i)
          in (cix, rCombSection combs cix)
 
+    goV :: ANF.Value -> IO Val
     goV (ANF.Partial gr vs) =
       goIx gr >>= \case
-        (cix, RComb (Comb rcomb)) -> PApV cix rcomb <$> traverse (bitraverse (pure . unboxedValueToTypedUnboxed) goV) vs
+        (cix, RComb (Comb rcomb)) -> boxedVal . PApV cix rcomb <$> traverse goV vs
         (_, RComb (CachedClosure _ clo))
-          | [] <- vs -> pure clo
+          | [] <- vs -> pure $ boxedVal clo
           | otherwise -> die . err $ msg
           where
             msg = "reifyValue0: non-trivial partial application to cached value"
     goV (ANF.Data r t0 vs) = do
       t <- flip packTags (fromIntegral t0) . fromIntegral <$> refTy r
-      DataC r t <$> traverse (bitraverse (pure . unboxedValueToTypedUnboxed) goV) vs
-    goV (ANF.Cont vs k) = cv <$> goK k <*> traverse (bitraverse (pure . unboxedValueToTypedUnboxed) goV) vs
+      boxedVal . DataC r t <$> traverse goV vs
+    goV (ANF.Cont vs k) = do
+      k' <- goK k
+      vs' <- traverse goV vs
+      pure . boxedVal $ cv k' vs'
       where
         cv k s = CapV k a s
           where
@@ -2357,22 +2364,22 @@ reifyValue0 (combs, rty, rtm) = goV
             "tried to reify a continuation with a cached value resumption"
               ++ show r
 
-    goL (ANF.Text t) = pure . Foreign $ Wrap Rf.textRef t
-    goL (ANF.List l) = Foreign . Wrap Rf.listRef <$> traverse goV l
-    goL (ANF.TmLink r) = pure . Foreign $ Wrap Rf.termLinkRef r
-    goL (ANF.TyLink r) = pure . Foreign $ Wrap Rf.typeLinkRef r
-    goL (ANF.Bytes b) = pure . Foreign $ Wrap Rf.bytesRef b
-    goL (ANF.Quote v) = pure . Foreign $ Wrap Rf.valueRef v
-    goL (ANF.Code g) = pure . Foreign $ Wrap Rf.codeRef g
-    goL (ANF.BArr a) = pure . Foreign $ Wrap Rf.ibytearrayRef a
-    goL (ANF.Char c) = pure $ CharClosure c
-    goL (ANF.Pos w) = pure $ NatClosure w
-    goL (ANF.Neg w) = pure $ IntClosure (negate (fromIntegral w :: Int))
-    goL (ANF.Float d) = pure $ DoubleClosure d
-    goL (ANF.Arr a) = Foreign . Wrap Rf.iarrayRef <$> traverse goV a
-
-    unboxedValueToTypedUnboxed :: ANF.UnboxedValue -> TypedUnboxed
-    unboxedValueToTypedUnboxed (ANF.UnboxedValue v t) = (TypedUnboxed (fromIntegral v) t)
+    goL :: ANF.BLit -> IO Val
+    goL (ANF.Text t) = pure . boxedVal . Foreign $ Wrap Rf.textRef t
+    goL (ANF.List l) = boxedVal . Foreign . Wrap Rf.listRef <$> traverse goV l
+    goL (ANF.TmLink r) = pure . boxedVal . Foreign $ Wrap Rf.termLinkRef r
+    goL (ANF.TyLink r) = pure . boxedVal . Foreign $ Wrap Rf.typeLinkRef r
+    goL (ANF.Bytes b) = pure . boxedVal . Foreign $ Wrap Rf.bytesRef b
+    goL (ANF.Quote v) = pure . boxedVal . Foreign $ Wrap Rf.valueRef v
+    goL (ANF.Code g) = pure . boxedVal . Foreign $ Wrap Rf.codeRef g
+    goL (ANF.BArr a) = pure . boxedVal . Foreign $ Wrap Rf.ibytearrayRef a
+    goL (ANF.Char c) = pure $ CharVal c
+    goL (ANF.Pos w) =
+      -- TODO: Should this be a Nat or an Int?
+      pure $ NatVal w
+    goL (ANF.Neg w) = pure $ IntVal (negate (fromIntegral w :: Int))
+    goL (ANF.Float d) = pure $ DoubleVal d
+    goL (ANF.Arr a) = boxedVal . Foreign . Wrap Rf.iarrayRef <$> traverse goV a
 
 -- Universal comparison functions
 
