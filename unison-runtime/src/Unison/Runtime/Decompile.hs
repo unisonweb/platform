@@ -37,12 +37,14 @@ import Unison.Runtime.Stack
   ( Closure (..),
     TypedUnboxed (..),
     USeq,
+    Val (..),
     getTUInt,
     pattern DataC,
     pattern PApV,
   )
 -- for Int -> Double
 
+import Unison.Runtime.TypeTags qualified as TT
 import Unison.Syntax.NamePrinter (prettyReference)
 import Unison.Term
   ( Term,
@@ -90,7 +92,7 @@ err err x = (singleton err, x)
 
 data DecompError
   = BadBool !Word64
-  | BadUnboxed !Reference
+  | BadUnboxed !TT.PackedTag
   | BadForeign !Reference
   | BadData !Reference
   | BadPAp !Reference
@@ -151,50 +153,41 @@ decompile ::
   (Var v) =>
   (Reference -> Maybe Reference) ->
   (Word64 -> Word64 -> Maybe (Term v ())) ->
-  Closure ->
+  Val ->
   DecompResult v
 decompile backref topTerms = \case
-  CharClosure c -> pure (char () c)
-  NatClosure n -> pure (nat () n)
-  IntClosure i -> pure (int () (fromIntegral i))
-  DoubleClosure f -> pure (float () f)
-  DataC rf (maskTags -> ct) []
-    | rf == booleanRef -> tag2bool ct
-  DataC rf _ [Left i] ->
-    err (BadUnboxed rf) . nat () $ fromIntegral $ getTUInt i
-  (DataC rf _ [Right b])
-    | rf == anyRef ->
-        app () (builtin () "Any.Any") <$> decompile backref topTerms b
-  (DataC rf (maskTags -> ct) vs) ->
-    apps' (con rf ct) <$> traverse decompUB vs
-  (PApV (CIx rf rt k) _ vs)
-    | rf == Builtin "jumpCont" ->
-        err Cont $ bug "<Continuation>"
-    | Builtin nm <- rf ->
-        apps' (builtin () nm) <$> traverse decompUB vs
-    | Just t <- topTerms rt k ->
-        Term.etaReduceEtaVars . substitute t
-          <$> traverse decompUB vs
-    | k > 0,
-      Just _ <- topTerms rt 0 ->
-        err (UnkLocal rf k) $ bug "<Unknown>"
-    | otherwise -> err (UnkComb rf) $ ref () rf
-  (PAp (CIx rf _ _) _ _) ->
-    err (BadPAp rf) $ bug "<Unknown>"
-  BlackHole -> err Exn $ bug "<Exception>"
-  (Captured {}) -> err Cont $ bug "<Continuation>"
-  (Foreign f) ->
-    decompileForeign backref topTerms f
-  where
-    decompileTypedUnboxed = \case
-      UnboxedNat i -> pure (nat () $ fromIntegral i)
-      UnboxedInt i -> pure (int () $ fromIntegral i)
-      UnboxedDouble i -> pure (float () i)
-      UnboxedChar i -> pure (char () i)
-      TypedUnboxed i _ -> err (BadUnboxed anyRef) $ nat () $ fromIntegral i
-
-    decompUB :: (Either TypedUnboxed Closure) -> DecompResult v
-    decompUB = either decompileTypedUnboxed (decompile backref topTerms)
+  CharVal c -> pure (char () c)
+  NatVal n -> pure (nat () n)
+  IntVal i -> pure (int () (fromIntegral i))
+  DoubleVal f -> pure (float () f)
+  Val i (UnboxedTypeTag tt) ->
+    err (BadUnboxed tt) . nat () $ fromIntegral $ i
+  Val _u clos -> case clos of
+    DataC rf (maskTags -> ct) []
+      | rf == booleanRef -> tag2bool ct
+    (DataC rf _ [b])
+      | rf == anyRef ->
+          app () (builtin () "Any.Any") <$> decompile backref topTerms b
+    (DataC rf (maskTags -> ct) vs) ->
+      apps' (con rf ct) <$> traverse (decompile backref topTerms) vs
+    (PApV (CIx rf rt k) _ vs)
+      | rf == Builtin "jumpCont" ->
+          err Cont $ bug "<Continuation>"
+      | Builtin nm <- rf ->
+          apps' (builtin () nm) <$> traverse (decompile backref topTerms) vs
+      | Just t <- topTerms rt k ->
+          Term.etaReduceEtaVars . substitute t
+            <$> traverse (decompile backref topTerms) vs
+      | k > 0,
+        Just _ <- topTerms rt 0 ->
+          err (UnkLocal rf k) $ bug "<Unknown>"
+      | otherwise -> err (UnkComb rf) $ ref () rf
+    (PAp (CIx rf _ _) _ _) ->
+      err (BadPAp rf) $ bug "<Unknown>"
+    BlackHole -> err Exn $ bug "<Exception>"
+    (Captured {}) -> err Cont $ bug "<Continuation>"
+    (Foreign f) ->
+      decompileForeign backref topTerms f
 
 tag2bool :: (Var v) => Word64 -> DecompResult v
 tag2bool 0 = pure (boolean () False)

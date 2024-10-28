@@ -440,7 +440,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 LOAD i)
               boxedVal . Foreign . Wrap Rf.termLinkRef . Ref <$> miss
           pokeTag stk 0
         Right x -> do
-          bpokeOff stk 1 x
+          pokeOff stk 1 x
           pokeTag stk 1
       pure (denv, stk, k)
 exec !env !denv !_activeThreads !stk !k _ (BPrim1 VALU i) = do
@@ -2207,7 +2207,7 @@ cacheAdd l cc = do
     then [] <$ cacheAdd0 tys l'' (expandSandbox sand l') cc
     else pure $ S.toList missing
 
-reflectValue :: EnumMap Word64 Reference -> Closure -> IO ANF.Value
+reflectValue :: EnumMap Word64 Reference -> Val -> IO ANF.Value
 reflectValue rty = goV
   where
     err s = "reflectValue: cannot prepare value for serialization: " ++ s
@@ -2278,7 +2278,7 @@ reflectValue rty = goV
     typedUnboxedToUnboxedValue :: TypedUnboxed -> ANF.UnboxedValue
     typedUnboxedToUnboxedValue (TypedUnboxed v t) = ANF.UnboxedValue (fromIntegral v) t
 
-reifyValue :: CCache -> ANF.Value -> IO (Either [Reference] Closure)
+reifyValue :: CCache -> ANF.Value -> IO (Either [Reference] Val)
 reifyValue cc val = do
   erc <-
     atomically $ do
@@ -2298,7 +2298,7 @@ reifyValue cc val = do
 reifyValue0 ::
   (EnumMap Word64 MCombs, M.Map Reference Word64, M.Map Reference Word64) ->
   ANF.Value ->
-  IO Closure
+  IO Val
 reifyValue0 (combs, rty, rtm) = goV
   where
     err s = "reifyValue: cannot restore value: " ++ s

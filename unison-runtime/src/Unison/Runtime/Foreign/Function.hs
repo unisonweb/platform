@@ -483,9 +483,9 @@ instance ForeignConvention (PA.MutableByteArray s) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap mbytearrayRef)
 
-instance ForeignConvention (PA.Array Closure) where
-  readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  writeForeign = writeForeignAs (Foreign . Wrap iarrayRef)
+-- instance ForeignConvention (PA.Array Closure) where
+--   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
+--   writeForeign = writeForeignAs (Foreign . Wrap iarrayRef)
 
 instance ForeignConvention PA.ByteArray where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
