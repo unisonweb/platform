@@ -13,6 +13,7 @@ import Control.Exception
 import Control.Lens
 import Data.Bitraversable (Bitraversable (..))
 import Data.Bits
+import Data.Char qualified as Char
 import Data.Map.Strict qualified as M
 import Data.Ord (comparing)
 import Data.Primitive.ByteArray qualified as BA
@@ -369,7 +370,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 CACH i)
       stk <- bump stk
       pokeS
         stk
-        (Sq.fromList $ RTValue 0 . Foreign . Wrap Rf.termLinkRef . Ref <$> unknown)
+        (Sq.fromList $ boxedElem . Foreign . Wrap Rf.termLinkRef . Ref <$> unknown)
       pure (denv, stk, k)
 exec !env !denv !_activeThreads !stk !k _ (BPrim1 CVLD i)
   | sandboxed env = die "attempted to use sandboxed operation: validate"
@@ -436,7 +437,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 LOAD i)
         Left miss -> do
           pokeOffS stk 1 $
             Sq.fromList $
-              RTValue 0 . Foreign . Wrap Rf.termLinkRef . Ref <$> miss
+              boxedElem . Foreign . Wrap Rf.termLinkRef . Ref <$> miss
           pokeTag stk 0
         Right x -> do
           bpokeOff stk 1 x
@@ -927,19 +928,19 @@ moveArgs !stk (VArgV i) = do
     l = fsize stk - i
 {-# INLINE moveArgs #-}
 
-closureArgs :: Stack -> Args -> IO [Closure]
+closureArgs :: Stack -> Args -> IO [Elem]
 closureArgs !_ ZArgs = pure []
 closureArgs !stk (VArg1 i) = do
-  x <- bpeekOff stk i
+  x <- peekOff stk i
   pure [x]
 closureArgs !stk (VArg2 i j) = do
-  x <- bpeekOff stk i
-  y <- bpeekOff stk j
+  x <- peekOff stk i
+  y <- peekOff stk j
   pure [x, y]
 closureArgs !stk (VArgR i l) =
-  for (take l [i ..]) (bpeekOff stk)
+  for (take l [i ..]) (peekOff stk)
 closureArgs !stk (VArgN bs) =
-  for (PA.primArrayToList bs) (bpeekOff stk)
+  for (PA.primArrayToList bs) (peekOff stk)
 closureArgs !_ _ =
   error "closure arguments can only be boxed."
 {-# INLINE closureArgs #-}
@@ -1544,7 +1545,7 @@ bprim1 !stk VWLS i =
     x Sq.:<| xs -> do
       stk <- bumpn stk 3
       pokeOffS stk 2 xs -- remaining seq
-      bpokeOff stk 1 x -- head
+      pokeOff stk 1 x -- head
       pokeTag stk 1 -- ':<|' tag
       pure stk
 bprim1 !stk VWRS i =
@@ -1555,7 +1556,7 @@ bprim1 !stk VWRS i =
       pure stk
     xs Sq.:|> x -> do
       stk <- bumpn stk 3
-      bpokeOff stk 2 x -- last
+      pokeOff stk 2 x -- last
       pokeOffS stk 1 xs -- remaining seq
       pokeTag stk 1 -- ':|>' tag
       pure stk
@@ -1565,15 +1566,17 @@ bprim1 !stk PAKT i = do
   pokeBi stk . Util.Text.pack . toList $ clo2char <$> s
   pure stk
   where
-    clo2char :: Closure -> Char
-    clo2char (CharClosure c) = c
+    clo2char :: Elem -> Char
+    clo2char (Elem _ (CharClosure c)) = c
+    clo2char (Elem c tt) | tt == charTypeTag = Char.chr $ c
     clo2char c = error $ "pack text: non-character closure: " ++ show c
 bprim1 !stk UPKT i = do
   t <- peekOffBi stk i
   stk <- bump stk
   pokeS stk
     . Sq.fromList
-    . fmap CharClosure
+    -- TODO: Should this be unboxed chars?
+    . fmap (boxedElem . CharClosure)
     . Util.Text.unpack
     $ t
   pure stk
@@ -1584,13 +1587,15 @@ bprim1 !stk PAKB i = do
   pure stk
   where
     -- TODO: Should we have a tag for bytes specifically?
-    clo2w8 :: Closure -> Word8
-    clo2w8 (NatClosure n) = toEnum . fromEnum $ n
+    clo2w8 :: Elem -> Word8
+    clo2w8 (Elem _ (NatClosure n)) = toEnum . fromEnum $ n
+    clo2w8 (Elem n tt) | tt == natTypeTag = toEnum $ n
     clo2w8 c = error $ "pack bytes: non-natural closure: " ++ show c
 bprim1 !stk UPKB i = do
   b <- peekOffBi stk i
   stk <- bump stk
-  pokeS stk . Sq.fromList . fmap (NatClosure . toEnum @Word64 . fromEnum @Word8) $
+  -- TODO: Should this be unboxed nats/bytes?
+  pokeS stk . Sq.fromList . fmap (boxedElem . NatClosure . toEnum @Word64 . fromEnum @Word8) $
     By.toWord8s b
   pure stk
 bprim1 !stk SIZB i = do
@@ -1967,22 +1972,22 @@ refLookup s m r
 decodeCacheArgument ::
   USeq -> IO [(Reference, Code)]
 decodeCacheArgument s = for (toList s) $ \case
-  (RTValue _i (DataB2 _ _ (Foreign x) (DataB2 _ _ (Foreign y) _))) ->
+  (Elem _unboxed (DataB2 _ _ (Foreign x) (DataB2 _ _ (Foreign y) _))) ->
     case unwrapForeign x of
       Ref r -> pure (r, unwrapForeign y)
       _ -> die "decodeCacheArgument: Con reference"
   _ -> die "decodeCacheArgument: unrecognized value"
 
-decodeSandboxArgument :: Sq.Seq Closure -> IO [Reference]
+decodeSandboxArgument :: USeq -> IO [Reference]
 decodeSandboxArgument s = fmap join . for (toList s) $ \case
-  Foreign x -> case unwrapForeign x of
+  Elem _ (Foreign x) -> case unwrapForeign x of
     Ref r -> pure [r]
     _ -> pure [] -- constructor
   _ -> die "decodeSandboxArgument: unrecognized value"
 
-encodeSandboxListResult :: [Reference] -> Sq.Seq Closure
+encodeSandboxListResult :: [Reference] -> Sq.Seq Elem
 encodeSandboxListResult =
-  Sq.fromList . fmap (Foreign . Wrap Rf.termLinkRef . Ref)
+  Sq.fromList . fmap (boxedElem . Foreign . Wrap Rf.termLinkRef . Ref)
 
 encodeSandboxResult :: Either [Reference] [Reference] -> Closure
 encodeSandboxResult (Left rfs) =

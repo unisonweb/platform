@@ -45,6 +45,8 @@ module Unison.Runtime.Stack
     BSeg,
     SegList,
     Elem (..),
+    boxedElem,
+    unboxedElem,
     USeq,
     TypedUnboxed
       ( TypedUnboxed,
@@ -65,6 +67,7 @@ module Unison.Runtime.Stack
     peekOffD,
     peekC,
     peekOffC,
+    poke,
     pokeD,
     pokeOffD,
     pokeC,
@@ -126,6 +129,12 @@ module Unison.Runtime.Stack
     adjustArgs,
     fsize,
     asize,
+
+    -- * Unboxed type tags
+    natTypeTag,
+    intTypeTag,
+    charTypeTag,
+    floatTypeTag,
   )
 where
 
@@ -603,8 +612,16 @@ instance Show Stack where
 type UElem = Int
 
 -- | A runtime value, which is either a boxed or unboxed value, but we may not know which.
-data Elem = Elem !UElem !BElem
+data Elem = Elem {getUnboxedElem :: !UElem, getBoxedElem :: !BElem}
   deriving (Show)
+
+-- | Lift a boxed elem into an Elem
+boxedElem :: BElem -> Elem
+boxedElem = Elem 0
+
+-- | Lift an unboxed elem into an Elem
+unboxedElem :: UElem -> Elem
+unboxedElem u = Elem u BlackHole
 
 type USeg = ByteArray
 

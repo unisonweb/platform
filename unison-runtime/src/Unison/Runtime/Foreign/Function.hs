@@ -433,11 +433,11 @@ instance ForeignConvention BufferMode where
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
 instance ForeignConvention [Closure] where
   readForeign (i : args) stk =
-    (args,) . toList <$> peekOffS stk i
+    (args,) . fmap getBoxedElem . toList <$> peekOffS stk i
   readForeign _ _ = foreignCCError "[Closure]"
   writeForeign stk l = do
     stk <- bump stk
-    stk <$ pokeS stk (Sq.fromList l)
+    stk <$ pokeS stk (Sq.fromList $ fmap boxedElem l)
 
 instance ForeignConvention [Foreign] where
   readForeign = readForeignAs (fmap marshalToForeign)
@@ -517,25 +517,25 @@ unwrapForeignClosure = unwrapForeign . marshalToForeign
 instance {-# OVERLAPPABLE #-} (BuiltinForeign a, BuiltinForeign b) => ForeignConvention [(a, b)] where
   readForeign (i : args) stk =
     (args,)
-      . fmap fromUnisonPair
+      . fmap (fromUnisonPair . getBoxedElem)
       . toList
       <$> peekOffS stk i
   readForeign _ _ = foreignCCError "[(a,b)]"
 
   writeForeign stk l = do
     stk <- bump stk
-    stk <$ pokeS stk (toUnisonPair <$> Sq.fromList l)
+    stk <$ pokeS stk (Elem 0 . toUnisonPair <$> Sq.fromList l)
 
 instance {-# OVERLAPPABLE #-} (BuiltinForeign b) => ForeignConvention [b] where
   readForeign (i : args) stk =
     (args,)
-      . fmap unwrapForeignClosure
+      . fmap (unwrapForeignClosure . getBoxedElem)
       . toList
       <$> peekOffS stk i
   readForeign _ _ = foreignCCError "[b]"
   writeForeign stk l = do
     stk <- bump stk
-    stk <$ pokeS stk (Foreign . wrapBuiltin <$> Sq.fromList l)
+    stk <$ pokeS stk (boxedElem . Foreign . wrapBuiltin <$> Sq.fromList l)
 
 foreignCCError :: String -> IO a
 foreignCCError nm =
