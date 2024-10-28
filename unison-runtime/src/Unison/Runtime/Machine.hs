@@ -2343,7 +2343,7 @@ reifyValue0 (combs, rty, rtm) = goV
     goK (ANF.Mark a ps de k) =
       mrk
         <$> traverse refTy ps
-        <*> traverse (\(k, v) -> (,) <$> refTy k <*> goV v) (M.toList de)
+        <*> traverse (\(k, v) -> (,) <$> refTy k <*> (expectClosure <$> goV v)) (M.toList de)
         <*> goK k
       where
         mrk ps de k =
@@ -2362,6 +2362,9 @@ reifyValue0 (combs, rty, rtm) = goV
           die . err $
             "tried to reify a continuation with a cached value resumption"
               ++ show r
+    expectClosure :: Val -> Closure
+    expectClosure v@(UnboxedVal {}) = error $ "expectClosure: Expected a closure val, but got:" <> show v
+    expectClosure (BoxedVal c) = c
 
     goL :: ANF.BLit -> IO Val
     goL (ANF.Text t) = pure . boxedVal . Foreign $ Wrap Rf.textRef t
@@ -2405,7 +2408,7 @@ universalEq frn = eqc
     eqVal (Val _ x) (Val _ y) = eqc x y
     eqc :: Closure -> Closure -> Bool
     eqc (DataC _ ct1 [w1]) (DataC _ ct2 [w2]) =
-      matchTags ct1 ct2 && w1 == w2
+      matchTags ct1 ct2 && eqVal w1 w2
     eqc (DataC _ ct1 vs1) (DataC _ ct2 vs2) =
       ct1 == ct2
         && eqValList vs1 vs2
