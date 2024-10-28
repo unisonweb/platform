@@ -371,7 +371,11 @@ pattern DataC rf ct segs <-
 
 -- | An unboxed value with an accompanying tag indicating its type.
 data TypedUnboxed = TypedUnboxed {getTUInt :: !Int, getTUTag :: !PackedTag}
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq)
+
+instance Ord TypedUnboxed where
+  -- Compare type tags first.
+  compare (TypedUnboxed i t) (TypedUnboxed i' t') = compare t t' <> compare i i'
 
 pattern CharClosure :: Char -> Closure
 pattern CharClosure c <- (unpackUnboxedClosure TT.charTag -> Just (Char.chr -> c))
@@ -658,6 +662,9 @@ type UVal = Int
 
 -- | A runtime value, which is either a boxed or unboxed value, but we may not know which.
 data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
+  -- The Eq instance for Val is deliberately omitted because you need to take into account the fact that if a Val is boxed, the
+  -- unboxed side is garbage and should not be compared.
+  -- See universalEq.
   deriving (Show)
 
 valToTypedUnboxed :: Val -> Maybe TypedUnboxed
@@ -681,14 +688,6 @@ pattern BoxedVal b <- (valToBoxed -> Just b)
     BoxedVal b = Val 0 b
 
 {-# COMPLETE UnboxedVal, BoxedVal #-}
-
--- | The Eq instance for Val is a little strange because it takes into account the fact that if a Val is boxed, the
--- unboxed side is garbage and should not be compared.
-instance Eq Val where
-  (Val u (ut@UnboxedTypeTag {})) == (Val v (vt@UnboxedTypeTag {})) = u == v && ut == vt
-  (Val _ (UnboxedTypeTag {})) == (Val _ _) = False
-  (Val _ _) == (Val _ (UnboxedTypeTag {})) = False
-  (Val _ x) == (Val _ y) = x == y
 
 -- | Lift a boxed val into an Val
 boxedVal :: BVal -> Val

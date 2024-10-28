@@ -11,7 +11,6 @@ import Control.Concurrent (ThreadId)
 import Control.Concurrent.STM as STM
 import Control.Exception
 import Control.Lens
-import Data.Bitraversable (Bitraversable (..))
 import Data.Bits
 import Data.Char qualified as Char
 import Data.Map.Strict qualified as M
@@ -107,7 +106,7 @@ data Tracer
 data CCache = CCache
   { foreignFuncs :: EnumMap Word64 ForeignFunc,
     sandboxed :: Bool,
-    tracer :: Bool -> Closure -> Tracer,
+    tracer :: Bool -> Val -> Tracer,
     -- Combinators in their original form, where they're easier to serialize into SCache
     srcCombs :: TVar (EnumMap Word64 Combs),
     combs :: TVar (EnumMap Word64 MCombs),
@@ -453,9 +452,9 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 DBTX i)
   | sandboxed env =
       die "attempted to use sandboxed operation: Debug.toText"
   | otherwise = do
-      clo <- bpeekOff stk i
+      val <- peekOff stk i
       stk <- bump stk
-      stk <- case tracer env False clo of
+      stk <- case tracer env False val of
         NoTrace -> stk <$ pokeTag stk 0
         MsgTrace _ _ tx -> do
           pokeBi stk (Util.Text.pack tx)
@@ -510,13 +509,13 @@ exec !_ !denv !_activeThreads !stk !k _ (BPrim2 CMPU i j) = do
   pure (denv, stk, k)
 exec !_ !_ !_activeThreads !stk !k r (BPrim2 THRO i j) = do
   name <- peekOffBi @Util.Text.Text stk i
-  x <- bpeekOff stk j
+  x <- peekOff stk j
   throwIO (BU (traceK r k) (Util.Text.toText name) x)
 exec !env !denv !_activeThreads !stk !k _ (BPrim2 TRCE i j)
   | sandboxed env = die "attempted to use sandboxed operation: trace"
   | otherwise = do
       tx <- peekOffBi stk i
-      clo <- bpeekOff stk j
+      clo <- peekOff stk j
       case tracer env True clo of
         NoTrace -> pure ()
         SimpleTrace str -> do
@@ -633,27 +632,27 @@ encodeExn stk exc = do
       pokeTag stk 0
       bpokeOff stk 1 $ Foreign (Wrap Rf.typeLinkRef link)
       pokeOffBi stk 2 msg
-      stk <$ bpokeOff stk 3 extra
+      stk <$ pokeOff stk 3 extra
       where
         disp e = Util.Text.pack $ show e
         (link, msg, extra)
           | Just (ioe :: IOException) <- fromException exn =
-              (Rf.ioFailureRef, disp ioe, unitValue)
+              (Rf.ioFailureRef, disp ioe, boxedVal unitValue)
           | Just re <- fromException exn = case re of
               PE _stk msg ->
-                (Rf.runtimeFailureRef, Util.Text.pack $ toPlainUnbroken msg, unitValue)
-              BU _ tx cl -> (Rf.runtimeFailureRef, Util.Text.fromText tx, cl)
+                (Rf.runtimeFailureRef, Util.Text.pack $ toPlainUnbroken msg, boxedVal unitValue)
+              BU _ tx val -> (Rf.runtimeFailureRef, Util.Text.fromText tx, val)
           | Just (ae :: ArithException) <- fromException exn =
-              (Rf.arithmeticFailureRef, disp ae, unitValue)
+              (Rf.arithmeticFailureRef, disp ae, boxedVal unitValue)
           | Just (nae :: NestedAtomically) <- fromException exn =
-              (Rf.stmFailureRef, disp nae, unitValue)
+              (Rf.stmFailureRef, disp nae, boxedVal unitValue)
           | Just (be :: BlockedIndefinitelyOnSTM) <- fromException exn =
-              (Rf.stmFailureRef, disp be, unitValue)
+              (Rf.stmFailureRef, disp be, boxedVal unitValue)
           | Just (be :: BlockedIndefinitelyOnMVar) <- fromException exn =
-              (Rf.ioFailureRef, disp be, unitValue)
+              (Rf.ioFailureRef, disp be, boxedVal unitValue)
           | Just (ie :: AsyncException) <- fromException exn =
-              (Rf.threadKilledFailureRef, disp ie, unitValue)
-          | otherwise = (Rf.miscFailureRef, disp exn, unitValue)
+              (Rf.threadKilledFailureRef, disp ie, boxedVal unitValue)
+          | otherwise = (Rf.miscFailureRef, disp exn, boxedVal unitValue)
 
 numValue :: Maybe Reference -> Closure -> IO Word64
 numValue _ (DataU1 _ _ i) = pure (fromIntegral $ getTUInt i)
@@ -2397,8 +2396,15 @@ universalEq ::
   Bool
 universalEq frn = eqc
   where
+    eql :: (a -> b -> Bool) -> [a] -> [b] -> Bool
     eql cm l r = length l == length r && and (zipWith cm l r)
-    eqc (DataC _ ct1 [Left w1]) (DataC _ ct2 [Left w2]) =
+    eqVal :: Val -> Val -> Bool
+    eqVal (Val u (ut@UnboxedTypeTag {})) (Val v (vt@UnboxedTypeTag {})) = u == v && ut == vt
+    eqVal (Val _ (UnboxedTypeTag {})) (Val _ _) = False
+    eqVal (Val _ _) (Val _ (UnboxedTypeTag {})) = False
+    eqVal (Val _ x) (Val _ y) = eqc x y
+    eqc :: Closure -> Closure -> Bool
+    eqc (DataC _ ct1 [w1]) (DataC _ ct2 [w2]) =
       matchTags ct1 ct2 && w1 == w2
     eqc (DataC _ ct1 vs1) (DataC _ ct2 vs2) =
       ct1 == ct2
@@ -2419,13 +2425,8 @@ universalEq frn = eqc
           length sl == length sr && and (Sq.zipWith eqc sl sr)
       | otherwise = frn fl fr
     eqc c d = closureNum c == closureNum d
-    -- Written this way to maintain back-compat with the
-    -- old val lists which were separated by unboxed/boxed.
-    eqValList vs1 vs2 =
-      let (us1, bs1) = partitionEithers vs1
-          (us2, bs2) = partitionEithers vs2
-       in eql (==) us1 us2
-            && eql eqc bs1 bs2
+    eqValList :: [Val] -> [Val] -> Bool
+    eqValList vs1 vs2 = eql eqVal vs1 vs2
 
     -- serialization doesn't necessarily preserve Int tags, so be
     -- more accepting for those.
@@ -2488,14 +2489,11 @@ universalCompare ::
   Ordering
 universalCompare frn = cmpc False
   where
+    cmpl :: (a -> b -> Ordering) -> [a] -> [b] -> Ordering
     cmpl cm l r =
       compare (length l) (length r) <> fold (zipWith cm l r)
+    cmpc :: Bool -> Closure -> Closure -> Ordering
     cmpc tyEq = \cases
-      (DataC _ ct1 [Left (TypedUnboxed i _)]) (DataC _ ct2 [Left (TypedUnboxed j _)])
-        | ct1 == TT.floatTag, ct2 == TT.floatTag -> compareAsFloat i j
-        | ct1 == TT.natTag, ct2 == TT.natTag -> compareAsNat i j
-        | ct1 == TT.intTag, ct2 == TT.natTag -> compare i j
-        | ct1 == TT.natTag, ct2 == TT.intTag -> compare i j
       (DataC rf1 ct1 vs1) (DataC rf2 ct2 vs2) ->
         (if tyEq && ct1 /= ct2 then compare rf1 rf2 else EQ)
           <> compare (maskTags ct1) (maskTags ct2)
@@ -2519,11 +2517,15 @@ universalCompare frn = cmpc False
             arrayCmp (cmpc tyEq) al ar
         | otherwise -> frn fl fr
       c d -> comparing closureNum c d
-    -- Written this way to maintain back-compat with the
-    -- old val lists which were separated by unboxed/boxed.
+    cmpValList :: Bool -> [Val] -> [Val] -> Ordering
     cmpValList tyEq vs1 vs2 =
-      let (us1, bs1) = (partitionEithers vs1)
-          (us2, bs2) = (partitionEithers vs2)
+      -- Written in a strange way way to maintain back-compat with the
+      -- old val lists which had boxed/unboxed separated
+      let partitionVals = foldMap \case
+            UnboxedVal tu -> ([tu], mempty)
+            BoxedVal b -> (mempty, [b])
+          (us1, bs1) = partitionVals vs1
+          (us2, bs2) = partitionVals vs2
        in cmpl compare us1 us2 <> cmpl (cmpc tyEq) bs1 bs2
 
 arrayCmp ::

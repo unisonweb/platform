@@ -35,10 +35,8 @@ import Unison.Runtime.IOSource (iarrayFromListRef, ibarrayFromBytesRef)
 import Unison.Runtime.MCode (CombIx (..))
 import Unison.Runtime.Stack
   ( Closure (..),
-    TypedUnboxed (..),
     USeq,
     Val (..),
-    getTUInt,
     pattern DataC,
     pattern PApV,
   )
@@ -76,7 +74,7 @@ import Unison.Type
     typeLinkRef,
   )
 import Unison.Util.Bytes qualified as By
-import Unison.Util.Pretty (indentN, lines, lit, syntaxToColor, wrap)
+import Unison.Util.Pretty (indentN, lines, lit, shown, syntaxToColor, wrap)
 import Unison.Util.Text qualified as Text
 import Unison.Var (Var)
 import Prelude hiding (lines)
@@ -107,6 +105,9 @@ type DecompResult v = (Set DecompError, Term v ())
 prf :: Reference -> Error
 prf = syntaxToColor . prettyReference 10
 
+printPackedTag :: TT.PackedTag -> Error
+printPackedTag t = shown $ TT.unpackTags t
+
 renderDecompError :: DecompError -> Error
 renderDecompError (BadBool n) =
   lines
@@ -115,8 +116,8 @@ renderDecompError (BadBool n) =
     ]
 renderDecompError (BadUnboxed rf) =
   lines
-    [ wrap "An apparent numeric type had an unrecognized reference:",
-      indentN 2 $ prf rf
+    [ wrap "An apparent numeric type had an unrecognized packed tag:",
+      indentN 2 $ printPackedTag rf
     ]
 renderDecompError (BadForeign rf) =
   lines

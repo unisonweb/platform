@@ -498,7 +498,7 @@ compileValue base =
   flip pair (rf base) . ANF.BLit . List . Seq.fromList . fmap cpair
   where
     rf = ANF.BLit . TmLink . RF.Ref
-    cons x y = Data RF.pairRef 0 [Right x, Right y]
+    cons x y = Data RF.pairRef 0 [x, y]
     tt = Data RF.unitRef 0 []
     code sg = ANF.BLit (Code sg)
     pair x y = cons x (cons y tt)
@@ -1022,7 +1022,7 @@ evalInContext ::
   Word64 ->
   IO (Either Error ([Error], Term Symbol))
 evalInContext ppe ctx activeThreads w = do
-  r <- newIORef (boxedElem BlackHole)
+  r <- newIORef (boxedVal BlackHole)
   crs <- readTVarIO (combRefs $ ccache ctx)
   let hook = watchHook r
       decom = decompileCtx crs ctx
@@ -1034,14 +1034,14 @@ evalInContext ppe ctx activeThreads w = do
         where
           tr = first (backmapRef ctx) <$> tr0
 
-      debugText fancy c = case decom c of
+      debugText fancy val = case decom val of
         (errs, dv)
           | null errs ->
               SimpleTrace . debugTextFormat fancy $ pretty ppe dv
           | otherwise ->
               MsgTrace
                 (debugTextFormat fancy $ tabulateErrors errs)
-                (show c)
+                (show val)
                 (debugTextFormat fancy $ pretty ppe dv)
 
   result <-
