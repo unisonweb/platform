@@ -583,13 +583,17 @@ data CombIx
 combRef :: CombIx -> Reference
 combRef (CIx r _ _) = r
 
+-- dnum maps type references to their number in the runtime
+-- cnum maps combinator references to their number
+-- anum maps combinator references to their main arity
 data RefNums = RN
   { dnum :: Reference -> Word64,
-    cnum :: Reference -> Word64
+    cnum :: Reference -> Word64,
+    anum :: Reference -> Maybe Int
   }
 
 emptyRNs :: RefNums
-emptyRNs = RN mt mt
+emptyRNs = RN mt mt (const Nothing)
   where
     mt _ = internalBug "RefNums: empty"
 
@@ -1050,12 +1054,14 @@ emitFunction _ grpr grpn rec ctx (FVar v) as
        in App False (Env cix cix) as
   | otherwise = emitSectionVErr v
 emitFunction rns _grpr _ _ _ (FComb r) as
+  | Just k <- anum rns r,
+    countArgs as == k = -- exactly saturated call
+      Call False cix cix as
   | otherwise -- slow path
-    =
-      let cix = CIx r n 0
-       in App False (Env cix cix) as
+      = App False (Env cix cix) as
   where
     n = cnum rns r
+    cix = CIx r n 0
 emitFunction rns _grpr _ _ _ (FCon r t) as =
   Ins (Pack r (packTags rt t) as)
     . Yield

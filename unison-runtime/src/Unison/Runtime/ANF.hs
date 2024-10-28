@@ -36,7 +36,9 @@ module Unison.Runtime.ANF
     Cacheability (..),
     Direction (..),
     SuperNormal (..),
+    arity,
     SuperGroup (..),
+    arities,
     POp (..),
     FOp,
     close,
@@ -113,7 +115,7 @@ import Unison.Reference (Id, Reference, Reference' (Builtin, DerivedId))
 import Unison.Referent (Referent, pattern Con, pattern Ref)
 import Unison.Runtime.Array qualified as PA
 import Unison.Symbol (Symbol)
-import Unison.Term hiding (List, Ref, Text, float, fresh, resolve)
+import Unison.Term hiding (List, Ref, Text, float, fresh, resolve, arity)
 import Unison.Type qualified as Ty
 import Unison.Typechecker.Components (minimize')
 import Unison.Util.Bytes (Bytes)
@@ -1507,6 +1509,16 @@ data SGEqv v
     DefnConventions (SuperNormal v) (SuperNormal v)
   | -- mismatched subterms in corresponding definition
     Subterms (ANormal v) (ANormal v)
+
+-- Yields the number of arguments directly accepted by a combinator.
+arity :: SuperNormal v -> Int
+arity (Lambda ccs _) = length ccs
+
+-- Yields the numbers of arguments directly accepted by the
+-- combinators in a group. The main entry is the first element, and
+-- local bindings follow in their original order.
+arities :: SuperGroup v -> [Int]
+arities (Rec bs e) = arity e : fmap (arity . snd) bs
 
 -- Checks if two SuperGroups are equivalent up to renaming. The rest
 -- of the structure must match on the nose. If the two groups are not
