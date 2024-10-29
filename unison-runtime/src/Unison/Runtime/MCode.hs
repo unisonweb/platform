@@ -1606,15 +1606,17 @@ prettyComb w i = \case
     shows w
       . showString ":"
       . shows i
+      . showString ":"
       . shows a
-      . showString ":\n"
+      . showString "\n"
       . prettySection 2 s
   (CachedClosure a b) ->
     shows w
       . showString ":"
       . shows i
+      . showString ":"
       . shows a
-      . showString ":\n"
+      . showString "\n"
       . shows b
 
 prettySection :: (Show comb) => Int -> GSection comb -> ShowS
@@ -1641,7 +1643,6 @@ prettySection ind sec =
       showString "Let\n"
         . prettySection (ind + 2) s
         . showString "\n"
-        . indent ind
         . prettySection ind b
     Die s -> showString $ "Die " ++ s
     Exit -> showString "Exit"
