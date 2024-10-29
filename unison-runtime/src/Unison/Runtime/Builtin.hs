@@ -299,10 +299,10 @@ notlift :: (Var v) => v -> ANormal v
 notlift v =
   TMatch v $ MatchIntegral (mapFromList [(1, fls), (0, tru)]) Nothing
 
-unbox :: (Var v) => v -> Reference -> v -> ANormal v -> ANormal v
-unbox v0 r v b =
-  TMatch v0 $
-    MatchData r (mapSingleton 0 $ ([UN], TAbs v b)) Nothing
+-- unbox :: (Var v) => v -> Reference -> v -> ANormal v -> ANormal v
+-- unbox v0 r v b =
+--   TMatch v0 $
+--     MatchData r (mapSingleton 0 $ ([UN], TAbs v b)) Nothing
 
 unenum :: (Var v) => Int -> v -> Reference -> v -> ANormal v -> ANormal v
 unenum n v0 r v nx =
@@ -623,11 +623,6 @@ appends = binop0 0 $ \[x, y] -> TPrm CATS [x, y]
 conss = binop0 0 $ \[x, y] -> TPrm CONS [x, y]
 snocs = binop0 0 $ \[x, y] -> TPrm SNOC [x, y]
 
-coerceType :: (Var v) => Reference -> Reference -> SuperNormal v
-coerceType fromType toType = unop0 1 $ \[x, r] ->
-  unbox x fromType r $
-    TCon toType 0 [r]
-
 takes, drops, sizes, ats, emptys :: (Var v) => SuperNormal v
 takes = binop0 0 $ \[x, y] -> TPrm TAKS [x, y]
 drops = binop0 0 $ \[x, y] -> TPrm DRPS [x, y]
@@ -822,9 +817,9 @@ andb = binop0 0 $ \[p, q] ->
 -- unsafeCoerce, used for numeric types where conversion is a
 -- no-op on the representation. Ideally this will be inlined and
 -- eliminated so that no instruction is necessary.
-cast :: Reference -> Reference -> SuperNormal Symbol
-cast _ri _ro =
-  -- TODO: Is there a way to avoid providing anything at all here?
+coerceType :: Reference -> Reference -> SuperNormal Symbol
+coerceType _ri _ro =
+  -- TODO: Fix this with a proper type-coercion
   unop0 0 $ \[x] -> TVar x
 
 -- This version of unsafeCoerce is the identity function. It works
@@ -2061,7 +2056,7 @@ builtinLookup =
         ("Nat.complement", (Untracked, compln)),
         ("Nat.pow", (Untracked, pown)),
         ("Nat.drop", (Untracked, dropn)),
-        ("Nat.toInt", (Untracked, cast Ty.natRef Ty.intRef)),
+        ("Nat.toInt", (Untracked, coerceType Ty.natRef Ty.intRef)),
         ("Nat.toFloat", (Untracked, n2f)),
         ("Nat.toText", (Untracked, n2t)),
         ("Nat.fromText", (Untracked, t2n)),
@@ -2131,8 +2126,8 @@ builtinLookup =
         ("Debug.trace", (Tracked, gen'trace)),
         ("Debug.toText", (Tracked, debug'text)),
         ("unsafe.coerceAbilities", (Untracked, poly'coerce)),
-        ("Char.toNat", (Untracked, cast Ty.charRef Ty.natRef)),
-        ("Char.fromNat", (Untracked, cast Ty.natRef Ty.charRef)),
+        ("Char.toNat", (Untracked, coerceType Ty.charRef Ty.natRef)),
+        ("Char.fromNat", (Untracked, coerceType Ty.natRef Ty.charRef)),
         ("Bytes.empty", (Untracked, emptyb)),
         ("Bytes.fromList", (Untracked, packb)),
         ("Bytes.toList", (Untracked, unpackb)),
