@@ -2026,9 +2026,11 @@ cacheAdd0 ntys0 termSuperGroups sands cc = do
     rtm <- updateMap (M.fromList $ zip rs [ntm ..]) (refTm cc)
     -- check for missing references
     let arities = fmap (head . ANF.arities) int <> builtinArities
+        inlinfo = ANF.buildInlineMap int
         rns = RN (refLookup "ty" rty) (refLookup "tm" rtm) (flip M.lookup arities)
         combinate :: Word64 -> (Reference, SuperGroup Symbol) -> (Word64, EnumMap Word64 Comb)
-        combinate n (r, g) = (n, emitCombs rns r n g)
+        combinate n (r, g) =
+          (n, emitCombs rns r n $ ANF.inline inlinfo g)
     let combRefUpdates = (mapFromList $ zip [ntm ..] rs)
     let combIdFromRefMap = (M.fromList $ zip rs [ntm ..])
     let newCacheableCombs =
