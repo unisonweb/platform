@@ -1544,11 +1544,12 @@ arities (Rec bs e) = arity e : fmap (arity . snd) bs
 
 -- Checks the body of a SuperGroup makes it eligible for inlining.
 -- See below for the discussion.
-isInlinable :: Var v => ANormal v -> Bool
-isInlinable TBLit{} = True
-isInlinable TApp {} = True
-isInlinable TVar {} = True
-isInlinable _       = False
+isInlinable :: Var v => Reference -> ANormal v -> Bool
+isInlinable r (TApp (FComb s) _) = r /= s
+isInlinable _ TApp {} = True
+isInlinable _ TBLit{} = True
+isInlinable _ TVar {} = True
+isInlinable _ _       = False
 
 -- Checks a SuperGroup makes it eligible to be inlined.
 -- Unfortunately we need to be quite conservative about this.
@@ -1578,19 +1579,27 @@ isInlinable _       = False
 -- bound variables. This should allow checking if the call is
 -- saturated and make it possible to locally substitute for an
 -- inlined expression.
-inlineInfo :: Var v => SuperGroup v -> Maybe (Int, ANormal v)
-inlineInfo (Rec [] (Lambda ccs body@(ABTN.TAbss _ e)))
-  | isInlinable e = Just (length ccs, body)
-inlineInfo _ = Nothing
+--
+-- The `Reference` argument allows us to check if the body is a
+-- direct recursive call to the same function, which would result
+-- in infinite inlining. This isn't the only such scenario, but
+-- it's one we can opportunistically rule out.
+inlineInfo :: Var v => Reference -> SuperGroup v -> Maybe (Int, ANormal v)
+inlineInfo r (Rec [] (Lambda ccs body@(ABTN.TAbss _ e)))
+  | isInlinable r e = Just (length ccs, body)
+inlineInfo _ _ = Nothing
 
 -- Builds inlining information from a collection of SuperGroups.
 -- They are all tested for inlinability, and the result map
 -- contains only the information for groups that are able to be
 -- inlined.
 buildInlineMap
-  :: Var v => Map k (SuperGroup v) -> Map k (Int, ANormal v)
+  :: Var v =>
+     Map Reference (SuperGroup v) ->
+     Map Reference (Int, ANormal v)
 buildInlineMap =
-  runIdentity . Map.traverseMaybeWithKey (\_ -> Identity . inlineInfo)
+  runIdentity .
+    Map.traverseMaybeWithKey (\r g -> Identity $ inlineInfo r g)
 
 -- Checks if two SuperGroups are equivalent up to renaming. The rest
 -- of the structure must match on the nose. If the two groups are not
