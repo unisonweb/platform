@@ -221,7 +221,7 @@ decompileForeign backref topTerms f
       pure $ typeLink () l
   | Just (a :: Array Closure) <- maybeUnwrapForeign iarrayRef f =
       app () (ref () iarrayFromListRef) . list ()
-        <$> traverse (decompile backref topTerms) (toList a)
+        <$> traverse (decompile backref topTerms . BoxedVal) (toList a)
   | Just (a :: ByteArray) <- maybeUnwrapForeign ibytearrayRef f =
       pure $
         app

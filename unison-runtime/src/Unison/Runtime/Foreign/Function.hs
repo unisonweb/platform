@@ -483,9 +483,9 @@ instance ForeignConvention (PA.MutableByteArray s) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap mbytearrayRef)
 
--- instance ForeignConvention (PA.Array Closure) where
---   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
---   writeForeign = writeForeignAs (Foreign . Wrap iarrayRef)
+instance ForeignConvention (PA.Array Closure) where
+  readForeign = readForeignAs (unwrapForeign . marshalToForeign)
+  writeForeign = writeForeignAs (Foreign . Wrap iarrayRef)
 
 instance ForeignConvention PA.ByteArray where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
@@ -495,8 +495,8 @@ instance {-# OVERLAPPABLE #-} (BuiltinForeign b) => ForeignConvention b where
   readForeign = readForeignBuiltin
   writeForeign = writeForeignBuiltin
 
-fromUnisonPair :: Closure -> (a, b)
-fromUnisonPair (DataC _ _ [Right x, Right (DataC _ _ [Right y, Right _])]) =
+fromUnisonPair :: (BuiltinForeign a, BuiltinForeign b) => Closure -> (a, b)
+fromUnisonPair (DataC _ _ [BoxedVal x, BoxedVal (DataC _ _ [BoxedVal y, BoxedVal _unit])]) =
   (unwrapForeignClosure x, unwrapForeignClosure y)
 fromUnisonPair _ = error "fromUnisonPair: invalid closure"
 
@@ -506,7 +506,7 @@ toUnisonPair (x, y) =
   DataC
     Ty.pairRef
     (PackedTag 0)
-    [Right $ wr x, Right $ DataC Ty.pairRef (PackedTag 0) [Right $ wr y, Right $ un]]
+    [BoxedVal $ wr x, BoxedVal $ DataC Ty.pairRef (PackedTag 0) [BoxedVal $ wr y, BoxedVal $ un]]
   where
     un = DataC Ty.unitRef (PackedTag 0) []
     wr z = Foreign $ wrapBuiltin z
