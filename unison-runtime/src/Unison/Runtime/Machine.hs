@@ -245,7 +245,7 @@ apply0 !callback !env !threadTracker !i = do
     Comb entryComb -> do
       Debug.debugM Debug.Temp "Entry Comb" entryComb
       -- Debug.debugM Debug.Temp "All Combs" cmbs
-      apply env denv threadTracker stk (kf k0) True ZArgs $
+      apply env denv threadTracker stk (kf k0) True ZArgs . BoxedVal $
         PAp entryCix entryComb nullSeg
     -- if it's cached, we can just finish
     CachedClosure _ clo -> bump stk >>= \stk -> bpoke stk clo
@@ -262,7 +262,7 @@ apply1 ::
   IO ()
 apply1 callback env threadTracker clo = do
   stk <- alloc
-  apply env mempty threadTracker stk k0 True ZArgs clo
+  apply env mempty threadTracker stk k0 True ZArgs $ BoxedVal clo
   where
     k0 = CB $ Hook callback
 
@@ -333,7 +333,8 @@ exec !_ !denv !_activeThreads !stk !k _ (Info tx) = do
   info tx k
   pure (denv, stk, k)
 exec !env !denv !_activeThreads !stk !k _ (Name r args) = do
-  stk <- name stk args =<< resolve env denv stk r
+  v <- resolve env denv stk r
+  stk <- name stk args v
   pure (denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (SetDyn p i) = do
   clo <- bpeekOff stk i
@@ -700,7 +701,7 @@ eval !env !denv !activeThreads !stk !k r (RMatch i pu br) = do
 eval !env !denv !activeThreads !stk !k _ (Yield args)
   | asize stk > 0,
     VArg1 i <- args =
-      bpeekOff stk i >>= apply env denv activeThreads stk k False ZArgs
+      peekOff stk i >>= apply env denv activeThreads stk k False ZArgs
   | otherwise = do
       stk <- moveArgs stk args
       stk <- frameArgs stk
@@ -793,14 +794,14 @@ enter !env !denv !activeThreads !stk !k !ck !args = \case
 {-# INLINE enter #-}
 
 -- fast path by-name delaying
-name :: Stack -> Args -> Closure -> IO Stack
-name !stk !args clo = case clo of
-  PAp cix comb seg -> do
+name :: Stack -> Args -> Val -> IO Stack
+name !stk !args = \case
+  BoxedVal (PAp cix comb seg) -> do
     seg <- closeArgs I stk seg args
     stk <- bump stk
     bpoke stk $ PAp cix comb seg
     pure stk
-  _ -> die $ "naming non-function: " ++ show clo
+  v -> die $ "naming non-function: " ++ show v
 {-# INLINE name #-}
 
 -- slow path application
@@ -812,37 +813,40 @@ apply ::
   K ->
   Bool ->
   Args ->
-  Closure ->
+  Val ->
   IO ()
-apply !env !denv !activeThreads !stk !k !ck !args = \case
-  (PAp cix@(CIx combRef _ _) comb seg) ->
-    case comb of
-      LamI a f entry
-        | ck || a <= ac -> do
-            stk <- ensure stk f
-            stk <- moveArgs stk args
-            stk <- dumpSeg stk seg A
-            stk <- acceptArgs stk a
-            eval env denv activeThreads stk k combRef entry
-        | otherwise -> do
-            seg <- closeArgs C stk seg args
-            stk <- discardFrame =<< frameArgs stk
-            stk <- bump stk
-            bpoke stk $ PAp cix comb seg
-            yield env denv activeThreads stk k
-    where
-      ac = asize stk + countArgs args + scount seg
-  clo -> zeroArgClosure clo
+apply !_env !_denv !_activeThreads !stk !_k !_ck !args !val
+  | debugger stk "apply" (args, val) = undefined
+apply !env !denv !activeThreads !stk !k !ck !args !val =
+  case val of
+    BoxedVal (PAp cix@(CIx combRef _ _) comb seg) ->
+      case comb of
+        LamI a f entry
+          | ck || a <= ac -> do
+              stk <- ensure stk f
+              stk <- moveArgs stk args
+              stk <- dumpSeg stk seg A
+              stk <- acceptArgs stk a
+              eval env denv activeThreads stk k combRef entry
+          | otherwise -> do
+              seg <- closeArgs C stk seg args
+              stk <- discardFrame =<< frameArgs stk
+              stk <- bump stk
+              bpoke stk $ PAp cix comb seg
+              yield env denv activeThreads stk k
+      where
+        ac = asize stk + countArgs args + scount seg
+    v -> zeroArgClosure v
   where
-    zeroArgClosure :: Closure -> IO ()
-    zeroArgClosure clo
+    zeroArgClosure :: Val -> IO ()
+    zeroArgClosure v
       | ZArgs <- args,
         asize stk == 0 = do
           stk <- discardFrame stk
           stk <- bump stk
-          bpoke stk clo
+          poke stk v
           yield env denv activeThreads stk k
-      | otherwise = die $ "applying non-function: " ++ show clo
+      | otherwise = die $ "applying non-function: " ++ show v
 {-# INLINE apply #-}
 
 jump ::
@@ -898,7 +902,6 @@ repush !env !activeThreads !stk = go
     go !_ (CB _) !_ = die "repush: impossible"
 {-# INLINE repush #-}
 
--- TODO: Double-check this one
 moveArgs ::
   Stack ->
   Args ->
@@ -1847,7 +1850,7 @@ yield !env !denv !activeThreads !stk !k = leap denv k
           clo = denv0 EC.! EC.findMin ps
       bpoke stk . DataB1 Rf.effectRef (PackedTag 0) =<< bpeek stk
       stk <- adjustArgs stk a
-      apply env denv activeThreads stk k False (VArg1 0) clo
+      apply env denv activeThreads stk k False (VArg1 0) (BoxedVal clo)
     leap !denv (Push fsz asz (CIx ref _ _) f nx k) = do
       stk <- restoreFrame stk fsz asz
       stk <- ensure stk f
@@ -1931,11 +1934,11 @@ discardCont denv stk k p =
     <&> \(_, denv, stk, k) -> (denv, stk, k)
 {-# INLINE discardCont #-}
 
-resolve :: CCache -> DEnv -> Stack -> MRef -> IO Closure
-resolve _ _ _ (Env cix mcomb) = pure $ mCombClosure cix mcomb
-resolve _ _ stk (Stk i) = bpeekOff stk i
+resolve :: CCache -> DEnv -> Stack -> MRef -> IO Val
+resolve _ _ _ (Env cix mcomb) = pure . boxedVal $ mCombClosure cix mcomb
+resolve _ _ stk (Stk i) = peekOff stk i
 resolve env denv _ (Dyn i) = case EC.lookup i denv of
-  Just clo -> pure clo
+  Just clo -> pure . boxedVal $ clo
   Nothing -> unhandledErr "resolve" env i
 
 unhandledErr :: String -> CCache -> Word64 -> IO a
