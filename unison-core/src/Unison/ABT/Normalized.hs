@@ -17,16 +17,18 @@ module Unison.ABT.Normalized
     renames,
     rename,
     transform,
+    visit,
+    visitPure,
   )
 where
 
 import Data.Bifoldable
 import Data.Bifunctor
 import Data.Foldable (toList)
--- import Data.Bitraversable
-
+import Data.Functor.Identity (Identity(..))
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Unison.ABT (Var (..))
@@ -204,3 +206,23 @@ transform ::
   Term g v
 transform phi (TTm body) = TTm . second (transform phi) $ phi body
 transform phi (TAbs u body) = TAbs u $ transform phi body
+
+visit ::
+  Applicative g =>
+  Bifoldable f =>
+  Traversable (f v) =>
+  Var v =>
+  (Term f v -> Maybe (g (Term f v))) ->
+  Term f v ->
+  g (Term f v)
+visit h t = flip fromMaybe (h t) $ case out t of
+  Abs x e -> TAbs x <$> visit h e
+  Tm body -> TTm <$> traverse (visit h) body
+
+visitPure ::
+  Bifoldable f =>
+  Traversable (f v) =>
+  Var v =>
+  (Term f v -> Maybe (Term f v)) ->
+  Term f v -> Term f v
+visitPure h = runIdentity . visit (fmap pure . h)

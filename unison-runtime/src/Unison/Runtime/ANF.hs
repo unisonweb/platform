@@ -76,6 +76,8 @@ module Unison.Runtime.ANF
     valueTermLinks,
     valueLinks,
     groupTermLinks,
+    buildInlineMap,
+    inline,
     foldGroup,
     foldGroupLinks,
     overGroup,
@@ -650,6 +652,25 @@ saturate dat = ABT.visitPure $ \case
         fvs = foldMap freeVars args
         args' = saturate dat <$> args
 
+-- Performs inlining on a supergroup using the inlining information
+-- in the map. The map can be created from typical SuperGroup data
+-- using the `buildInlineMap` function.
+inline ::
+  Var v =>
+  Map Reference (Int, ANormal v) ->
+  SuperGroup v ->
+  SuperGroup v
+inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
+  where
+  go0 (Lambda ccs body) = Lambda ccs $ go body
+  go = ABTN.visitPure \case
+    TApp (FComb r) args
+      | Just (arity, ABTN.TAbss vs body) <- Map.lookup r inls,
+        length args == arity,
+        rn <- Map.fromList (zip vs args) ->
+          Just $ ABTN.renames rn body
+    _ -> Nothing
+
 addDefaultCases :: (Var v) => (Monoid a) => Text -> Term v a -> Term v a
 addDefaultCases = ABT.visitPure . defaultCaseVisitor
 
@@ -713,7 +734,7 @@ data ANormalF v e
   | AApp (Func v) [v]
   | AFrc v
   | AVar v
-  deriving (Show, Eq)
+  deriving (Show, Eq, Functor, Foldable, Traversable)
 
 -- Types representing components that will go into the runtime tag of
 -- a data type value. RTags correspond to references, while CTags
@@ -780,18 +801,6 @@ instance Num CTag where
   abs = internalBug "CTag: abs"
   signum = internalBug "CTag: signum"
   negate = internalBug "CTag: negate"
-
-instance Functor (ANormalF v) where
-  fmap _ (AVar v) = AVar v
-  fmap _ (ALit l) = ALit l
-  fmap _ (ABLit l) = ABLit l
-  fmap f (ALet d m bn bo) = ALet d m (f bn) (f bo)
-  fmap f (AName n as bo) = AName n as $ f bo
-  fmap f (AMatch v br) = AMatch v $ f <$> br
-  fmap f (AHnd rs h e) = AHnd rs h $ f e
-  fmap f (AShift i e) = AShift i $ f e
-  fmap _ (AFrc v) = AFrc v
-  fmap _ (AApp f args) = AApp f args
 
 instance Bifunctor ANormalF where
   bimap f _ (AVar v) = AVar (f v)
@@ -1519,6 +1528,56 @@ arity (Lambda ccs _) = length ccs
 -- local bindings follow in their original order.
 arities :: SuperGroup v -> [Int]
 arities (Rec bs e) = arity e : fmap (arity . snd) bs
+
+-- Checks the body of a SuperGroup makes it eligible for inlining.
+-- See below for the discussion.
+isInlinable :: Var v => ANormal v -> Bool
+isInlinable TBLit{} = True
+isInlinable TApp {} = True
+isInlinable TVar {} = True
+isInlinable _       = False
+
+-- Checks a SuperGroup makes it eligible to be inlined.
+-- Unfortunately we need to be quite conservative about this.
+--
+-- The heuristic implemented below is as follows:
+--
+--   1. There are no local bindings, so only the 'entry point'
+--      matters.
+--   2. The entry point body is just a single expression, that is,
+--      an application, variable or literal.
+--
+-- The first condition ensures that there isn't any need to jump
+-- into a non-entrypoint from outside a group. These should be rare
+-- anyway, because the local bindings are no longer used for
+-- (unison-level) local function definitions (those are lifted
+-- out). The second condition ensures that inlining the body should
+-- have no effect on the runtime stack of of the function we're
+-- inlining into, because the combinator is just a wrapper around
+-- the simple expression.
+--
+-- Fortunately, it should be possible to make _most_ builtins have
+-- this form, so that their instructions can be inlined directly
+-- into the call sites when saturated.
+--
+-- The result of this function is the information necessary to
+-- inline the combinator—an arity and the body expression with
+-- bound variables. This should allow checking if the call is
+-- saturated and make it possible to locally substitute for an
+-- inlined expression.
+inlineInfo :: Var v => SuperGroup v -> Maybe (Int, ANormal v)
+inlineInfo (Rec [] (Lambda ccs body@(ABTN.TAbss _ e)))
+  | isInlinable e = Just (length ccs, body)
+inlineInfo _ = Nothing
+
+-- Builds inlining information from a collection of SuperGroups.
+-- They are all tested for inlinability, and the result map
+-- contains only the information for groups that are able to be
+-- inlined.
+buildInlineMap
+  :: Var v => Map k (SuperGroup v) -> Map k (Int, ANormal v)
+buildInlineMap =
+  runIdentity . Map.traverseMaybeWithKey (\_ -> Identity . inlineInfo)
 
 -- Checks if two SuperGroups are equivalent up to renaming. The rest
 -- of the structure must match on the nose. If the two groups are not
