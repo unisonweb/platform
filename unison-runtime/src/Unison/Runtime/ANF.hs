@@ -662,14 +662,27 @@ inline ::
   SuperGroup v
 inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
   where
-  go0 (Lambda ccs body) = Lambda ccs $ go body
-  go = ABTN.visitPure \case
+  go0 (Lambda ccs body) = Lambda ccs $ go (30 :: Int) body
+  -- Note: number argument bails out in recursive inlining cases
+  go n | n <= 0 = id
+  go n = ABTN.visitPure \case
     TApp (FComb r) args
-      | Just (arity, ABTN.TAbss vs body) <- Map.lookup r inls,
-        length args == arity,
-        rn <- Map.fromList (zip vs args) ->
-          Just $ ABTN.renames rn body
+      | Just (arity, expr) <- Map.lookup r inls ->
+          go (n-1) <$> tweak expr args arity
     _ -> Nothing
+
+  tweak (ABTN.TAbss vs body) args arity
+    -- exactly saturated
+    | length args == arity,
+      rn <- Map.fromList (zip vs args) =
+        Just $ ABTN.renames rn body
+    -- oversaturated, only makes sense if body is a call
+    | length args > arity,
+      (pre, post) <- splitAt arity args,
+      rn <- Map.fromList (zip vs pre),
+      TApp f pre <- ABTN.renames rn body =
+        Just $ TApp f (pre ++ post)
+    | otherwise = Nothing
 
 addDefaultCases :: (Var v) => (Monoid a) => Text -> Term v a -> Term v a
 addDefaultCases = ABT.visitPure . defaultCaseVisitor
