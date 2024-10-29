@@ -1704,4 +1704,5 @@ prettyIns (Pack r i as) =
 prettyIns i = shows i
 
 prettyArgs :: Args -> ShowS
-prettyArgs v = shows v
+prettyArgs ZArgs = showString "ZArgs"
+prettyArgs v = showParen True $ shows v
