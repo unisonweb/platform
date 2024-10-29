@@ -117,7 +117,7 @@ import Unison.Reference (Id, Reference, Reference' (Builtin, DerivedId))
 import Unison.Referent (Referent, pattern Con, pattern Ref)
 import Unison.Runtime.Array qualified as PA
 import Unison.Symbol (Symbol)
-import Unison.Term hiding (List, Ref, Text, float, fresh, resolve, arity)
+import Unison.Term hiding (List, Ref, Text, arity, float, fresh, resolve)
 import Unison.Type qualified as Ty
 import Unison.Typechecker.Components (minimize')
 import Unison.Util.Bytes (Bytes)
@@ -656,20 +656,20 @@ saturate dat = ABT.visitPure $ \case
 -- in the map. The map can be created from typical SuperGroup data
 -- using the `buildInlineMap` function.
 inline ::
-  Var v =>
+  (Var v) =>
   Map Reference (Int, ANormal v) ->
   SuperGroup v ->
   SuperGroup v
 inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
   where
-  go0 (Lambda ccs body) = Lambda ccs $ go body
-  go = ABTN.visitPure \case
-    TApp (FComb r) args
-      | Just (arity, ABTN.TAbss vs body) <- Map.lookup r inls,
-        length args == arity,
-        rn <- Map.fromList (zip vs args) ->
-          Just $ ABTN.renames rn body
-    _ -> Nothing
+    go0 (Lambda ccs body) = Lambda ccs $ go body
+    go = ABTN.visitPure \case
+      TApp (FComb r) args
+        | Just (arity, ABTN.TAbss vs body) <- Map.lookup r inls,
+          length args == arity,
+          rn <- Map.fromList (zip vs args) ->
+            Just $ ABTN.renames rn body
+      _ -> Nothing
 
 addDefaultCases :: (Var v) => (Monoid a) => Text -> Term v a -> Term v a
 addDefaultCases = ABT.visitPure . defaultCaseVisitor
@@ -1531,11 +1531,11 @@ arities (Rec bs e) = arity e : fmap (arity . snd) bs
 
 -- Checks the body of a SuperGroup makes it eligible for inlining.
 -- See below for the discussion.
-isInlinable :: Var v => ANormal v -> Bool
-isInlinable TBLit{} = True
+isInlinable :: (Var v) => ANormal v -> Bool
+isInlinable TBLit {} = True
 isInlinable TApp {} = True
 isInlinable TVar {} = True
-isInlinable _       = False
+isInlinable _ = False
 
 -- Checks a SuperGroup makes it eligible to be inlined.
 -- Unfortunately we need to be quite conservative about this.
@@ -1565,7 +1565,7 @@ isInlinable _       = False
 -- bound variables. This should allow checking if the call is
 -- saturated and make it possible to locally substitute for an
 -- inlined expression.
-inlineInfo :: Var v => SuperGroup v -> Maybe (Int, ANormal v)
+inlineInfo :: (Var v) => SuperGroup v -> Maybe (Int, ANormal v)
 inlineInfo (Rec [] (Lambda ccs body@(ABTN.TAbss _ e)))
   | isInlinable e = Just (length ccs, body)
 inlineInfo _ = Nothing
@@ -1574,8 +1574,8 @@ inlineInfo _ = Nothing
 -- They are all tested for inlinability, and the result map
 -- contains only the information for groups that are able to be
 -- inlined.
-buildInlineMap
-  :: Var v => Map k (SuperGroup v) -> Map k (Int, ANormal v)
+buildInlineMap ::
+  (Var v) => Map k (SuperGroup v) -> Map k (Int, ANormal v)
 buildInlineMap =
   runIdentity . Map.traverseMaybeWithKey (\_ -> Identity . inlineInfo)
 
