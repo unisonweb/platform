@@ -654,8 +654,9 @@ encodeExn stk exc = do
               (Rf.threadKilledFailureRef, disp ie, boxedVal unitValue)
           | otherwise = (Rf.miscFailureRef, disp exn, boxedVal unitValue)
 
-numValue :: Maybe Reference -> Closure -> IO Word64
-numValue _ (DataU1 _ _ i) = pure (fromIntegral $ getTUInt i)
+numValue :: Maybe Reference -> Val -> IO Word64
+numValue _ (UnboxedVal tu) = pure (fromIntegral $ getTUInt tu)
+numValue _ (BoxedVal (DataU1 _ _ i)) = pure (fromIntegral $ getTUInt i)
 numValue mr clo =
   die $
     "numValue: bad closure: "
@@ -685,7 +686,7 @@ eval !env !denv !activeThreads !stk !k r (DMatch mr i br) = do
   eval env denv activeThreads stk k r $
     selectBranch (maskTags t) br
 eval !env !denv !activeThreads !stk !k r (NMatch mr i br) = do
-  n <- numValue mr =<< bpeekOff stk i
+  n <- numValue mr =<< peekOff stk i
   eval env denv activeThreads stk k r $ selectBranch n br
 eval !env !denv !activeThreads !stk !k r (RMatch i pu br) = do
   (t, stk) <- dumpDataNoTag Nothing stk =<< peekOff stk i

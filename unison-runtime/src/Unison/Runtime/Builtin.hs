@@ -821,6 +821,8 @@ coerceType :: Reference -> Reference -> SuperNormal Symbol
 coerceType _ri _ro =
   -- TODO: Fix this with a proper type-coercion
   unop0 0 $ \[x] -> TVar x
+    -- unbox x0 ri x $
+    --   TCon ro 0 [x]
 
 -- This version of unsafeCoerce is the identity function. It works
 -- only if the two types being coerced between are actually the same,
