@@ -823,10 +823,9 @@ andb = binop0 0 $ \[p, q] ->
 -- no-op on the representation. Ideally this will be inlined and
 -- eliminated so that no instruction is necessary.
 cast :: Reference -> Reference -> SuperNormal Symbol
-cast ri ro =
-  unop0 1 $ \[x0, x] ->
-    unbox x0 ri x $
-      TCon ro 0 [x]
+cast _ri _ro =
+  -- TODO: Is there a way to avoid providing anything at all here?
+  unop0 0 $ \[x] -> TVar x
 
 -- This version of unsafeCoerce is the identity function. It works
 -- only if the two types being coerced between are actually the same,
