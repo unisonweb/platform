@@ -681,14 +681,14 @@ eval !env !denv !activeThreads !stk !k r (Match i br) = do
   n <- peekOffN stk i
   eval env denv activeThreads stk k r $ selectBranch n br
 eval !env !denv !activeThreads !stk !k r (DMatch mr i br) = do
-  (t, stk) <- dumpDataNoTag mr stk =<< bpeekOff stk i
+  (t, stk) <- dumpDataNoTag mr stk =<< peekOff stk i
   eval env denv activeThreads stk k r $
     selectBranch (maskTags t) br
 eval !env !denv !activeThreads !stk !k r (NMatch mr i br) = do
   n <- numValue mr =<< bpeekOff stk i
   eval env denv activeThreads stk k r $ selectBranch n br
 eval !env !denv !activeThreads !stk !k r (RMatch i pu br) = do
-  (t, stk) <- dumpDataNoTag Nothing stk =<< bpeekOff stk i
+  (t, stk) <- dumpDataNoTag Nothing stk =<< peekOff stk i
   if t == PackedTag 0
     then eval env denv activeThreads stk k r pu
     else case ANF.unpackTags t of
@@ -998,45 +998,53 @@ buildData !stk !r !t (VArgV i) = do
 dumpDataNoTag ::
   Maybe Reference ->
   Stack ->
-  Closure ->
+  Val ->
   IO (PackedTag, Stack)
-dumpDataNoTag !_ !stk (Enum _ t) = pure (t, stk)
-dumpDataNoTag !_ !stk (DataU1 _ t x) = do
-  stk <- bump stk
-  pokeTU stk x
-  pure (t, stk)
-dumpDataNoTag !_ !stk (DataU2 _ t x y) = do
-  stk <- bumpn stk 2
-  pokeOffTU stk 1 y
-  pokeTU stk x
-  pure (t, stk)
-dumpDataNoTag !_ !stk (DataB1 _ t x) = do
-  stk <- bump stk
-  bpoke stk x
-  pure (t, stk)
-dumpDataNoTag !_ !stk (DataB2 _ t x y) = do
-  stk <- bumpn stk 2
-  bpokeOff stk 1 y
-  bpoke stk x
-  pure (t, stk)
-dumpDataNoTag !_ !stk (DataUB _ t x y) = do
-  stk <- bumpn stk 2
-  pokeTU stk x
-  bpokeOff stk 1 y
-  pure (t, stk)
-dumpDataNoTag !_ !stk (DataBU _ t x y) = do
-  stk <- bumpn stk 2
-  bpoke stk x
-  pokeOffTU stk 1 y
-  pure (t, stk)
-dumpDataNoTag !_ !stk (DataG _ t seg) = do
-  stk <- dumpSeg stk seg S
-  pure (t, stk)
-dumpDataNoTag !mr !_ clo =
-  die $
-    "dumpDataNoTag: bad closure: "
-      ++ show clo
-      ++ maybe "" (\r -> "\nexpected type: " ++ show r) mr
+dumpDataNoTag !mr !stk = \case
+  -- Normally we want to avoid dumping unboxed values since it's unnecessary, but sometimes we don't know the type of
+  -- the incoming value and end up dumping unboxed values, so we just push them back to the stack as-is. e.g. in type-casts/coercions
+  val@(UnboxedVal tu) -> do
+    stk <- bump stk
+    poke stk val
+    pure (getTUTag tu, stk)
+  (BoxedVal clos) -> case clos of
+    (Enum _ t) -> pure (t, stk)
+    (DataU1 _ t x) -> do
+      stk <- bump stk
+      pokeTU stk x
+      pure (t, stk)
+    (DataU2 _ t x y) -> do
+      stk <- bumpn stk 2
+      pokeOffTU stk 1 y
+      pokeTU stk x
+      pure (t, stk)
+    (DataB1 _ t x) -> do
+      stk <- bump stk
+      bpoke stk x
+      pure (t, stk)
+    (DataB2 _ t x y) -> do
+      stk <- bumpn stk 2
+      bpokeOff stk 1 y
+      bpoke stk x
+      pure (t, stk)
+    (DataUB _ t x y) -> do
+      stk <- bumpn stk 2
+      pokeTU stk x
+      bpokeOff stk 1 y
+      pure (t, stk)
+    (DataBU _ t x y) -> do
+      stk <- bumpn stk 2
+      bpoke stk x
+      pokeOffTU stk 1 y
+      pure (t, stk)
+    (DataG _ t seg) -> do
+      stk <- dumpSeg stk seg S
+      pure (t, stk)
+    clo ->
+      die $
+        "dumpDataNoTag: bad closure: "
+          ++ show clo
+          ++ maybe "" (\r -> "\nexpected type: " ++ show r) mr
 {-# INLINE dumpDataNoTag #-}
 
 -- Note: although the representation allows it, it is impossible
