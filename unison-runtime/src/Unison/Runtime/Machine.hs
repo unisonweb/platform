@@ -673,8 +673,8 @@ eval !env !denv !activeThreads !stk !k _ (Yield args)
 eval !env !denv !activeThreads !stk !k _ (App ck r args) =
   resolve env denv stk r
     >>= apply env denv activeThreads stk k ck args
-eval !env !denv !activeThreads !stk !k _ (Call ck _combIx rcomb args) =
-  enter env denv activeThreads stk k ck args rcomb
+eval !env !denv !activeThreads !stk !k _ (Call ck combIx rcomb args) =
+  enter env denv activeThreads stk k (combRef combIx) ck args rcomb
 eval !env !denv !activeThreads !stk !k _ (Jump i args) =
   bpeekOff stk i >>= jump env denv activeThreads stk k args
 eval !env !denv !activeThreads !stk !k r (Let nw cix f sect) = do
@@ -738,17 +738,18 @@ enter ::
   ActiveThreads ->
   Stack ->
   K ->
+  Reference ->
   Bool ->
   Args ->
   MComb ->
   IO ()
-enter !env !denv !activeThreads !stk !k !sck !args = \case
+enter !env !denv !activeThreads !stk !k !cref !sck !args = \case
   (RComb (Lam a f entry)) -> do
     -- check for stack check _skip_
     stk <- if sck then pure stk else ensure stk f
     stk <- moveArgs stk args
     stk <- acceptArgs stk a
-    eval env denv activeThreads stk k dummyRef entry
+    eval env denv activeThreads stk k cref entry
   (RComb (CachedClosure _cix clos)) -> do
     stk <- discardFrame stk
     stk <- bump stk
