@@ -259,11 +259,11 @@ apply1 ::
   (Stack -> IO ()) ->
   CCache ->
   ActiveThreads ->
-  Closure ->
+  Val ->
   IO ()
 apply1 callback env threadTracker clo = do
   stk <- alloc
-  apply env mempty threadTracker stk k0 True ZArgs $ BoxedVal clo
+  apply env mempty threadTracker stk k0 True ZArgs $ clo
   where
     k0 = CB $ Hook callback
 
@@ -595,23 +595,23 @@ exec !env !denv !_activeThreads !stk !k _ (ForeignCall _ w args)
 exec !env !denv !activeThreads !stk !k _ (Fork i)
   | sandboxed env = die "attempted to use sandboxed operation: fork"
   | otherwise = do
-      tid <- forkEval env activeThreads =<< bpeekOff stk i
+      tid <- forkEval env activeThreads =<< peekOff stk i
       stk <- bump stk
       bpoke stk . Foreign . Wrap Rf.threadIdRef $ tid
       pure (denv, stk, k)
 exec !env !denv !activeThreads !stk !k _ (Atomically i)
   | sandboxed env = die $ "attempted to use sandboxed operation: atomically"
   | otherwise = do
-      c <- bpeekOff stk i
+      v <- peekOff stk i
       stk <- bump stk
-      atomicEval env activeThreads (bpoke stk) c
+      atomicEval env activeThreads (poke stk) v
       pure (denv, stk, k)
 exec !env !denv !activeThreads !stk !k _ (TryForce i)
   | sandboxed env = die $ "attempted to use sandboxed operation: tryForce"
   | otherwise = do
-      c <- bpeekOff stk i
+      v <- peekOff stk i
       stk <- bump stk -- Bump the boxed stack to make a slot for the result, which will be written in the callback if we succeed.
-      ev <- Control.Exception.try $ nestEval env activeThreads (bpoke stk) c
+      ev <- Control.Exception.try $ nestEval env activeThreads (poke stk) v
       stk <- encodeExn stk ev
       pure (denv, stk, k)
 {-# INLINE exec #-}
@@ -731,7 +731,7 @@ eval !_ !_ !_ !_activeThreads !_ _ Exit = pure ()
 eval !_ !_ !_ !_activeThreads !_ _ (Die s) = die s
 {-# NOINLINE eval #-}
 
-forkEval :: CCache -> ActiveThreads -> Closure -> IO ThreadId
+forkEval :: CCache -> ActiveThreads -> Val -> IO ThreadId
 forkEval env activeThreads clo =
   do
     threadId <-
@@ -757,15 +757,15 @@ forkEval env activeThreads clo =
           UnliftIO.atomicModifyIORef' activeThreads (\ids -> (Set.delete myThreadId ids, ()))
 {-# INLINE forkEval #-}
 
-nestEval :: CCache -> ActiveThreads -> (Closure -> IO ()) -> Closure -> IO ()
-nestEval env activeThreads write clo = apply1 readBack env activeThreads clo
+nestEval :: CCache -> ActiveThreads -> (Val -> IO ()) -> Val -> IO ()
+nestEval env activeThreads write val = apply1 readBack env activeThreads val
   where
-    readBack stk = bpeek stk >>= write
+    readBack stk = peek stk >>= write
 {-# INLINE nestEval #-}
 
-atomicEval :: CCache -> ActiveThreads -> (Closure -> IO ()) -> Closure -> IO ()
-atomicEval env activeThreads write clo =
-  atomically . unsafeIOToSTM $ nestEval env activeThreads write clo
+atomicEval :: CCache -> ActiveThreads -> (Val -> IO ()) -> Val -> IO ()
+atomicEval env activeThreads write val =
+  atomically . unsafeIOToSTM $ nestEval env activeThreads write val
 {-# INLINE atomicEval #-}
 
 -- fast path application
