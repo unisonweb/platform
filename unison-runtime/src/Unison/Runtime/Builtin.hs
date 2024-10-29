@@ -1299,17 +1299,15 @@ outMaybe maybe result =
         (1, ([BX], TAbs maybe $ some maybe))
       ]
 
-outMaybeNat :: (Var v) => v -> v -> v -> ANormal v
-outMaybeNat tag result n =
+outMaybeNat :: (Var v) => v -> v ->  ANormal v
+outMaybeNat tag result =
   TMatch tag . MatchSum $
     mapFromList
       [ (0, ([], none)),
         ( 1,
           ( [UN],
           -- TODO: Fix this?
-            TAbs result
-              . TLetD n BX (TCon Ty.natRef 0 [n])
-              $ some n
+            TAbs result $ some result
           )
         )
       ]
@@ -1763,9 +1761,9 @@ boxToMaybeBox =
 
 -- a -> Maybe Nat
 boxToMaybeNat :: ForeignOp
-boxToMaybeNat = inBx arg tag $ outMaybeNat tag result n
+boxToMaybeNat = inBx arg tag $ outMaybeNat tag result
   where
-    (arg, tag, result, n) = fresh
+    (arg, tag, result) = fresh
 
 -- a -> Maybe (Nat, b)
 boxToMaybeNTup :: ForeignOp
