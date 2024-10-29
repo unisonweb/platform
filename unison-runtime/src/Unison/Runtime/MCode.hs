@@ -57,11 +57,12 @@ import Data.Bits (shiftL, shiftR, (.|.))
 import Data.Coerce
 import Data.Functor ((<&>))
 import Data.Map.Strict qualified as M
+import Data.Text as Text (unpack)
 import Data.Void (Void, absurd)
 import Data.Word (Word16, Word64)
 import GHC.Stack (HasCallStack)
 import Unison.ABT.Normalized (pattern TAbss)
-import Unison.Reference (Reference)
+import Unison.Reference (Reference, showShort)
 import Unison.Referent (Referent)
 import Unison.Runtime.ANF
   ( ANormal,
@@ -1624,11 +1625,11 @@ prettySection ind sec =
   indent ind . case sec of
     App _ r as ->
       showString "App "
-        . showsPrec 12 r
+        . prettyGRef 12 r
         . showString " "
         . prettyArgs as
     Call _ i _ as ->
-      showString "Call " . shows i . showString " " . prettyArgs as
+      showString "Call " . prettyCIx i . showString " " . prettyArgs as
     Jump i as ->
       showString "Jump " . shows i . showString " " . prettyArgs as
     Match i bs ->
@@ -1669,6 +1670,20 @@ prettySection ind sec =
             . showString " ->\n"
             . prettyBranches (ind + 1) e
 
+prettyCIx :: CombIx -> ShowS
+prettyCIx (CIx r _ n) =
+  prettyRef r . if n == 0 then id else showString "-" . shows n
+
+prettyRef :: Reference -> ShowS
+prettyRef = showString . Text.unpack . showShort 10
+
+prettyGRef :: Int -> GRef comb -> ShowS
+prettyGRef p r =
+  showParen (p > 10) $ case r of
+    Stk i -> showString "Stk " . shows i
+    Dyn w -> showString "Dyn " . shows w
+    Env cix _ -> showString "Env " . prettyCIx cix
+
 prettyBranches :: (Show comb) => Int -> GBranch comb -> ShowS
 prettyBranches ind bs =
   case bs of
@@ -1696,9 +1711,21 @@ prettyBranches ind bs =
 prettyIns :: (Show comb) => GInstr comb -> ShowS
 prettyIns (Pack r i as) =
   showString "Pack "
-    . showsPrec 10 r
+    . prettyRef r
     . (' ' :)
     . shows i
+    . (' ' :)
+    . prettyArgs as
+prettyIns (BLit r t l) =
+  showString "BLit "
+    . prettyRef r
+    . (' ' :)
+    . shows t
+    . (' ' :)
+    . showsPrec 11 l
+prettyIns (Name r as) =
+  showString "Name "
+    . prettyGRef 12 r
     . (' ' :)
     . prettyArgs as
 prettyIns i = shows i
