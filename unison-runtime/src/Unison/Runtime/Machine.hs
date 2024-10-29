@@ -304,17 +304,17 @@ buildLit _ _ (MD _) = error "buildLit: double"
 
 debugger :: (Show a) => Stack -> String -> a -> Bool
 debugger stk msg a = unsafePerformIO $ do
-  Debug.debugLogM Debug.Temp (msg ++ ": " ++ show a)
   dumpStack stk
+  Debug.debugLogM Debug.Temp (msg ++ ": " ++ show a)
   pure False
 
 dumpStack :: Stack -> IO ()
 dumpStack stk@(Stack _ap fp sp _ustk _bstk)
-  | sp - fp <= 0 = Debug.debugLogM Debug.Temp "Stack Empty"
+  | sp - fp < 0 = Debug.debugLogM Debug.Temp "Stack before 👇: Empty"
   | otherwise = do
       stkResults <- for [0 .. ((sp - fp) - 1)] $ \i -> do
         peekOff stk i
-      Debug.debugM Debug.Temp "Stack" stkResults
+      Debug.debugM Debug.Temp "Stack before 👇:" stkResults
 
 -- | Execute an instruction
 exec ::
