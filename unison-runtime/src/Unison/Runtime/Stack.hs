@@ -1,3 +1,6 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE ConstraintKinds #-}
+
 module Unison.Runtime.Stack
   ( K (..),
     GClosure (..),
@@ -121,6 +124,7 @@ where
 
 import Control.Monad.Primitive
 import Data.Char qualified as Char
+import Data.Kind (Constraint)
 import Data.Primitive.ByteArray qualified as BA
 import Data.Word
 import GHC.Exts as L (IsList (..))
@@ -134,6 +138,40 @@ import Unison.Runtime.TypeTags qualified as TT
 import Unison.Type qualified as Ty
 import Unison.Util.EnumContainers as EC
 import Prelude hiding (words)
+
+{- ORMOLU_DISABLE -}
+#ifdef STACK_CHECK
+type DebugCallStack = (HasCallStack :: Constraint)
+
+unboxedSentinel :: Int
+unboxedSentinel = -99
+
+boxedSentinel :: Closure
+boxedSentinel = (Closure GUnboxedSentinel)
+
+assertBumped :: HasCallStack => Stack -> Off -> IO ()
+assertBumped (Stack _ _ sp ustk bstk) i = do
+  u <- readByteArray ustk (sp - i)
+  b <- readArray bstk (sp - i)
+  when (u /= unboxedSentinel || b /= boxedSentinel) $ error $ "Expected stack slot to have been bumped, but it was:" <> show (Val u b)
+
+assertUnboxed :: HasCallStack => Stack -> Off -> IO ()
+assertUnboxed (Stack _ _ sp ustk bstk) i = do
+  (u :: Int) <- readByteArray ustk (sp - i)
+  b <- readArray bstk (sp - i)
+  case b of
+    UnboxedTypeTag _ -> pure ()
+    _ -> error $ "Expected stack val to be unboxed, but it was:" <> show (Val u b)
+
+pokeSentinelOff :: Stack -> Off -> IO ()
+pokeSentinelOff (Stack _ _ sp ustk bstk) off = do
+  writeByteArray ustk (sp - off) unboxedSentinel
+  writeArray bstk (sp - off) boxedSentinel
+#else
+-- Don't track callstacks in production, it's expensive
+type DebugCallStack = (() :: Constraint)
+#endif
+{- ORMOLU_ENABLE -}
 
 newtype Callback = Hook (Stack -> IO ())
 
@@ -192,6 +230,7 @@ type USeq = Seq Val
 
 type IxClosure = GClosure CombIx
 
+{- ORMOLU_DISABLE -}
 data GClosure comb
   = GPAp
       !CombIx
@@ -209,7 +248,11 @@ data GClosure comb
     --  GHC will optimize nullary constructors into singletons.
     GUnboxedTypeTag !PackedTag
   | GBlackHole
+#ifdef STACK_CHECK
+  | GUnboxedSentinel
+#endif
   deriving stock (Show, Functor, Foldable, Traversable)
+{- ORMOLU_ENABLE -}
 
 instance Eq (GClosure comb) where
   -- This is safe because the embedded CombIx will break disputes
@@ -605,6 +648,7 @@ alloc = do
   pure $ Stack {ap = -1, fp = -1, sp = -1, ustk, bstk}
 {-# INLINE alloc #-}
 
+{- ORMOLU_DISABLE -}
 peek :: Stack -> IO Val
 peek stk = do
   u <- upeek stk
@@ -613,11 +657,19 @@ peek stk = do
 {-# INLINE peek #-}
 
 peekI :: Stack -> IO Int
-peekI (Stack _ _ sp ustk _) = readByteArray ustk sp
+peekI _stk@(Stack _ _ sp ustk _) = do
+#ifdef STACK_CHECK
+  assertUnboxed _stk sp
+#endif
+  readByteArray ustk sp
 {-# INLINE peekI #-}
 
 peekOffI :: Stack -> Off -> IO Int
-peekOffI (Stack _ _ sp ustk _) i = readByteArray ustk (sp - i)
+peekOffI _stk@(Stack _ _ sp ustk _) i = do
+#ifdef STACK_CHECK
+  assertUnboxed _stk (sp - i)
+#endif
+  readByteArray ustk (sp - i)
 {-# INLINE peekOffI #-}
 
 bpeek :: Stack -> IO BVal
@@ -625,7 +677,11 @@ bpeek (Stack _ _ sp _ bstk) = readArray bstk sp
 {-# INLINE bpeek #-}
 
 upeek :: Stack -> IO UVal
-upeek (Stack _ _ sp ustk _) = readByteArray ustk sp
+upeek _stk@(Stack _ _ sp ustk _) = do
+#ifdef STACK_CHECK
+  assertUnboxed _stk sp
+#endif
+  readByteArray ustk sp
 {-# INLINE upeek #-}
 
 peekOff :: Stack -> Off -> IO Val
@@ -640,7 +696,11 @@ bpeekOff (Stack _ _ sp _ bstk) i = readArray bstk (sp - i)
 {-# INLINE bpeekOff #-}
 
 upeekOff :: Stack -> Off -> IO UVal
-upeekOff (Stack _ _ sp ustk _) i = readByteArray ustk (sp - i)
+upeekOff _stk@(Stack _ _ sp ustk _) i = do
+#ifdef STACK_CHECK
+  assertUnboxed _stk (sp - i)
+#endif
+  readByteArray ustk (sp - i)
 {-# INLINE upeekOff #-}
 
 upokeT :: Stack -> UVal -> PackedTag -> IO ()
@@ -650,7 +710,10 @@ upokeT !stk@(Stack _ _ sp ustk _) !u !t = do
 {-# INLINE upokeT #-}
 
 poke :: Stack -> Val -> IO ()
-poke (Stack _ _ sp ustk bstk) (Val u b) = do
+poke _stk@(Stack _ _ sp ustk bstk) (Val u b) = do
+#ifdef STACK_CHECK
+  assertBumped _stk sp
+#endif
   writeByteArray ustk sp u
   writeArray bstk sp b
 {-# INLINE poke #-}
@@ -690,11 +753,15 @@ pokeBool stk b =
 -- | Store a boxed value.
 -- We don't bother nulling out the unboxed stack,
 -- it's extra work and there's nothing to garbage collect.
-bpoke :: Stack -> BVal -> IO ()
-bpoke (Stack _ _ sp _ bstk) b = writeArray bstk sp b
+bpoke :: DebugCallStack => Stack -> BVal -> IO ()
+bpoke _stk@(Stack _ _ sp _ustk bstk) b = do
+#ifdef STACK_CHECK
+  assertBumped _stk sp
+#endif
+  writeArray bstk sp b
 {-# INLINE bpoke #-}
 
-pokeOff :: Stack -> Off -> Val -> IO ()
+pokeOff :: DebugCallStack => Stack -> Off -> Val -> IO ()
 pokeOff stk i (Val u t) = do
   bpokeOff stk i t
   writeByteArray (ustk stk) (sp stk - i) u
@@ -706,8 +773,12 @@ upokeOffT stk i u t = do
   writeByteArray (ustk stk) (sp stk - i) u
 {-# INLINE upokeOffT #-}
 
-bpokeOff :: Stack -> Off -> BVal -> IO ()
-bpokeOff (Stack _ _ sp _ bstk) i b = writeArray bstk (sp - i) b
+bpokeOff :: DebugCallStack => Stack -> Off -> BVal -> IO ()
+bpokeOff _stk@(Stack _ _ sp _ bstk) i b = do
+#ifdef STACK_CHECK
+  assertBumped _stk (sp - i)
+#endif
+  writeArray bstk (sp - i) b
 {-# INLINE bpokeOff #-}
 
 -- | Eats up arguments
@@ -756,11 +827,22 @@ ensure stk@(Stack ap fp sp ustk bstk) sze
 {-# INLINE ensure #-}
 
 bump :: Stack -> IO Stack
-bump (Stack ap fp sp ustk bstk) = pure $ Stack ap fp (sp + 1) ustk bstk
+bump (Stack ap fp sp ustk bstk) = do
+  let stk' = Stack ap fp (sp + 1) ustk bstk
+#ifdef STACK_CHECK
+  pokeSentinelOff stk' (sp + 1)
+#endif
+  pure stk'
 {-# INLINE bump #-}
 
 bumpn :: Stack -> SZ -> IO Stack
-bumpn (Stack ap fp sp ustk bstk) n = pure $ Stack ap fp (sp + n) ustk bstk
+bumpn (Stack ap fp sp ustk bstk) n = do
+  let stk' = Stack ap fp (sp + n) ustk bstk
+#ifdef STACK_CHECK
+  for_ [0..n-1] $ \i ->
+    pokeSentinelOff stk' i
+#endif
+  pure stk'
 {-# INLINE bumpn #-}
 
 duplicate :: Stack -> IO Stack
@@ -892,28 +974,52 @@ asize (Stack ap fp _ _ _) = fp - ap
 {-# INLINE asize #-}
 
 peekN :: Stack -> IO Word64
-peekN (Stack _ _ sp ustk _) = readByteArray ustk sp
+peekN _stk@(Stack _ _ sp ustk _) = do
+#ifdef STACK_CHECK
+  assertUnboxed _stk sp
+#endif
+  readByteArray ustk sp
 {-# INLINE peekN #-}
 
 peekD :: Stack -> IO Double
-peekD (Stack _ _ sp ustk _) = readByteArray ustk sp
+peekD _stk@(Stack _ _ sp ustk _) = do
+#ifdef STACK_CHECK
+  assertUnboxed _stk sp
+#endif
+  readByteArray ustk sp
 {-# INLINE peekD #-}
 
 peekC :: Stack -> IO Char
-peekC (Stack _ _ sp ustk _) = Char.chr <$> readByteArray ustk sp
+peekC stk = do
+  Char.chr <$> peekI stk
 {-# INLINE peekC #-}
 
 peekOffN :: Stack -> Int -> IO Word64
-peekOffN (Stack _ _ sp ustk _) i = readByteArray ustk (sp - i)
+peekOffN _stk@(Stack _ _ sp ustk _) i = do
+#ifdef STACK_CHECK
+
+  assertUnboxed _stk (sp - i)
+#endif
+  readByteArray ustk (sp - i)
 {-# INLINE peekOffN #-}
 
 peekOffD :: Stack -> Int -> IO Double
-peekOffD (Stack _ _ sp ustk _) i = readByteArray ustk (sp - i)
+peekOffD _stk@(Stack _ _ sp ustk _) i = do
+#ifdef STACK_CHECK
+  assertUnboxed _stk (sp - i)
+#endif
+  readByteArray ustk (sp - i)
 {-# INLINE peekOffD #-}
 
 peekOffC :: Stack -> Int -> IO Char
-peekOffC (Stack _ _ sp ustk _) i = Char.chr <$> readByteArray ustk (sp - i)
+peekOffC _stk@(Stack _ _ sp ustk _) i = do
+#ifdef STACK_CHECK
+  assertUnboxed _stk (sp - i)
+#endif
+  Char.chr <$> readByteArray ustk (sp - i)
 {-# INLINE peekOffC #-}
+
+{- ORMOLU_ENABLE -}
 
 pokeN :: Stack -> Word64 -> IO ()
 pokeN stk@(Stack _ _ sp ustk _) n = do
