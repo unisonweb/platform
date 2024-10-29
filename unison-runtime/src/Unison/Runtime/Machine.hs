@@ -63,6 +63,7 @@ import Unison.Symbol (Symbol)
 import Unison.Type qualified as Rf
 import Unison.Util.Bytes qualified as By
 import Unison.Util.EnumContainers as EC
+import Unison.Util.Monoid qualified as Monoid
 import Unison.Util.Pretty (toPlainUnbroken)
 import Unison.Util.Text qualified as Util.Text
 import UnliftIO (IORef)
@@ -497,14 +498,14 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim2 SDBV i j)
       bpoke stk $ encodeSandboxResult res
       pure (denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (BPrim2 EQLU i j) = do
-  x <- bpeekOff stk i
-  y <- bpeekOff stk j
+  x <- peekOff stk i
+  y <- peekOff stk j
   stk <- bump stk
   pokeBool stk $ universalEq (==) x y
   pure (denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (BPrim2 CMPU i j) = do
-  x <- bpeekOff stk i
-  y <- bpeekOff stk j
+  x <- peekOff stk i
+  y <- peekOff stk j
   stk <- bump stk
   pokeI stk . fromEnum $ universalCompare compare x y
   pure (denv, stk, k)
@@ -1638,8 +1639,8 @@ bprim2 ::
   Int ->
   IO Stack
 bprim2 !stk EQLU i j = do
-  x <- bpeekOff stk i
-  y <- bpeekOff stk j
+  x <- peekOff stk i
+  y <- peekOff stk j
   stk <- bump stk
   pokeBool stk $ universalEq (==) x y
   pure stk
@@ -2406,10 +2407,10 @@ closureNum BlackHole {} = error "BlackHole"
 
 universalEq ::
   (Foreign -> Foreign -> Bool) ->
-  Closure ->
-  Closure ->
+  Val ->
+  Val ->
   Bool
-universalEq frn = eqc
+universalEq frn = eqVal
   where
     eql :: (a -> b -> Bool) -> [a] -> [b] -> Bool
     eql cm l r = length l == length r && and (zipWith cm l r)
@@ -2499,11 +2500,19 @@ compareAsNat i j = compare ni nj
 
 universalCompare ::
   (Foreign -> Foreign -> Ordering) ->
-  Closure ->
-  Closure ->
+  Val ->
+  Val ->
   Ordering
-universalCompare frn = cmpc False
+universalCompare frn = cmpVal False
   where
+    cmpVal :: Bool -> Val -> Val -> Ordering
+    cmpVal tyEq = \cases
+      (UnboxedVal tu1) (UnboxedVal tu2) ->
+        Monoid.whenM tyEq (compare (maskTags $ getTUTag tu1) (maskTags $ getTUTag tu2))
+          <> compare (getTUInt tu1) (getTUInt tu2)
+      (BoxedVal c1) (BoxedVal c2) -> cmpc tyEq c1 c2
+      (UnboxedVal _) (BoxedVal _) -> LT
+      (BoxedVal _) (UnboxedVal _) -> GT
     cmpl :: (a -> b -> Ordering) -> [a] -> [b] -> Ordering
     cmpl cm l r =
       compare (length l) (length r) <> fold (zipWith cm l r)
