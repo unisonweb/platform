@@ -117,7 +117,7 @@ import Unison.Reference (Id, Reference, Reference' (Builtin, DerivedId))
 import Unison.Referent (Referent, pattern Con, pattern Ref)
 import Unison.Runtime.Array qualified as PA
 import Unison.Symbol (Symbol)
-import Unison.Term hiding (List, Ref, Text, float, fresh, resolve, arity)
+import Unison.Term hiding (List, Ref, Text, arity, float, fresh, resolve)
 import Unison.Type qualified as Ty
 import Unison.Typechecker.Components (minimize')
 import Unison.Util.Bytes (Bytes)
@@ -656,20 +656,20 @@ saturate dat = ABT.visitPure $ \case
 -- in the map. The map can be created from typical SuperGroup data
 -- using the `buildInlineMap` function.
 inline ::
-  Var v =>
+  (Var v) =>
   Map Reference (Int, ANormal v) ->
   SuperGroup v ->
   SuperGroup v
 inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
   where
-  go0 (Lambda ccs body) = Lambda ccs $ go (30 :: Int) body
-  -- Note: number argument bails out in recursive inlining cases
-  go n | n <= 0 = id
-  go n = ABTN.visitPure \case
-    TApp (FComb r) args
-      | Just (arity, expr) <- Map.lookup r inls ->
+    go0 (Lambda ccs body) = Lambda ccs $ go (30 :: Int) body
+    -- Note: number argument bails out in recursive inlining cases
+    go n | n <= 0 = id
+    go n = ABTN.visitPure \case
+      TApp (FComb r) args
+        | Just (arity, expr) <- Map.lookup r inls ->
           go (n-1) <$> tweak expr args arity
-    _ -> Nothing
+      _ -> Nothing
 
   tweak (ABTN.TAbss vs body) args arity
     -- exactly saturated
@@ -1547,7 +1547,7 @@ arities (Rec bs e) = arity e : fmap (arity . snd) bs
 isInlinable :: Var v => Reference -> ANormal v -> Bool
 isInlinable r (TApp (FComb s) _) = r /= s
 isInlinable _ TApp {} = True
-isInlinable _ TBLit{} = True
+isInlinable _ TBLit {} = True
 isInlinable _ TVar {} = True
 isInlinable _ _       = False
 
@@ -1584,7 +1584,7 @@ isInlinable _ _       = False
 -- direct recursive call to the same function, which would result
 -- in infinite inlining. This isn't the only such scenario, but
 -- it's one we can opportunistically rule out.
-inlineInfo :: Var v => Reference -> SuperGroup v -> Maybe (Int, ANormal v)
+inlineInfo :: (Var v) => Reference -> SuperGroup v -> Maybe (Int, ANormal v)
 inlineInfo r (Rec [] (Lambda ccs body@(ABTN.TAbss _ e)))
   | isInlinable r e = Just (length ccs, body)
 inlineInfo _ _ = Nothing
@@ -1594,7 +1594,7 @@ inlineInfo _ _ = Nothing
 -- contains only the information for groups that are able to be
 -- inlined.
 buildInlineMap
-  :: Var v =>
+  :: (Var v) =>
      Map Reference (SuperGroup v) ->
      Map Reference (Int, ANormal v)
 buildInlineMap =
