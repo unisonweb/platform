@@ -671,18 +671,18 @@ inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
           go (n-1) <$> tweak expr args arity
       _ -> Nothing
 
-  tweak (ABTN.TAbss vs body) args arity
-    -- exactly saturated
-    | length args == arity,
-      rn <- Map.fromList (zip vs args) =
-        Just $ ABTN.renames rn body
-    -- oversaturated, only makes sense if body is a call
-    | length args > arity,
-      (pre, post) <- splitAt arity args,
-      rn <- Map.fromList (zip vs pre),
-      TApp f pre <- ABTN.renames rn body =
-        Just $ TApp f (pre ++ post)
-    | otherwise = Nothing
+    tweak (ABTN.TAbss vs body) args arity
+      -- exactly saturated
+      | length args == arity,
+        rn <- Map.fromList (zip vs args) =
+          Just $ ABTN.renames rn body
+      -- oversaturated, only makes sense if body is a call
+      | length args > arity,
+        (pre, post) <- splitAt arity args,
+        rn <- Map.fromList (zip vs pre),
+        TApp f pre <- ABTN.renames rn body =
+          Just $ TApp f (pre ++ post)
+      | otherwise = Nothing
 
 addDefaultCases :: (Var v) => (Monoid a) => Text -> Term v a -> Term v a
 addDefaultCases = ABT.visitPure . defaultCaseVisitor
