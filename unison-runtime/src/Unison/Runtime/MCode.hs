@@ -1056,10 +1056,12 @@ emitFunction _ grpr grpn rec ctx (FVar v) as
   | otherwise = emitSectionVErr v
 emitFunction rns _grpr _ _ _ (FComb r) as
   | Just k <- anum rns r,
-    countArgs as == k = -- exactly saturated call
+    countArgs as == k -- exactly saturated call
+    =
       Call False cix cix as
   | otherwise -- slow path
-      = App False (Env cix cix) as
+    =
+      App False (Env cix cix) as
   where
     n = cnum rns r
     cix = CIx r n 0
