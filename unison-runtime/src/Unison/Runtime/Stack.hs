@@ -8,12 +8,8 @@ module Unison.Runtime.Stack
         CapV,
         PAp,
         Enum,
-        DataU1,
-        DataU2,
-        DataB1,
-        DataB2,
-        DataUB,
-        DataBU,
+        Data1,
+        Data2,
         DataG,
         Captured,
         Foreign,
@@ -202,12 +198,8 @@ data GClosure comb
       {-# UNPACK #-} !(GCombInfo comb)
       {-# UNPACK #-} !Seg -- args
   | GEnum !Reference !PackedTag
-  | GDataU1 !Reference !PackedTag !Val
-  | GDataU2 !Reference !PackedTag !Val !Val
-  | GDataB1 !Reference !PackedTag !(GClosure comb)
-  | GDataB2 !Reference !PackedTag !(GClosure comb) !(GClosure comb)
-  | GDataUB !Reference !PackedTag !Val !(GClosure comb)
-  | GDataBU !Reference !PackedTag !(GClosure comb) !Val
+  | GData1 !Reference !PackedTag !Val
+  | GData2 !Reference !PackedTag !Val !Val
   | GDataG !Reference !PackedTag {-# UNPACK #-} !Seg
   | -- code cont, arg size, u/b data stacks
     GCaptured !K !Int {-# UNPACK #-} !Seg
@@ -226,29 +218,15 @@ instance Eq (GClosure comb) where
 instance Ord (GClosure comb) where
   compare a b = compare (a $> ()) (b $> ())
 
+pattern PAp :: CombIx -> GCombInfo (RComb Val) -> Seg -> Closure
 pattern PAp cix comb seg = Closure (GPAp cix comb seg)
 
+pattern Enum :: Reference -> PackedTag -> Closure
 pattern Enum r t = Closure (GEnum r t)
 
-pattern DataU1 r t i = Closure (GDataU1 r t i)
+pattern Data1 r t i = Closure (GData1 r t i)
 
-pattern DataU2 r t i j = Closure (GDataU2 r t i j)
-
-pattern DataB1 r t x <- Closure (GDataB1 r t (Closure -> x))
-  where
-    DataB1 r t x = Closure (GDataB1 r t (unClosure x))
-
-pattern DataB2 r t x y <- Closure (GDataB2 r t (Closure -> x) (Closure -> y))
-  where
-    DataB2 r t x y = Closure (GDataB2 r t (unClosure x) (unClosure y))
-
-pattern DataUB r t i y <- Closure (GDataUB r t i (Closure -> y))
-  where
-    DataUB r t i y = Closure (GDataUB r t i (unClosure y))
-
-pattern DataBU r t y i <- Closure (GDataBU r t (Closure -> y) i)
-  where
-    DataBU r t y i = Closure (GDataBU r t (unClosure y) i)
+pattern Data2 r t i j = Closure (GData2 r t i j)
 
 pattern DataG r t seg = Closure (GDataG r t seg)
 
@@ -260,7 +238,7 @@ pattern BlackHole = Closure GBlackHole
 
 pattern UnboxedTypeTag t = Closure (GUnboxedTypeTag t)
 
-{-# COMPLETE PAp, Enum, DataU1, DataU2, DataB1, DataB2, DataUB, DataBU, DataG, Captured, Foreign, UnboxedTypeTag, BlackHole #-}
+{-# COMPLETE PAp, Enum, Data1, Data2, DataG, Captured, Foreign, UnboxedTypeTag, BlackHole #-}
 
 {-# COMPLETE DataC, PAp, Captured, Foreign, BlackHole, UnboxedTypeTag #-}
 
@@ -297,12 +275,8 @@ traceK begin = dedup (begin, 1)
 splitData :: Closure -> Maybe (Reference, PackedTag, SegList)
 splitData = \case
   (Enum r t) -> Just (r, t, [])
-  (DataU1 r t u) -> Just (r, t, [u])
-  (DataU2 r t i j) -> Just (r, t, [i, j])
-  (DataB1 r t x) -> Just (r, t, [boxedVal x])
-  (DataB2 r t x y) -> Just (r, t, [boxedVal x, boxedVal y])
-  (DataUB r t u b) -> Just (r, t, [u, boxedVal b])
-  (DataBU r t b u) -> Just (r, t, [boxedVal b, u])
+  (Data1 r t u) -> Just (r, t, [u])
+  (Data2 r t i j) -> Just (r, t, [i, j])
   (DataG r t seg) -> Just (r, t, segToList seg)
   _ -> Nothing
 
@@ -325,12 +299,8 @@ bseg = L.fromList . reverse
 
 formData :: Reference -> PackedTag -> SegList -> Closure
 formData r t [] = Enum r t
-formData r t [UnboxedVal tu] = DataU1 r t tu
-formData r t [UnboxedVal i, UnboxedVal j] = DataU2 r t i j
-formData r t [UnboxedVal u, Val _ b] = DataUB r t u b
-formData r t [Val _ b, UnboxedVal u] = DataBU r t b u
-formData r t [Val _ x] = DataB1 r t x
-formData r t [Val _ x, Val _ y] = DataB2 r t x y
+formData r t [v1] = Data1 r t v1
+formData r t [v1, v2] = Data2 r t v1 v2
 formData r t segList = DataG r t (segFromList segList)
 
 frameDataSize :: K -> Int
@@ -1082,11 +1052,10 @@ closureTermRefs :: (Monoid m) => (Reference -> m) -> (Closure -> m)
 closureTermRefs f = \case
   PAp (CIx r _ _) _ (_useg, bseg) ->
     f r <> foldMap (closureTermRefs f) bseg
-  (DataB1 _ _ c) -> closureTermRefs f c
-  (DataB2 _ _ c1 c2) ->
-    closureTermRefs f c1 <> closureTermRefs f c2
-  (DataUB _ _ _ c) ->
-    closureTermRefs f c
+  (DataC _ _ vs) ->
+    vs & foldMap \case
+      BoxedVal c -> closureTermRefs f c
+      UnboxedVal {} -> mempty
   (Captured k _ (_useg, bseg)) ->
     contTermRefs f k <> foldMap (closureTermRefs f) bseg
   (Foreign fo)

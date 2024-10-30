@@ -655,8 +655,7 @@ encodeExn stk exc = do
           | otherwise = (Rf.miscFailureRef, disp exn, boxedVal unitValue)
 
 numValue :: Maybe Reference -> Val -> IO Word64
-numValue _ (UnboxedVal tu) = pure (fromIntegral $ getTUInt tu)
-numValue _ (BoxedVal (DataU1 _ _ i)) = pure (fromIntegral $ getTUInt i)
+numValue _ (Val v (UnboxedTypeTag {})) = pure (fromIntegral @Int @Word64 v)
 numValue mr clo =
   die $
     "numValue: bad closure: "
@@ -947,39 +946,17 @@ closureArgs !_ _ =
   error "closure arguments can only be boxed."
 {-# INLINE closureArgs #-}
 
--- | TODO: Experiment:
--- In cases where we need to check the boxed stack to see where the argument lives
--- we can either fetch from both unboxed and boxed stacks, then check the boxed result;
--- OR we can just fetch from the boxed stack and check the result, then conditionally
--- fetch from the unboxed stack.
---
--- The former puts more work before the branch, which _may_ be better for cpu pipelining,
--- but the latter avoids an unnecessary fetch from the unboxed stack in cases where all args are boxed.
+-- | Pack some number of args into a data type of the provided ref/tag type.
 buildData ::
   Stack -> Reference -> PackedTag -> Args -> IO Closure
 buildData !_ !r !t ZArgs = pure $ Enum r t
 buildData !stk !r !t (VArg1 i) = do
-  bv <- bpeekOff stk i
-  case bv of
-    UnboxedTypeTag ut -> do
-      uv <- upeekOff stk i
-      pure $ DataU1 r t (TypedUnboxed uv ut)
-    _ -> pure $ DataB1 r t bv
+  v <- peekOff stk i
+  pure $ Data1 r t v
 buildData !stk !r !t (VArg2 i j) = do
-  b1 <- bpeekOff stk i
-  b2 <- bpeekOff stk j
-  case (b1, b2) of
-    (UnboxedTypeTag t1, UnboxedTypeTag t2) -> do
-      u1 <- upeekOff stk i
-      u2 <- upeekOff stk j
-      pure $ DataU2 r t (TypedUnboxed u1 t1) (TypedUnboxed u2 t2)
-    (UnboxedTypeTag t1, _) -> do
-      u1 <- upeekOff stk i
-      pure $ DataUB r t (TypedUnboxed u1 t1) b2
-    (_, UnboxedTypeTag t2) -> do
-      u2 <- upeekOff stk j
-      pure $ DataBU r t b1 (TypedUnboxed u2 t2)
-    _ -> pure $ DataB2 r t b1 b2
+  v1 <- peekOff stk i
+  v2 <- peekOff stk j
+  pure $ Data2 r t v1 v2
 buildData !stk !r !t (VArgR i l) = do
   seg <- augSeg I stk nullSeg (Just $ ArgR i l)
   pure $ DataG r t seg
@@ -1006,39 +983,20 @@ dumpDataNoTag ::
 dumpDataNoTag !mr !stk = \case
   -- Normally we want to avoid dumping unboxed values since it's unnecessary, but sometimes we don't know the type of
   -- the incoming value and end up dumping unboxed values, so we just push them back to the stack as-is. e.g. in type-casts/coercions
-  val@(UnboxedVal tu) -> do
+  val@(Val _ (UnboxedTypeTag t)) -> do
     stk <- bump stk
     poke stk val
-    pure (getTUTag tu, stk)
-  (BoxedVal clos) -> case clos of
+    pure (t, stk)
+  Val _ clos -> case clos of
     (Enum _ t) -> pure (t, stk)
-    (DataU1 _ t x) -> do
+    (Data1 _ t x) -> do
       stk <- bump stk
-      pokeTU stk x
+      poke stk x
       pure (t, stk)
-    (DataU2 _ t x y) -> do
+    (Data2 _ t x y) -> do
       stk <- bumpn stk 2
-      pokeOffTU stk 1 y
-      pokeTU stk x
-      pure (t, stk)
-    (DataB1 _ t x) -> do
-      stk <- bump stk
-      bpoke stk x
-      pure (t, stk)
-    (DataB2 _ t x y) -> do
-      stk <- bumpn stk 2
-      bpokeOff stk 1 y
-      bpoke stk x
-      pure (t, stk)
-    (DataUB _ t x y) -> do
-      stk <- bumpn stk 2
-      pokeTU stk x
-      bpokeOff stk 1 y
-      pure (t, stk)
-    (DataBU _ t x y) -> do
-      stk <- bumpn stk 2
-      bpoke stk x
-      pokeOffTU stk 1 y
+      pokeOff stk 1 y
+      poke stk x
       pure (t, stk)
     (DataG _ t seg) -> do
       stk <- dumpSeg stk seg S
@@ -1584,26 +1542,24 @@ bprim1 !stk UPKT i = do
   stk <- bump stk
   pokeS stk
     . Sq.fromList
-    -- TODO: Should this be unboxed chars?
-    . fmap (boxedVal . CharClosure)
+    . fmap CharVal
     . Util.Text.unpack
     $ t
   pure stk
 bprim1 !stk PAKB i = do
   s <- peekOffS stk i
   stk <- bump stk
-  pokeBi stk . By.fromWord8s . fmap clo2w8 $ toList s
+  pokeBi stk . By.fromWord8s . fmap val2w8 $ toList s
   pure stk
   where
     -- TODO: Should we have a tag for bytes specifically?
-    clo2w8 :: Val -> Word8
-    clo2w8 (NatVal n) = toEnum . fromEnum $ n
-    clo2w8 c = error $ "pack bytes: non-natural closure: " ++ show c
+    val2w8 :: Val -> Word8
+    val2w8 (NatVal n) = toEnum . fromEnum $ n
+    val2w8 c = error $ "pack bytes: non-natural closure: " ++ show c
 bprim1 !stk UPKB i = do
   b <- peekOffBi stk i
   stk <- bump stk
-  -- TODO: Should this be unboxed nats/bytes?
-  pokeS stk . Sq.fromList . fmap (boxedVal . NatClosure . toEnum @Word64 . fromEnum @Word8) $
+  pokeS stk . Sq.fromList . fmap (NatVal . toEnum @Word64 . fromEnum @Word8) $
     By.toWord8s b
   pure stk
 bprim1 !stk SIZB i = do
@@ -1845,7 +1801,7 @@ yield !env !denv !activeThreads !stk !k = leap denv k
     leap !denv0 (Mark a ps cs k) = do
       let denv = cs <> EC.withoutKeys denv0 ps
           val = denv0 EC.! EC.findMin ps
-      bpoke stk . DataB1 Rf.effectRef (PackedTag 0) =<< bpeek stk
+      bpoke stk . Data1 Rf.effectRef (PackedTag 0) =<< peek stk
       stk <- adjustArgs stk a
       apply env denv activeThreads stk k False (VArg1 0) val
     leap !denv (Push fsz asz (CIx ref _ _) f nx k) = do
@@ -1980,7 +1936,7 @@ refLookup s m r
 decodeCacheArgument ::
   USeq -> IO [(Reference, Code)]
 decodeCacheArgument s = for (toList s) $ \case
-  (Val _unboxed (DataB2 _ _ (Foreign x) (DataB2 _ _ (Foreign y) _))) ->
+  (Val _unboxed (Data2 _ _ (BoxedVal (Foreign x)) (BoxedVal (Data2 _ _ (BoxedVal (Foreign y)) _)))) ->
     case unwrapForeign x of
       Ref r -> pure (r, unwrapForeign y)
       _ -> die "decodeCacheArgument: Con reference"
@@ -1999,15 +1955,15 @@ encodeSandboxListResult =
 
 encodeSandboxResult :: Either [Reference] [Reference] -> Closure
 encodeSandboxResult (Left rfs) =
-  encodeLeft . Foreign . Wrap Rf.listRef $ encodeSandboxListResult rfs
+  encodeLeft . boxedVal . Foreign . Wrap Rf.listRef $ encodeSandboxListResult rfs
 encodeSandboxResult (Right rfs) =
-  encodeRight . Foreign . Wrap Rf.listRef $ encodeSandboxListResult rfs
+  encodeRight . boxedVal . Foreign . Wrap Rf.listRef $ encodeSandboxListResult rfs
 
-encodeLeft :: Closure -> Closure
-encodeLeft = DataB1 Rf.eitherRef TT.leftTag
+encodeLeft :: Val -> Closure
+encodeLeft = Data1 Rf.eitherRef TT.leftTag
 
-encodeRight :: Closure -> Closure
-encodeRight = DataB1 Rf.eitherRef TT.rightTag
+encodeRight :: Val -> Closure
+encodeRight = Data1 Rf.eitherRef TT.rightTag
 
 addRefs ::
   TVar Word64 ->
