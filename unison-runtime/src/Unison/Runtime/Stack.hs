@@ -501,10 +501,10 @@ uargOnto stk sp cop cp0 (ArgN v) = do
   let loop i
         | i < 0 = return ()
         | otherwise = do
-            (x :: Int) <- readByteArray stk (sp - indexPrimArray v i)
+            (x :: Int) <- readByteArray stk (sp - indexPrimArray v i) --
             writeByteArray buf (boff - i) x
             loop $ i - 1
-  loop $ sz - 1
+  loop $ sz - 1 -- 2
   when overwrite $
     copyMutableByteArray cop (bytes $ cp0 + 1) buf 0 (bytes sz)
   pure cp

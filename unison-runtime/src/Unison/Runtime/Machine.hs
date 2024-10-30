@@ -306,12 +306,15 @@ debugger stk msg a = unsafePerformIO $ do
   pure False
 
 dumpStack :: Stack -> IO ()
-dumpStack stk@(Stack _ap fp sp _ustk _bstk)
+dumpStack stk@(Stack ap fp sp _ustk _bstk)
   | sp - fp < 0 = Debug.debugLogM Debug.Temp "Stack before 👇: Empty"
   | otherwise = do
-      stkResults <- for [0 .. ((sp - fp) - 1)] $ \i -> do
+      stkLocals <- for [0 .. ((sp - fp) - 1)] $ \i -> do
         peekOff stk i
-      Debug.debugM Debug.Temp "Stack before 👇:" stkResults
+      Debug.debugM Debug.Temp "Stack frame locals 👇:" stkLocals
+      stkArgs <- for [0 .. ((fp - ap) - 1)] $ \i -> do
+        peekOff stk (i + (sp - fp))
+      Debug.debugM Debug.Temp "Stack args 👇:" stkArgs
 
 -- | Execute an instruction
 exec ::
