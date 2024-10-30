@@ -17,12 +17,14 @@ where
 
 import Control.Exception (bracket)
 import Control.Monad.Reader (ask)
+import Data.Algorithm.Diff qualified as Diff
+import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Semialign (zipWith)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
 import Data.These (These (..))
-import System.Directory (canonicalizePath, getTemporaryDirectory)
+import System.Directory (canonicalizePath, getTemporaryDirectory, removeFile)
 import System.Environment (lookupEnv)
 import System.IO qualified as IO
 import System.Process qualified as Process
@@ -383,19 +385,30 @@ doMerge info = do
               lcaFilename <- makeTempFile (Text.Builder.run (aliceFilenameSlug <> "-" <> bobFilenameSlug <> "-base.u"))
               aliceFilename <- makeTempFile (Text.Builder.run (aliceFilenameSlug <> ".u"))
               bobFilename <- makeTempFile (Text.Builder.run (bobFilenameSlug <> ".u"))
-              let outputFilename = Text.Builder.run (aliceFilenameSlug <> "-" <> bobFilenameSlug <> "-merged.u")
+              let mergedFilename = Text.Builder.run (aliceFilenameSlug <> "-" <> bobFilenameSlug <> "-merged.u")
               let mergetool =
                     mergetool0
                       & Text.pack
                       & Text.replace "$BASE" lcaFilename
                       & Text.replace "$LOCAL" aliceFilename
-                      & Text.replace "$MERGED" outputFilename
+                      & Text.replace "$MERGED" mergedFilename
                       & Text.replace "$REMOTE" bobFilename
               exitCode <-
                 liftIO do
+                  let aliceFileContents = Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.alice)
+                  let bobFileContents = Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.bob)
+                  removeFile (Text.unpack mergedFilename) <|> pure ()
                   env.writeSource lcaFilename (Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.lca)) True
-                  env.writeSource aliceFilename (Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.alice)) True
-                  env.writeSource bobFilename (Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.bob)) True
+                  env.writeSource aliceFilename aliceFileContents True
+                  env.writeSource bobFilename bobFileContents True
+                  env.writeSource
+                    mergedFilename
+                    ( makeMergedFileContents
+                        mergeSourceAndTarget
+                        aliceFileContents
+                        bobFileContents
+                    )
+                    True
                   let createProcess = (Process.shell (Text.unpack mergetool)) {Process.delegate_ctlc = True}
                   Process.withCreateProcess createProcess \_ _ _ -> Process.waitForProcess
               done (Output.MergeFailureWithMergetool mergeSourceAndTarget temporaryBranchName mergetool exitCode)
@@ -604,6 +617,57 @@ typecheckedUnisonFileToBranchAdds tuf = do
 
     splitVar :: Symbol -> Path.Split
     splitVar = Path.splitFromName . Name.unsafeParseVar
+
+------------------------------------------------------------------------------------------------------------------------
+-- Making file with conflict markers
+
+makeMergedFileContents :: MergeSourceAndTarget -> Text -> Text -> Text
+makeMergedFileContents sourceAndTarget aliceContents bobContents =
+  let f :: (Text.Builder, Diff.Diff Text) -> Diff.Diff Text -> (Text.Builder, Diff.Diff Text)
+      f (acc, previous) line =
+        case (previous, line) of
+          (Diff.Both {}, Diff.Both bothLine _) -> go (Text.Builder.text bothLine)
+          (Diff.Both {}, Diff.First aliceLine) -> go (aliceSlug <> Text.Builder.text aliceLine)
+          (Diff.Both {}, Diff.Second bobLine) -> go (aliceSlug <> middleSlug <> Text.Builder.text bobLine)
+          (Diff.First {}, Diff.Both bothLine _) -> go (middleSlug <> bobSlug <> Text.Builder.text bothLine)
+          (Diff.First {}, Diff.First aliceLine) -> go (Text.Builder.text aliceLine)
+          (Diff.First {}, Diff.Second bobLine) -> go (middleSlug <> Text.Builder.text bobLine)
+          (Diff.Second {}, Diff.Both bothLine _) -> go (bobSlug <> Text.Builder.text bothLine)
+          (Diff.Second {}, Diff.First aliceLine) -> go (bobSlug <> aliceSlug <> Text.Builder.text aliceLine)
+          (Diff.Second {}, Diff.Second bobLine) -> go (Text.Builder.text bobLine)
+        where
+          go content =
+            let !acc1 = acc <> content <> newline
+             in (acc1, line)
+   in Diff.getDiff (Text.lines aliceContents) (Text.lines bobContents)
+        & List.foldl' f (mempty @Text.Builder, Diff.Both Text.empty Text.empty)
+        & fst
+        & Text.Builder.run
+  where
+    aliceSlug :: Text.Builder
+    aliceSlug =
+      "<<<<<<< " <> Text.Builder.text (into @Text sourceAndTarget.alice.branch) <> newline
+
+    middleSlug :: Text.Builder
+    middleSlug = "=======\n"
+
+    bobSlug :: Text.Builder
+    bobSlug =
+      ">>>>>>> "
+        <> ( case sourceAndTarget.bob of
+               MergeSource'LocalProjectBranch bobProjectAndBranch ->
+                 Text.Builder.text (into @Text bobProjectAndBranch.branch)
+               MergeSource'RemoteProjectBranch bobProjectAndBranch ->
+                 "remote " <> Text.Builder.text (into @Text bobProjectAndBranch.branch)
+               MergeSource'RemoteLooseCode info ->
+                 case Path.toName info.path of
+                   Nothing -> "<root>"
+                   Just name -> Text.Builder.text (Name.toText name)
+           )
+        <> newline
+
+    newline :: Text.Builder
+    newline = "\n"
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Debugging by printing a bunch of stuff out
