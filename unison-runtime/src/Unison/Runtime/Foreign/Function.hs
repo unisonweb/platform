@@ -125,12 +125,12 @@ instance ForeignConvention Char where
 
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
-instance ForeignConvention Closure where
-  readForeign (i : args) stk = (args,) <$> bpeekOff stk i
-  readForeign [] _ = foreignCCError "Closure"
-  writeForeign stk c = do
+instance ForeignConvention Val where
+  readForeign (i : args) stk = (args,) <$> peekOff stk i
+  readForeign [] _ = foreignCCError "Val"
+  writeForeign stk v = do
     stk <- bump stk
-    stk <$ (bpoke stk =<< evaluate c)
+    stk <$ (poke stk =<< evaluate v)
 
 instance ForeignConvention Text where
   readForeign = readForeignBuiltin
@@ -431,35 +431,35 @@ instance ForeignConvention BufferMode where
 
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
-instance ForeignConvention [Closure] where
+instance ForeignConvention [Val] where
   readForeign (i : args) stk =
-    (args,) . fmap getBoxedVal . toList <$> peekOffS stk i
-  readForeign _ _ = foreignCCError "[Closure]"
+    (args,) . toList <$> peekOffS stk i
+  readForeign _ _ = foreignCCError "[Val]"
   writeForeign stk l = do
     stk <- bump stk
-    stk <$ pokeS stk (Sq.fromList $ fmap boxedVal l)
+    stk <$ pokeS stk (Sq.fromList l)
 
 instance ForeignConvention [Foreign] where
   readForeign = readForeignAs (fmap marshalToForeign)
   writeForeign = writeForeignAs (fmap Foreign)
 
-instance ForeignConvention (MVar Closure) where
+instance ForeignConvention (MVar Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap mvarRef)
 
-instance ForeignConvention (TVar Closure) where
+instance ForeignConvention (TVar Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap tvarRef)
 
-instance ForeignConvention (IORef Closure) where
+instance ForeignConvention (IORef Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap refRef)
 
-instance ForeignConvention (Ticket Closure) where
+instance ForeignConvention (Ticket Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap ticketRef)
 
-instance ForeignConvention (Promise Closure) where
+instance ForeignConvention (Promise Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap promiseRef)
 
@@ -475,7 +475,7 @@ instance ForeignConvention Foreign where
   readForeign = readForeignAs marshalToForeign
   writeForeign = writeForeignAs Foreign
 
-instance ForeignConvention (PA.MutableArray s Closure) where
+instance ForeignConvention (PA.MutableArray s Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap marrayRef)
 
@@ -483,7 +483,7 @@ instance ForeignConvention (PA.MutableByteArray s) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap mbytearrayRef)
 
-instance ForeignConvention (PA.Array Closure) where
+instance ForeignConvention (PA.Array Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap iarrayRef)
 
