@@ -15,7 +15,6 @@ module Unison.Codebase.Editor.HandleInput.Merge2
   )
 where
 
-import Control.Exception (bracket)
 import Control.Monad.Reader (ask)
 import Data.Algorithm.Diff qualified as Diff
 import Data.List qualified as List
@@ -26,7 +25,8 @@ import Data.Text.IO qualified as Text
 import Data.These (These (..))
 import System.Directory (canonicalizePath, getTemporaryDirectory, removeFile)
 import System.Environment (lookupEnv)
-import System.IO qualified as IO
+import System.FilePath ((</>))
+import System.IO.Temp qualified as Temporary
 import System.Process qualified as Process
 import Text.ANSI qualified as Text
 import Text.Builder qualified
@@ -373,18 +373,17 @@ doMerge info = do
               liftIO $ env.writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 blob3.unparsedFile) True
               done (Output.MergeFailure scratchFilePath mergeSourceAndTarget temporaryBranchName)
             Just mergetool0 -> do
-              tmpdir <- liftIO (canonicalizePath =<< getTemporaryDirectory)
-              let makeTempFile template =
-                    liftIO do
-                      bracket
-                        (IO.openTempFile tmpdir (Text.unpack template))
-                        (IO.hClose . snd)
-                        (pure . Text.pack . fst)
               let aliceFilenameSlug = mangleBranchName mergeSourceAndTarget.alice.branch
               let bobFilenameSlug = mangleMergeSource mergeSourceAndTarget.bob
-              lcaFilename <- makeTempFile (Text.Builder.run (aliceFilenameSlug <> "-" <> bobFilenameSlug <> "-base.u"))
-              aliceFilename <- makeTempFile (Text.Builder.run (aliceFilenameSlug <> ".u"))
-              bobFilename <- makeTempFile (Text.Builder.run (bobFilenameSlug <> ".u"))
+              makeTempFilename <-
+                liftIO do
+                  tmpdir0 <- getTemporaryDirectory
+                  tmpdir1 <- canonicalizePath tmpdir0
+                  tmpdir2 <- Temporary.createTempDirectory tmpdir1 "unison-merge"
+                  pure \filename -> Text.pack (tmpdir2 </> Text.unpack (Text.Builder.run filename))
+              let lcaFilename = makeTempFilename (aliceFilenameSlug <> "-" <> bobFilenameSlug <> "-base.u")
+              let aliceFilename = makeTempFilename (aliceFilenameSlug <> ".u")
+              let bobFilename = makeTempFilename (bobFilenameSlug <> ".u")
               let mergedFilename = Text.Builder.run (aliceFilenameSlug <> "-" <> bobFilenameSlug <> "-merged.u")
               let mergetool =
                     mergetool0
