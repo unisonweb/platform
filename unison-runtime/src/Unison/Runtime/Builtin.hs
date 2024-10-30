@@ -172,7 +172,7 @@ import Unison.Runtime.Foreign
   )
 import Unison.Runtime.Foreign qualified as F
 import Unison.Runtime.Foreign.Function
-import Unison.Runtime.Stack (Closure)
+import Unison.Runtime.Stack (Val (..), emptyVal)
 import Unison.Runtime.Stack qualified as Closure
 import Unison.Symbol
 import Unison.Type (charRef)
@@ -195,7 +195,7 @@ import Unison.Util.Text qualified as Util.Text
 import Unison.Util.Text.Pattern qualified as TPat
 import Unison.Var
 
-type Failure = F.Failure Closure
+type Failure = F.Failure Val
 
 freshes :: (Var v) => Int -> [v]
 freshes = freshes' mempty
@@ -2223,11 +2223,11 @@ mkForeignIOF f = mkForeign $ \a -> tryIOE (f a)
     handleIOE (Left e) = Left $ Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue
     handleIOE (Right a) = Right a
 
-unitValue :: Closure
-unitValue = Closure.Enum Ty.unitRef (PackedTag 0)
+unitValue :: Val
+unitValue = BoxedVal $ Closure.Enum Ty.unitRef (PackedTag 0)
 
-natValue :: Word64 -> Closure
-natValue w =  Closure.NatClosure w
+natValue :: Word64 -> Val
+natValue w = NatVal w
 
 mkForeignTls ::
   forall a r.
@@ -2564,43 +2564,43 @@ declareForeigns = do
 
   declareForeign Tracked "MVar.new" boxDirect
     . mkForeign
-    $ \(c :: Closure) -> newMVar c
+    $ \(c :: Val) -> newMVar c
 
   declareForeign Tracked "MVar.newEmpty.v2" unitDirect
     . mkForeign
-    $ \() -> newEmptyMVar @Closure
+    $ \() -> newEmptyMVar @Val
 
   declareForeign Tracked "MVar.take.impl.v3" boxToEFBox
     . mkForeignIOF
-    $ \(mv :: MVar Closure) -> takeMVar mv
+    $ \(mv :: MVar Val) -> takeMVar mv
 
   declareForeign Tracked "MVar.tryTake" boxToMaybeBox
     . mkForeign
-    $ \(mv :: MVar Closure) -> tryTakeMVar mv
+    $ \(mv :: MVar Val) -> tryTakeMVar mv
 
   declareForeign Tracked "MVar.put.impl.v3" boxBoxToEF0
     . mkForeignIOF
-    $ \(mv :: MVar Closure, x) -> putMVar mv x
+    $ \(mv :: MVar Val, x) -> putMVar mv x
 
   declareForeign Tracked "MVar.tryPut.impl.v3" boxBoxToEFBool
     . mkForeignIOF
-    $ \(mv :: MVar Closure, x) -> tryPutMVar mv x
+    $ \(mv :: MVar Val, x) -> tryPutMVar mv x
 
   declareForeign Tracked "MVar.swap.impl.v3" boxBoxToEFBox
     . mkForeignIOF
-    $ \(mv :: MVar Closure, x) -> swapMVar mv x
+    $ \(mv :: MVar Val, x) -> swapMVar mv x
 
   declareForeign Tracked "MVar.isEmpty" boxToBool
     . mkForeign
-    $ \(mv :: MVar Closure) -> isEmptyMVar mv
+    $ \(mv :: MVar Val) -> isEmptyMVar mv
 
   declareForeign Tracked "MVar.read.impl.v3" boxToEFBox
     . mkForeignIOF
-    $ \(mv :: MVar Closure) -> readMVar mv
+    $ \(mv :: MVar Val) -> readMVar mv
 
   declareForeign Tracked "MVar.tryRead.impl.v3" boxToEFMBox
     . mkForeignIOF
-    $ \(mv :: MVar Closure) -> tryReadMVar mv
+    $ \(mv :: MVar Val) -> tryReadMVar mv
 
   declareForeign Untracked "Char.toText" (wordDirect Ty.charRef) . mkForeign $
     \(ch :: Char) -> pure (Util.Text.singleton ch)
@@ -2654,35 +2654,35 @@ declareForeigns = do
         \(certs :: [X.SignedCertificate], params :: ServerParams) -> pure $ updateServer (X.makeCertificateStore certs) params
 
   declareForeign Tracked "TVar.new" boxDirect . mkForeign $
-    \(c :: Closure) -> unsafeSTMToIO $ STM.newTVar c
+    \(c :: Val) -> unsafeSTMToIO $ STM.newTVar c
 
   declareForeign Tracked "TVar.read" boxDirect . mkForeign $
-    \(v :: STM.TVar Closure) -> unsafeSTMToIO $ STM.readTVar v
+    \(v :: STM.TVar Val) -> unsafeSTMToIO $ STM.readTVar v
 
   declareForeign Tracked "TVar.write" boxBoxTo0 . mkForeign $
-    \(v :: STM.TVar Closure, c :: Closure) ->
+    \(v :: STM.TVar Val, c :: Val) ->
       unsafeSTMToIO $ STM.writeTVar v c
 
   declareForeign Tracked "TVar.newIO" boxDirect . mkForeign $
-    \(c :: Closure) -> STM.newTVarIO c
+    \(c :: Val) -> STM.newTVarIO c
 
   declareForeign Tracked "TVar.readIO" boxDirect . mkForeign $
-    \(v :: STM.TVar Closure) -> STM.readTVarIO v
+    \(v :: STM.TVar Val) -> STM.readTVarIO v
 
   declareForeign Tracked "TVar.swap" boxBoxDirect . mkForeign $
-    \(v, c :: Closure) -> unsafeSTMToIO $ STM.swapTVar v c
+    \(v, c :: Val) -> unsafeSTMToIO $ STM.swapTVar v c
 
   declareForeign Tracked "STM.retry" unitDirect . mkForeign $
-    \() -> unsafeSTMToIO STM.retry :: IO Closure
+    \() -> unsafeSTMToIO STM.retry :: IO Val
 
   -- Scope and Ref stuff
   declareForeign Untracked "Scope.ref" boxDirect
     . mkForeign
-    $ \(c :: Closure) -> newIORef c
+    $ \(c :: Val) -> newIORef c
 
   declareForeign Tracked "IO.ref" boxDirect
     . mkForeign
-    $ \(c :: Closure) -> evaluate c >>= newIORef
+    $ \(c :: Val) -> evaluate c >>= newIORef
 
   -- The docs for IORef state that IORef operations can be observed
   -- out of order ([1]) but actually GHC does emit the appropriate
@@ -2692,16 +2692,16 @@ declareForeigns = do
   -- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
   -- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
   declareForeign Untracked "Ref.read" boxDirect . mkForeign $
-    \(r :: IORef Closure) -> readIORef r
+    \(r :: IORef Val) -> readIORef r
 
   declareForeign Untracked "Ref.write" boxBoxTo0 . mkForeign $
-    \(r :: IORef Closure, c :: Closure) -> evaluate c >>= writeIORef r
+    \(r :: IORef Val, c :: Val) -> evaluate c >>= writeIORef r
 
   declareForeign Tracked "Ref.readForCas" boxDirect . mkForeign $
-    \(r :: IORef Closure) -> readForCAS r
+    \(r :: IORef Val) -> readForCAS r
 
   declareForeign Tracked "Ref.Ticket.read" boxDirect . mkForeign $
-    \(t :: Ticket Closure) -> pure $ peekTicket t
+    \(t :: Ticket Val) -> pure $ peekTicket t
 
   -- In GHC, CAS returns both a Boolean and the current value of the
   -- IORef, which can be used to retry a failed CAS.
@@ -2717,23 +2717,23 @@ declareForeigns = do
   -- [1]: https://github.com/ghc/ghc/blob/master/rts/PrimOps.cmm#L697
   -- [2]: https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L285
   declareForeign Tracked "Ref.cas" boxBoxBoxToBool . mkForeign $
-    \(r :: IORef Closure, t :: Ticket Closure, v :: Closure) -> fmap fst $
+    \(r :: IORef Val, t :: Ticket Val, v :: Val) -> fmap fst $
       do
         t <- evaluate t
         casIORef r t v
 
   declareForeign Tracked "Promise.new" unitDirect . mkForeign $
-    \() -> newPromise @Closure
+    \() -> newPromise @Val
 
   -- the only exceptions from Promise.read are async and shouldn't be caught
   declareForeign Tracked "Promise.read" boxDirect . mkForeign $
-    \(p :: Promise Closure) -> readPromise p
+    \(p :: Promise Val) -> readPromise p
 
   declareForeign Tracked "Promise.tryRead" boxToMaybeBox . mkForeign $
-    \(p :: Promise Closure) -> tryReadPromise p
+    \(p :: Promise Val) -> tryReadPromise p
 
   declareForeign Tracked "Promise.write" boxBoxToBool . mkForeign $
-    \(p :: Promise Closure, a :: Closure) -> writePromise p a
+    \(p :: Promise Val, a :: Val) -> writePromise p a
 
   declareForeign Tracked "Tls.newClient.impl.v3" boxBoxToEFBox . mkForeignTls $
     \( config :: TLS.ClientParams,
@@ -2935,7 +2935,7 @@ declareForeigns = do
               checkBounds name (PA.sizeofMutableArray dst) (doff + l - 1) $
                 checkBounds name (PA.sizeofMutableArray src) (soff + l - 1) $
                   Right
-                    <$> PA.copyMutableArray @IO @Closure
+                    <$> PA.copyMutableArray @IO @Val
                       dst
                       (fromIntegral doff)
                       src
@@ -2969,7 +2969,7 @@ declareForeigns = do
               checkBounds name (PA.sizeofMutableArray dst) (doff + l - 1) $
                 checkBounds name (PA.sizeofArray src) (soff + l - 1) $
                   Right
-                    <$> PA.copyArray @IO @Closure
+                    <$> PA.copyArray @IO @Val
                       dst
                       (fromIntegral doff)
                       src
@@ -2977,9 +2977,9 @@ declareForeigns = do
                       (fromIntegral l)
 
   declareForeign Untracked "ImmutableArray.size" boxToNat . mkForeign $
-    pure . fromIntegral @Int @Word64 . PA.sizeofArray @Closure
+    pure . fromIntegral @Int @Word64 . PA.sizeofArray @Val
   declareForeign Untracked "MutableArray.size" boxToNat . mkForeign $
-    pure . fromIntegral @Int @Word64 . PA.sizeofMutableArray @PA.RealWorld @Closure
+    pure . fromIntegral @Int @Word64 . PA.sizeofMutableArray @PA.RealWorld @Val
   declareForeign Untracked "ImmutableByteArray.size" boxToNat . mkForeign $
     pure . fromIntegral @Int @Word64 . PA.sizeofByteArray
   declareForeign Untracked "MutableByteArray.size" boxToNat . mkForeign $
@@ -3065,7 +3065,7 @@ declareForeigns = do
   declareForeign Untracked "MutableByteArray.freeze!" boxDirect . mkForeign $
     PA.unsafeFreezeByteArray
   declareForeign Untracked "MutableArray.freeze!" boxDirect . mkForeign $
-    PA.unsafeFreezeArray @IO @Closure
+    PA.unsafeFreezeArray @IO @Val
 
   declareForeign Untracked "MutableByteArray.freeze" boxNatNatToExnBox . mkForeign $
     \(src, off, len) ->
@@ -3080,9 +3080,9 @@ declareForeigns = do
             $ Right <$> PA.freezeByteArray src (fromIntegral off) (fromIntegral len)
 
   declareForeign Untracked "MutableArray.freeze" boxNatNatToExnBox . mkForeign $
-    \(src :: PA.MutableArray PA.RealWorld Closure, off, len) ->
+    \(src :: PA.MutableArray PA.RealWorld Val, off, len) ->
       if len == 0
-        then fmap Right . PA.unsafeFreezeArray =<< PA.newArray 0 ( Closure.BlackHole)
+        then fmap Right . PA.unsafeFreezeArray =<< PA.newArray 0 emptyVal
         else
           checkBounds
             "MutableArray.freeze"
@@ -3097,9 +3097,9 @@ declareForeigns = do
     pure . PA.sizeofByteArray
 
   declareForeign Tracked "IO.array" natToBox . mkForeign $
-    \n -> PA.newArray n (Closure.BlackHole :: Closure)
+    \n -> PA.newArray n emptyVal
   declareForeign Tracked "IO.arrayOf" boxNatToBox . mkForeign $
-    \(v :: Closure, n) -> PA.newArray n v
+    \(v :: Val, n) -> PA.newArray n v
   declareForeign Tracked "IO.bytearray" natToBox . mkForeign $ PA.newByteArray
   declareForeign Tracked "IO.bytearrayOf" natNatToBox
     . mkForeign
@@ -3109,9 +3109,9 @@ declareForeigns = do
       pure arr
 
   declareForeign Untracked "Scope.array" natToBox . mkForeign $
-    \n -> PA.newArray n (Closure.BlackHole :: Closure)
+    \n -> PA.newArray n emptyVal
   declareForeign Untracked "Scope.arrayOf" boxNatToBox . mkForeign $
-    \(v :: Closure, n) -> PA.newArray n v
+    \(v :: Val, n) -> PA.newArray n v
   declareForeign Untracked "Scope.bytearray" natToBox . mkForeign $ PA.newByteArray
   declareForeign Untracked "Scope.bytearrayOf" natNatToBox
     . mkForeign
@@ -3141,12 +3141,12 @@ declareForeigns = do
     \(beg, end) -> evaluate . TPat.cpattern . TPat.Char . TPat.Not $ TPat.CharRange beg end
   declareForeign Untracked "Text.patterns.charIn" boxDirect . mkForeign $ \ccs -> do
     cs <- for ccs $ \case
-      Closure.CharClosure c -> pure c
+      CharVal c -> pure c
       _ -> die "Text.patterns.charIn: non-character closure"
     evaluate . TPat.cpattern . TPat.Char $ TPat.CharSet cs
   declareForeign Untracked "Text.patterns.notCharIn" boxDirect . mkForeign $ \ccs -> do
     cs <- for ccs $ \case
-      Closure.CharClosure c -> pure c
+      CharVal c -> pure c
       _ -> die "Text.patterns.notCharIn: non-character closure"
     evaluate . TPat.cpattern . TPat.Char . TPat.Not $ TPat.CharSet cs
   declareForeign Untracked "Pattern.many" boxDirect . mkForeign $
@@ -3179,7 +3179,7 @@ declareForeigns = do
   declareForeign Untracked "Char.Class.range" (wordWordDirect charRef charRef) . mkForeign $ \(a, b) -> pure $ TPat.CharRange a b
   declareForeign Untracked "Char.Class.anyOf" boxDirect . mkForeign $ \ccs -> do
     cs <- for ccs $ \case
-      Closure.CharClosure c -> pure c
+      CharVal c -> pure c
       _ -> die "Text.patterns.charIn: non-character closure"
     evaluate $ TPat.CharSet cs
   declareForeign Untracked "Char.Class.alphanumeric" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.AlphaNum)
@@ -3201,7 +3201,7 @@ declareForeigns = do
 type RW = PA.PrimState IO
 
 checkedRead ::
-  Text -> (PA.MutableArray RW Closure, Word64) -> IO (Either Failure Closure)
+  Text -> (PA.MutableArray RW Val, Word64) -> IO (Either Failure Val)
 checkedRead name (arr, w) =
   checkBounds
     name
@@ -3210,7 +3210,7 @@ checkedRead name (arr, w) =
     (Right <$> PA.readArray arr (fromIntegral w))
 
 checkedWrite ::
-  Text -> (PA.MutableArray RW Closure, Word64, Closure) -> IO (Either Failure ())
+  Text -> (PA.MutableArray RW Val, Word64, Val) -> IO (Either Failure ())
 checkedWrite name (arr, w, v) =
   checkBounds
     name
@@ -3219,7 +3219,7 @@ checkedWrite name (arr, w, v) =
     (Right <$> PA.writeArray arr (fromIntegral w) v)
 
 checkedIndex ::
-  Text -> (PA.Array Closure, Word64) -> IO (Either Failure Closure)
+  Text -> (PA.Array Val, Word64) -> IO (Either Failure Val)
 checkedIndex name (arr, w) =
   checkBounds
     name

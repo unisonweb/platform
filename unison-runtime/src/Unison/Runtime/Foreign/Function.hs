@@ -123,14 +123,21 @@ instance ForeignConvention Char where
     stk <- bump stk
     stk <$ pokeC stk ch
 
--- In reality this fixes the type to be 'RClosure', but allows us to defer
--- the typechecker a bit and avoid a bunch of annoying type annotations.
 instance ForeignConvention Val where
   readForeign (i : args) stk = (args,) <$> peekOff stk i
   readForeign [] _ = foreignCCError "Val"
   writeForeign stk v = do
     stk <- bump stk
     stk <$ (poke stk =<< evaluate v)
+
+-- In reality this fixes the type to be 'RClosure', but allows us to defer
+-- the typechecker a bit and avoid a bunch of annoying type annotations.
+instance ForeignConvention Closure where
+  readForeign (i : args) stk = (args,) <$> bpeekOff stk i
+  readForeign [] _ = foreignCCError "Closure"
+  writeForeign stk c = do
+    stk <- bump stk
+    stk <$ (bpoke stk =<< evaluate c)
 
 instance ForeignConvention Text where
   readForeign = readForeignBuiltin
@@ -431,13 +438,23 @@ instance ForeignConvention BufferMode where
 
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
-instance ForeignConvention [Val] where
+instance {-# OVERLAPPING #-} ForeignConvention [Val] where
   readForeign (i : args) stk =
     (args,) . toList <$> peekOffS stk i
   readForeign _ _ = foreignCCError "[Val]"
   writeForeign stk l = do
     stk <- bump stk
     stk <$ pokeS stk (Sq.fromList l)
+
+-- In reality this fixes the type to be 'RClosure', but allows us to defer
+-- the typechecker a bit and avoid a bunch of annoying type annotations.
+instance {-# OVERLAPPING #-} ForeignConvention [Closure] where
+  readForeign (i : args) stk =
+    (args,) . fmap getBoxedVal . toList <$> peekOffS stk i
+  readForeign _ _ = foreignCCError "[Closure]"
+  writeForeign stk l = do
+    stk <- bump stk
+    stk <$ pokeS stk (Sq.fromList . fmap BoxedVal $ l)
 
 instance ForeignConvention [Foreign] where
   readForeign = readForeignAs (fmap marshalToForeign)

@@ -41,6 +41,7 @@ module Unison.Runtime.Stack
         UnboxedVal,
         BoxedVal
       ),
+    emptyVal,
     boxedVal,
     USeq,
     traceK,
@@ -595,6 +596,10 @@ instance Ord Val where
     (UnboxedVal (Val i1 t1)) (UnboxedVal (Val i2 t2)) -> compare t1 t2 <> compare i1 i2
     (UnboxedVal _) (BoxedVal _) -> LT
     (BoxedVal _) (UnboxedVal _) -> GT
+
+-- | A nulled out value you can use when filling empty arrays, etc.
+emptyVal :: Val
+emptyVal = Val (-1) BlackHole
 
 -- | Matches a Val which is known to be unboxed, and returns the entire original value.
 valToTypedUnboxed :: Val -> Maybe Val

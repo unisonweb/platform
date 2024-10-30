@@ -8,10 +8,8 @@ import Control.Concurrent.STM as STM
 import Control.Exception
 import Control.Lens
 import Data.Bits
-import Data.Char qualified as Char
 import Data.Map.Strict qualified as M
 import Data.Ord (comparing)
-import Data.Primitive.ByteArray qualified as BA
 import Data.Sequence qualified as Sq
 import Data.Set qualified as S
 import Data.Set qualified as Set
@@ -1571,13 +1569,12 @@ bprim1 !stk VWRS i =
 bprim1 !stk PAKT i = do
   s <- peekOffS stk i
   stk <- bump stk
-  pokeBi stk . Util.Text.pack . toList $ clo2char <$> s
+  pokeBi stk . Util.Text.pack . toList $ val2char <$> s
   pure stk
   where
-    clo2char :: Val -> Char
-    clo2char (Val _ (CharClosure c)) = c
-    clo2char (Val c tt) | tt == charTypeTag = Char.chr $ c
-    clo2char c = error $ "pack text: non-character closure: " ++ show c
+    val2char :: Val -> Char
+    val2char (CharVal c) = c
+    val2char c = error $ "pack text: non-character closure: " ++ show c
 bprim1 !stk UPKT i = do
   t <- peekOffBi stk i
   stk <- bump stk
@@ -1596,8 +1593,7 @@ bprim1 !stk PAKB i = do
   where
     -- TODO: Should we have a tag for bytes specifically?
     clo2w8 :: Val -> Word8
-    clo2w8 (Val _ (NatClosure n)) = toEnum . fromEnum $ n
-    clo2w8 (Val n tt) | tt == natTypeTag = toEnum $ n
+    clo2w8 (NatVal n) = toEnum . fromEnum $ n
     clo2w8 c = error $ "pack bytes: non-natural closure: " ++ show c
 bprim1 !stk UPKB i = do
   b <- peekOffBi stk i
@@ -2230,8 +2226,14 @@ reflectValue rty = goV
     goV = \case
       -- For back-compatibility we reflect all Unboxed values into boxed literals, we could change this in the future,
       -- but there's not much of a big reason to.
-      UnboxedVal tu -> ANF.BLit <$> reflectUData tu
-      BoxedVal clos ->
+
+      NatVal n -> pure . ANF.BLit $ ANF.Pos n
+      IntVal n
+        | n >= 0 -> pure . ANF.BLit $ ANF.Pos (fromIntegral n)
+        | otherwise -> pure . ANF.BLit $ ANF.Neg (fromIntegral (abs n))
+      DoubleVal f -> pure . ANF.BLit $ ANF.Float f
+      CharVal c -> pure . ANF.BLit $ ANF.Char c
+      val@(Val _ clos) ->
         case clos of
           (PApV cix _rComb args) ->
             ANF.Partial (goIx cix) <$> traverse goV args
@@ -2241,7 +2243,7 @@ reflectValue rty = goV
             ANF.Cont <$> traverse goV segs <*> goK k
           (Foreign f) -> ANF.BLit <$> goF f
           BlackHole -> die $ err "black hole"
-          UnboxedTypeTag {} -> die $ err "impossible unboxed type tag"
+          UnboxedTypeTag {} -> die $ err $ "unknown unboxed value" <> show val
 
     goK (CB _) = die $ err "callback continuation"
     goK KE = pure ANF.KE
@@ -2276,19 +2278,6 @@ reflectValue rty = goV
       | Just a <- maybeUnwrapForeign Rf.iarrayRef f =
           ANF.Arr <$> traverse goV a
       | otherwise = die $ err $ "foreign value: " <> (show f)
-
-    -- For back-compatibility reasons all unboxed values are uplifted to boxed when serializing to ANF.
-    reflectUData :: TypedUnboxed -> IO ANF.BLit
-    reflectUData (TypedUnboxed v t)
-      | t == TT.natTag = pure $ ANF.Pos (fromIntegral v)
-      | t == TT.charTag = pure $ ANF.Char (toEnum v)
-      | t == TT.intTag, v >= 0 = pure $ ANF.Pos (fromIntegral v)
-      | t == TT.intTag, v < 0 = pure $ ANF.Neg (fromIntegral (-v))
-      | t == TT.floatTag = pure $ ANF.Float (intToDouble v)
-      | otherwise = die . err $ "unboxed data: " <> show (t, v)
-
-    intToDouble :: Int -> Double
-    intToDouble w = indexByteArray (BA.byteArrayFromList [w]) 0
 
 reifyValue :: CCache -> ANF.Value -> IO (Either [Reference] Val)
 reifyValue cc val = do
@@ -2502,12 +2491,14 @@ universalCompare frn = cmpVal False
   where
     cmpVal :: Bool -> Val -> Val -> Ordering
     cmpVal tyEq = \cases
-      (UnboxedVal tu1) (UnboxedVal tu2) ->
-        Monoid.whenM tyEq (compare (maskTags $ getTUTag tu1) (maskTags $ getTUTag tu2))
-          <> compare (getTUInt tu1) (getTUInt tu2)
       (BoxedVal c1) (BoxedVal c2) -> cmpc tyEq c1 c2
       (UnboxedVal _) (BoxedVal _) -> LT
       (BoxedVal _) (UnboxedVal _) -> GT
+      (UnboxedVal (Val v1 t1)) (UnboxedVal (Val v2 t2)) ->
+        -- We don't need to mask the tags since unboxed types are
+        -- always treated like nullary constructors and have an empty ctag.
+        Monoid.whenM tyEq (compare t1 t2)
+          <> compare v1 v2
     cmpl :: (a -> b -> Ordering) -> [a] -> [b] -> Ordering
     cmpl cm l r =
       compare (length l) (length r) <> fold (zipWith cm l r)
