@@ -160,7 +160,6 @@ data InstrT
   | AtomicallyT
   | SeqT
   | TryForceT
-  | BLitT
 
 instance Tag InstrT where
   tag2word UPrim1T = 0
@@ -180,7 +179,6 @@ instance Tag InstrT where
   tag2word AtomicallyT = 14
   tag2word SeqT = 15
   tag2word TryForceT = 16
-  tag2word BLitT = 17
 
   word2tag 0 = pure UPrim1T
   word2tag 1 = pure UPrim2T
@@ -199,7 +197,6 @@ instance Tag InstrT where
   word2tag 14 = pure AtomicallyT
   word2tag 15 = pure SeqT
   word2tag 16 = pure TryForceT
-  word2tag 17 = pure BLitT
   word2tag n = unknownTag "InstrT" n
 
 putInstr :: (MonadPut m) => GInstr cix -> m ()
@@ -215,7 +212,6 @@ putInstr = \case
   (Info s) -> putTag InfoT *> serialize s
   (Pack r w a) -> putTag PackT *> putReference r *> putPackedTag w *> putArgs a
   (Lit l) -> putTag LitT *> putLit l
-  (BLit l) -> putTag BLitT *> putLit l
   (Print i) -> putTag PrintT *> pInt i
   (Reset s) -> putTag ResetT *> putEnumSet pWord s
   (Fork i) -> putTag ForkT *> pInt i
@@ -237,7 +233,6 @@ getInstr =
     InfoT -> Info <$> deserialize
     PackT -> Pack <$> getReference <*> getPackedTag <*> getArgs
     LitT -> Lit <$> getLit
-    BLitT -> BLit <$> getLit
     PrintT -> Print <$> gInt
     ResetT -> Reset <$> getEnumSet gWord
     ForkT -> Fork <$> gInt

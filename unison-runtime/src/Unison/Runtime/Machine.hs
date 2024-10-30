@@ -288,18 +288,16 @@ unitValue = Enum Rf.unitRef TT.unitTag
 lookupDenv :: Word64 -> DEnv -> Val
 lookupDenv p denv = fromMaybe (BoxedVal BlackHole) $ EC.lookup p denv
 
-buildBoxedLit :: MLit -> Closure
-buildBoxedLit = \case
-  MT t -> Foreign (Wrap Rf.textRef t)
-  MM r -> Foreign (Wrap Rf.termLinkRef r)
-  MY r -> Foreign (Wrap Rf.typeLinkRef r)
-  MI {} -> errUnboxed
-  MN {} -> errUnboxed
-  MC {} -> errUnboxed
-  MD {} -> errUnboxed
-  where
-    errUnboxed = error "buildBoxedList: unboxed type used with BLit"
-{-# INLINE buildBoxedLit #-}
+litToVal :: MLit -> Val
+litToVal = \case
+  MT t -> BoxedVal $ Foreign (Wrap Rf.textRef t)
+  MM r -> BoxedVal $ Foreign (Wrap Rf.termLinkRef r)
+  MY r -> BoxedVal $ Foreign (Wrap Rf.typeLinkRef r)
+  MI i -> IntVal i
+  MN n -> NatVal n
+  MC c -> CharVal c
+  MD d -> DoubleVal d
+{-# INLINE litToVal #-}
 
 debugger :: (Show a) => Stack -> String -> a -> Bool
 debugger stk msg a = unsafePerformIO $ do
@@ -542,37 +540,9 @@ exec !_ !denv !_activeThreads !stk !k _ (Print i) = do
   t <- peekOffBi stk i
   Tx.putStrLn (Util.Text.toText t)
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (Lit (MI n)) = do
+exec !_ !denv !_activeThreads !stk !k _ (Lit ml) = do
   stk <- bump stk
-  pokeI stk n
-  pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (Lit (MC c)) = do
-  stk <- bump stk
-  pokeC stk c
-  pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (Lit (MN n)) = do
-  stk <- bump stk
-  pokeN stk n
-  pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (Lit (MD d)) = do
-  stk <- bump stk
-  pokeD stk d
-  pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (Lit (MT t)) = do
-  stk <- bump stk
-  bpoke stk (Foreign (Wrap Rf.textRef t))
-  pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (Lit (MM r)) = do
-  stk <- bump stk
-  bpoke stk (Foreign (Wrap Rf.termLinkRef r))
-  pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (Lit (MY r)) = do
-  stk <- bump stk
-  bpoke stk (Foreign (Wrap Rf.typeLinkRef r))
-  pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (BLit l) = do
-  stk <- bump stk
-  bpoke stk $ buildBoxedLit l
+  poke stk $ litToVal ml
   pure (denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (Reset ps) = do
   (stk, a) <- saveArgs stk

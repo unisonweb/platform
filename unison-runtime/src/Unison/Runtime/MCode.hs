@@ -494,8 +494,6 @@ data GInstr comb
       !Args -- arguments to pack
   | -- Push a particular value onto the appropriate stack
     Lit !MLit -- value to push onto the stack
-  | -- Push a particular value directly onto the boxed stack
-    BLit !MLit
   | -- Print a value on the unboxed stack
     Print !Int -- index of the primitive value to print
   | -- Put a delimiter on the continuation
@@ -960,7 +958,7 @@ emitSection _ _ _ _ ctx (TLit l) =
       | ANF.LY {} <- l = addCount 1
       | otherwise = addCount 1
 emitSection _ _ _ _ ctx (TBLit l) =
-  addCount 1 . countCtx ctx . Ins (emitBLit l) . Yield $ VArg1 0
+  addCount 1 . countCtx ctx . Ins (emitLit l) . Yield $ VArg1 0
 emitSection rns grpr grpn rec ctx (TMatch v bs)
   | Just (i, BX) <- ctxResolve ctx v,
     MatchData r cs df <- bs =
@@ -1136,7 +1134,7 @@ emitLet ::
 emitLet _ _ _ _ _ _ _ (TLit l) =
   fmap (Ins $ emitLit l)
 emitLet _ _ _ _ _ _ _ (TBLit l) =
-  fmap (Ins $ emitBLit l)
+  fmap (Ins $ emitLit l)
 -- emitLet rns grp _   _ _   ctx (TApp (FComb r) args)
 --   -- We should be able to tell if we are making a saturated call
 --   -- or not here. We aren't carrying the information here yet, though.
@@ -1465,11 +1463,9 @@ litToMLit (ANF.T t) = MT t
 litToMLit (ANF.LM r) = MM r
 litToMLit (ANF.LY r) = MY r
 
+-- | Emit a literal as a machine literal of the correct boxed/unboxed format.
 emitLit :: ANF.Lit -> Instr
 emitLit = Lit . litToMLit
-
-emitBLit :: ANF.Lit -> Instr
-emitBLit l = BLit (litToMLit l)
 
 -- Emits some fix-up code for calling functions. Some of the
 -- variables in scope come from the top-level let rec, but these
