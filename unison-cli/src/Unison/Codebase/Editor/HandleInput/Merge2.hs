@@ -368,7 +368,7 @@ doMerge info = do
                 Cli.getLatestFile <&> \case
                   Nothing -> "scratch.u"
                   Just (file, _) -> file
-              liftIO $ env.writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 blob3.unparsedFile)
+              liftIO $ env.writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 blob3.unparsedFile) True
               done (Output.MergeFailure scratchFilePath mergeSourceAndTarget temporaryBranchName)
             Just mergetool0 -> do
               tmpdir <- liftIO (canonicalizePath =<< getTemporaryDirectory)
@@ -393,9 +393,9 @@ doMerge info = do
                       & Text.replace "$REMOTE" bobFilename
               exitCode <-
                 liftIO do
-                  env.writeSource lcaFilename (Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.lca))
-                  env.writeSource aliceFilename (Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.alice))
-                  env.writeSource bobFilename (Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.bob))
+                  env.writeSource lcaFilename (Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.lca)) True
+                  env.writeSource aliceFilename (Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.alice)) True
+                  env.writeSource bobFilename (Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.bob)) True
                   let createProcess = (Process.shell (Text.unpack mergetool)) {Process.delegate_ctlc = True}
                   Process.withCreateProcess createProcess \_ _ _ -> Process.waitForProcess
               done (Output.MergeFailureWithMergetool mergeSourceAndTarget temporaryBranchName mergetool exitCode)

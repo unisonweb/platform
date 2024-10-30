@@ -52,7 +52,7 @@ import Unison.Var qualified as Var
 
 handleStructuredFindReplaceI :: HQ.HashQualified Name -> Cli ()
 handleStructuredFindReplaceI rule = do
-  Cli.Env {writeSource} <- ask
+  env <- ask
   uf0 <- Cli.expectLatestParsedFile
   let (prepare, uf, finish) = UF.prepareRewrite uf0
   (ppe, _ns, rules) <- lookupRewrite InvalidStructuredFindReplace prepare rule
@@ -67,7 +67,7 @@ handleStructuredFindReplaceI rule = do
   #latestTypecheckedFile .= Just (Left . snd $ uf')
   let msg = "| Rewrote using: "
   let rendered = Text.pack . P.toPlain 80 $ renderRewrittenFile ppe msg uf'
-  liftIO $ writeSource (Text.pack dest) rendered
+  liftIO $ env.writeSource (Text.pack dest) rendered True
   Cli.respond $ OutputRewrittenFile dest vs
 
 handleStructuredFindI :: HQ.HashQualified Name -> Cli ()
@@ -116,13 +116,13 @@ handleTextFindI allowLib tokens = do
   results0 <- traverse ok results
   let results = Alphabetical.sortAlphabetically [hq | (hq, True) <- results0]
   Cli.setNumberedArgs $ map SA.HashQualified results
-  Cli.respond (ListTextFind allowLib results) 
+  Cli.respond (ListTextFind allowLib results)
   where
     tokensTxt = Text.pack <$> tokens
-    containsTokens tm = 
+    containsTokens tm =
       hasAll . join $ ABT.find txts tm
-      where 
-        hasAll txts = all (\tok -> any (\haystack -> Text.isInfixOf tok haystack) txts) tokensTxt 
+      where
+        hasAll txts = all (\tok -> any (\haystack -> Text.isInfixOf tok haystack) txts) tokensTxt
         txts (Term.Text' haystack) = ABT.Found [haystack]
         txts (Term.Nat' haystack) = ABT.Found [Text.pack (show haystack)]
         txts (Term.Int' haystack) = ABT.Found [Text.pack (show haystack)]

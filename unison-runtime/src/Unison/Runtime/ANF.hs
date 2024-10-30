@@ -55,6 +55,8 @@ module Unison.Runtime.ANF
     Tag (..),
     GroupRef (..),
     Code (..),
+    UBValue,
+    ValList,
     Value (..),
     Cont (..),
     BLit (..),
@@ -86,7 +88,7 @@ module Unison.Runtime.ANF
 where
 
 import Control.Exception (throw)
-import Control.Lens (snoc, unsnoc)
+import Control.Lens (foldMapOf, folded, snoc, unsnoc, _Right)
 import Control.Monad.Reader (ReaderT (..), ask, local)
 import Control.Monad.State (MonadState (..), State, gets, modify, runState)
 import Data.Bifoldable (Bifoldable (..))
@@ -95,7 +97,6 @@ import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.Functor.Compose (Compose (..))
 import Data.List hiding (and, or)
 import Data.Map qualified as Map
-import Data.Primitive qualified as PA
 import Data.Set qualified as Set
 import Data.Text qualified as Data.Text
 import GHC.Stack (CallStack, callStack)
@@ -110,6 +111,7 @@ import Unison.Pattern qualified as P
 import Unison.Prelude
 import Unison.Reference (Id, Reference, Reference' (Builtin, DerivedId))
 import Unison.Referent (Referent, pattern Con, pattern Ref)
+import Unison.Runtime.Array qualified as PA
 import Unison.Symbol (Symbol)
 import Unison.Term hiding (List, Ref, Text, float, fresh, resolve)
 import Unison.Type qualified as Ty
@@ -690,6 +692,13 @@ data CTE v s
 
 pattern ST1 :: Direction Word16 -> v -> Mem -> s -> CTE v s
 pattern ST1 d v m s = ST d [v] [m] s
+
+-- All variables, both bound and free occurring in a CTE. This is
+-- useful for avoiding both free and bound variables when
+-- freshening.
+cteVars :: (Ord v) => Cte v -> Set v
+cteVars (ST _ vs _ e) = Set.fromList vs `Set.union` ABTN.freeVars e
+cteVars (LZ v r as) = Set.fromList (either (const id) (:) r $ v : as)
 
 data ANormalF v e
   = ALet (Direction Word16) [Mem] e e
@@ -1533,10 +1542,17 @@ type ANFD v = Compose (ANFM v) (Directed ())
 data GroupRef = GR Reference Word64
   deriving (Show)
 
+-- | A value which is either unboxed or boxed.
+type UBValue = Either Word64 Value
+
+-- | A list of either unboxed or boxed values.
+-- Each slot is one of unboxed or boxed but not both.
+type ValList = [UBValue]
+
 data Value
-  = Partial GroupRef [Word64] [Value]
-  | Data Reference Word64 [Word64] [Value]
-  | Cont [Word64] [Value] Cont
+  = Partial GroupRef ValList
+  | Data Reference Word64 ValList
+  | Cont ValList Cont
   | BLit BLit
   deriving (Show)
 
@@ -1556,19 +1572,28 @@ instance Eq Code where
 overGroup :: (SuperGroup Symbol -> SuperGroup Symbol) -> Code -> Code
 overGroup f (CodeRep sg ch) = CodeRep (f sg) ch
 
-foldGroup :: Monoid m => (SuperGroup Symbol -> m) -> Code -> m
+foldGroup :: (Monoid m) => (SuperGroup Symbol -> m) -> Code -> m
 foldGroup f (CodeRep sg _) = f sg
 
 traverseGroup ::
-  Applicative f =>
+  (Applicative f) =>
   (SuperGroup Symbol -> f (SuperGroup Symbol)) ->
-  Code -> f Code
+  Code ->
+  f Code
 traverseGroup f (CodeRep sg ch) = flip CodeRep ch <$> f sg
 
 data Cont
   = KE
-  | Mark Word64 Word64 [Reference] (Map Reference Value) Cont
-  | Push Word64 Word64 Word64 Word64 GroupRef Cont
+  | Mark
+      Word64 -- pending args
+      [Reference]
+      (Map Reference Value)
+      Cont
+  | Push
+      Word64 -- Frame size
+      Word64 -- Pending args
+      GroupRef
+      Cont
   deriving (Show)
 
 data BLit
@@ -1688,8 +1713,16 @@ tru = TCon Ty.booleanRef 1 []
 -- binding during ANF translation. Renames a variable in a
 -- context, and returns an indication of whether the varible
 -- was shadowed by one of the context bindings.
+--
+-- Note: this assumes that `u` is not bound by any of the context
+-- entries, as no effort is made to rename them to avoid capturing
+-- `u`.
 renameCtx :: (Var v) => v -> v -> Ctx v -> (Ctx v, Bool)
-renameCtx v u (d, ctx) | (ctx, b) <- rn [] ctx = ((d, ctx), b)
+renameCtx v u (d, ctx) | (ctx, b) <- renameCtes v u ctx = ((d, ctx), b)
+
+-- As above, but without the Direction.
+renameCtes :: (Var v) => v -> v -> [Cte v] -> ([Cte v], Bool)
+renameCtes v u = rn []
   where
     swap w
       | w == v = u
@@ -1707,7 +1740,92 @@ renameCtx v u (d, ctx) | (ctx, b) <- rn [] ctx = ((d, ctx), b)
       where
         e = LZ w (swap <$> f) (swap <$> as)
 
-anfBlock :: (Var v) => Term v a -> ANFM v (Ctx v, DNormal v)
+-- Simultaneously renames variables in a list of context entries.
+--
+-- Assumes that the variables being renamed to are not bound by the
+-- context entries, so that it is unnecessary to rename them.
+renamesCtes :: (Var v) => Map v v -> [Cte v] -> [Cte v]
+renamesCtes rn = map f
+  where
+    swap w
+      | Just u <- Map.lookup w rn = u
+      | otherwise = w
+
+    f (ST d vs ccs b) = ST d vs ccs (ABTN.renames rn b)
+    f (LZ v r as) = LZ v (second swap r) (map swap as)
+
+-- Calculates the free variables occurring in a context. This
+-- consists of the free variables in the expressions being bound,
+-- but with previously bound variables subtracted.
+freeVarsCtx :: (Ord v) => Ctx v -> Set v
+freeVarsCtx = freeVarsCte . snd
+
+freeVarsCte :: (Ord v) => [Cte v] -> Set v
+freeVarsCte = foldr m Set.empty
+  where
+    m (ST _ vs _ bn) rest =
+      ABTN.freeVars bn `Set.union` (rest Set.\\ Set.fromList vs)
+    m (LZ v r as) rest =
+      Set.fromList (either (const id) (:) r as)
+        `Set.union` Set.delete v rest
+
+-- Conditionally freshens a list of variables. The predicate
+-- argument selects which variables to freshen, and the set is a set
+-- of variables to avoid for freshness. The process ensures that the
+-- result is mutually fresh, and returns a new set of variables to
+-- avoid, which includes the freshened variables.
+--
+-- Presumably any variables selected by the predicate should be
+-- included in the set, but the set may contain additional variables
+-- to avoid, when freshening.
+freshens :: (Var v) => (v -> Bool) -> Set v -> [v] -> (Set v, [v])
+freshens p avoid0 vs =
+  mapAccumL f (Set.union avoid0 (Set.fromList vs)) vs
+  where
+    f avoid v
+      | p v, u <- Var.freshIn avoid v = (Set.insert u avoid, u)
+      | otherwise = (avoid, v)
+
+-- Freshens the variable bindings in a context to avoid a set of
+-- variables. Returns the renaming necessary for anything that was
+-- bound in the freshened context.
+--
+-- Note: this only freshens if it's necessary to avoid variables in
+-- the _original_ set. We need to keep track of other variables to
+-- avoid when making up new names for those, but it it isn't
+-- necessary to freshen variables to remove shadowing _within_ the
+-- context, since it is presumably already correctly formed.
+freshenCtx :: (Var v) => Set v -> Ctx v -> (Map v v, Ctx v)
+freshenCtx avoid0 (d, ctx) =
+  case go lavoid Map.empty [] $ reverse ctx of
+    (rn, ctx) -> (rn, (d, ctx))
+  where
+    -- precalculate all variable occurrences in the context to just
+    -- completely avoid those as well.
+    lavoid =
+      foldl (flip $ Set.union . cteVars) avoid0 ctx
+
+    go _ rns fresh [] = (rns, fresh)
+    go avoid rns fresh (bn : bns) = case bn of
+      LZ v r as
+        | v `Set.member` avoid0,
+          u <- Var.freshIn avoid v,
+          (fresh, _) <- renameCtes v u fresh,
+          avoid <- Set.insert u avoid,
+          rns <- Map.alter (Just . fromMaybe u) v rns ->
+            go avoid rns (LZ u r as : fresh) bns
+      ST d vs ccs expr
+        | (avoid, us) <- freshens (`Set.member` avoid0) avoid vs,
+          rn <- Map.fromList (filter (uncurry (/=)) $ zip vs us),
+          not (Map.null rn),
+          fresh <- renamesCtes rn fresh,
+          -- Note: rns union left-biased, so inner contexts take
+          -- priority.
+          rns <- Map.union rns rn ->
+            go avoid rns (ST d us ccs expr : fresh) bns
+      _ -> go avoid rns (bn : fresh) bns
+
+anfBlock :: (Ord v, Var v) => Term v a -> ANFM v (Ctx v, DNormal v)
 anfBlock (Var' v) = pure (mempty, pure $ TVar v)
 anfBlock (If' c t f) = do
   (cctx, cc) <- anfBlock c
@@ -1857,14 +1975,24 @@ anfBlock (Let1Named' v b e) =
   anfBlock b >>= \case
     (bctx, (Direct, TVar u)) -> do
       (ectx, ce) <- anfBlock e
+      (brn, bctx) <- fixupBctx bctx ectx ce
+      u <- pure $ Map.findWithDefault u u brn
       (ectx, shaded) <- pure $ renameCtx v u ectx
       ce <- pure $ if shaded then ce else ABTN.rename v u <$> ce
       pure (bctx <> ectx, ce)
     (bctx, (d0, cb)) -> bindLocal [v] $ do
       (ectx, ce) <- anfBlock e
       d <- bindDirection d0
+      (brn, bctx) <- fixupBctx bctx ectx ce
+      cb <- pure $ ABTN.renames brn cb
       let octx = bctx <> directed [ST1 d v BX cb] <> ectx
       pure (octx, ce)
+  where
+    fixupBctx bctx ectx (_, ce) =
+      pure $ freshenCtx (Set.union ecfvs efvs) bctx
+      where
+        ecfvs = freeVarsCtx ectx
+        efvs = ABTN.freeVars ce
 anfBlock (Apps' (Blank' b) args) = do
   nm <- fresh
   (actx, cas) <- anfArgs args
@@ -2000,18 +2128,18 @@ valueTermLinks = Set.toList . valueLinks f
     f _ _ = Set.empty
 
 valueLinks :: (Monoid a) => (Bool -> Reference -> a) -> Value -> a
-valueLinks f (Partial (GR cr _) _ bs) =
-  f False cr <> foldMap (valueLinks f) bs
-valueLinks f (Data dr _ _ bs) =
-  f True dr <> foldMap (valueLinks f) bs
-valueLinks f (Cont _ bs k) =
-  foldMap (valueLinks f) bs <> contLinks f k
+valueLinks f (Partial (GR cr _) vs) =
+  f False cr <> foldMapOf (folded . _Right) (valueLinks f) vs
+valueLinks f (Data dr _ vs) =
+  f True dr <> foldMapOf (folded . _Right) (valueLinks f) vs
+valueLinks f (Cont vs k) =
+  foldMapOf (folded . _Right) (valueLinks f) vs <> contLinks f k
 valueLinks f (BLit l) = blitLinks f l
 
 contLinks :: (Monoid a) => (Bool -> Reference -> a) -> Cont -> a
-contLinks f (Push _ _ _ _ (GR cr _) k) =
+contLinks f (Push _ _ (GR cr _) k) =
   f False cr <> contLinks f k
-contLinks f (Mark _ _ ps de k) =
+contLinks f (Mark _ ps de k) =
   foldMap (f True) ps
     <> Map.foldMapWithKey (\k c -> f True k <> valueLinks f c) de
     <> contLinks f k

@@ -282,6 +282,9 @@ scratch/main> help
   `edit.namespace` will load all terms and types contained within the current namespace into your scratch file. This includes definitions in namespaces, but excludes libraries.
   `edit.namespace ns1 ns2 ...` loads the terms and types contained within the provided namespaces.
   
+  edit.new
+  Like `edit`, but adds a new fold line below the definitions.
+  
   find
   `find`                           lists all definitions in the
                                    current namespace.

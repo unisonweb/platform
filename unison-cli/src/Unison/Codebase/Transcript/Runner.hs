@@ -348,8 +348,8 @@ run isTest verbosity dir stanzas codebase runtime sbRuntime nRuntime ucmVersion 
             let f = Cli.LoadSuccess <$> readUtf8 (Text.unpack name)
              in f <|> pure Cli.InvalidSourceNameError
 
-      writeSourceFile :: ScratchFileName -> Text -> IO ()
-      writeSourceFile fp contents = do
+      writeSource :: ScratchFileName -> Text -> Bool -> IO ()
+      writeSource fp contents _addFold = do
         shouldShowSourceChanges <- (== Shown) <$> readIORef hidden
         when shouldShowSourceChanges $ do
           atomically (Q.enqueue ucmScratchFileUpdatesQueue (fp, contents))
@@ -420,7 +420,7 @@ run isTest verbosity dir stanzas codebase runtime sbRuntime nRuntime ucmVersion 
               i <- atomicModifyIORef' seedRef \i -> let !i' = i + 1 in (i', i)
               pure (Parser.uniqueBase32Namegen (Random.drgNewSeed (Random.seedFromInteger (fromIntegral i)))),
             loadSource = loadPreviousUnisonBlock,
-            writeSource = writeSourceFile,
+            writeSource,
             notify = print,
             notifyNumbered = printNumbered,
             runtime,

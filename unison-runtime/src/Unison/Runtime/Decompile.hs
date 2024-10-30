@@ -153,17 +153,20 @@ decompile ::
   Closure ->
   DecompResult v
 decompile backref topTerms = \case
-  DataC rf (maskTags -> ct) [] []
+  DataC rf (maskTags -> ct) []
     | rf == booleanRef -> tag2bool ct
-  DataC rf (maskTags -> ct) [i] [] ->
+  DataC rf (maskTags -> ct) [Left i] ->
     decompileUnboxed rf ct i
-  (DataC rf _ [] [b])
+  (DataC rf _ [Right b])
     | rf == anyRef ->
         app () (builtin () "Any.Any") <$> decompile backref topTerms b
-  (DataC rf (maskTags -> ct) [] bs) ->
-    apps' (con rf ct) <$> traverse (decompile backref topTerms) bs
-  (PApV (CIx rf rt k) _ [] bs)
-    | rf == Builtin "jumpCont" -> err Cont $ bug "<Continuation>"
+  (DataC rf (maskTags -> ct) vs)
+    -- Only match lists of boxed args.
+    | ([], bs) <- partitionEithers vs ->
+        apps' (con rf ct) <$> traverse (decompile backref topTerms) bs
+  (PApV (CIx rf rt k) _ (partitionEithers -> ([], bs)))
+    | rf == Builtin "jumpCont" ->
+        err Cont $ bug "<Continuation>"
     | Builtin nm <- rf ->
         apps' (builtin () nm) <$> traverse (decompile backref topTerms) bs
     | Just t <- topTerms rt k ->
@@ -173,9 +176,9 @@ decompile backref topTerms = \case
       Just _ <- topTerms rt 0 ->
         err (UnkLocal rf k) $ bug "<Unknown>"
     | otherwise -> err (UnkComb rf) $ ref () rf
-  (PAp (CIx rf _ _) _ _ _) ->
+  (PAp (CIx rf _ _) _ _) ->
     err (BadPAp rf) $ bug "<Unknown>"
-  (DataC rf _ _ _) -> err (BadData rf) $ bug "<Data>"
+  (DataC rf _ _) -> err (BadData rf) $ bug "<Data>"
   BlackHole -> err Exn $ bug "<Exception>"
   (Captured {}) -> err Cont $ bug "<Continuation>"
   (Foreign f) ->

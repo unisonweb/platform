@@ -14,7 +14,6 @@ import Data.Bytes.VarInt
 import Data.Foldable (traverse_)
 import Data.Int (Int64)
 import Data.Map.Strict as Map (Map, fromList, toList)
-import Data.Primitive qualified as PA
 import Data.Text (Text)
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Vector.Primitive qualified as BA
@@ -26,6 +25,7 @@ import Unison.Hash (Hash)
 import Unison.Hash qualified as Hash
 import Unison.Reference (Id' (..), Reference, Reference' (Builtin, DerivedId), pattern Derived)
 import Unison.Referent (Referent, pattern Con, pattern Ref)
+import Unison.Runtime.Array qualified as PA
 import Unison.Runtime.Exception
 import Unison.Runtime.MCode
   ( BPrim1 (..),

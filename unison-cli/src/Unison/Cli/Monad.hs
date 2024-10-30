@@ -164,8 +164,8 @@ data Env = Env
     generateUniqueName :: IO Parser.UniqueName,
     -- | How to load source code.
     loadSource :: SourceName -> IO LoadSourceResult,
-    -- | How to write source code.
-    writeSource :: SourceName -> Text -> IO (),
+    -- | How to write source code. Bool = make new fold?
+    writeSource :: SourceName -> Text -> Bool -> IO (),
     -- | What to do with output for the user.
     notify :: Output -> IO (),
     -- | What to do with numbered output for the user.

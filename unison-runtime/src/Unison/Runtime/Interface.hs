@@ -498,8 +498,8 @@ compileValue base =
   flip pair (rf base) . ANF.BLit . List . Seq.fromList . fmap cpair
   where
     rf = ANF.BLit . TmLink . RF.Ref
-    cons x y = Data RF.pairRef 0 [] [x, y]
-    tt = Data RF.unitRef 0 [] []
+    cons x y = Data RF.pairRef 0 [Right x, Right y]
+    tt = Data RF.unitRef 0 []
     code sg = ANF.BLit (Code sg)
     pair x y = cons x (cons y tt)
     cpair (r, sg) = pair (rf r) (code sg)
@@ -851,8 +851,8 @@ prepareEvaluation ppe tm ctx = do
       Just r -> r
       Nothing -> error "prepareEvaluation: could not remap main ref"
 
-watchHook :: IORef Closure -> Stack 'UN -> Stack 'BX -> IO ()
-watchHook r _ bstk = peek bstk >>= writeIORef r
+watchHook :: IORef Closure -> Stack -> IO ()
+watchHook r stk = bpeek stk >>= writeIORef r
 
 backReferenceTm ::
   EnumMap Word64 Reference ->
@@ -1056,7 +1056,7 @@ executeMainComb ::
   CCache ->
   IO (Either (Pretty ColorText) ())
 executeMainComb init cc = do
-  rSection <- resolveSection cc $ Ins (Pack RF.unitRef 0 ZArgs) $ Call True init init (BArg1 0)
+  rSection <- resolveSection cc $ Ins (Pack RF.unitRef 0 ZArgs) $ Call True init init (VArg1 0)
   result <-
     UnliftIO.try . eval0 cc Nothing $ rSection
   case result of

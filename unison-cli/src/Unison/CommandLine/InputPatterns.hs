@@ -141,6 +141,7 @@ where
 
 import Control.Lens.Cons qualified as Cons
 import Data.Bitraversable (bitraverse)
+import Data.Char (isSpace)
 import Data.List (intercalate)
 import Data.List.Extra qualified as List
 import Data.List.NonEmpty qualified as NE
@@ -148,7 +149,6 @@ import Data.Map qualified as Map
 import Data.Maybe (fromJust)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
-import Data.Char (isSpace)
 import Data.These (These (..))
 import Network.URI qualified as URI
 import System.Console.Haskeline.Completion (Completion (Completion))
@@ -1026,10 +1026,10 @@ displayTo =
       file : defs ->
         maybe
           (wrongArgsLength "at least two arguments" [file])
-          ( \defs ->
-              Input.DisplayI . Input.FileLocation
-                <$> unsupportedStructuredArgument displayTo "a file name" file
-                <*> traverse handleHashQualifiedNameArg defs
+          ( \defs -> do
+              file <- unsupportedStructuredArgument displayTo "a file name" file
+              names <- traverse handleHashQualifiedNameArg defs
+              pure (Input.DisplayI (Input.FileLocation file Input.AboveFold) names)
           )
           $ NE.nonEmpty defs
       [] -> wrongArgsLength "at least two arguments" []
@@ -1086,14 +1086,13 @@ textfind :: Bool -> InputPattern
 textfind allowLib =
   InputPattern cmdName aliases I.Visible [("token", OnePlus, noCompletionsArg)] msg parse
   where
-    (cmdName, aliases, alternate) = 
-      if allowLib then 
-        ("text.find.all", ["grep.all"], "Use `text.find` to exclude `lib` from search.")
-      else
-        ("text.find", ["grep"], "Use `text.find.all` to include search of `lib`.")
+    (cmdName, aliases, alternate) =
+      if allowLib
+        then ("text.find.all", ["grep.all"], "Use `text.find` to exclude `lib` from search.")
+        else ("text.find", ["grep"], "Use `text.find.all` to include search of `lib`.")
     parse = \case
       [] -> Left (P.text "Please supply at least one token.")
-      words -> pure $ Input.TextFindI allowLib (untokenize $ [ e | Left e <- words ])
+      words -> pure $ Input.TextFindI allowLib (untokenize $ [e | Left e <- words])
     msg =
       P.lines
         [ P.wrap $
@@ -1101,26 +1100,27 @@ textfind allowLib =
               <> " finds terms with literals (text or numeric) containing"
               <> "`token1`, `99`, and `token2`.",
           "",
-          P.wrap $ "Numeric literals must be quoted (ex: \"42\")" <>
-                   "but single words need not be quoted.",
+          P.wrap $
+            "Numeric literals must be quoted (ex: \"42\")"
+              <> "but single words need not be quoted.",
           "",
           P.wrap alternate
         ]
 
--- | Reinterprets `"` in the expected way, combining tokens until reaching 
--- the closing quote. 
+-- | Reinterprets `"` in the expected way, combining tokens until reaching
+-- the closing quote.
 -- Example: `untokenize ["\"uno", "dos\""]` becomes `["uno dos"]`.
 untokenize :: [String] -> [String]
 untokenize words = go (unwords words)
   where
-  go words = case words of
-    [] -> []
-    '"' : quoted -> takeWhile (/= '"') quoted : go (drop 1 . dropWhile (/= '"') $ quoted)
-    unquoted -> case span ok unquoted of 
-      ("", rem) -> go (dropWhile isSpace rem)
-      (tok, rem) -> tok : go (dropWhile isSpace rem) 
-      where
-        ok ch = ch /= '"' && not (isSpace ch)
+    go words = case words of
+      [] -> []
+      '"' : quoted -> takeWhile (/= '"') quoted : go (drop 1 . dropWhile (/= '"') $ quoted)
+      unquoted -> case span ok unquoted of
+        ("", rem) -> go (dropWhile isSpace rem)
+        (tok, rem) -> tok : go (dropWhile isSpace rem)
+        where
+          ok ch = ch /= '"' && not (isSpace ch)
 
 sfind :: InputPattern
 sfind =
@@ -2377,7 +2377,24 @@ edit =
       parse =
         maybe
           (wrongArgsLength "at least one argument" [])
-          ( fmap (Input.ShowDefinitionI Input.LatestFileLocation Input.ShowDefinitionLocal)
+          ( fmap (Input.ShowDefinitionI (Input.LatestFileLocation Input.WithinFold) Input.ShowDefinitionLocal)
+              . traverse handleHashQualifiedNameArg
+          )
+          . NE.nonEmpty
+    }
+
+editNew :: InputPattern
+editNew =
+  InputPattern
+    { patternName = "edit.new",
+      aliases = [],
+      visibility = I.Visible,
+      args = [("definition to edit", OnePlus, definitionQueryArg)],
+      help = "Like `edit`, but adds a new fold line below the definitions.",
+      parse =
+        maybe
+          (wrongArgsLength "at least one argument" [])
+          ( fmap (Input.ShowDefinitionI (Input.LatestFileLocation Input.AboveFold) Input.ShowDefinitionLocal)
               . traverse handleHashQualifiedNameArg
           )
           . NE.nonEmpty
@@ -3489,6 +3506,7 @@ validInputs =
       docsToHtml,
       edit,
       editNamespace,
+      editNew,
       execute,
       find,
       findIn,

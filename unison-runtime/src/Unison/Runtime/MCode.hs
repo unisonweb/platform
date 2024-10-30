@@ -35,14 +35,13 @@ module Unison.Runtime.MCode
     GBranch (..),
     Branch,
     RBranch,
-    bcount,
-    ucount,
     emitCombs,
     emitComb,
     resolveCombs,
     absurdCombs,
     emptyRNs,
     argsToLists,
+    countArgs,
     combRef,
     combDeps,
     combTypes,
@@ -57,10 +56,7 @@ import Data.Bitraversable (Bitraversable (..), bifoldMapDefault, bimapDefault)
 import Data.Bits (shiftL, shiftR, (.|.))
 import Data.Coerce
 import Data.Functor ((<&>))
-import Data.List (partition)
 import Data.Map.Strict qualified as M
-import Data.Primitive.ByteArray
-import Data.Primitive.PrimArray
 import Data.Void (Void, absurd)
 import Data.Word (Word16, Word64)
 import GHC.Stack (HasCallStack)
@@ -92,6 +88,8 @@ import Unison.Runtime.ANF
     pattern TVar,
   )
 import Unison.Runtime.ANF qualified as ANF
+import Unison.Runtime.Array
+import Unison.Runtime.Array qualified as PA
 import Unison.Runtime.Builtin.Types (builtinTypeNumbering)
 import Unison.Util.EnumContainers as EC
 import Unison.Util.Text (Text)
@@ -264,51 +262,29 @@ data Args'
 
 data Args
   = ZArgs
-  | UArg1 !Int
-  | UArg2 !Int !Int
-  | BArg1 !Int
-  | BArg2 !Int !Int
-  | DArg2 !Int !Int
-  | UArgR !Int !Int
-  | BArgR !Int !Int
-  | DArgR !Int !Int !Int !Int
-  | BArgN !(PrimArray Int)
-  | UArgN !(PrimArray Int)
-  | DArgN !(PrimArray Int) !(PrimArray Int)
-  | DArgV !Int !Int
+  | VArg1 !Int
+  | VArg2 !Int !Int
+  | VArgR !Int !Int
+  | VArgN {-# UNPACK #-} !(PrimArray Int)
+  | VArgV !Int
   deriving (Show, Eq, Ord)
 
-argsToLists :: Args -> ([Int], [Int])
-argsToLists ZArgs = ([], [])
-argsToLists (UArg1 i) = ([i], [])
-argsToLists (UArg2 i j) = ([i, j], [])
-argsToLists (BArg1 i) = ([], [i])
-argsToLists (BArg2 i j) = ([], [i, j])
-argsToLists (DArg2 i j) = ([i], [j])
-argsToLists (UArgR i l) = (take l [i ..], [])
-argsToLists (BArgR i l) = ([], take l [i ..])
-argsToLists (DArgR ui ul bi bl) = (take ul [ui ..], take bl [bi ..])
-argsToLists (BArgN bs) = ([], primArrayToList bs)
-argsToLists (UArgN us) = (primArrayToList us, [])
-argsToLists (DArgN us bs) = (primArrayToList us, primArrayToList bs)
-argsToLists (DArgV _ _) = internalBug "argsToLists: DArgV"
+argsToLists :: Args -> [Int]
+argsToLists = \case
+  ZArgs -> []
+  VArg1 i -> [i]
+  VArg2 i j -> [i, j]
+  VArgR i l -> take l [i ..]
+  VArgN us -> primArrayToList us
+  VArgV _ -> internalBug "argsToLists: DArgV"
 
-ucount, bcount :: Args -> Int
-ucount (UArg1 _) = 1
-ucount (UArg2 _ _) = 2
-ucount (DArg2 _ _) = 1
-ucount (UArgR _ l) = l
-ucount (DArgR _ l _ _) = l
-ucount _ = 0
-{-# INLINE ucount #-}
-bcount (BArg1 _) = 1
-bcount (BArg2 _ _) = 2
-bcount (DArg2 _ _) = 1
-bcount (BArgR _ l) = l
-bcount (DArgR _ _ _ l) = l
-bcount (BArgN a) = sizeofPrimArray a
-bcount _ = 0
-{-# INLINE bcount #-}
+countArgs :: Args -> Int
+countArgs ZArgs = 0
+countArgs (VArg1 {}) = 1
+countArgs (VArg2 {}) = 2
+countArgs (VArgR _ l) = l
+countArgs (VArgN us) = sizeofPrimArray us
+countArgs (VArgV {}) = internalBug "countArgs: DArgV"
 
 data UPrim1
   = -- integral
@@ -571,8 +547,7 @@ data GSection comb
     Let
       !(GSection comb) -- binding
       !CombIx -- body section refrence
-      !Int -- unboxed stack safety
-      !Int -- boxed stack safety
+      !Int -- stack safety
       !(GSection comb) -- body code
   | -- Throw an exception with the given message
     Die String
@@ -624,24 +599,23 @@ type Comb = GComb Void CombIx
 -- longer strictly a 'combinator.'
 data GCombInfo comb
   = LamI
-      !Int -- Number of unboxed arguments
-      !Int -- Number of boxed arguments
-      !Int -- Maximum needed unboxed frame size
-      !Int -- Maximum needed boxed frame size
+      !Int -- Number of arguments
+      !Int -- Maximum needed frame size
       !(GSection comb) -- Entry
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 data GComb clos comb
-  = Comb {-# unpack #-} !(GCombInfo comb)
+  = Comb {-# UNPACK #-} !(GCombInfo comb)
   | -- A pre-evaluated comb, typically a pure top-level const
     CachedClosure !Word64 {- top level comb ix -} !clos
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
-pattern Lam
-  :: Int -> Int -> Int -> Int -> GSection comb -> GComb clos comb
-pattern Lam ua ba uf bf sect = Comb (LamI ua ba uf bf sect)
+pattern Lam ::
+  Int -> Int -> GSection comb -> GComb clos comb
+pattern Lam a f sect = Comb (LamI a f sect)
+
 -- it seems GHC can't figure this out itself
-{-# complete CachedClosure, Lam #-}
+{-# COMPLETE CachedClosure, Lam #-}
 
 instance Bifunctor GComb where
   bimap = bimapDefault
@@ -651,12 +625,12 @@ instance Bifoldable GComb where
 
 instance Bitraversable GComb where
   bitraverse f _ (CachedClosure cix c) = CachedClosure cix <$> f c
-  bitraverse _ f (Lam u b uf bf s) = Lam u b uf bf <$> traverse f s
+  bitraverse _ f (Lam a fr s) = Lam a fr <$> traverse f s
 
 type RCombs clos = GCombs clos (RComb clos)
 
 -- | The fixed point of a GComb where all references to a Comb are themselves Combs.
-newtype RComb clos = RComb { unRComb :: GComb clos (RComb clos) }
+newtype RComb clos = RComb {unRComb :: GComb clos (RComb clos)}
 
 type RCombInfo clos = GCombInfo (RComb clos)
 
@@ -739,16 +713,14 @@ ctx vs cs = pushCtx (zip vs cs) ECtx
 -- Look up a variable in the context, getting its position on the
 -- relevant stack and its calling convention if it is there.
 ctxResolve :: (Var v) => Ctx v -> v -> Maybe (Int, Mem)
-ctxResolve ctx v = walk 0 0 ctx
+ctxResolve ctx v = walk 0 ctx
   where
-    walk _ _ ECtx = Nothing
-    walk ui bi (Block ctx) = walk ui bi ctx
-    walk ui bi (Tag ctx) = walk (ui + 1) bi ctx
-    walk ui bi (Var x m ctx)
-      | v == x = case m of BX -> Just (bi, m); UN -> Just (ui, m)
-      | otherwise = walk ui' bi' ctx
-      where
-        (ui', bi') = case m of BX -> (ui, bi + 1); UN -> (ui + 1, bi)
+    walk _ ECtx = Nothing
+    walk i (Block ctx) = walk i ctx
+    walk i (Tag ctx) = walk (i + 1) ctx
+    walk i (Var x m ctx)
+      | v == x = Just (i, m)
+      | otherwise = walk (i + 1) ctx
 
 -- Add a sequence of variables and calling conventions to the context.
 pushCtx :: [(v, Mem)] -> Ctx v -> Ctx v
@@ -836,16 +808,18 @@ resolveCombs mayExisting combs =
 absurdCombs :: EnumMap Word64 (EnumMap Word64 (GComb Void cix)) -> EnumMap Word64 (GCombs any cix)
 absurdCombs = fmap . fmap . first $ absurd
 
--- Type for aggregating the necessary stack frame size. First field is
--- unboxed size, second is boxed. The Applicative instance takes the
--- point-wise maximum, so that combining values from different branches
--- results in finding the maximum value of either size necessary.
-data Counted a = C !Int !Int a
+-- Type for aggregating the necessary stack frame size. First field is the
+-- necessary size. The Applicative instance takes the
+-- maximum, so that combining values from different branches
+-- results in finding the maximum number of slots either side requires.
+--
+-- TODO: Now that we have a single stack, most of this counting can probably be simplified.
+data Counted a = C !Int a
   deriving (Functor)
 
 instance Applicative Counted where
-  pure = C 0 0
-  C u0 b0 f <*> C u1 b1 x = C (max u0 u1) (max b0 b1) (f x)
+  pure = C 0
+  C s0 f <*> C s1 x = C (max s0 s1) (f x)
 
 newtype Emit a
   = EM (Word64 -> (EC.EnumMap Word64 Comb, Counted a))
@@ -869,30 +843,31 @@ letIndex l c = c .|. fromIntegral l
 
 record :: Ctx v -> Word16 -> Emit Section -> Emit (Word64, Comb)
 record ctx l (EM es) = EM $ \c ->
-  let (m, C u b s) = es c
-      (au, ab) = countCtx0 0 0 ctx
+  let (m, C sz s) = es c
+      na = countCtx0 0 ctx
       n = letIndex l c
-      comb = Lam au ab u b s
-   in (EC.mapInsert n comb m, C u b (n, comb))
+      comb = Lam na sz s
+   in (EC.mapInsert n comb m, C sz (n, comb))
 
 recordTop :: [v] -> Word16 -> Emit Section -> Emit ()
 recordTop vs l (EM e) = EM $ \c ->
-  let (m, C u b s) = e c
-      ab = length vs
+  let (m, C sz s) = e c
+      na = length vs
       n = letIndex l c
-   in (EC.mapInsert n (Lam 0 ab u b s) m, C u b ())
+   in (EC.mapInsert n (Lam na sz s) m, C sz ())
 
 -- Counts the stack space used by a context and annotates a value
 -- with it.
 countCtx :: Ctx v -> a -> Emit a
-countCtx ctx = counted . C u b where (u, b) = countCtx0 0 0 ctx
+countCtx ctx = counted . C i
+  where
+    i = countCtx0 0 ctx
 
-countCtx0 :: Int -> Int -> Ctx v -> (Int, Int)
-countCtx0 !ui !bi (Var _ UN ctx) = countCtx0 (ui + 1) bi ctx
-countCtx0 ui bi (Var _ BX ctx) = countCtx0 ui (bi + 1) ctx
-countCtx0 ui bi (Tag ctx) = countCtx0 (ui + 1) bi ctx
-countCtx0 ui bi (Block ctx) = countCtx0 ui bi ctx
-countCtx0 ui bi ECtx = (ui, bi)
+countCtx0 :: Int -> Ctx v -> Int
+countCtx0 !i (Var _ _ ctx) = countCtx0 (i + 1) ctx
+countCtx0 i (Tag ctx) = countCtx0 (i + 1) ctx
+countCtx0 i (Block ctx) = countCtx0 i ctx
+countCtx0 i ECtx = i
 
 emitComb ::
   (Var v) =>
@@ -907,8 +882,8 @@ emitComb rns grpr grpn rec (n, Lambda ccs (TAbss vs bd)) =
     . recordTop vs 0
     $ emitSection rns grpr grpn rec (ctx vs ccs) bd
 
-addCount :: Int -> Int -> Emit a -> Emit a
-addCount i j = onCount $ \(C u b x) -> C (u + i) (b + j) x
+addCount :: Int -> Emit a -> Emit a
+addCount i = onCount $ \(C sz x) -> C (sz + i) x
 
 -- Emit a machine code section from an ANF term
 emitSection ::
@@ -942,43 +917,40 @@ emitSection rns grpr grpn rec ctx (TName u (Right v) args bo)
               <$> emitSection rns grpr grpn rec (Var u BX ctx) bo
   | otherwise = emitSectionVErr v
 emitSection _ grpr grpn rec ctx (TVar v)
-  | Just (i, BX) <- ctxResolve ctx v = countCtx ctx . Yield $ BArg1 i
-  | Just (i, UN) <- ctxResolve ctx v = countCtx ctx . Yield $ UArg1 i
+  | Just (i, _) <- ctxResolve ctx v = countCtx ctx . Yield $ VArg1 i
   | Just j <- rctxResolve rec v =
       let cix = (CIx grpr grpn j)
-       in countCtx ctx $ App False (Env cix cix) ZArgs
+       in countCtx ctx $ App False (Env cix cix) $ ZArgs
   | otherwise = emitSectionVErr v
 emitSection _ _ grpn _ ctx (TPrm p args) =
   -- 3 is a conservative estimate of how many extra stack slots
   -- a prim op will need for its results.
-  addCount 3 3
+  addCount 3
     . countCtx ctx
     . Ins (emitPOp p $ emitArgs grpn ctx args)
     . Yield
-    $ DArgV i j
-  where
-    (i, j) = countBlock ctx
+    . VArgV
+    $ countBlock ctx
 emitSection _ _ grpn _ ctx (TFOp p args) =
-  addCount 3 3
+  addCount 3
     . countCtx ctx
     . Ins (emitFOp p $ emitArgs grpn ctx args)
     . Yield
-    $ DArgV i j
-  where
-    (i, j) = countBlock ctx
+    . VArgV
+    $ countBlock ctx
 emitSection rns grpr grpn rec ctx (TApp f args) =
   emitClosures grpr grpn rec ctx args $ \ctx as ->
     countCtx ctx $ emitFunction rns grpr grpn rec ctx f as
 emitSection _ _ _ _ ctx (TLit l) =
-  c . countCtx ctx . Ins (emitLit l) . Yield $ litArg l
+  c . countCtx ctx . Ins (emitLit l) . Yield $ VArg1 0
   where
     c
-      | ANF.T {} <- l = addCount 0 1
-      | ANF.LM {} <- l = addCount 0 1
-      | ANF.LY {} <- l = addCount 0 1
-      | otherwise = addCount 1 0
+      | ANF.T {} <- l = addCount 1
+      | ANF.LM {} <- l = addCount 1
+      | ANF.LY {} <- l = addCount 1
+      | otherwise = addCount 1
 emitSection _ _ _ _ ctx (TBLit l) =
-  addCount 0 1 . countCtx ctx . Ins (emitBLit l) . Yield $ BArg1 0
+  addCount 1 . countCtx ctx . Ins (emitBLit l) . Yield $ VArg1 0
 emitSection rns grpr grpn rec ctx (TMatch v bs)
   | Just (i, BX) <- ctxResolve ctx v,
     MatchData r cs df <- bs =
@@ -1087,7 +1059,7 @@ emitFunction rns _grpr _ _ _ (FComb r) as
 emitFunction rns _grpr _ _ _ (FCon r t) as =
   Ins (Pack r (packTags rt t) as)
     . Yield
-    $ BArg1 0
+    $ VArg1 0
   where
     rt = toEnum . fromIntegral $ dnum rns r
 emitFunction rns _grpr _ _ _ (FReq r e) as =
@@ -1096,7 +1068,7 @@ emitFunction rns _grpr _ _ _ (FReq r e) as =
   -- more than 2^16 types.
   Ins (Pack r (packTags rt e) as)
     . App True (Dyn a)
-    $ BArg1 0
+    $ VArg1 0
   where
     a = dnum rns r
     rt = toEnum . fromIntegral $ a
@@ -1107,13 +1079,12 @@ emitFunction _ _grpr _ _ ctx (FCont k) as
 emitFunction _ _grpr _ _ _ (FPrim _) _ =
   internalBug "emitFunction: impossible"
 
-countBlock :: Ctx v -> (Int, Int)
-countBlock = go 0 0
+countBlock :: Ctx v -> Int
+countBlock = go 0
   where
-    go !ui !bi (Var _ UN ctx) = go (ui + 1) bi ctx
-    go ui bi (Var _ BX ctx) = go ui (bi + 1) ctx
-    go ui bi (Tag ctx) = go (ui + 1) bi ctx
-    go ui bi _ = (ui, bi)
+    go !i (Var _ _ ctx) = go (i + 1) ctx
+    go i (Tag ctx) = go (i + 1) ctx
+    go i _ = i
 
 matchCallingError :: Mem -> Branched v -> String
 matchCallingError cc b = "(" ++ show cc ++ "," ++ brs ++ ")"
@@ -1136,12 +1107,6 @@ emitFunctionVErr :: (Var v, HasCallStack) => v -> a
 emitFunctionVErr v =
   internalBug $
     "emitFunction: could not resolve function variable: " ++ show v
-
-litArg :: ANF.Lit -> Args
-litArg ANF.T {} = BArg1 0
-litArg ANF.LM {} = BArg1 0
-litArg ANF.LY {} = BArg1 0
-litArg _ = UArg1 0
 
 -- Emit machine code for a let expression. Some expressions do not
 -- require a machine code Let, which uses more complicated stack
@@ -1184,9 +1149,9 @@ emitLet rns grpr grpn rec d vcs ctx bnd
           <$> emitSection rns grpr grpn rec (Block ctx) bnd
           <*> record (pushCtx vcs ctx) w esect
   where
-    f s (w, Lam _ _ un bx bd) =
+    f s (w, Lam _ f bd) =
       let cix = (CIx grpr grpn w)
-       in Let s cix un bx bd
+       in Let s cix f bd
 
 -- Translate from ANF prim ops to machine code operations. The
 -- machine code operations are divided with respect to more detailed
@@ -1322,19 +1287,19 @@ emitPOp ANF.DBTX = emitBP1 DBTX
 -- non-prim translations
 emitPOp ANF.BLDS = Seq
 emitPOp ANF.FORK = \case
-  BArg1 i -> Fork i
+  VArg1 i -> Fork i
   _ -> internalBug "fork takes exactly one boxed argument"
 emitPOp ANF.ATOM = \case
-  BArg1 i -> Atomically i
+  VArg1 i -> Atomically i
   _ -> internalBug "atomically takes exactly one boxed argument"
 emitPOp ANF.PRNT = \case
-  BArg1 i -> Print i
+  VArg1 i -> Print i
   _ -> internalBug "print takes exactly one boxed argument"
 emitPOp ANF.INFO = \case
   ZArgs -> Info "debug"
   _ -> internalBug "info takes no arguments"
 emitPOp ANF.TFRC = \case
-  BArg1 i -> TryForce i
+  VArg1 i -> TryForce i
   _ -> internalBug "tryEval takes exactly one boxed argument"
 
 -- handled in emitSection because Die is not an instruction
@@ -1349,31 +1314,28 @@ emitFOp fop = ForeignCall True (fromIntegral $ fromEnum fop)
 -- Helper functions for packing the variable argument representation
 -- into the indexes stored in prim op instructions
 emitP1 :: UPrim1 -> Args -> Instr
-emitP1 p (UArg1 i) = UPrim1 p i
+emitP1 p (VArg1 i) = UPrim1 p i
 emitP1 p a =
   internalBug $
     "wrong number of args for unary unboxed primop: "
       ++ show (p, a)
 
 emitP2 :: UPrim2 -> Args -> Instr
-emitP2 p (UArg2 i j) = UPrim2 p i j
+emitP2 p (VArg2 i j) = UPrim2 p i j
 emitP2 p a =
   internalBug $
     "wrong number of args for binary unboxed primop: "
       ++ show (p, a)
 
 emitBP1 :: BPrim1 -> Args -> Instr
-emitBP1 p (UArg1 i) = BPrim1 p i
-emitBP1 p (BArg1 i) = BPrim1 p i
+emitBP1 p (VArg1 i) = BPrim1 p i
 emitBP1 p a =
   internalBug $
     "wrong number of args for unary boxed primop: "
       ++ show (p, a)
 
 emitBP2 :: BPrim2 -> Args -> Instr
-emitBP2 p (UArg2 i j) = BPrim2 p i j
-emitBP2 p (BArg2 i j) = BPrim2 p i j
-emitBP2 p (DArg2 i j) = BPrim2 p i j
+emitBP2 p (VArg2 i j) = BPrim2 p i j
 emitBP2 p a =
   internalBug $
     "wrong number of args for binary boxed primop: "
@@ -1555,25 +1517,18 @@ emitArgs grpn ctx args
 -- Turns a list of stack positions and calling conventions into the
 -- argument format expected in the machine code.
 demuxArgs :: [(Int, Mem)] -> Args
-demuxArgs as0 =
-  case bimap (fmap fst) (fmap fst) $ partition ((== UN) . snd) as0 of
-    ([], []) -> ZArgs
-    ([], [i]) -> BArg1 i
-    ([], [i, j]) -> BArg2 i j
-    ([i], []) -> UArg1 i
-    ([i, j], []) -> UArg2 i j
-    ([i], [j]) -> DArg2 i j
-    ([], bs) -> BArgN $ primArrayFromList bs
-    (us, []) -> UArgN $ primArrayFromList us
-    -- TODO: handle ranges
-    (us, bs) -> DArgN (primArrayFromList us) (primArrayFromList bs)
+demuxArgs = \case
+  [] -> ZArgs
+  [(i, _)] -> VArg1 i
+  [(i, _), (j, _)] -> VArg2 i j
+  args -> VArgN $ PA.primArrayFromList (fst <$> args)
 
 combDeps :: GComb clos comb -> [Word64]
-combDeps (Lam _ _ _ _ s) = sectionDeps s
+combDeps (Lam _ _ s) = sectionDeps s
 combDeps (CachedClosure {}) = []
 
 combTypes :: GComb any comb -> [Word64]
-combTypes (Lam _ _ _ _ s) = sectionTypes s
+combTypes (Lam _ _ s) = sectionTypes s
 combTypes (CachedClosure {}) = []
 
 sectionDeps :: GSection comb -> [Word64]
@@ -1587,13 +1542,13 @@ sectionDeps (NMatch _ _ br) = branchDeps br
 sectionDeps (Ins i s)
   | Name (Env (CIx _ w _) _) _ <- i = w : sectionDeps s
   | otherwise = sectionDeps s
-sectionDeps (Let s (CIx _ w _) _ _ b) =
+sectionDeps (Let s (CIx _ w _) _ b) =
   w : sectionDeps s ++ sectionDeps b
 sectionDeps _ = []
 
 sectionTypes :: GSection comb -> [Word64]
 sectionTypes (Ins i s) = instrTypes i ++ sectionTypes s
-sectionTypes (Let s _ _ _ b) = sectionTypes s ++ sectionTypes b
+sectionTypes (Let s _ _ b) = sectionTypes s ++ sectionTypes b
 sectionTypes (Match _ br) = branchTypes br
 sectionTypes (DMatch _ _ br) = branchTypes br
 sectionTypes (NMatch _ _ br) = branchTypes br
@@ -1639,15 +1594,22 @@ prettyCombs w es =
     id
     (mapToList es)
 
-prettyComb :: Word64 -> Word64 -> Comb -> ShowS
+prettyComb :: (Show clos, Show comb) => Word64 -> Word64 -> GComb clos comb -> ShowS
 prettyComb w i = \case
-  (Lam ua ba _ _ s) ->
+  (Lam a _ s) ->
     shows w
       . showString ":"
       . shows i
-      . shows [ua, ba]
+      . shows a
       . showString ":\n"
       . prettySection 2 s
+  (CachedClosure a b) ->
+    shows w
+      . showString ":"
+      . shows i
+      . shows a
+      . showString ":\n"
+      . shows b
 
 prettySection :: (Show comb) => Int -> GSection comb -> ShowS
 prettySection ind sec =
@@ -1669,7 +1631,7 @@ prettySection ind sec =
     Yield as -> showString "Yield " . prettyArgs as
     Ins i nx ->
       prettyIns i . showString "\n" . prettySection ind nx
-    Let s _ _ _ b ->
+    Let s _ _ b ->
       showString "Let\n"
         . prettySection (ind + 2) s
         . showString "\n"
@@ -1724,12 +1686,6 @@ prettyBranches ind bs =
         . showString " ->\n"
         . prettySection (ind + 1) e
 
-un :: ShowS
-un = ('U' :)
-
-bx :: ShowS
-bx = ('B' :)
-
 prettyIns :: (Show comb) => GInstr comb -> ShowS
 prettyIns (Pack r i as) =
   showString "Pack "
@@ -1741,26 +1697,4 @@ prettyIns (Pack r i as) =
 prettyIns i = shows i
 
 prettyArgs :: Args -> ShowS
-prettyArgs ZArgs = shows @[Int] []
-prettyArgs (UArg1 i) = un . shows [i]
-prettyArgs (BArg1 i) = bx . shows [i]
-prettyArgs (UArg2 i j) = un . shows [i, j]
-prettyArgs (BArg2 i j) = bx . shows [i, j]
-prettyArgs (DArg2 i j) = un . shows [i] . (' ' :) . bx . shows [j]
-prettyArgs (UArgR i l) = un . shows (Prelude.take l [i ..])
-prettyArgs (BArgR i l) = bx . shows (Prelude.take l [i ..])
-prettyArgs (DArgR i l j k) =
-  un
-    . shows (Prelude.take l [i ..])
-    . (' ' :)
-    . bx
-    . shows (Prelude.take k [j ..])
-prettyArgs (UArgN v) = un . shows (primArrayToList v)
-prettyArgs (BArgN v) = bx . shows (primArrayToList v)
-prettyArgs (DArgN u b) =
-  un
-    . shows (primArrayToList u)
-    . (' ' :)
-    . bx
-    . shows (primArrayToList b)
-prettyArgs (DArgV i j) = ('V' :) . shows [i, j]
+prettyArgs v = shows v

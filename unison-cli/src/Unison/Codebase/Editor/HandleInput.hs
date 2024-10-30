@@ -14,7 +14,6 @@ import Control.Monad.State qualified as State
 import Data.Foldable qualified as Foldable
 import Data.List qualified as List
 import Data.List.Extra (nubOrd)
-import Data.List.NonEmpty (NonEmpty)
 import Data.List.NonEmpty qualified as Nel
 import Data.Map qualified as Map
 import Data.Set qualified as Set
@@ -85,7 +84,7 @@ import Unison.Codebase.Editor.HandleInput.Reflogs qualified as Reflogs
 import Unison.Codebase.Editor.HandleInput.ReleaseDraft (handleReleaseDraft)
 import Unison.Codebase.Editor.HandleInput.Run (handleRun)
 import Unison.Codebase.Editor.HandleInput.RuntimeUtils qualified as RuntimeUtils
-import Unison.Codebase.Editor.HandleInput.ShowDefinition (showDefinitions)
+import Unison.Codebase.Editor.HandleInput.ShowDefinition (handleShowDefinition)
 import Unison.Codebase.Editor.HandleInput.TermResolution (resolveMainRef)
 import Unison.Codebase.Editor.HandleInput.Tests qualified as Tests
 import Unison.Codebase.Editor.HandleInput.Todo (handleTodo)
@@ -616,7 +615,7 @@ loop e = do
             DisplayI outputLoc namesToDisplay -> do
               traverse_ (displayI outputLoc) namesToDisplay
             ShowDefinitionI outputLoc showDefinitionScope query -> handleShowDefinition outputLoc showDefinitionScope query
-            EditNamespaceI paths -> handleEditNamespace LatestFileLocation paths
+            EditNamespaceI paths -> handleEditNamespace (LatestFileLocation AboveFold) paths
             FindShallowI pathArg -> handleLs pathArg
             FindI isVerbose fscope ws -> handleFindI isVerbose fscope ws input
             StructuredFindI _fscope ws -> handleStructuredFindI ws
@@ -763,7 +762,7 @@ loop e = do
                 Nothing -> do
                   Cli.respond DebugFuzzyOptionsNoResolver
             DebugFormatI -> do
-              Cli.Env {writeSource, loadSource} <- ask
+              env <- ask
               void $ runMaybeT do
                 (filePath, _) <- MaybeT Cli.getLatestFile
                 pf <- lift Cli.getLatestParsedFile
@@ -771,17 +770,17 @@ loop e = do
                 names <- lift Cli.currentNames
                 let buildPPED uf tf =
                       let names' = (fromMaybe mempty $ (UF.typecheckedToNames <$> tf) <|> (UF.toNames <$> uf)) `Names.shadowing` names
-                      in pure (PPED.makePPED (PPE.hqNamer 10 names') (PPE.suffixifyByHashName names'))
+                       in pure (PPED.makePPED (PPE.hqNamer 10 names') (PPE.suffixifyByHashName names'))
                 let formatWidth = 80
                 currentPath <- lift $ Cli.getCurrentPath
                 updates <- MaybeT $ Format.formatFile buildPPED formatWidth currentPath pf tf Nothing
                 source <-
-                  liftIO (loadSource (Text.pack filePath)) >>= \case
+                  liftIO (env.loadSource (Text.pack filePath)) >>= \case
                     Cli.InvalidSourceNameError -> lift $ Cli.returnEarly $ Output.InvalidSourceName filePath
                     Cli.LoadError -> lift $ Cli.returnEarly $ Output.SourceLoadFailed filePath
                     Cli.LoadSuccess contents -> pure contents
                 let updatedSource = Format.applyTextReplacements updates source
-                liftIO $ writeSource (Text.pack filePath) updatedSource
+                liftIO $ env.writeSource (Text.pack filePath) updatedSource True
             DebugDumpNamespacesI -> do
               let seen h = State.gets (Set.member h)
                   set h = State.modify (Set.insert h)
@@ -1264,50 +1263,6 @@ handleDependents hq = do
   Cli.setNumberedArgs . map SA.HashQualified $ types <> terms
   Cli.respond (ListDependents ppe lds types terms)
 
--- | Handle a @ShowDefinitionI@ input command, i.e. `view` or `edit`.
-handleShowDefinition :: OutputLocation -> ShowDefinitionScope -> NonEmpty (HQ.HashQualified Name) -> Cli ()
-handleShowDefinition outputLoc showDefinitionScope query = do
-  Cli.Env {codebase} <- ask
-  hqLength <- Cli.runTransaction Codebase.hashLength
-  let hasAbsoluteQuery = any (any Name.isAbsolute) query
-  (names, unbiasedPPED) <- case (hasAbsoluteQuery, showDefinitionScope) of
-    -- TODO: We should instead print each definition using the names from its project-branch root.
-    (True, _) -> do
-      root <- Cli.getCurrentProjectRoot
-      let root0 = Branch.head root
-      let names = Names.makeAbsolute $ Branch.toNames root0
-      let pped = PPED.makePPED (PPE.hqNamer 10 names) (suffixify names)
-      pure (names, pped)
-    (_, ShowDefinitionGlobal) -> do
-      -- TODO: Maybe rewrite to be properly global
-      root <- Cli.getCurrentProjectRoot
-      let root0 = Branch.head root
-      let names = Names.makeAbsolute $ Branch.toNames root0
-      let pped = PPED.makePPED (PPE.hqNamer 10 names) (suffixify names)
-      pure (names, pped)
-    (_, ShowDefinitionLocal) -> do
-      currentNames <- Cli.currentNames
-      let pped = PPED.makePPED (PPE.hqNamer 10 currentNames) (suffixify currentNames)
-      pure (currentNames, pped)
-  let pped = PPED.biasTo (mapMaybe HQ.toName (toList query)) unbiasedPPED
-  Backend.DefinitionResults terms types misses <- do
-    let nameSearch = NameSearch.makeNameSearch hqLength names
-    Cli.runTransaction (Backend.definitionsByName codebase nameSearch includeCycles Names.IncludeSuffixes (toList query))
-  showDefinitions outputLoc pped terms types misses
-  where
-    suffixify =
-      case outputLoc of
-        ConsoleLocation -> PPE.suffixifyByHash
-        FileLocation _ -> PPE.suffixifyByHashName
-        LatestFileLocation -> PPE.suffixifyByHashName
-
-    -- `view`: don't include cycles; `edit`: include cycles
-    includeCycles =
-      case outputLoc of
-        ConsoleLocation -> Backend.DontIncludeCycles
-        FileLocation _ -> Backend.IncludeCycles
-        LatestFileLocation -> Backend.IncludeCycles
-
 -- todo: compare to `getHQTerms` / `getHQTypes`.  Is one universally better?
 resolveHQToLabeledDependencies :: HQ.HashQualified Name -> Cli (Set LabeledDependency)
 resolveHQToLabeledDependencies = \case
@@ -1355,8 +1310,8 @@ doDisplay outputLoc names tm = do
   rendered <- DisplayValues.displayTerm pped loadTerm loadTypeOfTerm' evalTerm loadDecl tm
   mayFP <- case outputLoc of
     ConsoleLocation -> pure Nothing
-    FileLocation path -> Just <$> Directory.canonicalizePath path
-    LatestFileLocation -> traverse Directory.canonicalizePath $ fmap fst (loopState ^. #latestFile) <|> Just "scratch.u"
+    FileLocation path _ -> Just <$> Directory.canonicalizePath path
+    LatestFileLocation _ -> traverse Directory.canonicalizePath $ fmap fst (loopState ^. #latestFile) <|> Just "scratch.u"
   whenJust mayFP \fp -> do
     liftIO $ prependFile fp (Text.pack . P.toPlain 80 $ rendered)
   Cli.respond $ DisplayRendered mayFP rendered
@@ -1364,8 +1319,8 @@ doDisplay outputLoc names tm = do
     suffixify =
       case outputLoc of
         ConsoleLocation -> PPE.suffixifyByHash
-        FileLocation _ -> PPE.suffixifyByHashName
-        LatestFileLocation -> PPE.suffixifyByHashName
+        FileLocation _ _ -> PPE.suffixifyByHashName
+        LatestFileLocation _ -> PPE.suffixifyByHashName
 
     prependFile :: FilePath -> Text -> IO ()
     prependFile filePath txt = do
@@ -1475,7 +1430,7 @@ doCompile profile native output main = do
       outf
         | native = output
         | otherwise = output <> ".uc"
-      copts = Runtime.defaultCompileOpts { Runtime.profile = profile }
+      copts = Runtime.defaultCompileOpts {Runtime.profile = profile}
   whenJustM
     ( liftIO $
         Runtime.compileTo theRuntime copts codeLookup ppe ref outf
@@ -1661,8 +1616,8 @@ displayI outputLoc hq = do
     suffixify =
       case outputLoc of
         ConsoleLocation -> PPE.suffixifyByHash
-        FileLocation _ -> PPE.suffixifyByHashName
-        LatestFileLocation -> PPE.suffixifyByHashName
+        FileLocation _ _ -> PPE.suffixifyByHashName
+        LatestFileLocation _ -> PPE.suffixifyByHashName
 
 docsI :: Name -> Cli ()
 docsI src = do

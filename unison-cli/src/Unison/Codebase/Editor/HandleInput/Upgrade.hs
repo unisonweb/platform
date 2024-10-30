@@ -87,7 +87,7 @@ handleUpgrade oldName newName = do
   when (oldName == newName) do
     Cli.returnEarlyWithoutOutput
 
-  Cli.Env {codebase, writeSource} <- ask
+  env <- ask
 
   let oldPath = Path.Absolute (Path.fromList [NameSegment.libSegment, oldName])
   let newPath = Path.Absolute (Path.fromList [NameSegment.libSegment, newName])
@@ -156,7 +156,7 @@ handleUpgrade oldName newName = do
       unisonFile <- do
         addDefinitionsToUnisonFile
           abort
-          codebase
+          env.codebase
           (findCtorNames Output.UOUUpgrade currentLocalNames currentLocalConstructorNames)
           dependents
           UnisonFile.emptyUnisonFile
@@ -197,13 +197,13 @@ handleUpgrade oldName newName = do
         Cli.getLatestFile <&> \case
           Nothing -> "scratch.u"
           Just (file, _) -> file
-      liftIO $ writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 prettyUnisonFile)
+      liftIO $ env.writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 prettyUnisonFile) True
       Cli.returnEarly $
         Output.UpgradeFailure (projectBranch ^. #name) temporaryBranchName scratchFilePath oldName newName
 
   branchUpdates <-
     Cli.runTransactionWithRollback \abort -> do
-      Codebase.addDefsToCodebase codebase typecheckedUnisonFile
+      Codebase.addDefsToCodebase env.codebase typecheckedUnisonFile
       typecheckedUnisonFileToBranchUpdates
         abort
         (findCtorNamesMaybe Output.UOUUpgrade currentLocalNames currentLocalConstructorNames Nothing)

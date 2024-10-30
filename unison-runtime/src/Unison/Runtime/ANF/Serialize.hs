@@ -850,75 +850,87 @@ getGroupRef = GR <$> getReference <*> getWord64be
 -- So, unboxed data is completely absent from the format. We are now
 -- exchanging unison surface values, effectively.
 putValue :: (MonadPut m) => Version -> Value -> m ()
-putValue v (Partial gr [] vs) =
+putValue v (Partial gr vs) =
   putTag PartialT
     *> putGroupRef gr
-    *> putFoldable (putValue v) vs
-putValue _ (Partial {}) =
-  exn "putValue: Partial with unboxed values no longer supported"
-putValue v (Data r t [] vs) =
+    *> putFoldable (putUBValue v) vs
+putValue v (Data r t vs) =
   putTag DataT
     *> putReference r
     *> putWord64be t
-    *> putFoldable (putValue v) vs
-putValue _ (Data {}) =
-  exn "putValue: Data with unboxed contents no longer supported"
-putValue v (Cont [] bs k) =
+    *> putFoldable (putUBValue v) vs
+putValue v (Cont bs k) =
   putTag ContT
-    *> putFoldable (putValue v) bs
+    *> putFoldable (putUBValue v) bs
     *> putCont v k
-putValue _ (Cont {}) =
-  exn "putValue: Cont with unboxed stack no longer supported"
 putValue v (BLit l) =
   putTag BLitT *> putBLit v l
+
+putUBValue :: (MonadPut m) => Version -> UBValue -> m ()
+putUBValue _v Left {} = exn "putUBValue: Unboxed values no longer supported"
+putUBValue v (Right a) = putValue v a
 
 getValue :: (MonadGet m) => Version -> m Value
 getValue v =
   getTag >>= \case
     PartialT
       | Transfer vn <- v,
-        vn < 4 ->
-          Partial <$> getGroupRef <*> getList getWord64be <*> getList (getValue v)
-      | otherwise ->
-          flip Partial [] <$> getGroupRef <*> getList (getValue v)
+        vn < 4 -> do
+          gr <- getGroupRef
+          getList getWord64be >>= assertEmptyUnboxed
+          bs <- getList getUBValue
+          pure $ Partial gr bs
+      | otherwise -> do
+          gr <- getGroupRef
+          vs <- getList getUBValue
+          pure $ Partial gr vs
     DataT
       | Transfer vn <- v,
-        vn < 4 ->
-          Data
-            <$> getReference
-            <*> getWord64be
-            <*> getList getWord64be
-            <*> getList (getValue v)
-      | otherwise ->
-          (\r t -> Data r t [])
-            <$> getReference
-            <*> getWord64be
-            <*> getList (getValue v)
+        vn < 4 -> do
+          r <- getReference
+          w <- getWord64be
+          getList getWord64be >>= assertEmptyUnboxed
+          vs <- getList getUBValue
+          pure $ Data r w vs
+      | otherwise -> do
+          r <- getReference
+          w <- getWord64be
+          vs <- getList getUBValue
+          pure $ Data r w vs
     ContT
       | Transfer vn <- v,
-        vn < 4 ->
-          Cont <$> getList getWord64be <*> getList (getValue v) <*> getCont v
-      | otherwise -> Cont [] <$> getList (getValue v) <*> getCont v
+        vn < 4 -> do
+          getList getWord64be >>= assertEmptyUnboxed
+          bs <- getList getUBValue
+          k <- getCont v
+          pure $ Cont bs k
+      | otherwise -> do
+          bs <- getList getUBValue
+          k <- getCont v
+          pure $ Cont bs k
     BLitT -> BLit <$> getBLit v
+  where
+    -- Only Boxed values are supported.
+    getUBValue :: (MonadGet m) => m UBValue
+    getUBValue = Right <$> getValue v
+    assertEmptyUnboxed :: (MonadGet m) => [a] -> m ()
+    assertEmptyUnboxed [] = pure ()
+    assertEmptyUnboxed _ = exn "getValue: unboxed values no longer supported"
 
 putCont :: (MonadPut m) => Version -> Cont -> m ()
 putCont _ KE = putTag KET
-putCont v (Mark 0 ba rs ds k) =
+putCont v (Mark a rs ds k) =
   putTag MarkT
-    *> putWord64be ba
+    *> putWord64be a
     *> putFoldable putReference rs
     *> putMap putReference (putValue v) ds
     *> putCont v k
-putCont _ (Mark {}) =
-  exn "putCont: Mark with unboxed args no longer supported"
-putCont v (Push 0 j 0 n gr k) =
+putCont v (Push f n gr k) =
   putTag PushT
-    *> putWord64be j
+    *> putWord64be f
     *> putWord64be n
     *> putGroupRef gr
     *> putCont v k
-putCont _ (Push {}) =
-  exn "putCont: Push with unboxed information no longer supported"
 
 getCont :: (MonadGet m) => Version -> m Cont
 getCont v =
@@ -926,35 +938,38 @@ getCont v =
     KET -> pure KE
     MarkT
       | Transfer vn <- v,
-        vn < 4 ->
-          Mark
-            <$> getWord64be
-            <*> getWord64be
-            <*> getList getReference
-            <*> getMap getReference (getValue v)
-            <*> getCont v
+        vn < 4 -> do
+          getWord64be >>= assert0 "unboxed arg size"
+          ba <- getWord64be
+          refs <- getList getReference
+          vals <- getMap getReference (getValue v)
+          cont <- getCont v
+          pure $ Mark ba refs vals cont
       | otherwise ->
-          Mark 0
+          Mark
             <$> getWord64be
             <*> getList getReference
             <*> getMap getReference (getValue v)
             <*> getCont v
     PushT
       | Transfer vn <- v,
-        vn < 4 ->
+        vn < 4 -> do
+          getWord64be >>= assert0 "unboxed frame size"
+          bf <- getWord64be
+          getWord64be >>= assert0 "unboxed arg size"
+          ba <- getWord64be
+          gr <- getGroupRef
+          cont <- getCont v
+          pure $ Push bf ba gr cont
+      | otherwise ->
           Push
             <$> getWord64be
             <*> getWord64be
-            <*> getWord64be
-            <*> getWord64be
             <*> getGroupRef
             <*> getCont v
-      | otherwise ->
-          (\j n -> Push 0 j 0 n)
-            <$> getWord64be
-            <*> getWord64be
-            <*> getGroupRef
-            <*> getCont v
+  where
+    assert0 _name 0 = pure ()
+    assert0 name n = exn $ "getCont: malformed intermediate term. Expected " <> name <> " to be 0, but got " <> show n
 
 deserializeCode :: ByteString -> Either String Code
 deserializeCode bs = runGetS (getVersion >>= getCode) bs
