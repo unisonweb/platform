@@ -215,7 +215,7 @@ putInstr = \case
   (Info s) -> putTag InfoT *> serialize s
   (Pack r w a) -> putTag PackT *> putReference r *> putPackedTag w *> putArgs a
   (Lit l) -> putTag LitT *> putLit l
-  (BLit r tt l) -> putTag BLitT *> putReference r *> putPackedTag tt *> putLit l
+  (BLit l) -> putTag BLitT *> putLit l
   (Print i) -> putTag PrintT *> pInt i
   (Reset s) -> putTag ResetT *> putEnumSet pWord s
   (Fork i) -> putTag ForkT *> pInt i
@@ -237,7 +237,7 @@ getInstr =
     InfoT -> Info <$> deserialize
     PackT -> Pack <$> getReference <*> getPackedTag <*> getArgs
     LitT -> Lit <$> getLit
-    BLitT -> BLit <$> getReference <*> getPackedTag <*> getLit
+    BLitT -> BLit <$> getLit
     PrintT -> Print <$> gInt
     ResetT -> Reset <$> getEnumSet gWord
     ForkT -> Fork <$> gInt

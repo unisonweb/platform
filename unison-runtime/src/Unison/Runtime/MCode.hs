@@ -57,7 +57,6 @@ import Data.Bits (shiftL, shiftR, (.|.))
 import Data.Coerce
 import Data.Functor ((<&>))
 import Data.Map.Strict qualified as M
-import Data.Primitive.ByteArray
 import Data.Primitive.PrimArray
 import Data.Primitive.PrimArray qualified as PA
 import Data.Void (Void, absurd)
@@ -92,7 +91,6 @@ import Unison.Runtime.ANF
     pattern TVar,
   )
 import Unison.Runtime.ANF qualified as ANF
-import Unison.Runtime.Builtin.Types (builtinTypeNumbering)
 import Unison.Util.EnumContainers as EC
 import Unison.Util.Text (Text)
 import Unison.Var (Var)
@@ -497,9 +495,7 @@ data GInstr comb
   | -- Push a particular value onto the appropriate stack
     Lit !MLit -- value to push onto the stack
   | -- Push a particular value directly onto the boxed stack
-    -- TODO: We don't actually need the ref/packed tag here,
-    -- we can always infer them from the constructor of MLit.
-    BLit !Reference !PackedTag !MLit
+    BLit !MLit
   | -- Print a value on the unboxed stack
     Print !Int -- index of the primitive value to print
   | -- Put a delimiter on the continuation
@@ -1472,22 +1468,8 @@ litToMLit (ANF.LY r) = MY r
 emitLit :: ANF.Lit -> Instr
 emitLit = Lit . litToMLit
 
-doubleToInt :: Double -> Int
-doubleToInt d = indexByteArray (byteArrayFromList [d]) 0
-
 emitBLit :: ANF.Lit -> Instr
-emitBLit l = case l of
-  (ANF.F d) -> BLit lRef builtinTypeTag (MI $ doubleToInt d)
-  _ -> BLit lRef builtinTypeTag (litToMLit l)
-  where
-    lRef = ANF.litRef l
-    builtinTypeTag :: PackedTag
-    builtinTypeTag =
-      case M.lookup (ANF.litRef l) builtinTypeNumbering of
-        Nothing -> error "emitBLit: unknown builtin type reference"
-        Just n ->
-          let rt = toEnum (fromIntegral n)
-           in (packTags rt 0)
+emitBLit l = BLit (litToMLit l)
 
 -- Emits some fix-up code for calling functions. Some of the
 -- variables in scope come from the top-level let rec, but these

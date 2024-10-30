@@ -288,14 +288,18 @@ unitValue = Enum Rf.unitRef TT.unitTag
 lookupDenv :: Word64 -> DEnv -> Val
 lookupDenv p denv = fromMaybe (BoxedVal BlackHole) $ EC.lookup p denv
 
-buildLit :: Reference -> PackedTag -> MLit -> Closure
-buildLit _ _ (MI i) = IntClosure i
-buildLit _ _ (MN n) = NatClosure n
-buildLit _ _ (MC c) = CharClosure c
-buildLit _ _ (MT t) = Foreign (Wrap Rf.textRef t)
-buildLit _ _ (MM r) = Foreign (Wrap Rf.termLinkRef r)
-buildLit _ _ (MY r) = Foreign (Wrap Rf.typeLinkRef r)
-buildLit _ _ (MD _) = error "buildLit: double"
+buildBoxedLit :: MLit -> Closure
+buildBoxedLit = \case
+  MT t -> Foreign (Wrap Rf.textRef t)
+  MM r -> Foreign (Wrap Rf.termLinkRef r)
+  MY r -> Foreign (Wrap Rf.typeLinkRef r)
+  MI {} -> errUnboxed
+  MN {} -> errUnboxed
+  MC {} -> errUnboxed
+  MD {} -> errUnboxed
+  where
+    errUnboxed = error "buildBoxedList: unboxed type used with BLit"
+{-# INLINE buildBoxedLit #-}
 
 debugger :: (Show a) => Stack -> String -> a -> Bool
 debugger stk msg a = unsafePerformIO $ do
@@ -566,9 +570,9 @@ exec !_ !denv !_activeThreads !stk !k _ (Lit (MY r)) = do
   stk <- bump stk
   bpoke stk (Foreign (Wrap Rf.typeLinkRef r))
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (BLit rf tt l) = do
+exec !_ !denv !_activeThreads !stk !k _ (BLit l) = do
   stk <- bump stk
-  bpoke stk $ buildLit rf tt l
+  bpoke stk $ buildBoxedLit l
   pure (denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (Reset ps) = do
   (stk, a) <- saveArgs stk
