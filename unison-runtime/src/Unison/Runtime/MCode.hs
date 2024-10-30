@@ -445,7 +445,7 @@ data MLit
 
 type Instr = GInstr CombIx
 
-type RInstr clos = GInstr (RComb clos)
+type RInstr val = GInstr (RComb val)
 
 -- Instructions for manipulating the data stack in the main portion of
 -- a block
@@ -516,7 +516,7 @@ data GInstr comb
 
 type Section = GSection CombIx
 
-type RSection clos = GSection (RComb clos)
+type RSection val = GSection (RComb val)
 
 data GSection comb
   = -- Apply a function to arguments. This is the 'slow path', and
@@ -618,18 +618,18 @@ data GCombInfo comb
       !(GSection comb) -- Entry
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
-data GComb clos comb
+data GComb val comb
   = Comb {-# UNPACK #-} !(GCombInfo comb)
   | -- A pre-evaluated comb, typically a pure top-level const
-    CachedClosure !Word64 {- top level comb ix -} !clos
+    CachedVal !Word64 {- top level comb ix -} !val
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 pattern Lam ::
-  Int -> Int -> GSection comb -> GComb clos comb
+  Int -> Int -> GSection comb -> GComb val comb
 pattern Lam a f sect = Comb (LamI a f sect)
 
 -- it seems GHC can't figure this out itself
-{-# COMPLETE CachedClosure, Lam #-}
+{-# COMPLETE CachedVal, Lam #-}
 
 instance Bifunctor GComb where
   bimap = bimapDefault
@@ -638,26 +638,26 @@ instance Bifoldable GComb where
   bifoldMap = bifoldMapDefault
 
 instance Bitraversable GComb where
-  bitraverse f _ (CachedClosure cix c) = CachedClosure cix <$> f c
+  bitraverse f _ (CachedVal cix c) = CachedVal cix <$> f c
   bitraverse _ f (Lam a fr s) = Lam a fr <$> traverse f s
 
-type RCombs clos = GCombs clos (RComb clos)
+type RCombs val = GCombs val (RComb val)
 
 -- | The fixed point of a GComb where all references to a Comb are themselves Combs.
-newtype RComb clos = RComb {unRComb :: GComb clos (RComb clos)}
+newtype RComb val = RComb {unRComb :: GComb val (RComb val)}
 
-type RCombInfo clos = GCombInfo (RComb clos)
+type RCombInfo val = GCombInfo (RComb val)
 
-instance Show (RComb clos) where
+instance Show (RComb val) where
   show _ = "<RCOMB>"
 
 -- | Map of combinators, parameterized by comb reference type
-type GCombs clos comb = EnumMap Word64 (GComb clos comb)
+type GCombs val comb = EnumMap Word64 (GComb val comb)
 
 -- | A reference to a combinator, parameterized by comb
 type Ref = GRef CombIx
 
-type RRef clos = GRef (RComb clos)
+type RRef val = GRef (RComb val)
 
 data GRef comb
   = Stk !Int -- stack reference to a closure
@@ -667,7 +667,7 @@ data GRef comb
 
 type Branch = GBranch CombIx
 
-type RBranch clos = GBranch (RComb clos)
+type RBranch val = GBranch (RComb val)
 
 data GBranch comb
   = -- if tag == n then t else f
@@ -792,10 +792,10 @@ emitCombs rns grpr grpn (Rec grp ent) =
 -- tying the knot recursively when necessary.
 resolveCombs ::
   -- Existing in-scope combs that might be referenced
-  Maybe (EnumMap Word64 (RCombs clos)) ->
+  Maybe (EnumMap Word64 (RCombs val)) ->
   -- Combinators which need their knots tied.
-  EnumMap Word64 (GCombs clos CombIx) ->
-  EnumMap Word64 (RCombs clos)
+  EnumMap Word64 (GCombs val CombIx) ->
+  EnumMap Word64 (RCombs val)
 resolveCombs mayExisting combs =
   -- Fixed point lookup;
   -- We make sure not to force resolved Combs or we'll loop forever.
@@ -1537,13 +1537,13 @@ demuxArgs = \case
   [(i, _), (j, _)] -> VArg2 i j
   args -> VArgN $ PA.primArrayFromList (fst <$> args)
 
-combDeps :: GComb clos comb -> [Word64]
+combDeps :: GComb val comb -> [Word64]
 combDeps (Lam _ _ s) = sectionDeps s
-combDeps (CachedClosure {}) = []
+combDeps (CachedVal {}) = []
 
 combTypes :: GComb any comb -> [Word64]
 combTypes (Lam _ _ s) = sectionTypes s
-combTypes (CachedClosure {}) = []
+combTypes (CachedVal {}) = []
 
 sectionDeps :: GSection comb -> [Word64]
 sectionDeps (App _ (Env (CIx _ w _) _) _) = [w]
@@ -1608,7 +1608,7 @@ prettyCombs w es =
     id
     (mapToList es)
 
-prettyComb :: (Show clos, Show comb) => Word64 -> Word64 -> GComb clos comb -> ShowS
+prettyComb :: (Show val, Show comb) => Word64 -> Word64 -> GComb val comb -> ShowS
 prettyComb w i = \case
   (Lam a _ s) ->
     shows w
@@ -1617,7 +1617,7 @@ prettyComb w i = \case
       . shows a
       . showString ":\n"
       . prettySection 2 s
-  (CachedClosure a b) ->
+  (CachedVal a b) ->
     shows w
       . showString ":"
       . shows i

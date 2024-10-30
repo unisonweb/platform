@@ -176,7 +176,7 @@ data K
     Mark
       !Int -- pending args
       !(EnumSet Word64)
-      !(EnumMap Word64 Closure)
+      !(EnumMap Word64 Val)
       !K
   | -- save information about a frame for later resumption
     Push
@@ -184,7 +184,7 @@ data K
       !Int -- pending args
       !CombIx -- resumption section reference
       !Int -- stack guard
-      !(RSection Closure) -- resumption section
+      !(RSection Val) -- resumption section
       !K
 
 instance Eq K where
@@ -210,7 +210,7 @@ instance Ord K where
   compare (Mark {}) _ = LT
   compare _ (Mark {}) = GT
 
-newtype Closure = Closure {unClosure :: (GClosure (RComb Closure))}
+newtype Closure = Closure {unClosure :: (GClosure (RComb Val))}
   deriving stock (Show, Eq, Ord)
 
 -- | Implementation for Unison sequences.
@@ -476,7 +476,7 @@ pattern UnboxedDouble d <- TypedUnboxed (intToDouble -> d) ((== TT.floatTag) -> 
 
 type SegList = [Val]
 
-pattern PApV :: CombIx -> RCombInfo Closure -> SegList -> Closure
+pattern PApV :: CombIx -> RCombInfo Val -> SegList -> Closure
 pattern PApV cix rcomb segs <-
   PAp cix rcomb (segToList -> segs)
   where
@@ -666,6 +666,22 @@ data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
   -- unboxed side is garbage and should not be compared.
   -- See universalEq.
   deriving (Show)
+
+instance Eq Val where
+  (==) = \cases
+    (Val u (ut@UnboxedTypeTag {})) (Val v (vt@UnboxedTypeTag {})) -> u == v && ut == vt
+    (Val _ (UnboxedTypeTag {})) (Val _ _) -> False
+    (Val _ _) (Val _ (UnboxedTypeTag {})) -> False
+    (Val _ x) (Val _ y) -> x == y
+
+instance Ord Val where
+  compare = \cases
+    (UnboxedVal tu1) (UnboxedVal tu2) ->
+      (compare (getTUTag tu1) (getTUTag tu2))
+        <> compare (getTUInt tu1) (getTUInt tu2)
+    (BoxedVal c1) (BoxedVal c2) -> compare c1 c2
+    (UnboxedVal _) (BoxedVal _) -> LT
+    (BoxedVal _) (UnboxedVal _) -> GT
 
 valToTypedUnboxed :: Val -> Maybe TypedUnboxed
 valToTypedUnboxed (Val u (UnboxedTypeTag t)) = Just $ TypedUnboxed u t
@@ -1170,7 +1186,11 @@ closureTermRefs f = \case
 
 contTermRefs :: (Monoid m) => (Reference -> m) -> K -> m
 contTermRefs f (Mark _ _ m k) =
-  foldMap (closureTermRefs f) m <> contTermRefs f k
+  ( m & foldMap \case
+      BoxedVal clo -> closureTermRefs f clo
+      _ -> mempty
+  )
+    <> contTermRefs f k
 contTermRefs f (Push _ _ (CIx r _ _) _ _ k) =
   f r <> contTermRefs f k
 contTermRefs _ _ = mempty

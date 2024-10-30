@@ -44,8 +44,8 @@ putComb :: (MonadPut m) => (clos -> m ()) -> GComb clos comb -> m ()
 putComb pClos = \case
   (Lam a f body) ->
     putTag LamT *> pInt a *> pInt f *> putSection body
-  (CachedClosure w c) ->
-    putTag CachedClosureT *> putNat w *> pClos c
+  (CachedVal w v) ->
+    putTag CachedClosureT *> putNat w *> pClos v
 
 getComb :: (MonadGet m) => m (GComb Void CombIx)
 getComb =

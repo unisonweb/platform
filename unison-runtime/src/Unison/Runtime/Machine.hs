@@ -82,21 +82,21 @@ type ActiveThreads = Maybe (IORef (Set ThreadId))
 type Tag = Word64
 
 -- dynamic environment
-type DEnv = EnumMap Word64 Closure
+type DEnv = EnumMap Word64 Val
 
-type MCombs = RCombs Closure
+type MCombs = RCombs Val
 
 type Combs = GCombs Void CombIx
 
-type MSection = RSection Closure
+type MSection = RSection Val
 
-type MBranch = RBranch Closure
+type MBranch = RBranch Val
 
-type MInstr = RInstr Closure
+type MInstr = RInstr Val
 
-type MComb = RComb Closure
+type MComb = RComb Val
 
-type MRef = RRef Closure
+type MRef = RRef Val
 
 data Tracer
   = NoTrace
@@ -200,10 +200,10 @@ eval0 !env !activeThreads !co = do
     topDEnv cmbs <$> readTVarIO (refTy env) <*> readTVarIO (refTm env)
   eval env denv activeThreads stk (k KE) dummyRef co
 
-mCombClosure :: CombIx -> MComb -> Closure
-mCombClosure cix (RComb (Comb comb)) =
-  PAp cix comb nullSeg
-mCombClosure _ (RComb (CachedClosure _ clo)) = clo
+mCombVal :: CombIx -> MComb -> Val
+mCombVal cix (RComb (Comb comb)) =
+  BoxedVal (PAp cix comb nullSeg)
+mCombVal _ (RComb (CachedVal _ clo)) = clo
 
 topDEnv ::
   EnumMap Word64 MCombs ->
@@ -215,7 +215,7 @@ topDEnv combs rfTy rfTm
     rcrf <- Builtin (DTx.pack "raise"),
     Just j <- M.lookup rcrf rfTm,
     cix <- CIx rcrf j 0,
-    clo <- mCombClosure cix $ rCombSection combs cix =
+    clo <- mCombVal cix $ rCombSection combs cix =
       ( EC.mapSingleton n clo,
         Mark 0 (EC.setSingleton n) mempty
       )
@@ -249,7 +249,7 @@ apply0 !callback !env !threadTracker !i = do
       apply env denv threadTracker stk (kf k0) True ZArgs . BoxedVal $
         PAp entryCix entryComb nullSeg
     -- if it's cached, we can just finish
-    CachedClosure _ clo -> bump stk >>= \stk -> bpoke stk clo
+    CachedVal _ val -> bump stk >>= \stk -> poke stk val
   where
     k0 = maybe KE (CB . Hook) callback
 
@@ -291,8 +291,8 @@ jump0 !callback !env !activeThreads !clo = do
 unitValue :: Closure
 unitValue = Enum Rf.unitRef TT.unitTag
 
-lookupDenv :: Word64 -> DEnv -> Closure
-lookupDenv p denv = fromMaybe BlackHole $ EC.lookup p denv
+lookupDenv :: Word64 -> DEnv -> Val
+lookupDenv p denv = fromMaybe (BoxedVal BlackHole) $ EC.lookup p denv
 
 buildLit :: Reference -> PackedTag -> MLit -> Closure
 buildLit _ _ (MI i) = IntClosure i
@@ -338,12 +338,12 @@ exec !env !denv !_activeThreads !stk !k _ (Name r args) = do
   stk <- name stk args v
   pure (denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (SetDyn p i) = do
-  clo <- bpeekOff stk i
-  pure (EC.mapInsert p clo denv, stk, k)
+  val <- peekOff stk i
+  pure (EC.mapInsert p val denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (Capture p) = do
   (cap, denv, stk, k) <- splitCont denv stk k p
   stk <- bump stk
-  bpoke stk cap
+  poke stk cap
   pure (denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (UPrim1 op i) = do
   stk <- uprim1 stk op i
@@ -787,10 +787,10 @@ enter !env !denv !activeThreads !stk !k !ck !args = \case
     -- TODO: start putting references in `Call` if we ever start
     -- detecting saturated calls.
     eval env denv activeThreads stk k dummyRef entry
-  (RComb (CachedClosure _cix clos)) -> do
+  (RComb (CachedVal _cix val)) -> do
     stk <- discardFrame stk
     stk <- bump stk
-    bpoke stk clos
+    poke stk val
     yield env denv activeThreads stk k
 {-# INLINE enter #-}
 
@@ -1848,10 +1848,10 @@ yield !env !denv !activeThreads !stk !k = leap denv k
   where
     leap !denv0 (Mark a ps cs k) = do
       let denv = cs <> EC.withoutKeys denv0 ps
-          clo = denv0 EC.! EC.findMin ps
+          val = denv0 EC.! EC.findMin ps
       bpoke stk . DataB1 Rf.effectRef (PackedTag 0) =<< bpeek stk
       stk <- adjustArgs stk a
-      apply env denv activeThreads stk k False (VArg1 0) (BoxedVal clo)
+      apply env denv activeThreads stk k False (VArg1 0) val
     leap !denv (Push fsz asz (CIx ref _ _) f nx k) = do
       stk <- restoreFrame stk fsz asz
       stk <- ensure stk f
@@ -1894,12 +1894,12 @@ splitCont ::
   Stack ->
   K ->
   Word64 ->
-  IO (Closure, DEnv, Stack, K)
+  IO (Val, DEnv, Stack, K)
 splitCont !denv !stk !k !p =
   walk denv asz KE k
   where
     asz = asize stk
-    walk :: EnumMap Word64 Closure -> SZ -> K -> K -> IO (Closure, EnumMap Word64 Closure, Stack, K)
+    walk :: EnumMap Word64 Val -> SZ -> K -> K -> IO (Val, EnumMap Word64 Val, Stack, K)
     walk !denv !sz !ck KE =
       die "fell off stack" >> finish denv sz 0 ck KE
     walk !denv !sz !ck (CB _) =
@@ -1917,11 +1917,11 @@ splitCont !denv !stk !k !p =
         (Push n a br p brSect ck)
         k
 
-    finish :: EnumMap Word64 Closure -> SZ -> SZ -> K -> K -> (IO (Closure, EnumMap Word64 Closure, Stack, K))
+    finish :: EnumMap Word64 Val -> SZ -> SZ -> K -> K -> (IO (Val, EnumMap Word64 Val, Stack, K))
     finish !denv !sz !a !ck !k = do
       (seg, stk) <- grab stk sz
       stk <- adjustArgs stk a
-      return (Captured ck asz seg, denv, stk, k)
+      return (BoxedVal $ Captured ck asz seg, denv, stk, k)
 {-# INLINE splitCont #-}
 
 discardCont ::
@@ -1936,10 +1936,10 @@ discardCont denv stk k p =
 {-# INLINE discardCont #-}
 
 resolve :: CCache -> DEnv -> Stack -> MRef -> IO Val
-resolve _ _ _ (Env cix mcomb) = pure . boxedVal $ mCombClosure cix mcomb
+resolve _ _ _ (Env cix mcomb) = pure $ mCombVal cix mcomb
 resolve _ _ stk (Stk i) = peekOff stk i
 resolve env denv _ (Dyn i) = case EC.lookup i denv of
-  Just clo -> pure . boxedVal $ clo
+  Just val -> pure val
   Nothing -> unhandledErr "resolve" env i
 
 unhandledErr :: String -> CCache -> Word64 -> IO a
@@ -2161,15 +2161,15 @@ cacheAdd0 ntys0 termSuperGroups sands cc = do
     pure $ int `seq` rtm `seq` newCombRefs `seq` updatedCombs `seq` nsn `seq` ncc `seq` nsc `seq` (unresolvedCacheableCombs, unresolvedNonCacheableCombs)
   preEvalTopLevelConstants unresolvedCacheableCombs unresolvedNonCacheableCombs cc
 
-preEvalTopLevelConstants :: (EnumMap Word64 (GCombs Closure CombIx)) -> (EnumMap Word64 (GCombs Closure CombIx)) -> CCache -> IO ()
+preEvalTopLevelConstants :: (EnumMap Word64 (GCombs Val CombIx)) -> (EnumMap Word64 (GCombs Val CombIx)) -> CCache -> IO ()
 preEvalTopLevelConstants cacheableCombs newCombs cc = do
   activeThreads <- Just <$> UnliftIO.newIORef mempty
   evaluatedCacheableCombsVar <- newTVarIO mempty
   for_ (EC.mapToList cacheableCombs) \(w, _) -> do
     let hook stk = do
-          clos <- bpeek stk
+          val <- peek stk
           atomically $ do
-            modifyTVar evaluatedCacheableCombsVar $ EC.mapInsert w (EC.mapSingleton 0 $ CachedClosure w clos)
+            modifyTVar evaluatedCacheableCombsVar $ EC.mapInsert w (EC.mapSingleton 0 $ CachedVal w val)
     apply0 (Just hook) cc activeThreads w
 
   evaluatedCacheableCombs <- readTVarIO evaluatedCacheableCombsVar
@@ -2250,7 +2250,7 @@ reflectValue rty = goV
     goK KE = pure ANF.KE
     goK (Mark a ps de k) = do
       ps <- traverse refTy (EC.setToList ps)
-      de <- traverse (\(k, v) -> (,) <$> refTy k <*> goV (boxedVal v {- TODO: Double check this -})) (mapToList de)
+      de <- traverse (\(k, v) -> (,) <$> refTy k <*> goV v) (mapToList de)
       ANF.Mark (fromIntegral a) ps (M.fromList de) <$> goK k
     goK (Push f a cix _ _rsect k) =
       ANF.Push
@@ -2333,8 +2333,8 @@ reifyValue0 (combs, rty, rtm) = goV
     goV (ANF.Partial gr vs) =
       goIx gr >>= \case
         (cix, RComb (Comb rcomb)) -> boxedVal . PApV cix rcomb <$> traverse goV vs
-        (_, RComb (CachedClosure _ clo))
-          | [] <- vs -> pure $ boxedVal clo
+        (_, RComb (CachedVal _ val))
+          | [] <- vs -> pure val
           | otherwise -> die . err $ msg
           where
             msg = "reifyValue0: non-trivial partial application to cached value"
@@ -2356,7 +2356,7 @@ reifyValue0 (combs, rty, rtm) = goV
     goK (ANF.Mark a ps de k) =
       mrk
         <$> traverse refTy ps
-        <*> traverse (\(k, v) -> (,) <$> refTy k <*> (expectClosure <$> goV v)) (M.toList de)
+        <*> traverse (\(k, v) -> (,) <$> refTy k <*> (goV v)) (M.toList de)
         <*> goK k
       where
         mrk ps de k =
@@ -2375,9 +2375,6 @@ reifyValue0 (combs, rty, rtm) = goV
           die . err $
             "tried to reify a continuation with a cached value resumption"
               ++ show r
-    expectClosure :: Val -> Closure
-    expectClosure v@(UnboxedVal {}) = error $ "expectClosure: Expected a closure val, but got:" <> show v
-    expectClosure (BoxedVal c) = c
 
     goL :: ANF.BLit -> IO Val
     goL (ANF.Text t) = pure . boxedVal . Foreign $ Wrap Rf.textRef t

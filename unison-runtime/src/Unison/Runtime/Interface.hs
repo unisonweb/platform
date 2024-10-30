@@ -1358,7 +1358,7 @@ restoreCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
     srcCombs =
       let builtinCombs = mapWithKey (\k v -> emitComb @Symbol rns (rf k) k mempty (0, v)) numberedTermLookup
        in builtinCombs <> cs
-    combs :: EnumMap Word64 (RCombs Closure)
+    combs :: EnumMap Word64 (RCombs Val)
     combs =
       srcCombs
         & absurdCombs
