@@ -791,14 +791,22 @@ apply !env !denv !activeThreads !stk !k !ck !args !val =
       case comb of
         LamI a f entry
           | ck || a <= ac -> do
+              !_ <- pure $ debugger stk "apply-LamI-beforeEnsure" ()
               stk <- ensure stk f
+              !_ <- pure $ debugger stk "apply-LamI-beforeMove" ()
               stk <- moveArgs stk args
+              !_ <- pure $ debugger stk "apply-LamI-afterMove" ()
               stk <- dumpSeg stk seg A
+              !_ <- pure $ debugger stk "apply-LamI-afterdumpSeg" ()
               stk <- acceptArgs stk a
+              !_ <- pure $ debugger stk "apply-LamI-afteracceptArgs" ()
               eval env denv activeThreads stk k combRef entry
           | otherwise -> do
+              !_ <- pure $ debugger stk "apply-LamIotherwise-beforeCloseArgs" ()
               seg <- closeArgs C stk seg args
+              !_ <- pure $ debugger stk "apply-LamIotherwise-afterCloseArgs" ()
               stk <- discardFrame =<< frameArgs stk
+              !_ <- pure $ debugger stk "apply-LamIotherwise-afterDiscardFrame" ()
               stk <- bump stk
               bpoke stk $ PAp cix comb seg
               yield env denv activeThreads stk k
@@ -887,7 +895,9 @@ moveArgs !stk (VArgR i l) = do
   stk <- prepareArgs stk (ArgR i l)
   pure stk
 moveArgs !stk (VArgN as) = do
+  !_ <- pure $ debugger stk "before prepareArgs" as
   stk <- prepareArgs stk (ArgN as)
+  !_ <- pure $ debugger stk "after prepareArgs" as
   pure stk
 moveArgs !stk (VArgV i) = do
   stk <-
