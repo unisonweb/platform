@@ -18,11 +18,7 @@ module Unison.Runtime.Stack
         Captured,
         Foreign,
         BlackHole,
-        UnboxedTypeTag,
-        CharClosure,
-        NatClosure,
-        DoubleClosure,
-        IntClosure
+        UnboxedTypeTag
       ),
     IxClosure,
     Callback (..),
@@ -47,15 +43,6 @@ module Unison.Runtime.Stack
       ),
     boxedVal,
     USeq,
-    TypedUnboxed
-      ( TypedUnboxed,
-        getTUInt,
-        getTUTag,
-        UnboxedChar,
-        UnboxedNat,
-        UnboxedInt,
-        UnboxedDouble
-      ),
     traceK,
     frameDataSize,
     marshalToForeign,
@@ -109,8 +96,6 @@ module Unison.Runtime.Stack
     upokeT,
     upokeOffT,
     unsafePokeIasN,
-    pokeTU,
-    pokeOffTU,
     bump,
     bumpn,
     grab,
@@ -216,12 +201,12 @@ data GClosure comb
       {-# UNPACK #-} !(GCombInfo comb)
       {-# UNPACK #-} !Seg -- args
   | GEnum !Reference !PackedTag
-  | GDataU1 !Reference !PackedTag !TypedUnboxed
-  | GDataU2 !Reference !PackedTag !TypedUnboxed !TypedUnboxed
+  | GDataU1 !Reference !PackedTag !Val
+  | GDataU2 !Reference !PackedTag !Val !Val
   | GDataB1 !Reference !PackedTag !(GClosure comb)
   | GDataB2 !Reference !PackedTag !(GClosure comb) !(GClosure comb)
-  | GDataUB !Reference !PackedTag !TypedUnboxed !(GClosure comb)
-  | GDataBU !Reference !PackedTag !(GClosure comb) !TypedUnboxed
+  | GDataUB !Reference !PackedTag !Val !(GClosure comb)
+  | GDataBU !Reference !PackedTag !(GClosure comb) !Val
   | GDataG !Reference !PackedTag {-# UNPACK #-} !Seg
   | -- code cont, arg size, u/b data stacks
     GCaptured !K !Int {-# UNPACK #-} !Seg
@@ -311,17 +296,14 @@ traceK begin = dedup (begin, 1)
 splitData :: Closure -> Maybe (Reference, PackedTag, SegList)
 splitData = \case
   (Enum r t) -> Just (r, t, [])
-  (DataU1 r t u) -> Just (r, t, [typedUnboxedToVal u])
-  (DataU2 r t i j) -> Just (r, t, [typedUnboxedToVal i, typedUnboxedToVal j])
+  (DataU1 r t u) -> Just (r, t, [u])
+  (DataU2 r t i j) -> Just (r, t, [i, j])
   (DataB1 r t x) -> Just (r, t, [boxedVal x])
   (DataB2 r t x y) -> Just (r, t, [boxedVal x, boxedVal y])
-  (DataUB r t u b) -> Just (r, t, [typedUnboxedToVal u, boxedVal b])
-  (DataBU r t b u) -> Just (r, t, [boxedVal b, typedUnboxedToVal u])
+  (DataUB r t u b) -> Just (r, t, [u, boxedVal b])
+  (DataBU r t b u) -> Just (r, t, [boxedVal b, u])
   (DataG r t seg) -> Just (r, t, segToList seg)
   _ -> Nothing
-
-typedUnboxedToVal :: TypedUnboxed -> Val
-typedUnboxedToVal (TypedUnboxed i t) = Val i (UnboxedTypeTag t)
 
 -- | Converts a list of integers representing an unboxed segment back into the
 -- appropriate segment. Segments are stored backwards in the runtime, so this
@@ -365,38 +347,9 @@ pattern DataC rf ct segs <-
   where
     DataC rf ct segs = formData rf ct segs
 
--- | An unboxed value with an accompanying tag indicating its type.
-data TypedUnboxed = TypedUnboxed {getTUInt :: !Int, getTUTag :: !PackedTag}
-  deriving (Show, Eq)
-
-instance Ord TypedUnboxed where
-  -- Compare type tags first.
-  compare (TypedUnboxed i t) (TypedUnboxed i' t') = compare t t' <> compare i i'
-
-pattern CharClosure :: Char -> Closure
-pattern CharClosure c <- (unpackUnboxedClosure TT.charTag -> Just (Char.chr -> c))
-  where
-    CharClosure c = DataU1 Ty.charRef TT.charTag (TypedUnboxed (Char.ord c) TT.charTag)
-
-pattern NatClosure :: Word64 -> Closure
-pattern NatClosure n <- (unpackUnboxedClosure TT.natTag -> Just (toEnum -> n))
-  where
-    NatClosure n = DataU1 Ty.natRef TT.natTag (TypedUnboxed (fromEnum n) TT.natTag)
-
-pattern DoubleClosure :: Double -> Closure
-pattern DoubleClosure d <- (unpackUnboxedClosure TT.floatTag -> Just (intToDouble -> d))
-  where
-    DoubleClosure d = DataU1 Ty.floatRef TT.floatTag (TypedUnboxed (doubleToInt d) TT.floatTag)
-
-pattern IntClosure :: Int -> Closure
-pattern IntClosure i <- (unpackUnboxedClosure TT.intTag -> Just i)
-  where
-    IntClosure i = DataU1 Ty.intRef TT.intTag (TypedUnboxed i TT.intTag)
-
 matchCharVal :: Val -> Maybe Char
 matchCharVal = \case
   (Val u (UnboxedTypeTag tt)) | tt == TT.charTag -> Just (Char.chr u)
-  (Val _ (CharClosure c)) -> Just c
   _ -> Nothing
 
 pattern CharVal :: Char -> Val
@@ -407,7 +360,6 @@ pattern CharVal c <- (matchCharVal -> Just c)
 matchNatVal :: Val -> Maybe Word64
 matchNatVal = \case
   (Val u (UnboxedTypeTag tt)) | tt == TT.natTag -> Just (toEnum u)
-  (Val _ (NatClosure n)) -> Just n
   _ -> Nothing
 
 pattern NatVal :: Word64 -> Val
@@ -418,7 +370,6 @@ pattern NatVal n <- (matchNatVal -> Just n)
 matchDoubleVal :: Val -> Maybe Double
 matchDoubleVal = \case
   (Val u (UnboxedTypeTag tt)) | tt == TT.floatTag -> Just (intToDouble u)
-  (Val _ (DoubleClosure d)) -> Just d
   _ -> Nothing
 
 pattern DoubleVal :: Double -> Val
@@ -429,7 +380,6 @@ pattern DoubleVal d <- (matchDoubleVal -> Just d)
 matchIntVal :: Val -> Maybe Int
 matchIntVal = \case
   (Val u (UnboxedTypeTag tt)) | tt == TT.intTag -> Just u
-  (Val _ (IntClosure i)) -> Just i
   _ -> Nothing
 
 pattern IntVal :: Int -> Val
@@ -439,36 +389,11 @@ pattern IntVal i <- (matchIntVal -> Just i)
 
 doubleToInt :: Double -> Int
 doubleToInt d = indexByteArray (BA.byteArrayFromList [d]) 0
+{-# INLINE doubleToInt #-}
 
 intToDouble :: Int -> Double
 intToDouble w = indexByteArray (BA.byteArrayFromList [w]) 0
-
-unpackUnboxedClosure :: PackedTag -> Closure -> Maybe Int
-unpackUnboxedClosure expectedTag = \case
-  DataU1 _ref tag (TypedUnboxed i _)
-    | tag == expectedTag -> Just i
-  _ -> Nothing
-{-# INLINE unpackUnboxedClosure #-}
-
-pattern UnboxedChar :: Char -> TypedUnboxed
-pattern UnboxedChar c <- TypedUnboxed (Char.chr -> c) ((== TT.charTag) -> True)
-  where
-    UnboxedChar c = TypedUnboxed (Char.ord c) TT.charTag
-
-pattern UnboxedNat :: Word64 -> TypedUnboxed
-pattern UnboxedNat n <- TypedUnboxed (toEnum -> n) ((== TT.natTag) -> True)
-  where
-    UnboxedNat n = TypedUnboxed (fromEnum n) TT.natTag
-
-pattern UnboxedInt :: Int -> TypedUnboxed
-pattern UnboxedInt i <- TypedUnboxed i ((== TT.intTag) -> True)
-  where
-    UnboxedInt i = TypedUnboxed i TT.intTag
-
-pattern UnboxedDouble :: Double -> TypedUnboxed
-pattern UnboxedDouble d <- TypedUnboxed (intToDouble -> d) ((== TT.floatTag) -> True)
-  where
-    UnboxedDouble d = TypedUnboxed (doubleToInt d) TT.floatTag
+{-# INLINE intToDouble #-}
 
 type SegList = [Val]
 
@@ -666,28 +591,26 @@ instance Eq Val where
 
 instance Ord Val where
   compare = \cases
-    (UnboxedVal tu1) (UnboxedVal tu2) ->
-      (compare (getTUTag tu1) (getTUTag tu2))
-        <> compare (getTUInt tu1) (getTUInt tu2)
     (BoxedVal c1) (BoxedVal c2) -> compare c1 c2
+    (UnboxedVal (Val i1 t1)) (UnboxedVal (Val i2 t2)) -> compare t1 t2 <> compare i1 i2
     (UnboxedVal _) (BoxedVal _) -> LT
     (BoxedVal _) (UnboxedVal _) -> GT
 
-valToTypedUnboxed :: Val -> Maybe TypedUnboxed
-valToTypedUnboxed (Val u (UnboxedTypeTag t)) = Just $ TypedUnboxed u t
+-- | Matches a Val which is known to be unboxed, and returns the entire original value.
+valToTypedUnboxed :: Val -> Maybe Val
+valToTypedUnboxed v@(Val _ (UnboxedTypeTag {})) = Just v
 valToTypedUnboxed _ = Nothing
 
--- | TODO: We need to either adjust this to catch `DataU1` closures as well, or stop creating DataU1 closures for
--- unboxed values in the first place.
-pattern UnboxedVal :: TypedUnboxed -> Val
+pattern UnboxedVal :: Val -> Val
 pattern UnboxedVal t <- (valToTypedUnboxed -> Just t)
   where
-    UnboxedVal (TypedUnboxed i t) = Val i (UnboxedTypeTag t)
+    UnboxedVal v = v
 
 valToBoxed :: Val -> Maybe Closure
 valToBoxed UnboxedVal {} = Nothing
 valToBoxed (Val _ b) = Just b
 
+-- | Matches a Val which is known to be boxed, and returns the closure portion.
 pattern BoxedVal :: Closure -> Val
 pattern BoxedVal b <- (valToBoxed -> Just b)
   where
@@ -772,10 +695,6 @@ unsafePokeIasN stk n = do
   upokeT stk n TT.natTag
 {-# INLINE unsafePokeIasN #-}
 
-pokeTU :: Stack -> TypedUnboxed -> IO ()
-pokeTU stk !(TypedUnboxed u t) = poke stk (Val u (UnboxedTypeTag t))
-{-# INLINE pokeTU #-}
-
 -- | Store an unboxed tag to later match on.
 -- Often used to indicate the constructor of a data type that's been unpacked onto the stack,
 -- or some tag we're about to branch on.
@@ -818,10 +737,6 @@ upokeOffT stk i u t = do
   bpokeOff stk i (UnboxedTypeTag t)
   writeByteArray (ustk stk) (sp stk - i) u
 {-# INLINE upokeOffT #-}
-
-pokeOffTU :: Stack -> Off -> TypedUnboxed -> IO ()
-pokeOffTU stk i (TypedUnboxed u t) = pokeOff stk i (Val u (UnboxedTypeTag t))
-{-# INLINE pokeOffTU #-}
 
 bpokeOff :: Stack -> Off -> BVal -> IO ()
 bpokeOff (Stack _ _ sp _ bstk) i b = writeArray bstk (sp - i) b
