@@ -1,11 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE ViewPatterns #-}
-
 module Unison.Runtime.Stack
   ( K (..),
     GClosure (..),
@@ -282,6 +274,14 @@ pattern BlackHole = Closure GBlackHole
 
 pattern UnboxedTypeTag t = Closure (GUnboxedTypeTag t)
 
+{-# COMPLETE PAp, Enum, DataU1, DataU2, DataB1, DataB2, DataUB, DataBU, DataG, Captured, Foreign, UnboxedTypeTag, BlackHole #-}
+
+{-# COMPLETE DataC, PAp, Captured, Foreign, BlackHole, UnboxedTypeTag #-}
+
+{-# COMPLETE DataC, PApV, Captured, Foreign, BlackHole, UnboxedTypeTag #-}
+
+{-# COMPLETE DataC, PApV, CapV, Foreign, BlackHole, UnboxedTypeTag #-}
+
 -- We can avoid allocating a closure for common type tags on each poke by having shared top-level closures for them.
 natTypeTag :: Closure
 natTypeTag = UnboxedTypeTag TT.natTag
@@ -298,10 +298,6 @@ charTypeTag = UnboxedTypeTag TT.charTag
 floatTypeTag :: Closure
 floatTypeTag = UnboxedTypeTag TT.floatTag
 {-# NOINLINE floatTypeTag #-}
-
-{-# COMPLETE PAp, Enum, DataU1, DataU2, DataB1, DataB2, DataUB, DataBU, DataG, Captured, Foreign, UnboxedTypeTag, BlackHole #-}
-
-{-# COMPLETE DataC, Captured, Foreign, UnboxedTypeTag, BlackHole #-}
 
 traceK :: Reference -> K -> [(Reference, Int)]
 traceK begin = dedup (begin, 1)
@@ -510,12 +506,6 @@ segFromList xs =
       ( \(Val unboxed boxed) -> ([unboxed], [boxed])
       )
     & \(us, bs) -> (useg us, bseg bs)
-
-{-# COMPLETE DataC, PAp, Captured, Foreign, BlackHole #-}
-
-{-# COMPLETE DataC, PApV, Captured, Foreign, BlackHole #-}
-
-{-# COMPLETE DataC, PApV, CapV, Foreign, BlackHole #-}
 
 marshalToForeign :: (HasCallStack) => Closure -> Foreign
 marshalToForeign (Foreign x) = x

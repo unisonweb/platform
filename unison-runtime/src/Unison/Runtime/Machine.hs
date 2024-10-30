@@ -1,9 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Unison.Runtime.Machine where
 
@@ -2245,6 +2241,7 @@ reflectValue rty = goV
             ANF.Cont <$> traverse goV segs <*> goK k
           (Foreign f) -> ANF.BLit <$> goF f
           BlackHole -> die $ err "black hole"
+          UnboxedTypeTag {} -> die $ err "impossible unboxed type tag"
 
     goK (CB _) = die $ err "callback continuation"
     goK KE = pure ANF.KE
@@ -2400,7 +2397,8 @@ closureNum PAp {} = 0
 closureNum DataC {} = 1
 closureNum Captured {} = 2
 closureNum Foreign {} = 3
-closureNum BlackHole {} = error "BlackHole"
+closureNum UnboxedTypeTag {} = 4
+closureNum BlackHole {} = 5
 
 universalEq ::
   (Foreign -> Foreign -> Bool) ->
@@ -2537,6 +2535,8 @@ universalCompare frn = cmpVal False
           Just ar <- maybeUnwrapForeign Rf.iarrayRef fr ->
             arrayCmp (cmpc tyEq) al ar
         | otherwise -> frn fl fr
+      (UnboxedTypeTag t1) (UnboxedTypeTag t2) -> compare t1 t2
+      (BlackHole) (BlackHole) -> EQ
       c d -> comparing closureNum c d
     cmpValList :: Bool -> [Val] -> [Val] -> Ordering
     cmpValList tyEq vs1 vs2 =
