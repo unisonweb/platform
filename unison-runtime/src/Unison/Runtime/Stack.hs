@@ -492,7 +492,7 @@ uargOnto stk sp cop cp0 (ArgN v) = do
             loop $ i - 1
   loop $ sz - 1
   when overwrite $
-    copyMutableByteArray cop (bytes $ cp + 1) buf 0 (bytes sz)
+    copyMutableByteArray cop (bytes $ cp0 + 1) buf 0 (bytes sz)
   pure cp
   where
     cp = cp0 + sz
