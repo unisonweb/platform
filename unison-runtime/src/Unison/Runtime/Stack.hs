@@ -373,7 +373,7 @@ pattern CharVal c <- (matchCharVal -> Just c)
 
 matchNatVal :: Val -> Maybe Word64
 matchNatVal = \case
-  (UnboxedVal u tt) | tt == TT.natTag -> Just (toEnum u)
+  (UnboxedVal u tt) | tt == TT.natTag -> Just (fromIntegral u)
   _ -> Nothing
 
 pattern NatVal :: Word64 -> Val
