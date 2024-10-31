@@ -863,7 +863,6 @@ repush !env !activeThreads !stk = go
     go !_ (CB _) !_ = die "repush: impossible"
 {-# INLINE repush #-}
 
--- TODO: Double-check this one
 moveArgs ::
   Stack ->
   Args ->

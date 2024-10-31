@@ -36,6 +36,7 @@ import Prelude hiding (getChar, putChar)
 -- code/values to be restored later. Hash means we're just getting
 -- bytes for hashing, so we don't need perfect information.
 data Version = Transfer Word32 | Hash Word32
+  deriving (Show)
 
 data TmTag
   = VarT

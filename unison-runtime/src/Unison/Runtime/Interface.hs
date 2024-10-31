@@ -13,10 +13,17 @@ module Unison.Runtime.Interface
     startNativeRuntime,
     standalone,
     runStandalone,
-    StoredCache,
+    StoredCache
+      ( -- Exported for tests
+        SCache
+      ),
     decodeStandalone,
     RuntimeHost (..),
     Runtime (..),
+
+    -- * Exported for tests
+    getStoredCache,
+    putStoredCache,
   )
 where
 
@@ -473,25 +480,25 @@ checkCacheability cl ctx (r, sg) =
   getTermType codebaseRef >>= \case
     -- A term's result is cacheable iff it has no arrows in its type,
     -- this is sufficient since top-level definitions can't have effects without a delay.
-    Just typ | not (Rec.cata hasArrows typ) ->
-      pure (r, CodeRep sg Cacheable)
+    Just typ
+      | not (Rec.cata hasArrows typ) ->
+          pure (r, CodeRep sg Cacheable)
     _ -> pure (r, CodeRep sg Uncacheable)
   where
-  codebaseRef = backmapRef ctx r
-  getTermType :: CodebaseReference -> IO (Maybe (Type Symbol))
-  getTermType = \case
-    (RF.DerivedId i) ->
-      getTypeOfTerm cl i >>= \case
-        Just t -> pure $ Just t
-        Nothing -> pure Nothing
-    RF.Builtin {} -> pure $ Nothing
-  hasArrows :: Type.TypeF v a Bool -> Bool
-  hasArrows abt = case ABT.out' abt of
-    (ABT.Tm f) -> case f of
-      Type.Arrow _ _ -> True
-      other -> or other
-    t -> or t
-
+    codebaseRef = backmapRef ctx r
+    getTermType :: CodebaseReference -> IO (Maybe (Type Symbol))
+    getTermType = \case
+      (RF.DerivedId i) ->
+        getTypeOfTerm cl i >>= \case
+          Just t -> pure $ Just t
+          Nothing -> pure Nothing
+      RF.Builtin {} -> pure $ Nothing
+    hasArrows :: Type.TypeF v a Bool -> Bool
+    hasArrows abt = case ABT.out' abt of
+      (ABT.Tm f) -> case f of
+        Type.Arrow _ _ -> True
+        other -> or other
+      t -> or t
 
 compileValue :: Reference -> [(Reference, Code)] -> Value
 compileValue base =
@@ -1265,7 +1272,7 @@ data StoredCache
       (Map Reference Word64)
       (Map Reference Word64)
       (Map Reference (Set Reference))
-  deriving (Show)
+  deriving (Show, Eq)
 
 putStoredCache :: (MonadPut m) => StoredCache -> m ()
 putStoredCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
