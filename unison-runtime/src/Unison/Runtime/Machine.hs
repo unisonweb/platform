@@ -1382,6 +1382,7 @@ uprim2 !stk CAST !vi !ti = do
   newTypeTag <- peekOffN stk ti
   v <- upeekOff stk vi
   stk <- bump stk
+  Debug.debugM Debug.Temp "CASTING" (v, newTypeTag)
   poke stk $ UnboxedVal v (PackedTag newTypeTag)
   pure stk
 {-# INLINE uprim2 #-}

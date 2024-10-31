@@ -336,7 +336,7 @@ matchNatVal = \case
 pattern NatVal :: Word64 -> Val
 pattern NatVal n <- (matchNatVal -> Just n)
   where
-    NatVal n = UnboxedVal (fromEnum n) TT.natTag
+    NatVal n = UnboxedVal (fromIntegral n) TT.natTag
 
 matchDoubleVal :: Val -> Maybe Double
 matchDoubleVal = \case

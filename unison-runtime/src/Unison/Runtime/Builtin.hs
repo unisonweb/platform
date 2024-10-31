@@ -805,7 +805,7 @@ andb = binop0 0 $ \[p, q] ->
 coerceType :: PackedTag -> SuperNormal Symbol
 coerceType (PackedTag destType) =
   unop0 1 $ \[v, tag] ->
-    TLetD tag UN (TLit $ N destType)
+    TLetD tag UN (TLit $ I $ fromIntegral destType)
       $ TPrm CAST [v, tag]
 
 -- unbox x0 ri x $
