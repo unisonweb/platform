@@ -321,114 +321,105 @@ binop0 n f =
   where
     xs@(x0 : y0 : _) = freshes (2 + n)
 
-unop :: (Var v) => POp -> Reference -> SuperNormal v
-unop pop rf = unop' pop rf rf
-
-unop' :: (Var v) => POp -> Reference -> Reference -> SuperNormal v
-unop' pop _rfi _rfo =
+unop :: (Var v) => POp ->  SuperNormal v
+unop pop =
   unop0 0 $ \[x] ->
     (TPrm pop [x])
 
-binop :: (Var v) => POp -> Reference -> SuperNormal v
-binop pop rf = binop' pop rf rf rf
-
-binop' ::
+binop ::
   (Var v) =>
   POp ->
-  Reference ->
-  Reference ->
-  Reference ->
   SuperNormal v
-binop' pop _rfx _rfy _rfr =
+binop pop =
   binop0 0 $ \[x, y] -> TPrm pop [x, y]
 
 -- | Lift a comparison op.
-cmpop :: (Var v) => POp -> Reference -> SuperNormal v
-cmpop pop _rf =
+cmpop :: (Var v) => POp ->  SuperNormal v
+cmpop pop =
   binop0 1 $ \[x, y, b] ->
     TLetD b UN (TPrm pop [x, y]) $
       boolift b
 
 -- | Like `cmpop`, but swaps the arguments.
-cmpopb :: (Var v) => POp -> Reference -> SuperNormal v
-cmpopb pop _rf =
+cmpopb :: (Var v) => POp -> SuperNormal v
+cmpopb pop =
   binop0 1 $ \[x, y, b] ->
     TLetD b UN (TPrm pop [y, x]) $
       boolift b
 
 -- | Like `cmpop`, but negates the result.
-cmpopn :: (Var v) => POp -> Reference -> SuperNormal v
-cmpopn pop _rf =
+cmpopn :: (Var v) => POp ->  SuperNormal v
+cmpopn pop =
   binop0 1 $ \[x, y, b] ->
     TLetD b UN (TPrm pop [x, y]) $
       notlift b
 
 -- | Like `cmpop`, but swaps arguments then negates the result.
-cmpopbn :: (Var v) => POp -> Reference -> SuperNormal v
-cmpopbn pop _rf =
+cmpopbn :: (Var v) => POp ->  SuperNormal v
+cmpopbn pop =
   binop0 1 $ \[x, y, b] ->
     TLetD b UN (TPrm pop [y, x]) $
       notlift b
 
 addi, subi, muli, divi, modi, shli, shri, powi :: (Var v) => SuperNormal v
-addi = binop ADDI Ty.intRef
-subi = binop SUBI Ty.intRef
-muli = binop MULI Ty.intRef
-divi = binop DIVI Ty.intRef
-modi = binop MODI Ty.intRef
-shli = binop' SHLI Ty.intRef Ty.natRef Ty.intRef
-shri = binop' SHRI Ty.intRef Ty.natRef Ty.intRef
-powi = binop' POWI Ty.intRef Ty.natRef Ty.intRef
+addi = binop ADDI
+subi = binop SUBI
+muli = binop MULI
+divi = binop DIVI
+modi = binop MODI
+shli = binop SHLI
+shri = binop SHRI
+powi = binop POWI
 
 addn, subn, muln, divn, modn, shln, shrn, pown :: (Var v) => SuperNormal v
-addn = binop ADDN Ty.natRef
-subn = binop' SUBN Ty.natRef Ty.natRef Ty.intRef
-muln = binop MULN Ty.natRef
-divn = binop DIVN Ty.natRef
-modn = binop MODN Ty.natRef
-shln = binop SHLN Ty.natRef
-shrn = binop SHRN Ty.natRef
-pown = binop POWN Ty.natRef
+addn = binop ADDN
+subn = binop SUBN
+muln = binop MULN
+divn = binop DIVN
+modn = binop MODN
+shln = binop SHLN
+shrn = binop SHRN
+pown = binop POWN
 
 eqi, eqn, lti, ltn, lei, len :: (Var v) => SuperNormal v
-eqi = cmpop EQLI Ty.intRef
-lti = cmpopbn LEQI Ty.intRef
-lei = cmpop LEQI Ty.intRef
-eqn = cmpop EQLN Ty.natRef
-ltn = cmpopbn LEQN Ty.natRef
-len = cmpop LEQN Ty.natRef
+eqi = cmpop EQLI
+lti = cmpopbn LEQI
+lei = cmpop LEQI
+eqn = cmpop EQLN
+ltn = cmpopbn LEQN
+len = cmpop LEQN
 
 gti, gtn, gei, gen :: (Var v) => SuperNormal v
-gti = cmpopn LEQI Ty.intRef
-gei = cmpopb LEQI Ty.intRef
-gtn = cmpopn LEQN Ty.intRef
-gen = cmpopb LEQN Ty.intRef
+gti = cmpopn LEQI
+gei = cmpopb LEQI
+gtn = cmpopn LEQN
+gen = cmpopb LEQN
 
 inci, incn :: (Var v) => SuperNormal v
-inci = unop INCI Ty.intRef
-incn = unop INCN Ty.natRef
+inci = unop INCI
+incn = unop INCN
 
 sgni, negi :: (Var v) => SuperNormal v
-sgni = unop SGNI Ty.intRef
-negi = unop NEGI Ty.intRef
+sgni = unop SGNI
+negi = unop NEGI
 
 lzeron, tzeron, lzeroi, tzeroi, popn, popi :: (Var v) => SuperNormal v
-lzeron = unop LZRO Ty.natRef
-tzeron = unop TZRO Ty.natRef
-popn = unop POPC Ty.natRef
-popi = unop' POPC Ty.intRef Ty.natRef
-lzeroi = unop' LZRO Ty.intRef Ty.natRef
-tzeroi = unop' TZRO Ty.intRef Ty.natRef
+lzeron = unop LZRO
+tzeron = unop TZRO
+popn = unop POPC
+popi = unop POPC
+lzeroi = unop LZRO
+tzeroi = unop TZRO
 
 andn, orn, xorn, compln, andi, ori, xori, compli :: (Var v) => SuperNormal v
-andn = binop ANDN Ty.natRef
-orn = binop IORN Ty.natRef
-xorn = binop XORN Ty.natRef
-compln = unop COMN Ty.natRef
-andi = binop ANDN Ty.intRef
-ori = binop IORN Ty.intRef
-xori = binop XORN Ty.intRef
-compli = unop COMN Ty.intRef
+andn = binop ANDN
+orn = binop IORN
+xorn = binop XORN
+compln = unop COMN
+andi = binop ANDN
+ori = binop IORN
+xori = binop XORN
+compli = unop COMN
 
 addf,
   subf,
@@ -439,26 +430,26 @@ addf,
   logf,
   logbf ::
     (Var v) => SuperNormal v
-addf = binop ADDF Ty.floatRef
-subf = binop SUBF Ty.floatRef
-mulf = binop MULF Ty.floatRef
-divf = binop DIVF Ty.floatRef
-powf = binop POWF Ty.floatRef
-sqrtf = unop SQRT Ty.floatRef
-logf = unop LOGF Ty.floatRef
-logbf = binop LOGB Ty.floatRef
+addf = binop ADDF
+subf = binop SUBF
+mulf = binop MULF
+divf = binop DIVF
+powf = binop POWF
+sqrtf = unop SQRT
+logf = unop LOGF
+logbf = binop LOGB
 
 expf, absf :: (Var v) => SuperNormal v
-expf = unop EXPF Ty.floatRef
-absf = unop ABSF Ty.floatRef
+expf = unop EXPF
+absf = unop ABSF
 
 cosf, sinf, tanf, acosf, asinf, atanf :: (Var v) => SuperNormal v
-cosf = unop COSF Ty.floatRef
-sinf = unop SINF Ty.floatRef
-tanf = unop TANF Ty.floatRef
-acosf = unop ACOS Ty.floatRef
-asinf = unop ASIN Ty.floatRef
-atanf = unop ATAN Ty.floatRef
+cosf = unop COSF
+sinf = unop SINF
+tanf = unop TANF
+acosf = unop ACOS
+asinf = unop ASIN
+atanf = unop ATAN
 
 coshf,
   sinhf,
@@ -468,33 +459,33 @@ coshf,
   atanhf,
   atan2f ::
     (Var v) => SuperNormal v
-coshf = unop COSH Ty.floatRef
-sinhf = unop SINH Ty.floatRef
-tanhf = unop TANH Ty.floatRef
-acoshf = unop ACSH Ty.floatRef
-asinhf = unop ASNH Ty.floatRef
-atanhf = unop ATNH Ty.floatRef
-atan2f = binop ATN2 Ty.floatRef
+coshf = unop COSH
+sinhf = unop SINH
+tanhf = unop TANH
+acoshf = unop ACSH
+asinhf = unop ASNH
+atanhf = unop ATNH
+atan2f = binop ATN2
 
 ltf, gtf, lef, gef, eqf, neqf :: (Var v) => SuperNormal v
-ltf = cmpopbn LEQF Ty.floatRef
-gtf = cmpopn LEQF Ty.floatRef
-lef = cmpop LEQF Ty.floatRef
-gef = cmpopb LEQF Ty.floatRef
-eqf = cmpop EQLF Ty.floatRef
-neqf = cmpopn EQLF Ty.floatRef
+ltf = cmpopbn LEQF
+gtf = cmpopn LEQF
+lef = cmpop LEQF
+gef = cmpopb LEQF
+eqf = cmpop EQLF
+neqf = cmpopn EQLF
 
 minf, maxf :: (Var v) => SuperNormal v
-minf = binop MINF Ty.floatRef
-maxf = binop MAXF Ty.floatRef
+minf = binop MINF
+maxf = binop MAXF
 
 ceilf, floorf, truncf, roundf, i2f, n2f :: (Var v) => SuperNormal v
-ceilf = unop' CEIL Ty.floatRef Ty.intRef
-floorf = unop' FLOR Ty.floatRef Ty.intRef
-truncf = unop' TRNF Ty.floatRef Ty.intRef
-roundf = unop' RNDF Ty.floatRef Ty.intRef
-i2f = unop' ITOF Ty.intRef Ty.floatRef
-n2f = unop' NTOF Ty.natRef Ty.floatRef
+ceilf = unop CEIL
+floorf = unop FLOR
+truncf = unop TRNF
+roundf = unop RNDF
+i2f = unop ITOF
+n2f = unop NTOF
 
 trni :: (Var v) => SuperNormal v
 trni = unop0 2 $ \[x, z, b] ->
