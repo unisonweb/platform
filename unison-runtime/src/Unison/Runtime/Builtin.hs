@@ -193,6 +193,7 @@ import Unison.Util.Text (Text)
 import Unison.Util.Text qualified as Util.Text
 import Unison.Util.Text.Pattern qualified as TPat
 import Unison.Var
+import qualified Unison.Runtime.TypeTags as TT
 
 type Failure = F.Failure Val
 
@@ -321,7 +322,7 @@ binop0 n f =
   where
     xs@(x0 : y0 : _) = freshes (2 + n)
 
-unop :: (Var v) => POp ->  SuperNormal v
+unop :: (Var v) => POp -> SuperNormal v
 unop pop =
   unop0 0 $ \[x] ->
     (TPrm pop [x])
@@ -334,7 +335,7 @@ binop pop =
   binop0 0 $ \[x, y] -> TPrm pop [x, y]
 
 -- | Lift a comparison op.
-cmpop :: (Var v) => POp ->  SuperNormal v
+cmpop :: (Var v) => POp -> SuperNormal v
 cmpop pop =
   binop0 1 $ \[x, y, b] ->
     TLetD b UN (TPrm pop [x, y]) $
@@ -348,14 +349,14 @@ cmpopb pop =
       boolift b
 
 -- | Like `cmpop`, but negates the result.
-cmpopn :: (Var v) => POp ->  SuperNormal v
+cmpopn :: (Var v) => POp -> SuperNormal v
 cmpopn pop =
   binop0 1 $ \[x, y, b] ->
     TLetD b UN (TPrm pop [x, y]) $
       notlift b
 
 -- | Like `cmpop`, but swaps arguments then negates the result.
-cmpopbn :: (Var v) => POp ->  SuperNormal v
+cmpopbn :: (Var v) => POp -> SuperNormal v
 cmpopbn pop =
   binop0 1 $ \[x, y, b] ->
     TLetD b UN (TPrm pop [y, x]) $
@@ -799,13 +800,13 @@ andb = binop0 0 $ \[p, q] ->
   TMatch p . flip (MatchData Ty.booleanRef) Nothing $
     mapFromList [(0, ([], fls)), (1, ([], TVar q))]
 
--- unsafeCoerce, used for numeric types where conversion is a
--- no-op on the representation. Ideally this will be inlined and
--- eliminated so that no instruction is necessary.
-coerceType :: Reference -> Reference -> SuperNormal Symbol
-coerceType _ri _ro =
-  -- TODO: Fix this with a proper type-coercion
-  unop0 0 $ \[x] -> TVar x
+-- A runtime type-cast. Used to unsafely coerce between unboxed
+-- types at runtime without changing their representation.
+coerceType :: PackedTag -> SuperNormal Symbol
+coerceType (PackedTag destType) =
+  unop0 1 $ \[v, tag] ->
+    TLetD tag UN (TLit $ N destType)
+      $ TPrm CAST [v, tag]
 
 -- unbox x0 ri x $
 --   TCon ro 0 [x]
@@ -1716,8 +1717,8 @@ builtinLookup =
         ("Int.<=", (Untracked, lei)),
         ("Int.>", (Untracked, gti)),
         ("Int.>=", (Untracked, gei)),
-        ("Int.fromRepresentation", (Untracked, coerceType Ty.natRef Ty.intRef)),
-        ("Int.toRepresentation", (Untracked, coerceType Ty.intRef Ty.natRef)),
+        ("Int.fromRepresentation", (Untracked, coerceType TT.intTag)),
+        ("Int.toRepresentation", (Untracked, coerceType TT.natTag)),
         ("Int.increment", (Untracked, inci)),
         ("Int.signum", (Untracked, sgni)),
         ("Int.negate", (Untracked, negi)),
@@ -1761,7 +1762,7 @@ builtinLookup =
         ("Nat.complement", (Untracked, compln)),
         ("Nat.pow", (Untracked, pown)),
         ("Nat.drop", (Untracked, dropn)),
-        ("Nat.toInt", (Untracked, coerceType Ty.natRef Ty.intRef)),
+        ("Nat.toInt", (Untracked, coerceType TT.intTag)),
         ("Nat.toFloat", (Untracked, n2f)),
         ("Nat.toText", (Untracked, n2t)),
         ("Nat.fromText", (Untracked, t2n)),
@@ -1774,8 +1775,8 @@ builtinLookup =
         ("Float.log", (Untracked, logf)),
         ("Float.logBase", (Untracked, logbf)),
         ("Float.sqrt", (Untracked, sqrtf)),
-        ("Float.fromRepresentation", (Untracked, coerceType Ty.natRef Ty.floatRef)),
-        ("Float.toRepresentation", (Untracked, coerceType Ty.floatRef Ty.natRef)),
+        ("Float.fromRepresentation", (Untracked, coerceType TT.floatTag)),
+        ("Float.toRepresentation", (Untracked, coerceType TT.natTag)),
         ("Float.min", (Untracked, minf)),
         ("Float.max", (Untracked, maxf)),
         ("Float.<", (Untracked, ltf)),
@@ -1831,8 +1832,8 @@ builtinLookup =
         ("Debug.trace", (Tracked, gen'trace)),
         ("Debug.toText", (Tracked, debug'text)),
         ("unsafe.coerceAbilities", (Untracked, poly'coerce)),
-        ("Char.toNat", (Untracked, coerceType Ty.charRef Ty.natRef)),
-        ("Char.fromNat", (Untracked, coerceType Ty.natRef Ty.charRef)),
+        ("Char.toNat", (Untracked, coerceType TT.natTag)),
+        ("Char.fromNat", (Untracked, coerceType TT.charTag)),
         ("Bytes.empty", (Untracked, emptyb)),
         ("Bytes.fromList", (Untracked, packb)),
         ("Bytes.toList", (Untracked, unpackb)),

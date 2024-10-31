@@ -360,6 +360,7 @@ data UPrim2
   | LOGB -- logBase
   | MAXF -- max
   | MINF -- min
+  | CAST -- unboxed runtime type cast (int to nat, etc.)
   deriving (Show, Eq, Ord)
 
 data BPrim1
@@ -1240,6 +1241,7 @@ emitPOp ANF.FTOT = emitBP1 FTOT
 emitPOp ANF.TTON = emitBP1 TTON
 emitPOp ANF.TTOI = emitBP1 TTOI
 emitPOp ANF.TTOF = emitBP1 TTOF
+emitPOp ANF.CAST = emitP2 CAST
 -- text
 emitPOp ANF.CATT = emitBP2 CATT
 emitPOp ANF.TAKT = emitBP2 TAKT

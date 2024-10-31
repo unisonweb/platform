@@ -1353,6 +1353,7 @@ data POp
   | TTON -- textToNat
   | TTOF -- textToFloat
   | FTOT -- floatToText
+  | CAST -- runtime type cast for unboxed values.
   | -- Concurrency
     FORK -- fork
   | -- Universal operations

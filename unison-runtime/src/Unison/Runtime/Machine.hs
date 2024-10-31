@@ -1378,6 +1378,12 @@ uprim2 !stk XORN !i !j = do
   stk <- bump stk
   pokeN stk (xor x y)
   pure stk
+uprim2 !stk CAST !ti !vi = do
+  newTypeTag <- peekOffN stk ti
+  v <- upeekOff stk vi
+  stk <- bump stk
+  poke stk $ UnboxedVal v (PackedTag newTypeTag)
+  pure stk
 {-# INLINE uprim2 #-}
 
 bprim1 ::
