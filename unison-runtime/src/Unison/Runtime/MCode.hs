@@ -57,11 +57,12 @@ import Data.Bits (shiftL, shiftR, (.|.))
 import Data.Coerce
 import Data.Functor ((<&>))
 import Data.Map.Strict qualified as M
+import Data.Text as Text (unpack)
 import Data.Void (Void, absurd)
 import Data.Word (Word16, Word64)
 import GHC.Stack (HasCallStack)
 import Unison.ABT.Normalized (pattern TAbss)
-import Unison.Reference (Reference)
+import Unison.Reference (Reference, showShort)
 import Unison.Referent (Referent)
 import Unison.Runtime.ANF
   ( ANormal,
@@ -583,13 +584,17 @@ data CombIx
 combRef :: CombIx -> Reference
 combRef (CIx r _ _) = r
 
+-- dnum maps type references to their number in the runtime
+-- cnum maps combinator references to their number
+-- anum maps combinator references to their main arity
 data RefNums = RN
   { dnum :: Reference -> Word64,
-    cnum :: Reference -> Word64
+    cnum :: Reference -> Word64,
+    anum :: Reference -> Maybe Int
   }
 
 emptyRNs :: RefNums
-emptyRNs = RN mt mt
+emptyRNs = RN mt mt (const Nothing)
   where
     mt _ = internalBug "RefNums: empty"
 
@@ -1050,12 +1055,16 @@ emitFunction _ grpr grpn rec ctx (FVar v) as
        in App False (Env cix cix) as
   | otherwise = emitSectionVErr v
 emitFunction rns _grpr _ _ _ (FComb r) as
+  | Just k <- anum rns r,
+    countArgs as == k -- exactly saturated call
+    =
+      Call False cix cix as
   | otherwise -- slow path
     =
-      let cix = CIx r n 0
-       in App False (Env cix cix) as
+      App False (Env cix cix) as
   where
     n = cnum rns r
+    cix = CIx r n 0
 emitFunction rns _grpr _ _ _ (FCon r t) as =
   Ins (Pack r (packTags rt t) as)
     . Yield
@@ -1600,15 +1609,17 @@ prettyComb w i = \case
     shows w
       . showString ":"
       . shows i
+      . showString ":"
       . shows a
-      . showString ":\n"
+      . showString "\n"
       . prettySection 2 s
   (CachedClosure a b) ->
     shows w
       . showString ":"
       . shows i
+      . showString ":"
       . shows a
-      . showString ":\n"
+      . showString "\n"
       . shows b
 
 prettySection :: (Show comb) => Int -> GSection comb -> ShowS
@@ -1616,11 +1627,11 @@ prettySection ind sec =
   indent ind . case sec of
     App _ r as ->
       showString "App "
-        . showsPrec 12 r
+        . prettyGRef 12 r
         . showString " "
         . prettyArgs as
     Call _ i _ as ->
-      showString "Call " . shows i . showString " " . prettyArgs as
+      showString "Call " . prettyCIx i . showString " " . prettyArgs as
     Jump i as ->
       showString "Jump " . shows i . showString " " . prettyArgs as
     Match i bs ->
@@ -1635,7 +1646,6 @@ prettySection ind sec =
       showString "Let\n"
         . prettySection (ind + 2) s
         . showString "\n"
-        . indent ind
         . prettySection ind b
     Die s -> showString $ "Die " ++ s
     Exit -> showString "Exit"
@@ -1661,6 +1671,20 @@ prettySection ind sec =
             . shows i
             . showString " ->\n"
             . prettyBranches (ind + 1) e
+
+prettyCIx :: CombIx -> ShowS
+prettyCIx (CIx r _ n) =
+  prettyRef r . if n == 0 then id else showString "-" . shows n
+
+prettyRef :: Reference -> ShowS
+prettyRef = showString . Text.unpack . showShort 10
+
+prettyGRef :: Int -> GRef comb -> ShowS
+prettyGRef p r =
+  showParen (p > 10) $ case r of
+    Stk i -> showString "Stk " . shows i
+    Dyn w -> showString "Dyn " . shows w
+    Env cix _ -> showString "Env " . prettyCIx cix
 
 prettyBranches :: (Show comb) => Int -> GBranch comb -> ShowS
 prettyBranches ind bs =
@@ -1689,12 +1713,25 @@ prettyBranches ind bs =
 prettyIns :: (Show comb) => GInstr comb -> ShowS
 prettyIns (Pack r i as) =
   showString "Pack "
-    . showsPrec 10 r
+    . prettyRef r
     . (' ' :)
     . shows i
+    . (' ' :)
+    . prettyArgs as
+prettyIns (BLit r t l) =
+  showString "BLit "
+    . prettyRef r
+    . (' ' :)
+    . shows t
+    . (' ' :)
+    . showsPrec 11 l
+prettyIns (Name r as) =
+  showString "Name "
+    . prettyGRef 12 r
     . (' ' :)
     . prettyArgs as
 prettyIns i = shows i
 
 prettyArgs :: Args -> ShowS
-prettyArgs v = shows v
+prettyArgs ZArgs = showString "ZArgs"
+prettyArgs v = showParen True $ shows v

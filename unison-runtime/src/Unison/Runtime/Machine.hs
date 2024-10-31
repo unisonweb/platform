@@ -673,8 +673,8 @@ eval !env !denv !activeThreads !stk !k _ (Yield args)
 eval !env !denv !activeThreads !stk !k _ (App ck r args) =
   resolve env denv stk r
     >>= apply env denv activeThreads stk k ck args
-eval !env !denv !activeThreads !stk !k _ (Call ck _combIx rcomb args) =
-  enter env denv activeThreads stk k ck args rcomb
+eval !env !denv !activeThreads !stk !k _ (Call ck combIx rcomb args) =
+  enter env denv activeThreads stk k (combRef combIx) ck args rcomb
 eval !env !denv !activeThreads !stk !k _ (Jump i args) =
   bpeekOff stk i >>= jump env denv activeThreads stk k args
 eval !env !denv !activeThreads !stk !k r (Let nw cix f sect) = do
@@ -738,18 +738,18 @@ enter ::
   ActiveThreads ->
   Stack ->
   K ->
+  Reference ->
   Bool ->
   Args ->
   MComb ->
   IO ()
-enter !env !denv !activeThreads !stk !k !ck !args = \case
+enter !env !denv !activeThreads !stk !k !cref !sck !args = \case
   (RComb (Lam a f entry)) -> do
-    stk <- if ck then ensure stk f else pure stk
+    -- check for stack check _skip_
+    stk <- if sck then pure stk else ensure stk f
     stk <- moveArgs stk args
     stk <- acceptArgs stk a
-    -- TODO: start putting references in `Call` if we ever start
-    -- detecting saturated calls.
-    eval env denv activeThreads stk k dummyRef entry
+    eval env denv activeThreads stk k cref entry
   (RComb (CachedClosure _cix clos)) -> do
     stk <- discardFrame stk
     stk <- bump stk
@@ -1947,7 +1947,7 @@ codeValidate tml cc = do
   rtm0 <- readTVarIO (refTm cc)
   let rs = fst <$> tml
       rtm = rtm0 `M.withoutKeys` S.fromList rs
-      rns = RN (refLookup "ty" rty) (refLookup "tm" rtm)
+      rns = RN (refLookup "ty" rty) (refLookup "tm" rtm) (const Nothing)
       combinate (n, (r, g)) = evaluate $ emitCombs rns r n g
   (Nothing <$ traverse_ combinate (zip [ftm ..] tml))
     `catch` \(CE cs perr) ->
@@ -2020,14 +2020,17 @@ cacheAdd0 ntys0 termSuperGroups sands cc = do
     let sz = fromIntegral $ M.size new
     let rgs = M.toList new
     let rs = fst <$> rgs
-    int <- writeTVar (intermed cc) (have <> new)
+    int <- updateMap new (intermed cc)
     rty <- addRefs (freshTy cc) (refTy cc) (tagRefs cc) ntys0
     ntm <- stateTVar (freshTm cc) $ \i -> (i, i + sz)
     rtm <- updateMap (M.fromList $ zip rs [ntm ..]) (refTm cc)
     -- check for missing references
-    let rns = RN (refLookup "ty" rty) (refLookup "tm" rtm)
+    let arities = fmap (head . ANF.arities) int <> builtinArities
+        inlinfo = ANF.buildInlineMap int
+        rns = RN (refLookup "ty" rty) (refLookup "tm" rtm) (flip M.lookup arities)
         combinate :: Word64 -> (Reference, SuperGroup Symbol) -> (Word64, EnumMap Word64 Comb)
-        combinate n (r, g) = (n, emitCombs rns r n g)
+        combinate n (r, g) =
+          (n, emitCombs rns r n $ ANF.inline inlinfo g)
     let combRefUpdates = (mapFromList $ zip [ntm ..] rs)
     let combIdFromRefMap = (M.fromList $ zip rs [ntm ..])
     let newCacheableCombs =
