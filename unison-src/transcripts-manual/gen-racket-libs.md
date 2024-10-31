@@ -3,7 +3,7 @@ When we start out, `./scheme-libs/racket` contains a bunch of library files that
 Next, we'll download the jit project and generate a few Racket files from it.
 
 ``` ucm
-jit-setup/main> lib.install @unison/internal/releases/0.0.23
+jit-setup/main> lib.install @unison/internal/releases/0.0.24
 ```
 
 ``` unison

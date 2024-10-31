@@ -657,15 +657,15 @@ loop e = do
               let sr = Slurp.slurpFile uf vars Slurp.UpdateOp currentNames
               previewResponse sourceName sr uf
             TodoI -> handleTodo
-            TestI testInput -> Tests.handleTest testInput
+            TestI native testInput -> Tests.handleTest native testInput
             ExecuteI main args -> handleRun False main args
             MakeStandaloneI output main ->
               doCompile False False output main
             CompileSchemeI prof output main ->
               doCompile prof True (Text.unpack output) main
             ExecuteSchemeI main args -> handleRun True main args
-            IOTestI main -> Tests.handleIOTest main
-            IOTestAllI -> Tests.handleAllIOTests
+            IOTestI native main -> Tests.handleIOTest native main
+            IOTestAllI native -> Tests.handleAllIOTests native
             -- UpdateBuiltinsI -> do
             --   stepAt updateBuiltins
             --   checkTodo
@@ -974,8 +974,10 @@ inputDescription input =
     Update2I -> pure ("update")
     UndoI {} -> pure "undo"
     ExecuteI s args -> pure ("execute " <> Text.unwords (HQ.toText s : fmap Text.pack args))
-    IOTestI hq -> pure ("io.test " <> HQ.toText hq)
-    IOTestAllI -> pure "io.test.all"
+    IOTestI native hq -> pure (cmd <> HQ.toText hq)
+      where cmd | native = "io.test.native " | otherwise = "io.test "
+    IOTestAllI native ->
+      pure (if native then "io.test.native.all" else "io.test.all")
     UpdateBuiltinsI -> pure "builtins.update"
     MergeBuiltinsI Nothing -> pure "builtins.merge"
     MergeBuiltinsI (Just path) -> ("builtins.merge " <>) <$> p path
@@ -1295,7 +1297,7 @@ doDisplay outputLoc names tm = do
   let useCache = True
       evalTerm tm =
         fmap ErrorUtil.hush . fmap (fmap Term.unannotate) $
-          RuntimeUtils.evalUnisonTermE True suffixifiedPPE useCache (Term.amap (const External) tm)
+          RuntimeUtils.evalUnisonTermE Sandboxed suffixifiedPPE useCache (Term.amap (const External) tm)
       loadTerm (Reference.DerivedId r) = case Map.lookup r tms of
         Nothing -> fmap (fmap Term.unannotate) $ Cli.runTransaction (Codebase.getTerm codebase r)
         Just (_, tm, _) -> pure (Just $ Term.unannotate tm)
@@ -1600,7 +1602,7 @@ displayI outputLoc hq = do
               then SearchTermsNotFound [hq]
               else TermAmbiguous suffixifiedPPE hq results
       let tm = Term.fromReferent External ref
-      tm <- RuntimeUtils.evalUnisonTerm True (PPE.biasTo bias $ suffixifiedPPE) True tm
+      tm <- RuntimeUtils.evalUnisonTerm Sandboxed (PPE.biasTo bias $ suffixifiedPPE) True tm
       doDisplay outputLoc names (Term.unannotate tm)
     Just (toDisplay, unisonFile) -> do
       let namesWithDefinitionsFromFile = UF.addNamesFromTypeCheckedUnisonFile unisonFile names

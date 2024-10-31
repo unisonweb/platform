@@ -42,9 +42,10 @@
   builtin-crypto.hash:termlink
   builtin-crypto.hmac:termlink
 
-  unison-POp-CACH
-  unison-POp-LOAD
-  unison-POp-LKUP
+  builtin-Value.load
+  builtin-Value.load:termlink
+  builtin-Code.cache_
+  builtin-Code.cache_:termlink
 
   ; some exports of internal machinery for use elsewhere
   reify-value
@@ -804,13 +805,7 @@
     (not (hash-has-key? runtime-module-type-map ln))))
 
 (define (resolve-builtin nm)
-  (dynamic-require
-    'unison/primops
-    nm
-    (lambda ()
-      (dynamic-require
-        'unison/simple-wrappers
-        nm))))
+  (dynamic-require 'unison/primops nm))
 
 (define (termlink->proc tl)
   (match tl
@@ -862,8 +857,6 @@
              unison/primops
              unison/primops-generated
              unison/builtin-generated
-             unison/simple-wrappers
-             unison/compound-wrappers
              ,@(if profile? '(profile profile/render-text) '()))
 
     ,@(typelink-defns-code tylinks)
@@ -915,8 +908,6 @@
               unison/primops
               unison/primops-generated
               unison/builtin-generated
-              unison/simple-wrappers
-              unison/compound-wrappers
               ,@(map (lambda (s) `(quote ,s)) reqs))
 
      (provide
@@ -1093,9 +1084,10 @@
         "dependency list"
         need)]))
 
-(define (unison-POp-CACH dfns0) (add-runtime-code #f dfns0))
+(define-unison-builtin (builtin-Code.cache_ dfns0)
+  (add-runtime-code #f dfns0))
 
-(define (unison-POp-LOAD v0)
+(define-unison-builtin (builtin-Value.load v0)
   (define val (unison-quote-val v0))
   (define deps
     (map reference->termlink
@@ -1108,14 +1100,12 @@
 
       (cond
         [(not (null? ndeps))
-         (sum 0 (list->chunked-list ndeps))]
+         (ref-either-left (list->chunked-list ndeps))]
         [else
          (define ldeps (filter need-code-loaded? hdeps))
          (define to-load (resolve-unloaded ldeps))
          (add-runtime-code-proc #f to-load)
-         (sum 1 (reify-value val))]))))
-
-(define (unison-POp-LKUP tl) (lookup-code tl))
+         (ref-either-right (reify-value val))]))))
 
 (define-unison-builtin (builtin-Code.lookup tl)
   (match (lookup-code tl)

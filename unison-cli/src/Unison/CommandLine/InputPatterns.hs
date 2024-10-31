@@ -66,7 +66,9 @@ module Unison.CommandLine.InputPatterns
     helpTopics,
     history,
     ioTest,
+    ioTestNative,
     ioTestAll,
+    ioTestAllNative,
     libInstallInputPattern,
     load,
     makeStandalone,
@@ -106,7 +108,9 @@ module Unison.CommandLine.InputPatterns
     sfindReplace,
     textfind,
     test,
+    testNative,
     testAll,
+    testAllNative,
     todo,
     ui,
     undo,
@@ -2857,6 +2861,39 @@ test =
         fmap
           ( \path ->
               Input.TestI
+                False
+                Input.TestInput
+                  { includeLibNamespace = False,
+                    path,
+                    showFailures = True,
+                    showSuccesses = True
+                  }
+          )
+          . \case
+            [] -> pure Path.empty
+            [pathString] -> handlePathArg pathString
+            args -> wrongArgsLength "no more than one argument" args
+    }
+
+testNative :: InputPattern
+testNative =
+  InputPattern
+    { patternName = "test.native",
+      aliases = [],
+      visibility = I.Hidden,
+      args = [("namespace", Optional, namespaceArg)],
+      help =
+        P.wrapColumn2
+          [ ( "`test.native`",
+              "runs unit tests for the current branch on the native runtime"
+            ),
+            ("`test foo`", "runs unit tests for the current branch defined in namespace `foo` on the native runtime")
+          ],
+      parse =
+        fmap
+          ( \path ->
+              Input.TestI
+                True
                 Input.TestInput
                   { includeLibNamespace = False,
                     path,
@@ -2881,6 +2918,27 @@ testAll =
     ( const $
         pure $
           Input.TestI
+            False
+            Input.TestInput
+              { includeLibNamespace = True,
+                path = Path.empty,
+                showFailures = True,
+                showSuccesses = True
+              }
+    )
+
+testAllNative :: InputPattern
+testAllNative =
+  InputPattern
+    "test.native.all"
+    ["test.all.native"]
+    I.Hidden
+    []
+    "`test.native.all` runs unit tests for the current branch (including the `lib` namespace) on the native runtime."
+    ( const $
+        pure $
+          Input.TestI
+            True
             Input.TestInput
               { includeLibNamespace = True,
                 path = Path.empty,
@@ -2980,7 +3038,27 @@ ioTest =
             )
           ],
       parse = \case
-        [thing] -> Input.IOTestI <$> handleHashQualifiedNameArg thing
+        [thing] -> Input.IOTestI False <$> handleHashQualifiedNameArg thing
+        args -> wrongArgsLength "exactly one argument" args
+    }
+
+ioTestNative :: InputPattern
+ioTestNative =
+  InputPattern
+    { patternName = "io.test.native",
+      aliases = ["test.io.native", "test.native.io"],
+      visibility = I.Hidden,
+      args = [("test to run", Required, exactDefinitionTermQueryArg)],
+      help =
+        P.wrapColumn2
+          [ ( "`io.test.native mytest`",
+              "Runs `!mytest` on the native runtime, where `mytest` "
+                <> "is a delayed test that can use the `IO` and "
+                <> "`Exception` abilities."
+            )
+          ],
+      parse = \case
+        [thing] -> Input.IOTestI True <$> handleHashQualifiedNameArg thing
         args -> wrongArgsLength "exactly one argument" args
     }
 
@@ -2998,7 +3076,25 @@ ioTestAll =
             )
           ],
       parse = \case
-        [] -> Right Input.IOTestAllI
+        [] -> Right (Input.IOTestAllI False)
+        args -> wrongArgsLength "no arguments" args
+    }
+
+ioTestAllNative :: InputPattern
+ioTestAllNative =
+  InputPattern
+    { patternName = "io.test.native.all",
+      aliases = ["test.io.native.all", "test.native.io.all"],
+      visibility = I.Hidden,
+      args = [],
+      help =
+        P.wrapColumn2
+          [ ( "`io.test.native.all`",
+              "runs unit tests for the current branch that use IO"
+            )
+          ],
+      parse = \case
+        [] -> Right (Input.IOTestAllI True)
         args -> wrongArgsLength "no arguments" args
     }
 
@@ -3525,7 +3621,9 @@ validInputs =
       helpTopics,
       history,
       ioTest,
+      ioTestNative,
       ioTestAll,
+      ioTestAllNative,
       libInstallInputPattern,
       load,
       makeStandalone,
@@ -3563,7 +3661,9 @@ validInputs =
       runScheme,
       saveExecuteResult,
       test,
+      testNative,
       testAll,
+      testAllNative,
       todo,
       ui,
       undo,

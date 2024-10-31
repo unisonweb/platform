@@ -89,6 +89,9 @@
   exception->string
   raise-unison-exception
 
+  exn:io?
+  exn:arith?
+
   request
   request-case
   sum
@@ -137,7 +140,6 @@
   unison/data
   unison/sandbox
   unison/data-info
-  unison/crypto
   (only-in unison/chunked-seq
            string->chunked-string
            chunked-string->string
@@ -834,3 +836,13 @@
     ref-runtimefailure:typelink
     (string->chunked-string (exn:bug-msg b))
     (exn:bug-val b)))
+
+(define (exn:io? e)
+  (or (exn:fail:read? e)
+      (exn:fail:filesystem? e)
+      (exn:fail:network? e)))
+
+(define (exn:arith? e)
+  (or (exn:fail:contract:divide-by-zero? e)
+      (exn:fail:contract:non-fixnum-result? e)))
+
