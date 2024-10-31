@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 
 module Unison.Runtime.Machine where
@@ -17,11 +18,9 @@ import Data.Text qualified as DTx
 import Data.Text.IO qualified as Tx
 import Data.Traversable
 import GHC.Conc as STM (unsafeIOToSTM)
-import System.IO.Unsafe (unsafePerformIO)
 import Unison.Builtin.Decls (exceptionRef, ioFailureRef)
 import Unison.Builtin.Decls qualified as Rf
 import Unison.ConstructorReference qualified as CR
-import Unison.Debug qualified as Debug
 import Unison.Prelude hiding (Text)
 import Unison.Reference
   ( Reference,
@@ -63,6 +62,13 @@ import Unison.Util.Text qualified as Util.Text
 import UnliftIO (IORef)
 import UnliftIO qualified
 import UnliftIO.Concurrent qualified as UnliftIO
+
+{- ORMOLU_DISABLE -}
+#ifdef STACK_CHECK
+import Unison.Debug qualified as Debug
+import System.IO.Unsafe (unsafePerformIO)
+#endif
+{- ORMOLU_ENABLE -}
 
 -- | A ref storing every currently active thread.
 -- This is helpful for cleaning up orphaned threads when the main process
@@ -238,8 +244,6 @@ apply0 !callback !env !threadTracker !i = do
   let entryCix = (CIx r i 0)
   case unRComb $ rCombSection cmbs entryCix of
     Comb entryComb -> do
-      Debug.debugM Debug.Temp "Entry Comb" entryComb
-      -- Debug.debugM Debug.Temp "All Combs" cmbs
       apply env denv threadTracker stk (kf k0) True ZArgs . BoxedVal $
         PAp entryCix entryComb nullSeg
     -- if it's cached, we can just finish
@@ -299,22 +303,26 @@ litToVal = \case
   MD d -> DoubleVal d
 {-# INLINE litToVal #-}
 
+{- ORMOLU_DISABLE -}
+#ifdef STACK_CHECK
 debugger :: (Show a) => Stack -> String -> a -> Bool
 debugger stk msg a = unsafePerformIO $ do
   dumpStack stk
-  Debug.debugLogM Debug.Temp (msg ++ ": " ++ show a)
+  Debug.debugLogM Debug.Interpreter (msg ++ ": " ++ show a)
   pure False
 
 dumpStack :: Stack -> IO ()
 dumpStack stk@(Stack ap fp sp _ustk _bstk)
-  | sp - fp < 0 = Debug.debugLogM Debug.Temp "Stack before 👇: Empty"
+  | sp - fp < 0 = Debug.debugLogM Debug.Interpreter "Stack before 👇: Empty"
   | otherwise = do
       stkLocals <- for [0 .. ((sp - fp) - 1)] $ \i -> do
         peekOff stk i
-      Debug.debugM Debug.Temp "Stack frame locals 👇:" stkLocals
+      Debug.debugM Debug.Interpreter "Stack frame locals 👇:" stkLocals
       stkArgs <- for [0 .. ((fp - ap) - 1)] $ \i -> do
         peekOff stk (i + (sp - fp))
-      Debug.debugM Debug.Temp "Stack args 👇:" stkArgs
+      Debug.debugM Debug.Interpreter "Stack args 👇:" stkArgs
+#endif
+{- ORMOLU_ENABLE -}
 
 -- | Execute an instruction
 exec ::
@@ -326,8 +334,12 @@ exec ::
   Reference ->
   MInstr ->
   IO (DEnv, Stack, K)
+{- ORMOLU_DISABLE -}
+#ifdef STACK_CHECK
 exec !_ !_ !_ !stk !_ !_ instr
   | debugger stk "exec" instr = undefined
+#endif
+{- ORMOLU_ENABLE -}
 exec !_ !denv !_activeThreads !stk !k _ (Info tx) = do
   info tx stk
   info tx k
@@ -645,8 +657,12 @@ eval ::
   Reference ->
   MSection ->
   IO ()
+{- ORMOLU_DISABLE -}
+#ifdef STACK_CHECK
 eval !_ !_ !_ !stk !_ !_ section
   | debugger stk "eval" section = undefined
+#endif
+{- ORMOLU_ENABLE -}
 eval !env !denv !activeThreads !stk !k r (Match i (TestT df cs)) = do
   t <- peekOffBi stk i
   eval env denv activeThreads stk k r $ selectTextBranch t df cs
@@ -786,30 +802,26 @@ apply ::
   Args ->
   Val ->
   IO ()
+{- ORMOLU_DISABLE -}
+#ifdef STACK_CHECK
 apply !_env !_denv !_activeThreads !stk !_k !_ck !args !val
   | debugger stk "apply" (args, val) = undefined
+#endif
+{- ORMOLU_ENABLE -}
 apply !env !denv !activeThreads !stk !k !ck !args !val =
   case val of
     BoxedVal (PAp cix@(CIx combRef _ _) comb seg) ->
       case comb of
         LamI a f entry
           | ck || a <= ac -> do
-              !_ <- pure $ debugger stk "apply-LamI-beforeEnsure" ()
               stk <- ensure stk f
-              !_ <- pure $ debugger stk "apply-LamI-beforeMove" ()
               stk <- moveArgs stk args
-              !_ <- pure $ debugger stk "apply-LamI-afterMove" ()
               stk <- dumpSeg stk seg A
-              !_ <- pure $ debugger stk "apply-LamI-afterdumpSeg" ()
               stk <- acceptArgs stk a
-              !_ <- pure $ debugger stk "apply-LamI-afteracceptArgs" ()
               eval env denv activeThreads stk k combRef entry
           | otherwise -> do
-              !_ <- pure $ debugger stk "apply-LamIotherwise-beforeCloseArgs" ()
               seg <- closeArgs C stk seg args
-              !_ <- pure $ debugger stk "apply-LamIotherwise-afterCloseArgs" ()
               stk <- discardFrame =<< frameArgs stk
-              !_ <- pure $ debugger stk "apply-LamIotherwise-afterDiscardFrame" ()
               stk <- bump stk
               bpoke stk $ PAp cix comb seg
               yield env denv activeThreads stk k
@@ -898,9 +910,7 @@ moveArgs !stk (VArgR i l) = do
   stk <- prepareArgs stk (ArgR i l)
   pure stk
 moveArgs !stk (VArgN as) = do
-  !_ <- pure $ debugger stk "before prepareArgs" as
   stk <- prepareArgs stk (ArgN as)
-  !_ <- pure $ debugger stk "after prepareArgs" as
   pure stk
 moveArgs !stk (VArgV i) = do
   stk <-
@@ -1395,7 +1405,6 @@ uprim2 !stk CAST !vi !ti = do
   newTypeTag <- peekOffN stk ti
   v <- upeekOff stk vi
   stk <- bump stk
-  Debug.debugM Debug.Temp "CASTING" (v, newTypeTag)
   poke stk $ UnboxedVal v (PackedTag newTypeTag)
   pure stk
 {-# INLINE uprim2 #-}
