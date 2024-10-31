@@ -397,6 +397,7 @@ instance Tag UPrim2 where
   tag2word LOGB = 31
   tag2word MAXF = 32
   tag2word MINF = 33
+  tag2word CAST = 34
 
   word2tag 0 = pure ADDI
   word2tag 1 = pure ADDN
@@ -432,6 +433,7 @@ instance Tag UPrim2 where
   word2tag 31 = pure LOGB
   word2tag 32 = pure MAXF
   word2tag 33 = pure MINF
+  word2tag 34 = pure CAST
   word2tag n = unknownTag "UPrim2" n
 
 instance Tag BPrim1 where
