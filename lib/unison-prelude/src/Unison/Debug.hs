@@ -36,6 +36,8 @@ data DebugFlag
   | -- | Useful for adding temporary debugging statements during development.
     -- Remove uses of Debug.Temp before merging to keep things clean for the next person :)
     Temp
+  | -- | Debugging the interpreter
+    Interpreter
   | -- | Shows Annotations when printing terms
     Annotations
   | -- | Debug endpoints of the local UI (or Share) server
@@ -65,6 +67,7 @@ debugFlags = case (unsafePerformIO (lookupEnv "UNISON_DEBUG")) of
       "LSP" -> pure LSP
       "TIMING" -> pure Timing
       "TEMP" -> pure Temp
+      "INTERPRETER" -> pure Interpreter
       "ANNOTATIONS" -> pure Annotations
       "SERVER" -> pure Server
       "PATTERN_COVERAGE" -> pure PatternCoverage
@@ -113,6 +116,10 @@ debugTiming = Timing `Set.member` debugFlags
 debugTemp :: Bool
 debugTemp = Temp `Set.member` debugFlags
 {-# NOINLINE debugTemp #-}
+
+debugInterpreter :: Bool
+debugInterpreter = Interpreter `Set.member` debugFlags
+{-# NOINLINE debugInterpreter #-}
 
 debugAnnotations :: Bool
 debugAnnotations = Annotations `Set.member` debugFlags
@@ -187,6 +194,7 @@ shouldDebug = \case
   LSP -> debugLSP
   Timing -> debugTiming
   Temp -> debugTemp
+  Interpreter -> debugInterpreter
   Annotations -> debugAnnotations
   Server -> debugServer
   PatternCoverage -> debugPatternCoverage
