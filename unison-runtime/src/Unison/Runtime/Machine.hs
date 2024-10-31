@@ -625,7 +625,7 @@ encodeExn stk exc = do
           | otherwise = (Rf.miscFailureRef, disp exn, boxedVal unitValue)
 
 numValue :: Maybe Reference -> Val -> IO Word64
-numValue _ (Val v (UnboxedTypeTag {})) = pure (fromIntegral @Int @Word64 v)
+numValue _ (UnboxedVal v _) = pure (fromIntegral @Int @Word64 v)
 numValue mr clo =
   die $
     "numValue: bad closure: "
@@ -953,11 +953,11 @@ dumpDataNoTag ::
 dumpDataNoTag !mr !stk = \case
   -- Normally we want to avoid dumping unboxed values since it's unnecessary, but sometimes we don't know the type of
   -- the incoming value and end up dumping unboxed values, so we just push them back to the stack as-is. e.g. in type-casts/coercions
-  val@(Val _ (UnboxedTypeTag t)) -> do
+  val@(UnboxedVal _ t) -> do
     stk <- bump stk
     poke stk val
     pure (t, stk)
-  Val _ clos -> case clos of
+  BoxedVal clos -> case clos of
     (Enum _ t) -> pure (t, stk)
     (Data1 _ t x) -> do
       stk <- bump stk
@@ -2329,10 +2329,9 @@ universalEq frn = eqVal
     eql :: (a -> b -> Bool) -> [a] -> [b] -> Bool
     eql cm l r = length l == length r && and (zipWith cm l r)
     eqVal :: Val -> Val -> Bool
-    eqVal (Val u (ut@UnboxedTypeTag {})) (Val v (vt@UnboxedTypeTag {})) = u == v && ut == vt
-    eqVal (Val _ (UnboxedTypeTag {})) (Val _ _) = False
-    eqVal (Val _ _) (Val _ (UnboxedTypeTag {})) = False
-    eqVal (Val _ x) (Val _ y) = eqc x y
+    eqVal (UnboxedVal v1 t1) (UnboxedVal v2 t2) = t1 == t2 && v1 == v2
+    eqVal (BoxedVal x) (BoxedVal y) = eqc x y
+    eqVal _ _ = False
     eqc :: Closure -> Closure -> Bool
     eqc (DataC _ ct1 [w1]) (DataC _ ct2 [w2]) =
       matchTags ct1 ct2 && eqVal w1 w2
@@ -2422,9 +2421,9 @@ universalCompare frn = cmpVal False
     cmpVal :: Bool -> Val -> Val -> Ordering
     cmpVal tyEq = \cases
       (BoxedVal c1) (BoxedVal c2) -> cmpc tyEq c1 c2
-      (UnboxedVal _) (BoxedVal _) -> LT
-      (BoxedVal _) (UnboxedVal _) -> GT
-      (UnboxedVal (Val v1 t1)) (UnboxedVal (Val v2 t2)) ->
+      (UnboxedVal {}) (BoxedVal {}) -> LT
+      (BoxedVal {}) (UnboxedVal {}) -> GT
+      (UnboxedVal v1 t1) (UnboxedVal v2 t2) ->
         -- We don't need to mask the tags since unboxed types are
         -- always treated like nullary constructors and have an empty ctag.
         Monoid.whenM tyEq (compare t1 t2)
@@ -2464,8 +2463,8 @@ universalCompare frn = cmpVal False
       -- Written in a strange way way to maintain back-compat with the
       -- old val lists which had boxed/unboxed separated
       let partitionVals = foldMap \case
-            UnboxedVal tu -> ([tu], mempty)
-            BoxedVal b -> (mempty, [b])
+            UnboxedVal v tt -> ([(tt, v)], mempty)
+            BoxedVal clos -> (mempty, [clos])
           (us1, bs1) = partitionVals vs1
           (us2, bs2) = partitionVals vs2
        in cmpl compare us1 us2 <> cmpl (cmpc tyEq) bs1 bs2

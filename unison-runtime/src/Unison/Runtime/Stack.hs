@@ -320,43 +320,43 @@ pattern DataC rf ct segs <-
 
 matchCharVal :: Val -> Maybe Char
 matchCharVal = \case
-  (Val u (UnboxedTypeTag tt)) | tt == TT.charTag -> Just (Char.chr u)
+  (UnboxedVal u tt) | tt == TT.charTag -> Just (Char.chr u)
   _ -> Nothing
 
 pattern CharVal :: Char -> Val
 pattern CharVal c <- (matchCharVal -> Just c)
   where
-    CharVal c = Val (Char.ord c) (UnboxedTypeTag TT.charTag)
+    CharVal c = UnboxedVal (Char.ord c) TT.charTag
 
 matchNatVal :: Val -> Maybe Word64
 matchNatVal = \case
-  (Val u (UnboxedTypeTag tt)) | tt == TT.natTag -> Just (toEnum u)
+  (UnboxedVal u tt) | tt == TT.natTag -> Just (toEnum u)
   _ -> Nothing
 
 pattern NatVal :: Word64 -> Val
 pattern NatVal n <- (matchNatVal -> Just n)
   where
-    NatVal n = Val (fromEnum n) (UnboxedTypeTag TT.natTag)
+    NatVal n = UnboxedVal (fromEnum n) TT.natTag
 
 matchDoubleVal :: Val -> Maybe Double
 matchDoubleVal = \case
-  (Val u (UnboxedTypeTag tt)) | tt == TT.floatTag -> Just (intToDouble u)
+  (UnboxedVal u tt) | tt == TT.floatTag -> Just (intToDouble u)
   _ -> Nothing
 
 pattern DoubleVal :: Double -> Val
 pattern DoubleVal d <- (matchDoubleVal -> Just d)
   where
-    DoubleVal d = Val (doubleToInt d) (UnboxedTypeTag TT.floatTag)
+    DoubleVal d = UnboxedVal (doubleToInt d) TT.floatTag
 
 matchIntVal :: Val -> Maybe Int
 matchIntVal = \case
-  (Val u (UnboxedTypeTag tt)) | tt == TT.intTag -> Just u
+  (UnboxedVal u tt) | tt == TT.intTag -> Just u
   _ -> Nothing
 
 pattern IntVal :: Int -> Val
 pattern IntVal i <- (matchIntVal -> Just i)
   where
-    IntVal i = Val i (UnboxedTypeTag TT.intTag)
+    IntVal i = UnboxedVal i TT.intTag
 
 doubleToInt :: Double -> Int
 doubleToInt d = indexByteArray (BA.byteArrayFromList [d]) 0
@@ -555,31 +555,24 @@ data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
 
 instance Eq Val where
   (==) = \cases
-    (Val u (ut@UnboxedTypeTag {})) (Val v (vt@UnboxedTypeTag {})) -> u == v && ut == vt
-    (Val _ (UnboxedTypeTag {})) (Val _ _) -> False
-    (Val _ _) (Val _ (UnboxedTypeTag {})) -> False
-    (Val _ x) (Val _ y) -> x == y
+    (UnboxedVal v1 t1) (UnboxedVal v2 t2) -> t1 == t2 && v1 == v2
+    (BoxedVal x) (BoxedVal y) -> x == y
+    (UnboxedVal {}) (BoxedVal {}) -> False
+    (BoxedVal {}) (UnboxedVal {}) -> False
 
 instance Ord Val where
   compare = \cases
     (BoxedVal c1) (BoxedVal c2) -> compare c1 c2
-    (UnboxedVal (Val i1 t1)) (UnboxedVal (Val i2 t2)) -> compare t1 t2 <> compare i1 i2
-    (UnboxedVal _) (BoxedVal _) -> LT
-    (BoxedVal _) (UnboxedVal _) -> GT
+    (UnboxedVal i1 t1) (UnboxedVal i2 t2) -> compare t1 t2 <> compare i1 i2
+    (UnboxedVal {}) (BoxedVal _) -> LT
+    (BoxedVal _) (UnboxedVal {}) -> GT
 
 -- | A nulled out value you can use when filling empty arrays, etc.
 emptyVal :: Val
 emptyVal = Val (-1) BlackHole
 
--- | Matches a Val which is known to be unboxed, and returns the entire original value.
-valToTypedUnboxed :: Val -> Maybe Val
-valToTypedUnboxed v@(Val _ (UnboxedTypeTag {})) = Just v
-valToTypedUnboxed _ = Nothing
-
-pattern UnboxedVal :: Val -> Val
-pattern UnboxedVal t <- (valToTypedUnboxed -> Just t)
-  where
-    UnboxedVal v = v
+pattern UnboxedVal :: Int -> PackedTag -> Val
+pattern UnboxedVal v t = (Val v (UnboxedTypeTag t))
 
 valToBoxed :: Val -> Maybe Closure
 valToBoxed UnboxedVal {} = Nothing
@@ -589,7 +582,7 @@ valToBoxed (Val _ b) = Just b
 pattern BoxedVal :: Closure -> Val
 pattern BoxedVal b <- (valToBoxed -> Just b)
   where
-    BoxedVal b = Val 0 b
+    BoxedVal b = Val (-1) b
 
 {-# COMPLETE UnboxedVal, BoxedVal #-}
 
