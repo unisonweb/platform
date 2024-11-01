@@ -329,8 +329,7 @@
       (or trace? (eq? h 'trace))
       (or inline? (eq? h 'inline))
       (or recursive? (eq? h 'recursive))
-      ; TODO: enable values
-      value?)))
+      (or value? (eq? h 'value)))))
 
 (define-for-syntax
   (make-link-def gen-link? loc name:stx name:link:stx)
