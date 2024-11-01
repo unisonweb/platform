@@ -11,7 +11,6 @@ module Unison.Runtime.TypeTags
     intTag,
     charTag,
     unitTag,
-    bufferModeTag,
     leftTag,
     rightTag,
   )
@@ -126,9 +125,6 @@ charTag = mkSimpleTag "charTag" Ty.charRef
 
 unitTag :: PackedTag
 unitTag = mkSimpleTag "unitTag" Ty.unitRef
-
-bufferModeTag :: PackedTag
-bufferModeTag = mkSimpleTag "bufferModeTag" Ty.bufferModeRef
 
 leftTag, rightTag :: PackedTag
 (leftTag, rightTag)

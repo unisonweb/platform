@@ -35,7 +35,6 @@ import Unison.Runtime.Exception
 import Unison.Runtime.Foreign
 import Unison.Runtime.MCode
 import Unison.Runtime.Stack
-import Unison.Runtime.TypeTags qualified as TT
 import Unison.Type
   ( iarrayRef,
     ibytearrayRef,
@@ -404,7 +403,7 @@ instance
     stk <- writeForeign stk b
     writeForeign stk a
 
-no'buf, line'buf, block'buf, sblock'buf :: Int
+no'buf, line'buf, block'buf, sblock'buf :: Word64
 no'buf = fromIntegral Ty.bufferModeNoBufferingId
 line'buf = fromIntegral Ty.bufferModeLineBufferingId
 block'buf = fromIntegral Ty.bufferModeBlockBufferingId
@@ -412,7 +411,7 @@ sblock'buf = fromIntegral Ty.bufferModeSizedBlockBufferingId
 
 instance ForeignConvention BufferMode where
   readForeign (i : args) stk =
-    upeekOff stk i >>= \case
+    peekOffN stk i >>= \case
       t
         | t == no'buf -> pure (args, NoBuffering)
         | t == line'buf -> pure (args, LineBuffering)
@@ -428,13 +427,13 @@ instance ForeignConvention BufferMode where
   writeForeign stk bm =
     bump stk >>= \stk ->
       case bm of
-        NoBuffering -> stk <$ upokeT stk no'buf TT.bufferModeTag
-        LineBuffering -> stk <$ upokeT stk line'buf TT.bufferModeTag
-        BlockBuffering Nothing -> stk <$ upokeT stk block'buf TT.bufferModeTag
+        NoBuffering -> stk <$ pokeN stk no'buf
+        LineBuffering -> stk <$ pokeN stk line'buf
+        BlockBuffering Nothing -> stk <$ pokeN stk block'buf
         BlockBuffering (Just n) -> do
           pokeI stk n
           stk <- bump stk
-          stk <$ upokeT stk sblock'buf TT.bufferModeTag
+          stk <$ pokeN stk sblock'buf
 
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
