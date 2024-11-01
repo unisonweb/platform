@@ -489,13 +489,18 @@ i2f = unop ITOF
 n2f = unop NTOF
 
 trni :: (Var v) => SuperNormal v
-trni = unop0 2 $ \[x, z, b] ->
-  TLetD z UN (TLit $ I 0)
+trni = unop0 4 $ \[x, z, b, tag, n] ->
+  -- TODO: Do we need to do all calculations _before_ the branch?
+  TLetD z UN (TLit $ N 0)
     . TLetD b UN (TPrm LEQI [x, z])
+    . TLetD tag UN (TLit $ I $ fromIntegral nt)
+    . TLetD n UN (TPrm CAST [x, tag])
     . TMatch b
     $ MatchIntegral
       (mapSingleton 1 $ TVar z)
-      (Just $ TVar x)
+      (Just $ TVar n)
+  where
+    PackedTag nt = TT.natTag
 
 modular :: (Var v) => POp -> (Bool -> ANormal v) -> SuperNormal v
 modular pop ret =
