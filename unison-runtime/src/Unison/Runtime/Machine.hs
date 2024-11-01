@@ -1589,12 +1589,6 @@ bprim2 ::
   Int ->
   Int ->
   IO Stack
-bprim2 !stk EQLU i j = do
-  x <- peekOff stk i
-  y <- peekOff stk j
-  stk <- bump stk
-  pokeBool stk $ universalEq (==) x y
-  pure stk
 bprim2 !stk IXOT i j = do
   x <- peekOffBi stk i
   y <- peekOffBi stk j
@@ -1783,6 +1777,7 @@ bprim2 !stk CATB i j = do
   pure stk
 bprim2 !stk THRO _ _ = pure stk -- impossible
 bprim2 !stk TRCE _ _ = pure stk -- impossible
+bprim2 !stk EQLU _ _ = pure stk -- impossible
 bprim2 !stk CMPU _ _ = pure stk -- impossible
 bprim2 !stk SDBX _ _ = pure stk -- impossible
 bprim2 !stk SDBV _ _ = pure stk -- impossible
