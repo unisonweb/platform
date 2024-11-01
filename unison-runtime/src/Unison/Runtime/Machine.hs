@@ -2372,8 +2372,7 @@ universalEq frn = eqVal
     eqc (Foreign fl) (Foreign fr)
       | Just al <- maybeUnwrapForeign @(PA.Array Val) Rf.iarrayRef fl,
         Just ar <- maybeUnwrapForeign @(PA.Array Val) Rf.iarrayRef fr =
-          let (l, r) = Debug.debug Debug.Temp "arrays" $ (al, ar)
-           in arrayEq eqVal l r
+          arrayEq eqVal al ar
       | Just sl <- maybeUnwrapForeign @(Seq Val) Rf.listRef fl,
         Just sr <- maybeUnwrapForeign @(Seq Val) Rf.listRef fr =
           length sl == length sr && and (Sq.zipWith eqVal sl sr)
