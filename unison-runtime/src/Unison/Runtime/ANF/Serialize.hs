@@ -649,6 +649,10 @@ pOpCode op = case op of
   SDBL -> 122
   SDBV -> 123
   CAST -> 124
+  ANDI -> 125
+  IORI -> 126
+  XORI -> 127
+  COMI -> 128
 
 pOpAssoc :: [(POp, Word16)]
 pOpAssoc = map (\op -> (op, pOpCode op)) [minBound .. maxBound]

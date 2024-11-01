@@ -1194,6 +1194,11 @@ uprim1 !stk COMN !i = do
   stk <- bump stk
   pokeN stk (complement n)
   pure stk
+uprim1 !stk COMI !i = do
+  n <- peekOffI stk i
+  stk <- bump stk
+  pokeI stk (complement n)
+  pure stk
 {-# INLINE uprim1 #-}
 
 uprim2 :: Stack -> UPrim2 -> Int -> Int -> IO Stack
@@ -1389,17 +1394,35 @@ uprim2 !stk ANDN !i !j = do
   stk <- bump stk
   pokeN stk (x .&. y)
   pure stk
+uprim2 !stk ANDI !i !j = do
+  x <- peekOffI stk i
+  y <- peekOffI stk j
+  stk <- bump stk
+  pokeI stk (x .&. y)
+  pure stk
 uprim2 !stk IORN !i !j = do
   x <- peekOffN stk i
   y <- peekOffN stk j
   stk <- bump stk
   pokeN stk (x .|. y)
   pure stk
+uprim2 !stk IORI !i !j = do
+  x <- peekOffI stk i
+  y <- peekOffI stk j
+  stk <- bump stk
+  pokeI stk (x .|. y)
+  pure stk
 uprim2 !stk XORN !i !j = do
   x <- peekOffN stk i
   y <- peekOffN stk j
   stk <- bump stk
   pokeN stk (xor x y)
+  pure stk
+uprim2 !stk XORI !i !j = do
+  x <- peekOffI stk i
+  y <- peekOffI stk j
+  stk <- bump stk
+  pokeI stk (xor x y)
   pure stk
 uprim2 !stk CAST !vi !ti = do
   newTypeTag <- peekOffN stk ti

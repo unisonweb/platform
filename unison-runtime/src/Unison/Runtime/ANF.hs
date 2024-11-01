@@ -1252,6 +1252,10 @@ data POp
   | POWI -- pow
   | SHLI -- shiftl
   | SHRI -- shiftr
+  | ANDI -- and
+  | IORI -- or
+  | XORI -- xor
+  | COMI -- complement
   | INCI -- inc
   | DECI -- dec
   | LEQI -- <=

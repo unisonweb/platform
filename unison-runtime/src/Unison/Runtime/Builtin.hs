@@ -417,10 +417,10 @@ andn = binop ANDN
 orn = binop IORN
 xorn = binop XORN
 compln = unop COMN
-andi = binop ANDN
-ori = binop IORN
-xori = binop XORN
-compli = unop COMN
+andi = binop ANDI
+ori = binop IORI
+xori = binop XORI
+compli = unop COMI
 
 addf,
   subf,

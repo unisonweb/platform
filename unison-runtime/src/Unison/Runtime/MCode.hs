@@ -297,6 +297,7 @@ data UPrim1
   | LZRO -- leadingZeroes
   | TZRO -- trailingZeroes
   | COMN -- complement
+  | COMI -- complement
   | POPC -- popCount
   -- floating
   | ABSF -- abs
@@ -346,10 +347,13 @@ data UPrim2
   | LEQI -- <=
   | LEQN
   | ANDN -- and
+  | ANDI
   | IORN -- or
+  | IORI
   | XORN -- xor
-  -- floating
-  | EQLF -- ==
+  | XORI
+  | -- floating
+    EQLF -- ==
   | LEQF -- <=
   | ADDF -- +
   | SUBF -- -
@@ -1197,9 +1201,13 @@ emitPOp ANF.TZRO = emitP1 TZRO
 emitPOp ANF.LZRO = emitP1 LZRO
 emitPOp ANF.POPC = emitP1 POPC
 emitPOp ANF.ANDN = emitP2 ANDN
+emitPOp ANF.ANDI = emitP2 ANDI
 emitPOp ANF.IORN = emitP2 IORN
+emitPOp ANF.IORI = emitP2 IORI
+emitPOp ANF.XORI = emitP2 XORI
 emitPOp ANF.XORN = emitP2 XORN
 emitPOp ANF.COMN = emitP1 COMN
+emitPOp ANF.COMI = emitP1 COMI
 -- Float
 emitPOp ANF.ADDF = emitP2 ADDF
 emitPOp ANF.SUBF = emitP2 SUBF
