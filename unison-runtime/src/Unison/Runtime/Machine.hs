@@ -1818,7 +1818,9 @@ yield !env !denv !activeThreads !stk !k = leap denv k
     leap !denv0 (Mark a ps cs k) = do
       let denv = cs <> EC.withoutKeys denv0 ps
           val = denv0 EC.! EC.findMin ps
-      bpoke stk . Data1 Rf.effectRef (PackedTag 0) =<< peek stk
+      v <- peek stk
+      stk <- bump stk
+      bpoke stk $ Data1 Rf.effectRef (PackedTag 0) v
       stk <- adjustArgs stk a
       apply env denv activeThreads stk k False (VArg1 0) val
     leap !denv (Push fsz asz (CIx ref _ _) f nx k) = do

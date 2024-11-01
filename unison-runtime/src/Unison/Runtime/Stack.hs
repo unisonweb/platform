@@ -141,6 +141,7 @@ import Prelude hiding (words)
 
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
+import Unison.Debug qualified as Debug
 
 type DebugCallStack = (HasCallStack :: Constraint)
 
