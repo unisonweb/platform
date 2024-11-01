@@ -128,7 +128,6 @@ import Data.Kind (Constraint)
 import Data.Primitive.ByteArray qualified as BA
 import Data.Word
 import GHC.Exts as L (IsList (..))
-import Unison.Debug qualified as Debug
 import Unison.Prelude
 import Unison.Reference (Reference)
 import Unison.Runtime.ANF (PackedTag)
@@ -1062,8 +1061,8 @@ pokeI stk@(Stack _ _ sp ustk _) i = do
 
 pokeByte :: Stack -> Word8 -> IO ()
 pokeByte stk b = do
-  -- NOTE: currently we just store bytes as ints, but we should have a separate type runtime type tag for them.
-  pokeI stk (fromIntegral b)
+  -- NOTE: currently we just store bytes as Word64s, but we should have a separate type runtime type tag for them.
+  pokeN stk (fromIntegral b)
 {-# INLINE pokeByte #-}
 
 pokeOffN :: Stack -> Int -> Word64 -> IO ()
