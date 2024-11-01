@@ -174,6 +174,7 @@ import Unison.Runtime.Foreign qualified as F
 import Unison.Runtime.Foreign.Function
 import Unison.Runtime.Stack (Val (..), emptyVal)
 import Unison.Runtime.Stack qualified as Closure
+import Unison.Runtime.TypeTags qualified as TT
 import Unison.Symbol
 import Unison.Type qualified as Ty
 import Unison.Util.Bytes qualified as Bytes
@@ -193,7 +194,6 @@ import Unison.Util.Text (Text)
 import Unison.Util.Text qualified as Util.Text
 import Unison.Util.Text.Pattern qualified as TPat
 import Unison.Var
-import qualified Unison.Runtime.TypeTags as TT
 
 type Failure = F.Failure Val
 
@@ -521,16 +521,15 @@ oddn = modular MODN (\b -> if b then tru else fls)
 dropn :: (Var v) => SuperNormal v
 dropn = binop0 4 $ \[x, y, b, r, tag, n] ->
   TLetD b UN (TPrm LEQN [x, y])
-  -- TODO: Can we avoid this work until after the branch?
-  . TLetD tag UN (TLit $ I $ fromIntegral nt)
-  . TLetD r UN (TPrm SUBN [x, y])
-  . TLetD n UN (TPrm CAST [r, tag])
-  $
-    ( TMatch b $
-        MatchIntegral
-          (mapSingleton 1 $ TLit $ N 0)
-          (Just $ TVar n)
-    )
+    -- TODO: Can we avoid this work until after the branch?
+    . TLetD tag UN (TLit $ I $ fromIntegral nt)
+    . TLetD r UN (TPrm SUBN [x, y])
+    . TLetD n UN (TPrm CAST [r, tag])
+    $ ( TMatch b $
+          MatchIntegral
+            (mapSingleton 1 $ TLit $ N 0)
+            (Just $ TVar n)
+      )
   where
     PackedTag nt = TT.natTag
 
@@ -817,8 +816,8 @@ andb = binop0 0 $ \[p, q] ->
 coerceType :: PackedTag -> SuperNormal Symbol
 coerceType (PackedTag destType) =
   unop0 1 $ \[v, tag] ->
-    TLetD tag UN (TLit $ I $ fromIntegral destType)
-      $ TPrm CAST [v, tag]
+    TLetD tag UN (TLit $ I $ fromIntegral destType) $
+      TPrm CAST [v, tag]
 
 -- unbox x0 ri x $
 --   TCon ro 0 [x]
