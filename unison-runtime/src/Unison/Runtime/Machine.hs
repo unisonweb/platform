@@ -2370,12 +2370,13 @@ universalEq frn = eqVal
         && a1 == a2
         && eqValList vs1 vs2
     eqc (Foreign fl) (Foreign fr)
-      | Just al <- maybeUnwrapForeign Rf.iarrayRef fl,
-        Just ar <- maybeUnwrapForeign Rf.iarrayRef fr =
-          arrayEq eqc al ar
-      | Just sl <- maybeUnwrapForeign Rf.listRef fl,
-        Just sr <- maybeUnwrapForeign Rf.listRef fr =
-          length sl == length sr && and (Sq.zipWith eqc sl sr)
+      | Just al <- maybeUnwrapForeign @(PA.Array Val) Rf.iarrayRef fl,
+        Just ar <- maybeUnwrapForeign @(PA.Array Val) Rf.iarrayRef fr =
+          let (l, r) = Debug.debug Debug.Temp "arrays" $ (al, ar)
+           in arrayEq eqVal l r
+      | Just sl <- maybeUnwrapForeign @(Seq Val) Rf.listRef fl,
+        Just sr <- maybeUnwrapForeign @(Seq Val) Rf.listRef fr =
+          length sl == length sr && and (Sq.zipWith eqVal sl sr)
       | otherwise = frn fl fr
     eqc c d = closureNum c == closureNum d
     eqValList :: [Val] -> [Val] -> Bool
@@ -2388,7 +2389,7 @@ universalEq frn = eqVal
         || (ct1 == TT.intTag && ct2 == TT.natTag)
         || (ct1 == TT.natTag && ct2 == TT.intTag)
 
-arrayEq :: (Closure -> Closure -> Bool) -> PA.Array Closure -> PA.Array Closure -> Bool
+arrayEq :: (a -> a -> Bool) -> PA.Array a -> PA.Array a -> Bool
 arrayEq eqc l r
   | PA.sizeofArray l /= PA.sizeofArray r = False
   | otherwise = go (PA.sizeofArray l - 1)
@@ -2471,13 +2472,13 @@ universalCompare frn = cmpVal False
           <> compare a1 a2
           <> cmpValList True vs1 vs2
       (Foreign fl) (Foreign fr)
-        | Just sl <- maybeUnwrapForeign Rf.listRef fl,
-          Just sr <- maybeUnwrapForeign Rf.listRef fr ->
-            fold (Sq.zipWith (cmpc tyEq) sl sr)
+        | Just sl <- maybeUnwrapForeign @(Seq Val) Rf.listRef fl,
+          Just sr <- maybeUnwrapForeign @(Seq Val) Rf.listRef fr ->
+            fold (Sq.zipWith (cmpVal tyEq) sl sr)
               <> compare (length sl) (length sr)
-        | Just al <- maybeUnwrapForeign Rf.iarrayRef fl,
-          Just ar <- maybeUnwrapForeign Rf.iarrayRef fr ->
-            arrayCmp (cmpc tyEq) al ar
+        | Just al <- maybeUnwrapForeign @(PA.Array Val) Rf.iarrayRef fl,
+          Just ar <- maybeUnwrapForeign @(PA.Array Val) Rf.iarrayRef fr ->
+            arrayCmp (cmpVal tyEq) al ar
         | otherwise -> frn fl fr
       (UnboxedTypeTag t1) (UnboxedTypeTag t2) -> compare t1 t2
       (BlackHole) (BlackHole) -> EQ
@@ -2494,13 +2495,13 @@ universalCompare frn = cmpVal False
        in cmpl compare us1 us2 <> cmpl (cmpc tyEq) bs1 bs2
 
 arrayCmp ::
-  (Closure -> Closure -> Ordering) ->
-  PA.Array Closure ->
-  PA.Array Closure ->
+  (a -> a -> Ordering) ->
+  PA.Array a ->
+  PA.Array a ->
   Ordering
-arrayCmp cmpc l r =
+arrayCmp cmpVal l r =
   comparing PA.sizeofArray l r <> go (PA.sizeofArray l - 1)
   where
     go i
       | i < 0 = EQ
-      | otherwise = cmpc (PA.indexArray l i) (PA.indexArray r i) <> go (i - 1)
+      | otherwise = cmpVal (PA.indexArray l i) (PA.indexArray r i) <> go (i - 1)
