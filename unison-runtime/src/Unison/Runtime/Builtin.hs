@@ -519,13 +519,20 @@ evnn = modular MODN (\b -> if b then fls else tru)
 oddn = modular MODN (\b -> if b then tru else fls)
 
 dropn :: (Var v) => SuperNormal v
-dropn = binop0 1 $ \[x, y, b] ->
-  TLetD b UN (TPrm LEQN [x, y]) $
+dropn = binop0 4 $ \[x, y, b, r, tag, n] ->
+  TLetD b UN (TPrm LEQN [x, y])
+  -- TODO: Can we avoid this work until after the branch?
+  . TLetD tag UN (TLit $ I $ fromIntegral nt)
+  . TLetD r UN (TPrm SUBN [x, y])
+  . TLetD n UN (TPrm CAST [r, tag])
+  $
     ( TMatch b $
         MatchIntegral
           (mapSingleton 1 $ TLit $ N 0)
-          (Just $ TPrm SUBN [x, y])
+          (Just $ TVar n)
     )
+  where
+    PackedTag nt = TT.natTag
 
 appendt, taket, dropt, indext, indexb, sizet, unconst, unsnoct :: (Var v) => SuperNormal v
 appendt = binop0 0 $ \[x, y] -> TPrm CATT [x, y]
