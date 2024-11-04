@@ -1499,6 +1499,12 @@ argNDirect n instr =
   where
     args = freshes n
 
+--  () -> a
+--
+--  Unit is unique in that we don't actually pass it as an arg
+unitDirect :: ForeignOp
+unitDirect instr = ([BX],) . TAbs arg $ TFOp instr [] where arg = fresh1
+
 -- a -> Either Failure b
 argToEF :: ForeignOp
 argToEF =
@@ -2284,7 +2290,7 @@ declareForeigns = do
     . mkForeign
     $ \(c :: Val) -> newMVar c
 
-  declareForeign Tracked "MVar.newEmpty.v2" (argNDirect 1)
+  declareForeign Tracked "MVar.newEmpty.v2" unitDirect
     . mkForeign
     $ \() -> newEmptyMVar @Val
 
@@ -2390,7 +2396,7 @@ declareForeigns = do
   declareForeign Tracked "TVar.swap" (argNDirect 2) . mkForeign $
     \(v, c :: Val) -> unsafeSTMToIO $ STM.swapTVar v c
 
-  declareForeign Tracked "STM.retry" (argNDirect 1) . mkForeign $
+  declareForeign Tracked "STM.retry" unitDirect . mkForeign $
     \() -> unsafeSTMToIO STM.retry :: IO Val
 
   -- Scope and Ref stuff
@@ -2440,7 +2446,7 @@ declareForeigns = do
         t <- evaluate t
         casIORef r t v
 
-  declareForeign Tracked "Promise.new" (argNDirect 1) . mkForeign $
+  declareForeign Tracked "Promise.new" unitDirect . mkForeign $
     \() -> newPromise @Val
 
   -- the only exceptions from Promise.read are async and shouldn't be caught
@@ -3303,7 +3309,7 @@ baseSandboxInfo =
 builtinArities :: Map Reference Int
 builtinArities =
   Map.fromList $
-    [ (r, arity s) | (r, (_, s)) <- Map.toList builtinLookup ]
+    [(r, arity s) | (r, (_, s)) <- Map.toList builtinLookup]
 
 unsafeSTMToIO :: STM.STM a -> IO a
 unsafeSTMToIO (STM.STM m) = IO m
