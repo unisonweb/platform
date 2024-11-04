@@ -673,8 +673,8 @@ eval !env !denv !activeThreads !stk !k r (DMatch mr i br) = do
   (t, stk) <- dumpDataNoTag mr stk =<< peekOff stk i
   eval env denv activeThreads stk k r $
     selectBranch (maskTags t) br
-eval !env !denv !activeThreads !stk !k r (NMatch mr i br) = do
-  n <- numValue mr =<< peekOff stk i
+eval !env !denv !activeThreads !stk !k r (NMatch _mr i br) = do
+  n <- peekOffN stk i
   eval env denv activeThreads stk k r $ selectBranch n br
 eval !env !denv !activeThreads !stk !k r (RMatch i pu br) = do
   (t, stk) <- dumpDataNoTag Nothing stk =<< peekOff stk i
