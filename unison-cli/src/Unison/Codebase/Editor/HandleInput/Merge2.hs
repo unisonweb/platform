@@ -16,11 +16,18 @@ module Unison.Codebase.Editor.HandleInput.Merge2
 where
 
 import Control.Monad.Reader (ask)
+import Data.Algorithm.Diff qualified as Diff
+import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Semialign (zipWith)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
 import Data.These (These (..))
+import System.Directory (canonicalizePath, getTemporaryDirectory, removeFile)
+import System.Environment (lookupEnv)
+import System.FilePath ((</>))
+import System.IO.Temp qualified as Temporary
+import System.Process qualified as Process
 import Text.ANSI qualified as Text
 import Text.Builder qualified
 import Text.Builder qualified as Text (Builder)
@@ -28,7 +35,7 @@ import U.Codebase.Branch qualified as V2 (Branch (..), CausalBranch)
 import U.Codebase.Branch qualified as V2.Branch
 import U.Codebase.Causal qualified as V2.Causal
 import U.Codebase.HashTags (CausalHash, unCausalHash)
-import U.Codebase.Reference (Reference, TermReferenceId, TypeReference, TypeReferenceId)
+import U.Codebase.Reference (TermReferenceId, TypeReference, TypeReferenceId)
 import U.Codebase.Sqlite.DbId (ProjectId)
 import U.Codebase.Sqlite.Operations qualified as Operations
 import U.Codebase.Sqlite.Project (Project (..))
@@ -60,7 +67,6 @@ import Unison.Codebase.ProjectPath qualified as PP
 import Unison.Codebase.SqliteCodebase.Branch.Cache (newBranchCache)
 import Unison.Codebase.SqliteCodebase.Conversions qualified as Conversions
 import Unison.Codebase.SqliteCodebase.Operations qualified as Operations
-import Unison.ConstructorType (ConstructorType)
 import Unison.DataDeclaration (Decl)
 import Unison.DataDeclaration qualified as DataDeclaration
 import Unison.Debug qualified as Debug
@@ -276,9 +282,21 @@ doMerge info = do
           for ((,) <$> ThreeWay.forgetLca blob2.defns <*> blob2.coreDependencies) \(defns, deps) ->
             getNamespaceDependentsOf3 defns deps
 
-      -- Load and merge Alice's and Bob's libdeps
-      mergedLibdeps <-
-        Cli.runTransaction (libdepsToBranch0 (Codebase.getDeclType env.codebase) blob2.libdeps)
+      -- Load libdeps
+      (mergedLibdeps, lcaLibdeps) <- do
+        -- We make a fresh branch cache to load the branch of libdeps.
+        -- It would probably be better to reuse the codebase's branch cache.
+        -- FIXME how slow/bad is this without that branch cache?
+        Cli.runTransaction do
+          branchCache <- Sqlite.unsafeIO newBranchCache
+          let load children =
+                Conversions.branch2to1
+                  branchCache
+                  (Codebase.getDeclType env.codebase)
+                  V2.Branch {terms = Map.empty, types = Map.empty, patches = Map.empty, children}
+          mergedLibdeps <- load blob2.libdeps
+          lcaLibdeps <- load blob2.lcaLibdeps
+          pure (mergedLibdeps, lcaLibdeps)
 
       let hasConflicts =
             blob2.hasConflicts
@@ -288,6 +306,7 @@ doMerge info = do
               blob2
               dependents0
               (Branch.toNames mergedLibdeps)
+              (Branch.toNames lcaLibdeps)
               Merge.TwoWay
                 { alice = into @Text aliceBranchNames,
                   bob =
@@ -332,12 +351,66 @@ doMerge info = do
               )
               info.alice.projectAndBranch.project
               (findTemporaryBranchName info.alice.projectAndBranch.project.projectId mergeSourceAndTarget)
-          scratchFilePath <-
-            Cli.getLatestFile <&> \case
-              Nothing -> "scratch.u"
-              Just (file, _) -> file
-          liftIO $ env.writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 blob3.unparsedFile) True
-          done (Output.MergeFailure scratchFilePath mergeSourceAndTarget temporaryBranchName)
+
+          --   Merge conflicts?    Have UCM_MERGETOOL?    Result
+          --   ----------------    -------------------    ------------------------------------------------------------
+          --                 No                     No           Put code that doesn't parse or typecheck in scratch.u
+          --                 No                    Yes           Put code that doesn't parse or typecheck in scratch.u
+          --                Yes                     No    Put code that doesn't parse (because conflicts) in scratch.u
+          --                Yes                    Yes                                              Run that cool tool
+
+          maybeMergetool <-
+            if hasConflicts
+              then liftIO (lookupEnv "UCM_MERGETOOL")
+              else pure Nothing
+
+          case maybeMergetool of
+            Nothing -> do
+              scratchFilePath <-
+                Cli.getLatestFile <&> \case
+                  Nothing -> "scratch.u"
+                  Just (file, _) -> file
+              liftIO $ env.writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 blob3.unparsedFile) True
+              done (Output.MergeFailure scratchFilePath mergeSourceAndTarget temporaryBranchName)
+            Just mergetool0 -> do
+              let aliceFilenameSlug = mangleBranchName mergeSourceAndTarget.alice.branch
+              let bobFilenameSlug = mangleMergeSource mergeSourceAndTarget.bob
+              makeTempFilename <-
+                liftIO do
+                  tmpdir0 <- getTemporaryDirectory
+                  tmpdir1 <- canonicalizePath tmpdir0
+                  tmpdir2 <- Temporary.createTempDirectory tmpdir1 "unison-merge"
+                  pure \filename -> Text.pack (tmpdir2 </> Text.unpack (Text.Builder.run filename))
+              let lcaFilename = makeTempFilename (aliceFilenameSlug <> "-" <> bobFilenameSlug <> "-base.u")
+              let aliceFilename = makeTempFilename (aliceFilenameSlug <> ".u")
+              let bobFilename = makeTempFilename (bobFilenameSlug <> ".u")
+              let mergedFilename = Text.Builder.run (aliceFilenameSlug <> "-" <> bobFilenameSlug <> "-merged.u")
+              let mergetool =
+                    mergetool0
+                      & Text.pack
+                      & Text.replace "$BASE" lcaFilename
+                      & Text.replace "$LOCAL" aliceFilename
+                      & Text.replace "$MERGED" mergedFilename
+                      & Text.replace "$REMOTE" bobFilename
+              exitCode <-
+                liftIO do
+                  let aliceFileContents = Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.alice)
+                  let bobFileContents = Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.bob)
+                  removeFile (Text.unpack mergedFilename) <|> pure ()
+                  env.writeSource lcaFilename (Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.lca)) True
+                  env.writeSource aliceFilename aliceFileContents True
+                  env.writeSource bobFilename bobFileContents True
+                  env.writeSource
+                    mergedFilename
+                    ( makeMergedFileContents
+                        mergeSourceAndTarget
+                        aliceFileContents
+                        bobFileContents
+                    )
+                    True
+                  let createProcess = (Process.shell (Text.unpack mergetool)) {Process.delegate_ctlc = True}
+                  Process.withCreateProcess createProcess \_ _ _ -> Process.waitForProcess
+              done (Output.MergeFailureWithMergetool mergeSourceAndTarget temporaryBranchName mergetool exitCode)
 
       Cli.runTransaction (Codebase.addDefsToCodebase env.codebase blob5.file)
       Cli.updateProjectBranchRoot_
@@ -481,26 +554,27 @@ findTemporaryBranchName projectId mergeSourceAndTarget = do
             <> "-into-"
             <> mangleBranchName mergeSourceAndTarget.alice.branch
 
-    mangleMergeSource :: MergeSource -> Text.Builder
-    mangleMergeSource = \case
-      MergeSource'LocalProjectBranch (ProjectAndBranch _project branch) -> mangleBranchName branch
-      MergeSource'RemoteProjectBranch (ProjectAndBranch _project branch) -> "remote-" <> mangleBranchName branch
-      MergeSource'RemoteLooseCode info -> manglePath info.path
-    mangleBranchName :: ProjectBranchName -> Text.Builder
-    mangleBranchName name =
-      case classifyProjectBranchName name of
-        ProjectBranchNameKind'Contributor user name1 ->
-          Text.Builder.text user
-            <> Text.Builder.char '-'
-            <> mangleBranchName name1
-        ProjectBranchNameKind'DraftRelease semver -> "releases-drafts-" <> mangleSemver semver
-        ProjectBranchNameKind'Release semver -> "releases-" <> mangleSemver semver
-        ProjectBranchNameKind'NothingSpecial -> Text.Builder.text (into @Text name)
-
+mangleMergeSource :: MergeSource -> Text.Builder
+mangleMergeSource = \case
+  MergeSource'LocalProjectBranch (ProjectAndBranch _project branch) -> mangleBranchName branch
+  MergeSource'RemoteProjectBranch (ProjectAndBranch _project branch) -> "remote-" <> mangleBranchName branch
+  MergeSource'RemoteLooseCode info -> manglePath info.path
+  where
     manglePath :: Path -> Text.Builder
     manglePath =
       Monoid.intercalateMap "-" (Text.Builder.text . NameSegment.toUnescapedText) . Path.toList
 
+mangleBranchName :: ProjectBranchName -> Text.Builder
+mangleBranchName name =
+  case classifyProjectBranchName name of
+    ProjectBranchNameKind'Contributor user name1 ->
+      Text.Builder.text user
+        <> Text.Builder.char '-'
+        <> mangleBranchName name1
+    ProjectBranchNameKind'DraftRelease semver -> "releases-drafts-" <> mangleSemver semver
+    ProjectBranchNameKind'Release semver -> "releases-" <> mangleSemver semver
+    ProjectBranchNameKind'NothingSpecial -> Text.Builder.text (into @Text name)
+  where
     mangleSemver :: Semver -> Text.Builder
     mangleSemver (Semver x y z) =
       Text.Builder.decimal x
@@ -508,26 +582,6 @@ findTemporaryBranchName projectId mergeSourceAndTarget = do
         <> Text.Builder.decimal y
         <> Text.Builder.char '.'
         <> Text.Builder.decimal z
-
-libdepsToBranch0 ::
-  (Reference -> Transaction ConstructorType) ->
-  Map NameSegment (V2.CausalBranch Transaction) ->
-  Transaction (Branch0 Transaction)
-libdepsToBranch0 loadDeclType libdeps = do
-  let branch :: V2.Branch Transaction
-      branch =
-        V2.Branch
-          { terms = Map.empty,
-            types = Map.empty,
-            patches = Map.empty,
-            children = libdeps
-          }
-
-  -- We make a fresh branch cache to load the branch of libdeps.
-  -- It would probably be better to reuse the codebase's branch cache.
-  -- FIXME how slow/bad is this without that branch cache?
-  branchCache <- Sqlite.unsafeIO newBranchCache
-  Conversions.branch2to1 branchCache loadDeclType branch
 
 typecheckedUnisonFileToBranchAdds :: TypecheckedUnisonFile Symbol Ann -> [(Path, Branch0 m -> Branch0 m)]
 typecheckedUnisonFileToBranchAdds tuf = do
@@ -562,6 +616,57 @@ typecheckedUnisonFileToBranchAdds tuf = do
 
     splitVar :: Symbol -> Path.Split
     splitVar = Path.splitFromName . Name.unsafeParseVar
+
+------------------------------------------------------------------------------------------------------------------------
+-- Making file with conflict markers
+
+makeMergedFileContents :: MergeSourceAndTarget -> Text -> Text -> Text
+makeMergedFileContents sourceAndTarget aliceContents bobContents =
+  let f :: (Text.Builder, Diff.Diff Text) -> Diff.Diff Text -> (Text.Builder, Diff.Diff Text)
+      f (acc, previous) line =
+        case (previous, line) of
+          (Diff.Both {}, Diff.Both bothLine _) -> go (Text.Builder.text bothLine)
+          (Diff.Both {}, Diff.First aliceLine) -> go (aliceSlug <> Text.Builder.text aliceLine)
+          (Diff.Both {}, Diff.Second bobLine) -> go (aliceSlug <> middleSlug <> Text.Builder.text bobLine)
+          (Diff.First {}, Diff.Both bothLine _) -> go (middleSlug <> bobSlug <> Text.Builder.text bothLine)
+          (Diff.First {}, Diff.First aliceLine) -> go (Text.Builder.text aliceLine)
+          (Diff.First {}, Diff.Second bobLine) -> go (middleSlug <> Text.Builder.text bobLine)
+          (Diff.Second {}, Diff.Both bothLine _) -> go (bobSlug <> Text.Builder.text bothLine)
+          (Diff.Second {}, Diff.First aliceLine) -> go (bobSlug <> aliceSlug <> Text.Builder.text aliceLine)
+          (Diff.Second {}, Diff.Second bobLine) -> go (Text.Builder.text bobLine)
+        where
+          go content =
+            let !acc1 = acc <> content <> newline
+             in (acc1, line)
+   in Diff.getDiff (Text.lines aliceContents) (Text.lines bobContents)
+        & List.foldl' f (mempty @Text.Builder, Diff.Both Text.empty Text.empty)
+        & fst
+        & Text.Builder.run
+  where
+    aliceSlug :: Text.Builder
+    aliceSlug =
+      "<<<<<<< " <> Text.Builder.text (into @Text sourceAndTarget.alice.branch) <> newline
+
+    middleSlug :: Text.Builder
+    middleSlug = "=======\n"
+
+    bobSlug :: Text.Builder
+    bobSlug =
+      ">>>>>>> "
+        <> ( case sourceAndTarget.bob of
+               MergeSource'LocalProjectBranch bobProjectAndBranch ->
+                 Text.Builder.text (into @Text bobProjectAndBranch.branch)
+               MergeSource'RemoteProjectBranch bobProjectAndBranch ->
+                 "remote " <> Text.Builder.text (into @Text bobProjectAndBranch.branch)
+               MergeSource'RemoteLooseCode info ->
+                 case Path.toName info.path of
+                   Nothing -> "<root>"
+                   Just name -> Text.Builder.text (Name.toText name)
+           )
+        <> newline
+
+    newline :: Text.Builder
+    newline = "\n"
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Debugging by printing a bunch of stuff out
