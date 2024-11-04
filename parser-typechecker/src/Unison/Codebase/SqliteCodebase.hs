@@ -46,9 +46,9 @@ import Unison.Type (Type)
 import Unison.Util.Cache qualified as Cache
 import Unison.WatchKind qualified as UF
 import UnliftIO (finally)
-import UnliftIO.Directory (createDirectoryIfMissing, doesFileExist)
 import UnliftIO qualified as UnliftIO
 import UnliftIO.Concurrent qualified as UnliftIO
+import UnliftIO.Directory (createDirectoryIfMissing, doesFileExist)
 import UnliftIO.STM
 
 debug :: Bool
@@ -306,9 +306,10 @@ sqliteCodebase debugName root localOrRemote lockOption migrationStrategy action 
     handleLockOption ma = case lockOption of
       DontLock -> ma
       DoLock -> withRunInIO \runInIO ->
-        withTryFileLock (lockfilePath root) Exclusive (\_flock -> runInIO ma) <&> \case
-          Nothing -> Left OpenCodebaseFileLockFailed
-          Just x -> x
+        let lockFP = lockfilePath root
+         in withTryFileLock lockFP Exclusive (\_flock -> runInIO ma) <&> \case
+              Nothing -> Left (OpenCodebaseFileLockFailed lockFP)
+              Just x -> x
 
 data Entity m
   = B CausalHash (m (Branch m))

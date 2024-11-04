@@ -571,11 +571,14 @@ getCodebaseOrExit codebasePathOption migrationStrategy action = do
             case err of
               InitErrorOpen err ->
                 case err of
-                  OpenCodebaseFileLockFailed ->
+                  OpenCodebaseFileLockFailed lockFilePath ->
                     pure
                       ( P.lines
-                          [ "Failed to obtain a file lock on the codebase. ",
-                            "Perhaps you are running multiple ucm processes against the same codebase."
+                          [ "It looks like there is already be a UCM process using this codebase.",
+                            "",
+                            "Multiple UCMs using the same codebase can cause issues, please close the other UCM process and try again.",
+                            "",
+                            P.wrap "If all other processes are closed and you still see this message you can manually delete the lock file at \"" <> P.string lockFilePath <> "\"."
                           ]
                       )
                   OpenCodebaseDoesntExist ->

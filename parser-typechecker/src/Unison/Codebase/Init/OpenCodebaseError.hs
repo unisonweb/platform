@@ -15,7 +15,7 @@ data OpenCodebaseError
     OpenCodebaseDoesntExist
   | -- | The codebase exists, but its schema version is unknown to this application.
     OpenCodebaseUnknownSchemaVersion SchemaVersion
-  | OpenCodebaseFileLockFailed
+  | OpenCodebaseFileLockFailed FilePath {- path to the lockfile -}
   | -- | The codebase exists, but requires a migration before it can be used.
     OpenCodebaseRequiresMigration
       -- current version
