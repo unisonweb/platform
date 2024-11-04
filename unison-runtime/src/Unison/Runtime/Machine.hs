@@ -2381,7 +2381,7 @@ universalEq frn = eqVal
     eql :: (a -> b -> Bool) -> [a] -> [b] -> Bool
     eql cm l r = length l == length r && and (zipWith cm l r)
     eqVal :: Val -> Val -> Bool
-    eqVal (UnboxedVal v1 t1) (UnboxedVal v2 t2) = t1 == t2 && v1 == v2
+    eqVal (UnboxedVal v1 t1) (UnboxedVal v2 t2) = matchTags t1 t2 && v1 == v2
     eqVal (BoxedVal x) (BoxedVal y) = eqc x y
     eqVal _ _ = False
     eqc :: Closure -> Closure -> Bool
@@ -2409,12 +2409,13 @@ universalEq frn = eqVal
     eqValList :: [Val] -> [Val] -> Bool
     eqValList vs1 vs2 = eql eqVal vs1 vs2
 
-    -- serialization doesn't necessarily preserve Int tags, so be
-    -- more accepting for those.
-    matchTags ct1 ct2 =
-      ct1 == ct2
-        || (ct1 == TT.intTag && ct2 == TT.natTag)
-        || (ct1 == TT.natTag && ct2 == TT.intTag)
+-- serialization doesn't necessarily preserve Int tags, so be
+-- more accepting for those.
+matchTags :: PackedTag -> PackedTag -> Bool
+matchTags ct1 ct2 =
+  ct1 == ct2
+    || (ct1 == TT.intTag && ct2 == TT.natTag)
+    || (ct1 == TT.natTag && ct2 == TT.intTag)
 
 arrayEq :: (a -> a -> Bool) -> PA.Array a -> PA.Array a -> Bool
 arrayEq eqc l r
@@ -2478,8 +2479,12 @@ universalCompare frn = cmpVal False
       (UnboxedVal v1 t1) (UnboxedVal v2 t2) ->
         -- We don't need to mask the tags since unboxed types are
         -- always treated like nullary constructors and have an empty ctag.
-        Monoid.whenM tyEq (compare t1 t2)
+        Monoid.whenM tyEq (compareTags t1 t2)
           <> compare v1 v2
+    compareTags t1 t2 =
+      if matchTags t1 t2
+        then EQ
+        else compare t1 t2
     cmpl :: (a -> b -> Ordering) -> [a] -> [b] -> Ordering
     cmpl cm l r =
       compare (length l) (length r) <> fold (zipWith cm l r)
@@ -2510,6 +2515,10 @@ universalCompare frn = cmpVal False
       (UnboxedTypeTag t1) (UnboxedTypeTag t2) -> compare t1 t2
       (BlackHole) (BlackHole) -> EQ
       c d -> comparing closureNum c d
+    cmpUnboxed :: Bool -> (PackedTag, Int) -> (PackedTag, Int) -> Ordering
+    cmpUnboxed tyEq (t1, v1) (t2, v2) =
+      Monoid.whenM tyEq (compareTags t1 t2)
+        <> compare v1 v2
     cmpValList :: Bool -> [Val] -> [Val] -> Ordering
     cmpValList tyEq vs1 vs2 =
       -- Written in a strange way way to maintain back-compat with the
@@ -2519,7 +2528,7 @@ universalCompare frn = cmpVal False
             BoxedVal clos -> (mempty, [clos])
           (us1, bs1) = partitionVals vs1
           (us2, bs2) = partitionVals vs2
-       in cmpl compare us1 us2 <> cmpl (cmpc tyEq) bs1 bs2
+       in cmpl (cmpUnboxed tyEq) us1 us2 <> cmpl (cmpc tyEq) bs1 bs2
 
 arrayCmp ::
   (a -> a -> Ordering) ->
