@@ -30,6 +30,31 @@ casting = (Nat.toInt 100,
            Int.toRepresentation +10,
            Int.toRepresentation -10)
 > casting
+
+
+> 1 Universal.== Int.toRepresentation +1
+> [1, 2, 3] Universal.== [Int.toRepresentation +1, Int.toRepresentation +2, Int.toRepresentation +3]
+
+-- Float edge cases
+> compare 0.0 0.0
+> compare +0.0 (-0.0)
+> compare -0.0 (+0.0)
+> compare -1.0 1.0
+
+-- Currently, the same NaN's are equal, but different NaN's are not...
+>  (0.0/0.0) == (0.0/0.0)
+>  (0.0/0.0) == (1.0/0.0)
+
+> Universal.compare [] [1]
+> Universal.compare [1, 2] [2, 3]
+> Universal.compare [2, 3] [1, 2]
+
+-- Values in 'Any' are compared a bit strangely.
+-- Currently we have special-cases to compare the values of Nats and Ints directly, ignoring their type, for better or
+-- worse.
+-- This helps to counter a different issue we have, where `load (save +10)` will load a `Nat` runtime type rather than
+-- an Int, since we don't actually store the type of numerics in the ANF.Value type.
+> Universal.compare (Any [1, 2]) (Any [+1, +2])
 ```
 
 ``` ucm
@@ -84,5 +109,53 @@ casting = (Nat.toInt 100,
            , 10
            , 18446744073709551606
            )
+  
+    32 | > 1 Universal.== Int.toRepresentation +1
+           ⧩
+           true
+  
+    33 | > [1, 2, 3] Universal.== [Int.toRepresentation +1, Int.toRepresentation +2, Int.toRepresentation +3]
+           ⧩
+           true
+  
+    36 | > compare 0.0 0.0
+           ⧩
+           +0
+  
+    37 | > compare +0.0 (-0.0)
+           ⧩
+           -1
+  
+    38 | > compare -0.0 (+0.0)
+           ⧩
+           +1
+  
+    39 | > compare -1.0 1.0
+           ⧩
+           -1
+  
+    42 | >  (0.0/0.0) == (0.0/0.0)
+           ⧩
+           true
+  
+    43 | >  (0.0/0.0) == (1.0/0.0)
+           ⧩
+           false
+  
+    45 | > Universal.compare [] [1]
+           ⧩
+           -1
+  
+    46 | > Universal.compare [1, 2] [2, 3]
+           ⧩
+           -1
+  
+    47 | > Universal.compare [2, 3] [1, 2]
+           ⧩
+           +1
+  
+    54 | > Universal.compare (Any [1, 2]) (Any [+1, +2])
+           ⧩
+           +0
 
 ```
