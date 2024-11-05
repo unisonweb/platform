@@ -63,7 +63,7 @@ casting = (Nat.toInt 100,
 
 -- Regression test for a problem with universalCompare where Nats larger than maxInt would compare incorrectly, but only
 -- when nested within other types due to how lists of constructor fields were compared.
-> Universal.compare (1,()) (maxNat, ())
+> Universal.compare (1,()) (18446744073709551615, ())
 
 -- Types in tuples should compare one by one left-to-right
 > Universal.compare (1, "", 2) (1, "", 3)
