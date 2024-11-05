@@ -667,7 +667,19 @@ data GRef comb
   = Stk !Int -- stack reference to a closure
   | Env !CombIx {- Lazy! Might be cyclic -} comb
   | Dyn !Word64 -- dynamic scope reference to a closure
-  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+  deriving (Show, Functor, Foldable, Traversable)
+
+instance Eq (GRef comb) where
+  a == b = compare a b == EQ
+
+instance Ord (GRef comb) where
+  compare (Stk a) (Stk b) = compare a b
+  compare (Stk {}) _ = LT
+  compare _ (Stk {}) = GT
+  compare (Env a _) (Env b _) = compare a b
+  compare (Env {}) _ = LT
+  compare _ (Env {}) = GT
+  compare (Dyn a) (Dyn b) = compare a b
 
 type Branch = GBranch CombIx
 

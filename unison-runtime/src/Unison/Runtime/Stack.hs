@@ -205,31 +205,8 @@ data K
       !(RSection Val) -- resumption section
       !K
 
-instance Eq K where
-  KE == KE = True
-  (CB cb) == (CB cb') = cb == cb'
-  (Mark a ps m k) == (Mark a' ps' m' k') =
-    a == a' && ps == ps' && m == m' && k == k'
-  (Push f a ci _ _sect k) == (Push f' a' ci' _ _sect' k') =
-    f == f' && a == a' && ci == ci' && k == k'
-  _ == _ = False
-
-instance Ord K where
-  compare KE KE = EQ
-  compare (CB cb) (CB cb') = compare cb cb'
-  compare (Mark a ps m k) (Mark a' ps' m' k') =
-    compare (a, ps, m, k) (a', ps', m', k')
-  compare (Push f a ci _ _sect k) (Push f' a' ci' _ _sect' k') =
-    compare (f, a, ci, k) (f', a', ci', k')
-  compare KE _ = LT
-  compare _ KE = GT
-  compare (CB {}) _ = LT
-  compare _ (CB {}) = GT
-  compare (Mark {}) _ = LT
-  compare _ (Mark {}) = GT
-
 newtype Closure = Closure {unClosure :: (GClosure (RComb Val))}
-  deriving stock (Show, Eq, Ord)
+  deriving stock (Show)
 
 -- | Implementation for Unison sequences.
 type USeq = Seq Val
@@ -282,22 +259,6 @@ data GClosure comb
 #endif
   deriving stock (Show, Functor, Foldable, Traversable)
 {- ORMOLU_ENABLE -}
-
--- We derive a basic instance for a version _without_ cyclic references.
-deriving instance Eq (GClosure ())
-
--- Then we define the eq instance for cyclic references to just use the derived instance after deleting any possible
--- cycles.
--- This is still correct because each constructor with a cyclic reference also includes
--- a CombIx identifying the cycle.
-instance Eq (GClosure (RComb Val)) where
-  a == b = (a $> ()) == (b $> ())
-
--- See Eq instance.
-deriving instance Ord (GClosure ())
-
-instance Ord (GClosure (RComb Val)) where
-  compare a b = compare (a $> ()) (b $> ())
 
 pattern PAp :: CombIx -> GCombInfo (RComb Val) -> Seg -> Closure
 pattern PAp cix comb seg = Closure (GPAp cix comb seg)
@@ -636,20 +597,6 @@ data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
   -- unboxed side is garbage and should not be compared.
   -- See universalEq.
   deriving (Show)
-
-instance Eq Val where
-  (==) = \cases
-    (UnboxedVal v1 t1) (UnboxedVal v2 t2) -> t1 == t2 && v1 == v2
-    (BoxedVal x) (BoxedVal y) -> x == y
-    (UnboxedVal {}) (BoxedVal {}) -> False
-    (BoxedVal {}) (UnboxedVal {}) -> False
-
-instance Ord Val where
-  compare = \cases
-    (BoxedVal c1) (BoxedVal c2) -> compare c1 c2
-    (UnboxedVal i1 t1) (UnboxedVal i2 t2) -> compare t1 t2 <> compare i1 i2
-    (UnboxedVal {}) (BoxedVal _) -> LT
-    (BoxedVal _) (UnboxedVal {}) -> GT
 
 -- | A nulled out value you can use when filling empty arrays, etc.
 emptyVal :: Val

@@ -9,6 +9,7 @@ import Control.Concurrent.STM as STM
 import Control.Exception
 import Control.Lens
 import Data.Bits
+import Data.Functor.Classes (Eq1 (..), Ord1 (..))
 import Data.Map.Strict qualified as M
 import Data.Ord (comparing)
 import Data.Sequence qualified as Sq
@@ -2401,7 +2402,7 @@ universalEq frn = eqVal
       cix1 == cix2
         && eqValList segs1 segs2
     eqc (CapV k1 a1 vs1) (CapV k2 a2 vs2) =
-      k1 == k2
+      eqK k1 k2
         && a1 == a2
         && eqValList vs1 vs2
     eqc (Foreign fl) (Foreign fr)
@@ -2413,8 +2414,18 @@ universalEq frn = eqVal
           length sl == length sr && and (Sq.zipWith eqVal sl sr)
       | otherwise = frn fl fr
     eqc c d = closureNum c == closureNum d
+
     eqValList :: [Val] -> [Val] -> Bool
     eqValList vs1 vs2 = eql eqVal vs1 vs2
+
+    eqK :: K -> K -> Bool
+    eqK KE KE = True
+    eqK (CB cb) (CB cb') = cb == cb'
+    eqK (Mark a ps m k) (Mark a' ps' m' k') =
+      a == a' && ps == ps' && liftEq eqVal m m' && eqK k k'
+    eqK (Push f a ci _ _sect k) (Push f' a' ci' _ _sect' k') =
+      f == f' && a == a' && ci == ci' && eqK k k'
+    eqK _ _ = False
 
 -- serialization doesn't necessarily preserve Int tags, so be
 -- more accepting for those.
@@ -2505,7 +2516,7 @@ universalCompare frn = cmpVal False
         compare cix1 cix2
           <> cmpValList tyEq segs1 segs2
       (CapV k1 a1 vs1) (CapV k2 a2 vs2) ->
-        compare k1 k2
+        cmpK tyEq k1 k2
           <> compare a1 a2
           <> cmpValList True vs1 vs2
       (Foreign fl) (Foreign fr)
@@ -2520,6 +2531,7 @@ universalCompare frn = cmpVal False
       (UnboxedTypeTag t1) (UnboxedTypeTag t2) -> compare t1 t2
       (BlackHole) (BlackHole) -> EQ
       c d -> comparing closureNum c d
+
     cmpUnboxed :: Bool -> (UnboxedTypeTag, Int) -> (UnboxedTypeTag, Int) -> Ordering
     cmpUnboxed tyEq (t1, v1) (t2, v2)
       | (t1 == IntTag || t1 == NatTag) && (t2 == IntTag || t2 == NatTag) =
@@ -2531,6 +2543,7 @@ universalCompare frn = cmpVal False
           -- always treated like nullary constructors and have an empty ctag.
           Monoid.whenM tyEq (compareUnboxedTypes t1 t2)
             <> compare v1 v2
+
     cmpValList :: Bool -> [Val] -> [Val] -> Ordering
     cmpValList tyEq vs1 vs2 =
       -- Written in a strange way way to maintain back-compat with the
@@ -2541,6 +2554,27 @@ universalCompare frn = cmpVal False
           (us1, bs1) = partitionVals vs1
           (us2, bs2) = partitionVals vs2
        in cmpl (cmpUnboxed tyEq) us1 us2 <> cmpl (cmpc tyEq) bs1 bs2
+
+    cmpK :: Bool -> K -> K -> Ordering
+    cmpK tyEq = \cases
+      KE KE -> EQ
+      (CB cb) (CB cb') -> compare cb cb'
+      (Mark a ps m k) (Mark a' ps' m' k') ->
+        compare a a'
+          <> compare ps ps'
+          <> liftCompare (cmpVal tyEq) m m'
+          <> cmpK tyEq k k'
+      (Push f a ci _ _sect k) (Push f' a' ci' _ _sect' k') ->
+        compare f f'
+          <> compare a a'
+          <> compare ci ci'
+          <> cmpK tyEq k k'
+      KE _ -> LT
+      _ KE -> GT
+      (CB {}) _ -> LT
+      _ (CB {}) -> GT
+      (Mark {}) _ -> LT
+      _ (Mark {}) -> GT
 
 arrayCmp ::
   (a -> a -> Ordering) ->
