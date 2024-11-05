@@ -2457,13 +2457,6 @@ compareAsFloat i j
   where
     clear k = clearBit k 64
 
-compareAsNat :: Int -> Int -> Ordering
-compareAsNat i j = compare ni nj
-  where
-    ni, nj :: Word
-    ni = fromIntegral i
-    nj = fromIntegral j
-
 universalCompare ::
   (Foreign -> Foreign -> Ordering) ->
   Val ->
@@ -2476,11 +2469,8 @@ universalCompare frn = cmpVal False
       (BoxedVal c1) (BoxedVal c2) -> cmpc tyEq c1 c2
       (UnboxedVal {}) (BoxedVal {}) -> LT
       (BoxedVal {}) (UnboxedVal {}) -> GT
-      (UnboxedVal v1 t1) (UnboxedVal v2 t2) ->
-        -- We don't need to mask the tags since unboxed types are
-        -- always treated like nullary constructors and have an empty ctag.
-        Monoid.whenM tyEq (compareTags t1 t2)
-          <> compare v1 v2
+      (NatVal i) (NatVal j) -> compare i j
+      (UnboxedVal v1 t1) (UnboxedVal v2 t2) -> cmpUnboxed tyEq (t1, v1) (t2, v2)
     compareTags t1 t2 =
       if matchTags t1 t2
         then EQ
@@ -2516,9 +2506,16 @@ universalCompare frn = cmpVal False
       (BlackHole) (BlackHole) -> EQ
       c d -> comparing closureNum c d
     cmpUnboxed :: Bool -> (PackedTag, Int) -> (PackedTag, Int) -> Ordering
-    cmpUnboxed tyEq (t1, v1) (t2, v2) =
-      Monoid.whenM tyEq (compareTags t1 t2)
-        <> compare v1 v2
+    cmpUnboxed tyEq (t1, v1) (t2, v2)
+      | (t1 == TT.intTag || t1 == TT.natTag) && (t2 == TT.intTag || t2 == TT.natTag) =
+          compare v1 v2
+      | t1 == TT.floatTag && t2 == TT.floatTag =
+          compareAsFloat v1 v2
+      | otherwise =
+          -- We don't need to mask the tags since unboxed types are
+          -- always treated like nullary constructors and have an empty ctag.
+          Monoid.whenM tyEq (compareTags t1 t2)
+            <> compare v1 v2
     cmpValList :: Bool -> [Val] -> [Val] -> Ordering
     cmpValList tyEq vs1 vs2 =
       -- Written in a strange way way to maintain back-compat with the
