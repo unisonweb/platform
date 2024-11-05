@@ -817,9 +817,6 @@ coerceType destType =
       TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt destType) $
         TPrm CAST [v, tag]
 
--- unbox x0 ri x $
---   TCon ro 0 [x]
-
 -- This version of unsafeCoerce is the identity function. It works
 -- only if the two types being coerced between are actually the same,
 -- because it keeps the same representation. It is not capable of
