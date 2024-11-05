@@ -19,6 +19,9 @@ module Unison.Runtime.Stack
         BlackHole,
         UnboxedTypeTag
       ),
+    UnboxedTypeTag (..),
+    unboxedTypeTagToInt,
+    unboxedTypeTagFromInt,
     IxClosure,
     Callback (..),
     Augment (..),
@@ -135,7 +138,6 @@ import Unison.Runtime.ANF (PackedTag)
 import Unison.Runtime.Array
 import Unison.Runtime.Foreign
 import Unison.Runtime.MCode
-import Unison.Runtime.TypeTags qualified as TT
 import Unison.Type qualified as Ty
 import Unison.Util.EnumContainers as EC
 import Prelude hiding (words)
@@ -234,6 +236,29 @@ type USeq = Seq Val
 
 type IxClosure = GClosure CombIx
 
+-- Don't re-order these, the ord instance affects Universal.compare
+data UnboxedTypeTag
+  = CharTag
+  | FloatTag
+  | IntTag
+  | NatTag
+  deriving stock (Show, Eq, Ord)
+
+unboxedTypeTagToInt :: UnboxedTypeTag -> Int
+unboxedTypeTagToInt = \case
+  CharTag -> 0
+  FloatTag -> 1
+  IntTag -> 2
+  NatTag -> 3
+
+unboxedTypeTagFromInt :: (HasCallStack) => Int -> UnboxedTypeTag
+unboxedTypeTagFromInt = \case
+  0 -> CharTag
+  1 -> FloatTag
+  2 -> IntTag
+  3 -> NatTag
+  _ -> error "intToUnboxedTypeTag: invalid tag"
+
 {- ORMOLU_DISABLE -}
 data GClosure comb
   = GPAp
@@ -250,7 +275,7 @@ data GClosure comb
   | -- The type tag for the value in the corresponding unboxed stack slot.
     -- We should consider adding separate constructors for common builtin type tags.
     --  GHC will optimize nullary constructors into singletons.
-    GUnboxedTypeTag !PackedTag
+    GUnboxedTypeTag !UnboxedTypeTag
   | GBlackHole
 #ifdef STACK_CHECK
   | GUnboxedSentinel
@@ -304,19 +329,19 @@ pattern UnboxedTypeTag t = Closure (GUnboxedTypeTag t)
 
 -- We can avoid allocating a closure for common type tags on each poke by having shared top-level closures for them.
 natTypeTag :: Closure
-natTypeTag = UnboxedTypeTag TT.natTag
+natTypeTag = UnboxedTypeTag NatTag
 {-# NOINLINE natTypeTag #-}
 
 intTypeTag :: Closure
-intTypeTag = UnboxedTypeTag TT.intTag
+intTypeTag = UnboxedTypeTag IntTag
 {-# NOINLINE intTypeTag #-}
 
 charTypeTag :: Closure
-charTypeTag = UnboxedTypeTag TT.charTag
+charTypeTag = UnboxedTypeTag CharTag
 {-# NOINLINE charTypeTag #-}
 
 floatTypeTag :: Closure
-floatTypeTag = UnboxedTypeTag TT.floatTag
+floatTypeTag = UnboxedTypeTag FloatTag
 {-# NOINLINE floatTypeTag #-}
 
 traceK :: Reference -> K -> [(Reference, Int)]
@@ -376,43 +401,43 @@ pattern DataC rf ct segs <-
 
 matchCharVal :: Val -> Maybe Char
 matchCharVal = \case
-  (UnboxedVal u tt) | tt == TT.charTag -> Just (Char.chr u)
+  (UnboxedVal u CharTag) -> Just (Char.chr u)
   _ -> Nothing
 
 pattern CharVal :: Char -> Val
 pattern CharVal c <- (matchCharVal -> Just c)
   where
-    CharVal c = UnboxedVal (Char.ord c) TT.charTag
+    CharVal c = UnboxedVal (Char.ord c) CharTag
 
 matchNatVal :: Val -> Maybe Word64
 matchNatVal = \case
-  (UnboxedVal u tt) | tt == TT.natTag -> Just (fromIntegral u)
+  (UnboxedVal u NatTag) -> Just (fromIntegral u)
   _ -> Nothing
 
 pattern NatVal :: Word64 -> Val
 pattern NatVal n <- (matchNatVal -> Just n)
   where
-    NatVal n = UnboxedVal (fromIntegral n) TT.natTag
+    NatVal n = UnboxedVal (fromIntegral n) NatTag
 
 matchDoubleVal :: Val -> Maybe Double
 matchDoubleVal = \case
-  (UnboxedVal u tt) | tt == TT.floatTag -> Just (intToDouble u)
+  (UnboxedVal u FloatTag) -> Just (intToDouble u)
   _ -> Nothing
 
 pattern DoubleVal :: Double -> Val
 pattern DoubleVal d <- (matchDoubleVal -> Just d)
   where
-    DoubleVal d = UnboxedVal (doubleToInt d) TT.floatTag
+    DoubleVal d = UnboxedVal (doubleToInt d) FloatTag
 
 matchIntVal :: Val -> Maybe Int
 matchIntVal = \case
-  (UnboxedVal u tt) | tt == TT.intTag -> Just u
+  (UnboxedVal u IntTag) -> Just u
   _ -> Nothing
 
 pattern IntVal :: Int -> Val
 pattern IntVal i <- (matchIntVal -> Just i)
   where
-    IntVal i = UnboxedVal i TT.intTag
+    IntVal i = UnboxedVal i IntTag
 
 doubleToInt :: Double -> Int
 doubleToInt d = indexByteArray (BA.byteArrayFromList [d]) 0
@@ -630,7 +655,7 @@ instance Ord Val where
 emptyVal :: Val
 emptyVal = Val (-1) BlackHole
 
-pattern UnboxedVal :: Int -> PackedTag -> Val
+pattern UnboxedVal :: Int -> UnboxedTypeTag -> Val
 pattern UnboxedVal v t = (Val v (UnboxedTypeTag t))
 
 valToBoxed :: Val -> Maybe Closure
@@ -721,7 +746,7 @@ upeekOff _stk@(Stack _ _ sp ustk _) i = do
   readByteArray ustk (sp - i)
 {-# INLINE upeekOff #-}
 
-upokeT :: DebugCallStack => Stack -> UVal -> PackedTag -> IO ()
+upokeT :: DebugCallStack => Stack -> UVal -> UnboxedTypeTag -> IO ()
 upokeT !stk@(Stack _ _ sp ustk _) !u !t = do
   bpoke stk (UnboxedTypeTag t)
   writeByteArray ustk sp u
@@ -741,7 +766,7 @@ poke _stk@(Stack _ _ sp ustk bstk) (Val u b) = do
 -- checks.
 unsafePokeIasN :: DebugCallStack => Stack -> Int -> IO ()
 unsafePokeIasN stk n = do
-  upokeT stk n TT.natTag
+  upokeT stk n NatTag
 {-# INLINE unsafePokeIasN #-}
 
 -- | Store an unboxed tag to later match on.
@@ -786,7 +811,7 @@ pokeOff stk i (Val u t) = do
   writeByteArray (ustk stk) (sp stk - i) u
 {-# INLINE pokeOff #-}
 
-upokeOffT :: DebugCallStack => Stack -> Off -> UVal -> PackedTag -> IO ()
+upokeOffT :: DebugCallStack => Stack -> Off -> UVal -> UnboxedTypeTag -> IO ()
 upokeOffT stk i u t = do
   bpokeOff stk i (UnboxedTypeTag t)
   writeByteArray (ustk stk) (sp stk - i) u
@@ -1090,7 +1115,7 @@ pokeOffI stk@(Stack _ _ sp ustk _) i n = do
 
 pokeOffC :: Stack -> Int -> Char -> IO ()
 pokeOffC stk i c = do
-  upokeOffT stk i (Char.ord c) TT.charTag
+  upokeOffT stk i (Char.ord c) CharTag
 {-# INLINE pokeOffC #-}
 
 pokeBi :: (BuiltinForeign b) => Stack -> b -> IO ()

@@ -36,13 +36,11 @@ import Unison.Runtime.MCode (CombIx (..))
 import Unison.Runtime.Stack
   ( Closure (..),
     USeq,
+    UnboxedTypeTag (..),
     Val (..),
     pattern DataC,
     pattern PApV,
   )
--- for Int -> Double
-
-import Unison.Runtime.TypeTags qualified as TT
 import Unison.Syntax.NamePrinter (prettyReference)
 import Unison.Term
   ( Term,
@@ -90,7 +88,7 @@ err err x = (singleton err, x)
 
 data DecompError
   = BadBool !Word64
-  | BadUnboxed !TT.PackedTag
+  | BadUnboxed !UnboxedTypeTag
   | BadForeign !Reference
   | BadData !Reference
   | BadPAp !Reference
@@ -105,8 +103,8 @@ type DecompResult v = (Set DecompError, Term v ())
 prf :: Reference -> Error
 prf = syntaxToColor . prettyReference 10
 
-printPackedTag :: TT.PackedTag -> Error
-printPackedTag t = shown $ TT.unpackTags t
+printUnboxedTypeTag :: UnboxedTypeTag -> Error
+printUnboxedTypeTag = shown
 
 renderDecompError :: DecompError -> Error
 renderDecompError (BadBool n) =
@@ -114,10 +112,10 @@ renderDecompError (BadBool n) =
     [ wrap "A boolean value had an unexpected constructor tag:",
       indentN 2 . lit . fromString $ show n
     ]
-renderDecompError (BadUnboxed rf) =
+renderDecompError (BadUnboxed tt) =
   lines
     [ wrap "An apparent numeric type had an unrecognized packed tag:",
-      indentN 2 $ printPackedTag rf
+      indentN 2 $ printUnboxedTypeTag tt
     ]
 renderDecompError (BadForeign rf) =
   lines

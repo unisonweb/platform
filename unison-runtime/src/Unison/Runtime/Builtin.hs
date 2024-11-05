@@ -173,9 +173,8 @@ import Unison.Runtime.Foreign
   )
 import Unison.Runtime.Foreign qualified as F
 import Unison.Runtime.Foreign.Function
-import Unison.Runtime.Stack (Val (..), emptyVal)
+import Unison.Runtime.Stack (UnboxedTypeTag (..), Val (..), emptyVal, unboxedTypeTagToInt)
 import Unison.Runtime.Stack qualified as Closure
-import Unison.Runtime.TypeTags qualified as TT
 import Unison.Symbol
 import Unison.Type qualified as Ty
 import Unison.Util.Bytes qualified as Bytes
@@ -492,16 +491,15 @@ n2f = unop NTOF
 trni :: (Var v) => SuperNormal v
 trni = unop0 4 $ \[x, z, b, tag, n] ->
   -- TODO: Do we need to do all calculations _before_ the branch?
+  -- Should probably just replace this with an instruction.
   TLetD z UN (TLit $ N 0)
     . TLetD b UN (TPrm LEQI [x, z])
-    . TLetD tag UN (TLit $ I $ fromIntegral nt)
+    . TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt NatTag)
     . TLetD n UN (TPrm CAST [x, tag])
     . TMatch b
     $ MatchIntegral
       (mapSingleton 1 $ TVar z)
       (Just $ TVar n)
-  where
-    PackedTag nt = TT.natTag
 
 modular :: (Var v) => POp -> (Bool -> ANormal v) -> SuperNormal v
 modular pop ret =
@@ -523,7 +521,8 @@ dropn :: (Var v) => SuperNormal v
 dropn = binop0 4 $ \[x, y, b, r, tag, n] ->
   TLetD b UN (TPrm LEQN [x, y])
     -- TODO: Can we avoid this work until after the branch?
-    . TLetD tag UN (TLit $ I $ fromIntegral nt)
+  -- Should probably just replace this with an instruction.
+    . TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt NatTag)
     . TLetD r UN (TPrm SUBN [x, y])
     . TLetD n UN (TPrm CAST [r, tag])
     $ ( TMatch b $
@@ -531,8 +530,6 @@ dropn = binop0 4 $ \[x, y, b, r, tag, n] ->
             (mapSingleton 1 $ TLit $ N 0)
             (Just $ TVar n)
       )
-  where
-    PackedTag nt = TT.natTag
 
 appendt, taket, dropt, indext, indexb, sizet, unconst, unsnoct :: (Var v) => SuperNormal v
 appendt = binop0 0 $ \[x, y] -> TPrm CATT [x, y]
@@ -814,11 +811,11 @@ andb = binop0 0 $ \[p, q] ->
 
 -- A runtime type-cast. Used to unsafely coerce between unboxed
 -- types at runtime without changing their representation.
-coerceType :: PackedTag -> SuperNormal Symbol
-coerceType (PackedTag destType) =
+coerceType :: UnboxedTypeTag -> SuperNormal Symbol
+coerceType destType =
   unop0 1 $ \[v, tag] ->
-    TLetD tag UN (TLit $ I $ fromIntegral destType) $
-      TPrm CAST [v, tag]
+      TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt destType) $
+        TPrm CAST [v, tag]
 
 -- unbox x0 ri x $
 --   TCon ro 0 [x]
@@ -1735,8 +1732,8 @@ builtinLookup =
         ("Int.<=", (Untracked, lei)),
         ("Int.>", (Untracked, gti)),
         ("Int.>=", (Untracked, gei)),
-        ("Int.fromRepresentation", (Untracked, coerceType TT.intTag)),
-        ("Int.toRepresentation", (Untracked, coerceType TT.natTag)),
+        ("Int.fromRepresentation", (Untracked, coerceType IntTag)),
+        ("Int.toRepresentation", (Untracked, coerceType NatTag)),
         ("Int.increment", (Untracked, inci)),
         ("Int.signum", (Untracked, sgni)),
         ("Int.negate", (Untracked, negi)),
@@ -1780,7 +1777,7 @@ builtinLookup =
         ("Nat.complement", (Untracked, compln)),
         ("Nat.pow", (Untracked, pown)),
         ("Nat.drop", (Untracked, dropn)),
-        ("Nat.toInt", (Untracked, coerceType TT.intTag)),
+        ("Nat.toInt", (Untracked, coerceType IntTag)),
         ("Nat.toFloat", (Untracked, n2f)),
         ("Nat.toText", (Untracked, n2t)),
         ("Nat.fromText", (Untracked, t2n)),
@@ -1793,8 +1790,8 @@ builtinLookup =
         ("Float.log", (Untracked, logf)),
         ("Float.logBase", (Untracked, logbf)),
         ("Float.sqrt", (Untracked, sqrtf)),
-        ("Float.fromRepresentation", (Untracked, coerceType TT.floatTag)),
-        ("Float.toRepresentation", (Untracked, coerceType TT.natTag)),
+        ("Float.fromRepresentation", (Untracked, coerceType FloatTag)),
+        ("Float.toRepresentation", (Untracked, coerceType NatTag)),
         ("Float.min", (Untracked, minf)),
         ("Float.max", (Untracked, maxf)),
         ("Float.<", (Untracked, ltf)),
@@ -1850,8 +1847,8 @@ builtinLookup =
         ("Debug.trace", (Tracked, gen'trace)),
         ("Debug.toText", (Tracked, debug'text)),
         ("unsafe.coerceAbilities", (Untracked, poly'coerce)),
-        ("Char.toNat", (Untracked, coerceType TT.natTag)),
-        ("Char.fromNat", (Untracked, coerceType TT.charTag)),
+        ("Char.toNat", (Untracked, coerceType NatTag)),
+        ("Char.fromNat", (Untracked, coerceType CharTag)),
         ("Bytes.empty", (Untracked, emptyb)),
         ("Bytes.fromList", (Untracked, packb)),
         ("Bytes.toList", (Untracked, unpackb)),

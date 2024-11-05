@@ -979,7 +979,7 @@ dumpDataNoTag !mr !stk = \case
   val@(UnboxedVal _ t) -> do
     stk <- bump stk
     poke stk val
-    pure (t, stk)
+    pure (unboxedPackedTag t, stk)
   BoxedVal clos -> case clos of
     (Enum _ t) -> pure (t, stk)
     (Data1 _ t x) -> do
@@ -999,6 +999,13 @@ dumpDataNoTag !mr !stk = \case
         "dumpDataNoTag: bad closure: "
           ++ show clo
           ++ maybe "" (\r -> "\nexpected type: " ++ show r) mr
+  where
+    unboxedPackedTag :: UnboxedTypeTag -> PackedTag
+    unboxedPackedTag = \case
+      CharTag -> TT.charTag
+      FloatTag -> TT.floatTag
+      IntTag -> TT.intTag
+      NatTag -> TT.natTag
 {-# INLINE dumpDataNoTag #-}
 
 -- Note: although the representation allows it, it is impossible
@@ -1201,7 +1208,7 @@ uprim1 !stk COMI !i = do
   pure stk
 {-# INLINE uprim1 #-}
 
-uprim2 :: Stack -> UPrim2 -> Int -> Int -> IO Stack
+uprim2 :: (HasCallStack) => Stack -> UPrim2 -> Int -> Int -> IO Stack
 uprim2 !stk ADDI !i !j = do
   m <- upeekOff stk i
   n <- upeekOff stk j
@@ -1425,10 +1432,10 @@ uprim2 !stk XORI !i !j = do
   pokeI stk (xor x y)
   pure stk
 uprim2 !stk CAST !vi !ti = do
-  newTypeTag <- peekOffN stk ti
+  newTypeTag <- peekOffI stk ti
   v <- upeekOff stk vi
   stk <- bump stk
-  poke stk $ UnboxedVal v (PackedTag newTypeTag)
+  poke stk $ UnboxedVal v (unboxedTypeTagFromInt newTypeTag)
   pure stk
 {-# INLINE uprim2 #-}
 
@@ -2381,7 +2388,7 @@ universalEq frn = eqVal
     eql :: (a -> b -> Bool) -> [a] -> [b] -> Bool
     eql cm l r = length l == length r && and (zipWith cm l r)
     eqVal :: Val -> Val -> Bool
-    eqVal (UnboxedVal v1 t1) (UnboxedVal v2 t2) = matchTags t1 t2 && v1 == v2
+    eqVal (UnboxedVal v1 t1) (UnboxedVal v2 t2) = matchUnboxedTypes t1 t2 && v1 == v2
     eqVal (BoxedVal x) (BoxedVal y) = eqc x y
     eqVal _ _ = False
     eqc :: Closure -> Closure -> Bool
@@ -2416,6 +2423,14 @@ matchTags ct1 ct2 =
   ct1 == ct2
     || (ct1 == TT.intTag && ct2 == TT.natTag)
     || (ct1 == TT.natTag && ct2 == TT.intTag)
+
+-- serialization doesn't necessarily preserve Int tags, so be
+-- more accepting for those.
+matchUnboxedTypes :: UnboxedTypeTag -> UnboxedTypeTag -> Bool
+matchUnboxedTypes ct1 ct2 =
+  ct1 == ct2
+    || (ct1 == IntTag && ct2 == NatTag)
+    || (ct1 == NatTag && ct2 == IntTag)
 
 arrayEq :: (a -> a -> Bool) -> PA.Array a -> PA.Array a -> Bool
 arrayEq eqc l r
@@ -2471,8 +2486,8 @@ universalCompare frn = cmpVal False
       (BoxedVal {}) (UnboxedVal {}) -> GT
       (NatVal i) (NatVal j) -> compare i j
       (UnboxedVal v1 t1) (UnboxedVal v2 t2) -> cmpUnboxed tyEq (t1, v1) (t2, v2)
-    compareTags t1 t2 =
-      if matchTags t1 t2
+    compareUnboxedTypes t1 t2 =
+      if matchUnboxedTypes t1 t2
         then EQ
         else compare t1 t2
     cmpl :: (a -> b -> Ordering) -> [a] -> [b] -> Ordering
@@ -2505,16 +2520,16 @@ universalCompare frn = cmpVal False
       (UnboxedTypeTag t1) (UnboxedTypeTag t2) -> compare t1 t2
       (BlackHole) (BlackHole) -> EQ
       c d -> comparing closureNum c d
-    cmpUnboxed :: Bool -> (PackedTag, Int) -> (PackedTag, Int) -> Ordering
+    cmpUnboxed :: Bool -> (UnboxedTypeTag, Int) -> (UnboxedTypeTag, Int) -> Ordering
     cmpUnboxed tyEq (t1, v1) (t2, v2)
-      | (t1 == TT.intTag || t1 == TT.natTag) && (t2 == TT.intTag || t2 == TT.natTag) =
+      | (t1 == IntTag || t1 == NatTag) && (t2 == IntTag || t2 == NatTag) =
           compare v1 v2
-      | t1 == TT.floatTag && t2 == TT.floatTag =
+      | t1 == FloatTag && t2 == FloatTag =
           compareAsFloat v1 v2
       | otherwise =
           -- We don't need to mask the tags since unboxed types are
           -- always treated like nullary constructors and have an empty ctag.
-          Monoid.whenM tyEq (compareTags t1 t2)
+          Monoid.whenM tyEq (compareUnboxedTypes t1 t2)
             <> compare v1 v2
     cmpValList :: Bool -> [Val] -> [Val] -> Ordering
     cmpValList tyEq vs1 vs2 =
