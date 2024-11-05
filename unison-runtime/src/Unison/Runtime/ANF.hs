@@ -54,10 +54,10 @@ module Unison.Runtime.ANF
     ANormal,
     RTag,
     CTag,
+    PackedTag (..),
     Tag (..),
     GroupRef (..),
     Code (..),
-    UBValue,
     ValList,
     Value (..),
     Cont (..),
@@ -92,12 +92,11 @@ module Unison.Runtime.ANF
 where
 
 import Control.Exception (throw)
-import Control.Lens (foldMapOf, folded, snoc, unsnoc, _Right)
+import Control.Lens (snoc, unsnoc)
 import Control.Monad.Reader (ReaderT (..), ask, local)
 import Control.Monad.State (MonadState (..), State, gets, modify, runState)
 import Data.Bifoldable (Bifoldable (..))
 import Data.Bitraversable (Bitraversable (..))
-import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.Functor.Compose (Compose (..))
 import Data.List hiding (and, or)
 import Data.Map qualified as Map
@@ -116,6 +115,7 @@ import Unison.Prelude
 import Unison.Reference (Id, Reference, Reference' (Builtin, DerivedId))
 import Unison.Referent (Referent, pattern Con, pattern Ref)
 import Unison.Runtime.Array qualified as PA
+import Unison.Runtime.TypeTags (CTag (..), PackedTag (..), RTag (..), Tag (..), maskTags, packTags, unpackTags)
 import Unison.Symbol (Symbol)
 import Unison.Term hiding (List, Ref, Text, arity, float, fresh, resolve)
 import Unison.Type qualified as Ty
@@ -127,7 +127,6 @@ import Unison.Util.Text qualified as Util.Text
 import Unison.Var (Var, typed)
 import Unison.Var qualified as Var
 import Prelude hiding (abs, and, or, seq)
-import Prelude qualified
 
 -- For internal errors
 data CompileExn = CE CallStack (Pretty.Pretty Pretty.ColorText)
@@ -668,7 +667,7 @@ inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
     go n = ABTN.visitPure \case
       TApp (FComb r) args
         | Just (arity, expr) <- Map.lookup r inls ->
-          go (n-1) <$> tweak expr args arity
+            go (n - 1) <$> tweak expr args arity
       _ -> Nothing
 
     tweak (ABTN.TAbss vs body) args arity
@@ -748,72 +747,6 @@ data ANormalF v e
   | AFrc v
   | AVar v
   deriving (Show, Eq, Functor, Foldable, Traversable)
-
--- Types representing components that will go into the runtime tag of
--- a data type value. RTags correspond to references, while CTags
--- correspond to constructors.
-newtype RTag = RTag Word64
-  deriving stock (Eq, Ord, Show, Read)
-  deriving newtype (EC.EnumKey)
-
-newtype CTag = CTag Word16
-  deriving stock (Eq, Ord, Show, Read)
-  deriving newtype (EC.EnumKey)
-
-class Tag t where rawTag :: t -> Word64
-
-instance Tag RTag where rawTag (RTag w) = w
-
-instance Tag CTag where rawTag (CTag w) = fromIntegral w
-
-packTags :: RTag -> CTag -> Word64
-packTags (RTag rt) (CTag ct) = ri .|. ci
-  where
-    ri = rt `shiftL` 16
-    ci = fromIntegral ct
-
-unpackTags :: Word64 -> (RTag, CTag)
-unpackTags w = (RTag $ w `shiftR` 16, CTag . fromIntegral $ w .&. 0xFFFF)
-
--- Masks a packed tag to extract just the constructor tag portion
-maskTags :: Word64 -> Word64
-maskTags w = w .&. 0xFFFF
-
-ensureRTag :: (Ord n, Show n, Num n) => String -> n -> r -> r
-ensureRTag s n x
-  | n > 0xFFFFFFFFFFFF =
-      internalBug $ s ++ "@RTag: too large: " ++ show n
-  | otherwise = x
-
-ensureCTag :: (Ord n, Show n, Num n) => String -> n -> r -> r
-ensureCTag s n x
-  | n > 0xFFFF =
-      internalBug $ s ++ "@CTag: too large: " ++ show n
-  | otherwise = x
-
-instance Enum RTag where
-  toEnum i = ensureRTag "toEnum" i . RTag $ toEnum i
-  fromEnum (RTag w) = fromEnum w
-
-instance Enum CTag where
-  toEnum i = ensureCTag "toEnum" i . CTag $ toEnum i
-  fromEnum (CTag w) = fromEnum w
-
-instance Num RTag where
-  fromInteger i = ensureRTag "fromInteger" i . RTag $ fromInteger i
-  (+) = internalBug "RTag: +"
-  (*) = internalBug "RTag: *"
-  abs = internalBug "RTag: abs"
-  signum = internalBug "RTag: signum"
-  negate = internalBug "RTag: negate"
-
-instance Num CTag where
-  fromInteger i = ensureCTag "fromInteger" i . CTag $ fromInteger i
-  (+) = internalBug "CTag: +"
-  (*) = internalBug "CTag: *"
-  abs = internalBug "CTag: abs"
-  signum = internalBug "CTag: signum"
-  negate = internalBug "CTag: negate"
 
 instance Bifunctor ANormalF where
   bimap f _ (AVar v) = AVar (f v)
@@ -1321,8 +1254,8 @@ data Lit
   | F Double
   | T Util.Text.Text
   | C Char
-  | LM Referent
-  | LY Reference
+  | LM Referent -- Term Link
+  | LY Reference -- Type Link
   deriving (Show, Eq)
 
 litRef :: Lit -> Reference
@@ -1340,139 +1273,144 @@ litRef (LY _) = Ty.typeLinkRef
 -- formats that we want to control and version.
 data POp
   = -- Int
-    ADDI
-  | SUBI
+    ADDI -- +
+  | SUBI -- -
   | MULI
-  | DIVI -- +,-,*,/
-  | SGNI
-  | NEGI
-  | MODI -- sgn,neg,mod
-  | POWI
-  | SHLI
-  | SHRI -- pow,shiftl,shiftr
-  | INCI
-  | DECI
-  | LEQI
-  | EQLI -- inc,dec,<=,==
+  | DIVI -- /
+  | SGNI -- sgn
+  | NEGI -- neg
+  | MODI -- mod
+  | POWI -- pow
+  | SHLI -- shiftl
+  | SHRI -- shiftr
+  | ANDI -- and
+  | IORI -- or
+  | XORI -- xor
+  | COMI -- complement
+  | INCI -- inc
+  | DECI -- dec
+  | LEQI -- <=
+  | EQLI -- ==
   -- Nat
-  | ADDN
-  | SUBN
+  | ADDN -- +
+  | SUBN -- -
   | MULN
-  | DIVN -- +,-,*,/
-  | MODN
-  | TZRO
-  | LZRO
-  | POPC -- mod,trailing/leadingZeros,popCount
-  | POWN
-  | SHLN
-  | SHRN -- pow,shiftl,shiftr
-  | ANDN
-  | IORN
-  | XORN
-  | COMN -- and,or,xor,complement
-  | INCN
-  | DECN
-  | LEQN
-  | EQLN -- inc,dec,<=,==
+  | DIVN -- /
+  | MODN -- mod
+  | TZRO -- trailingZeros
+  | LZRO -- leadingZeros
+  | POPC -- popCount
+  | POWN -- pow
+  | SHLN -- shiftl
+  | SHRN -- shiftr
+  | ANDN -- and
+  | IORN -- or
+  | XORN -- xor
+  | COMN -- complement
+  | INCN -- inc
+  | DECN -- dec
+  | LEQN -- <=
+  | EQLN -- ==
   -- Float
-  | ADDF
-  | SUBF
+  | ADDF -- +
+  | SUBF -- -
   | MULF
-  | DIVF -- +,-,*,/
-  | MINF
-  | MAXF
-  | LEQF
-  | EQLF -- min,max,<=,==
-  | POWF
-  | EXPF
-  | SQRT
-  | LOGF -- pow,exp,sqrt,log
+  | DIVF -- /
+  | MINF -- min
+  | MAXF -- max
+  | LEQF -- <=
+  | EQLF -- ==
+  | POWF -- pow
+  | EXPF -- exp
+  | SQRT -- sqrt
+  | LOGF -- log
   | LOGB -- logBase
-  | ABSF
-  | CEIL
-  | FLOR
-  | TRNF -- abs,ceil,floor,truncate
+  | ABSF -- abs
+  | CEIL -- ceil
+  | FLOR -- floor
+  | TRNF -- truncate
   | RNDF -- round
   -- Trig
-  | COSF
-  | ACOS
-  | COSH
-  | ACSH -- cos,acos,cosh,acosh
-  | SINF
-  | ASIN
-  | SINH
-  | ASNH -- sin,asin,sinh,asinh
-  | TANF
-  | ATAN
-  | TANH
-  | ATNH -- tan,atan,tanh,atanh
+  | COSF -- cos
+  | ACOS -- acos
+  | COSH -- cosh
+  | ACSH -- acosh
+  | SINF -- sin
+  | ASIN -- asin
+  | SINH -- sinh
+  | ASNH -- asinh
+  | TANF -- tan
+  | ATAN -- atan
+  | TANH -- tanh
+  | ATNH -- atanh
   | ATN2 -- atan2
   -- Text
-  | CATT
-  | TAKT
-  | DRPT
-  | SIZT -- ++,take,drop,size
+  | CATT -- ++
+  | TAKT -- take
+  | DRPT -- drop
+  | SIZT -- size
   | IXOT -- indexOf
-  | UCNS
-  | USNC
-  | EQLT
-  | LEQT -- uncons,unsnoc,==,<=
-  | PAKT
-  | UPKT -- pack,unpack
+  | UCNS -- uncons
+  | USNC -- unsnoc
+  | EQLT -- ==
+  | LEQT -- <=
+  | PAKT -- pack
+  | UPKT -- unpack
   -- Sequence
-  | CATS
-  | TAKS
-  | DRPS
-  | SIZS -- ++,take,drop,size
-  | CONS
-  | SNOC
-  | IDXS
-  | BLDS -- cons,snoc,at,build
-  | VWLS
-  | VWRS
-  | SPLL
-  | SPLR -- viewl,viewr,splitl,splitr
+  | CATS -- ++
+  | TAKS -- take
+  | DRPS -- drop
+  | SIZS -- size
+  | CONS -- cons
+  | SNOC -- snoc
+  | IDXS -- at
+  | BLDS -- build
+  | VWLS -- viewl
+  | VWRS -- viewr
+  | SPLL -- splitl
+  | SPLR -- splitr
   -- Bytes
-  | PAKB
-  | UPKB
-  | TAKB
-  | DRPB -- pack,unpack,take,drop
+  | PAKB -- pack
+  | UPKB -- unpack
+  | TAKB -- take
+  | DRPB -- drop
   | IXOB -- indexOf
-  | IDXB
-  | SIZB
-  | FLTB
-  | CATB -- index,size,flatten,append
+  | IDXB -- index
+  | SIZB -- size
+  | FLTB -- flatten
+  | CATB -- append
   -- Conversion
-  | ITOF
-  | NTOF
-  | ITOT
-  | NTOT
-  | TTOI
-  | TTON
-  | TTOF
-  | FTOT
+  | ITOF -- intToFloat
+  | NTOF -- natToFloat
+  | ITOT -- intToText
+  | NTOT -- natToText
+  | TTOI -- textToInt
+  | TTON -- textToNat
+  | TTOF -- textToFloat
+  | FTOT -- floatToText
+  | CAST -- runtime type cast for unboxed values.
   | -- Concurrency
-    FORK
+    FORK -- fork
   | -- Universal operations
-    EQLU
-  | CMPU
-  | EROR
+    EQLU -- ==
+  | CMPU -- compare
+  | EROR -- error
   | -- Code
-    MISS
-  | CACH
-  | LKUP
-  | LOAD -- isMissing,cache_,lookup,load
-  | CVLD
-  | SDBX -- validate, sandbox
-  | VALU
-  | TLTT -- value, Term.Link.toText
+    MISS -- isMissing
+  | CACH -- cache_
+  | LKUP -- lookup
+  | LOAD -- load
+  | CVLD -- validate
+  | SDBX -- sandbox
+  | VALU -- value
+  | TLTT -- Term.Link.toText
   -- Debug
-  | PRNT
-  | INFO
-  | TRCE
-  | DBTX
+  | PRNT -- print
+  | INFO -- info
+  | TRCE -- trace
+  | DBTX -- debugText
   | -- STM
-    ATOM
+    ATOM -- atomically
   | TFRC -- try force
   | SDBL -- sandbox link list
   | SDBV -- sandbox check for Values
@@ -1544,12 +1482,12 @@ arities (Rec bs e) = arity e : fmap (arity . snd) bs
 
 -- Checks the body of a SuperGroup makes it eligible for inlining.
 -- See below for the discussion.
-isInlinable :: Var v => Reference -> ANormal v -> Bool
+isInlinable :: (Var v) => Reference -> ANormal v -> Bool
 isInlinable r (TApp (FComb s) _) = r /= s
 isInlinable _ TApp {} = True
 isInlinable _ TBLit {} = True
 isInlinable _ TVar {} = True
-isInlinable _ _       = False
+isInlinable _ _ = False
 
 -- Checks a SuperGroup makes it eligible to be inlined.
 -- Unfortunately we need to be quite conservative about this.
@@ -1593,13 +1531,13 @@ inlineInfo _ _ = Nothing
 -- They are all tested for inlinability, and the result map
 -- contains only the information for groups that are able to be
 -- inlined.
-buildInlineMap
-  :: (Var v) =>
-     Map Reference (SuperGroup v) ->
-     Map Reference (Int, ANormal v)
+buildInlineMap ::
+  (Var v) =>
+  Map Reference (SuperGroup v) ->
+  Map Reference (Int, ANormal v)
 buildInlineMap =
-  runIdentity .
-    Map.traverseMaybeWithKey (\r g -> Identity $ inlineInfo r g)
+  runIdentity
+    . Map.traverseMaybeWithKey (\r g -> Identity $ inlineInfo r g)
 
 -- Checks if two SuperGroups are equivalent up to renaming. The rest
 -- of the structure must match on the nose. If the two groups are not
@@ -1635,12 +1573,9 @@ type ANFD v = Compose (ANFM v) (Directed ())
 data GroupRef = GR Reference Word64
   deriving (Show, Eq)
 
--- | A value which is either unboxed or boxed.
-type UBValue = Either Word64 Value
-
 -- | A list of either unboxed or boxed values.
 -- Each slot is one of unboxed or boxed but not both.
-type ValList = [UBValue]
+type ValList = [Value]
 
 data Value
   = Partial GroupRef ValList
@@ -1698,11 +1633,12 @@ data BLit
   | Quote Value
   | Code Code
   | BArr PA.ByteArray
-  | Pos Word64
+  | Arr (PA.Array Value)
+  | -- Despite the following being in the Boxed Literal type, they all represent unboxed values
+    Pos Word64
   | Neg Word64
   | Char Char
   | Float Double
-  | Arr (PA.Array Value)
   deriving (Show, Eq)
 
 groupVars :: ANFM v (Set v)
@@ -2222,11 +2158,11 @@ valueTermLinks = Set.toList . valueLinks f
 
 valueLinks :: (Monoid a) => (Bool -> Reference -> a) -> Value -> a
 valueLinks f (Partial (GR cr _) vs) =
-  f False cr <> foldMapOf (folded . _Right) (valueLinks f) vs
+  f False cr <> foldMap (valueLinks f) vs
 valueLinks f (Data dr _ vs) =
-  f True dr <> foldMapOf (folded . _Right) (valueLinks f) vs
+  f True dr <> foldMap (valueLinks f) vs
 valueLinks f (Cont vs k) =
-  foldMapOf (folded . _Right) (valueLinks f) vs <> contLinks f k
+  foldMap (valueLinks f) vs <> contLinks f k
 valueLinks f (BLit l) = blitLinks f l
 
 contLinks :: (Monoid a) => (Bool -> Reference -> a) -> Cont -> a
