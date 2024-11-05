@@ -182,6 +182,8 @@ doMerge info = do
         _ <- Cli.updateAt info.description (PP.projectBranchRoot info.alice.projectAndBranch) (\_aliceBranch -> bobBranch)
         done (Output.MergeSuccessFastForward mergeSourceAndTarget)
 
+      Cli.respond (Output.MergeProgress Output.MergeProgress'LoadingBranches)
+
       -- Load Alice/Bob/LCA causals
       causals <-
         Cli.runTransaction do
@@ -251,6 +253,8 @@ doMerge info = do
                in bimap f g <$> blob0.defns
             )
 
+      Cli.respond (Output.MergeProgress Output.MergeProgress'DiffingBranches)
+
       blob1 <-
         Merge.makeMergeblob1 blob0 hydratedDefns & onLeft \case
           Merge.Alice reason -> done (Output.IncoherentDeclDuringMerge mergeTarget reason)
@@ -271,10 +275,14 @@ doMerge info = do
 
       liftIO (debugFunctions.debugPartitionedDiff blob2.conflicts blob2.unconflicts)
 
+      Cli.respond (Output.MergeProgress Output.MergeProgress'LoadingDependents)
+
       dependents0 <-
         Cli.runTransaction $
           for ((,) <$> ThreeWay.forgetLca blob2.defns <*> blob2.coreDependencies) \(defns, deps) ->
             getNamespaceDependentsOf3 defns deps
+
+      Cli.respond (Output.MergeProgress Output.MergeProgress'LoadingAndMergingLibdeps)
 
       -- Load and merge Alice's and Bob's libdeps
       mergedLibdeps <-
@@ -282,6 +290,8 @@ doMerge info = do
 
       let hasConflicts =
             blob2.hasConflicts
+
+      Cli.respond (Output.MergeProgress Output.MergeProgress'RenderingUnisonFile)
 
       let blob3 =
             Merge.makeMergeblob3
@@ -308,6 +318,7 @@ doMerge info = do
           else case Merge.makeMergeblob4 blob3 of
             Left _parseErr -> pure Nothing
             Right blob4 -> do
+              Cli.respond (Output.MergeProgress Output.MergeProgress'TypecheckingUnisonFile)
               typeLookup <- Cli.runTransaction (Codebase.typeLookupForDependencies env.codebase blob4.dependencies)
               pure case Merge.makeMergeblob5 blob4 typeLookup of
                 Left _typecheckErr -> Nothing
