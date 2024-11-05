@@ -13,10 +13,17 @@ module Unison.Runtime.Interface
     startNativeRuntime,
     standalone,
     runStandalone,
-    StoredCache,
+    StoredCache
+      ( -- Exported for tests
+        SCache
+      ),
     decodeStandalone,
     RuntimeHost (..),
     Runtime (..),
+
+    -- * Exported for tests
+    getStoredCache,
+    putStoredCache,
   )
 where
 
@@ -473,33 +480,33 @@ checkCacheability cl ctx (r, sg) =
   getTermType codebaseRef >>= \case
     -- A term's result is cacheable iff it has no arrows in its type,
     -- this is sufficient since top-level definitions can't have effects without a delay.
-    Just typ | not (Rec.cata hasArrows typ) ->
-      pure (r, CodeRep sg Cacheable)
+    Just typ
+      | not (Rec.cata hasArrows typ) ->
+          pure (r, CodeRep sg Cacheable)
     _ -> pure (r, CodeRep sg Uncacheable)
   where
-  codebaseRef = backmapRef ctx r
-  getTermType :: CodebaseReference -> IO (Maybe (Type Symbol))
-  getTermType = \case
-    (RF.DerivedId i) ->
-      getTypeOfTerm cl i >>= \case
-        Just t -> pure $ Just t
-        Nothing -> pure Nothing
-    RF.Builtin {} -> pure $ Nothing
-  hasArrows :: Type.TypeF v a Bool -> Bool
-  hasArrows abt = case ABT.out' abt of
-    (ABT.Tm f) -> case f of
-      Type.Arrow _ _ -> True
-      other -> or other
-    t -> or t
-
+    codebaseRef = backmapRef ctx r
+    getTermType :: CodebaseReference -> IO (Maybe (Type Symbol))
+    getTermType = \case
+      (RF.DerivedId i) ->
+        getTypeOfTerm cl i >>= \case
+          Just t -> pure $ Just t
+          Nothing -> pure Nothing
+      RF.Builtin {} -> pure $ Nothing
+    hasArrows :: Type.TypeF v a Bool -> Bool
+    hasArrows abt = case ABT.out' abt of
+      (ABT.Tm f) -> case f of
+        Type.Arrow _ _ -> True
+        other -> or other
+      t -> or t
 
 compileValue :: Reference -> [(Reference, Code)] -> Value
 compileValue base =
   flip pair (rf base) . ANF.BLit . List . Seq.fromList . fmap cpair
   where
     rf = ANF.BLit . TmLink . RF.Ref
-    cons x y = Data RF.pairRef 0 [] [x, y]
-    tt = Data RF.unitRef 0 [] []
+    cons x y = Data RF.pairRef 0 [Right x, Right y]
+    tt = Data RF.unitRef 0 []
     code sg = ANF.BLit (Code sg)
     pair x y = cons x (cons y tt)
     cpair (r, sg) = pair (rf r) (code sg)
@@ -851,8 +858,8 @@ prepareEvaluation ppe tm ctx = do
       Just r -> r
       Nothing -> error "prepareEvaluation: could not remap main ref"
 
-watchHook :: IORef Closure -> Stack 'UN -> Stack 'BX -> IO ()
-watchHook r _ bstk = peek bstk >>= writeIORef r
+watchHook :: IORef Closure -> Stack -> IO ()
+watchHook r stk = bpeek stk >>= writeIORef r
 
 backReferenceTm ::
   EnumMap Word64 Reference ->
@@ -1056,7 +1063,7 @@ executeMainComb ::
   CCache ->
   IO (Either (Pretty ColorText) ())
 executeMainComb init cc = do
-  rSection <- resolveSection cc $ Ins (Pack RF.unitRef 0 ZArgs) $ Call True init init (BArg1 0)
+  rSection <- resolveSection cc $ Ins (Pack RF.unitRef 0 ZArgs) $ Call True init init (VArg1 0)
   result <-
     UnliftIO.try . eval0 cc Nothing $ rSection
   case result of
@@ -1265,7 +1272,7 @@ data StoredCache
       (Map Reference Word64)
       (Map Reference Word64)
       (Map Reference (Set Reference))
-  deriving (Show)
+  deriving (Show, Eq)
 
 putStoredCache :: (MonadPut m) => StoredCache -> m ()
 putStoredCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do

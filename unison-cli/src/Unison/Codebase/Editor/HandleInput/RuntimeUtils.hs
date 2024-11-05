@@ -3,9 +3,10 @@ module Unison.Codebase.Editor.HandleInput.RuntimeUtils
     evalUnisonTermE,
     evalPureUnison,
     displayDecompileErrors,
+    selectRuntime,
+    EvalMode (..)
   )
 where
-
 import Control.Lens
 import Control.Monad.Reader (ask)
 import Unison.ABT qualified as ABT
@@ -28,6 +29,15 @@ import Unison.Term qualified as Term
 import Unison.Util.Pretty qualified as P
 import Unison.WatchKind qualified as WK
 
+data EvalMode = Sandboxed | Permissive | Native
+
+selectRuntime :: EvalMode -> Cli (Runtime.Runtime Symbol)
+selectRuntime mode = ask <&> \case
+  Cli.Env { runtime, sandboxedRuntime, nativeRuntime }
+    | Permissive <- mode -> runtime
+    | Sandboxed <- mode -> sandboxedRuntime
+    | Native <- mode -> nativeRuntime
+
 displayDecompileErrors :: [Runtime.Error] -> Cli ()
 displayDecompileErrors errs = Cli.respond (PrintMessage msg)
   where
@@ -41,14 +51,14 @@ displayDecompileErrors errs = Cli.respond (PrintMessage msg)
 
 -- | Evaluate a single closed definition.
 evalUnisonTermE ::
-  Bool ->
+  EvalMode ->
   PPE.PrettyPrintEnv ->
   Bool ->
   Term Symbol Ann ->
   Cli (Either Runtime.Error (Term Symbol Ann))
-evalUnisonTermE sandbox ppe useCache tm = do
-  Cli.Env {codebase, runtime, sandboxedRuntime} <- ask
-  let theRuntime = if sandbox then sandboxedRuntime else runtime
+evalUnisonTermE mode ppe useCache tm = do
+  Cli.Env {codebase} <- ask
+  theRuntime <- selectRuntime mode
 
   let watchCache :: Reference.Id -> IO (Maybe (Term Symbol ()))
       watchCache ref = do
@@ -73,22 +83,25 @@ evalUnisonTermE sandbox ppe useCache tm = do
 
 -- | Evaluate a single closed definition.
 evalUnisonTerm ::
-  Bool ->
+  EvalMode ->
   PPE.PrettyPrintEnv ->
   Bool ->
   Term Symbol Ann ->
   Cli (Term Symbol Ann)
-evalUnisonTerm sandbox ppe useCache tm =
-  evalUnisonTermE sandbox ppe useCache tm & onLeftM \err ->
+evalUnisonTerm mode ppe useCache tm =
+  evalUnisonTermE mode ppe useCache tm & onLeftM \err ->
     Cli.returnEarly (EvaluationFailure err)
 
 evalPureUnison ::
+  Bool ->
   PPE.PrettyPrintEnv ->
   Bool ->
   Term Symbol Ann ->
   Cli (Either Runtime.Error (Term Symbol Ann))
-evalPureUnison ppe useCache tm = evalUnisonTermE False ppe useCache tm'
+evalPureUnison native ppe useCache tm =
+  evalUnisonTermE mode ppe useCache tm'
   where
+    mode = if native then Native else Permissive
     tm' =
       Term.iff
         a

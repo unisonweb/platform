@@ -2,6 +2,7 @@
 
 module IntegrationTests.ArgumentParsing where
 
+import Control.Monad (when)
 import Data.List (intercalate)
 import Data.Time (diffUTCTime, getCurrentTime)
 import EasyTest
@@ -71,10 +72,12 @@ test = do
 expectExitCode :: ExitCode -> FilePath -> [String] -> String -> Test ()
 expectExitCode expected cmd args stdin = scope (intercalate " " (cmd : args)) do
   start <- io $ getCurrentTime
-  (code, _, _) <- io $ readProcessWithExitCode cmd args stdin
+  (code, _, stdErr) <- io $ readProcessWithExitCode cmd args stdin
   end <- io $ getCurrentTime
   let diff = diffUTCTime end start
   note $ printf "\n[Time: %s sec]" $ show diff
+  when (code /= expected) do
+    note ("stderr:\n" <> stdErr)
   expectEqual code expected
 
 defaultArgs :: [String]

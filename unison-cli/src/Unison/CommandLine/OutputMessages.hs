@@ -30,6 +30,7 @@ import Servant.Client qualified as Servant
 import System.Console.ANSI qualified as ANSI
 import System.Console.Haskeline.Completion qualified as Completion
 import System.Directory (canonicalizePath, getHomeDirectory)
+import System.Exit (ExitCode (..))
 import Text.Pretty.Simple (pShowNoColor, pStringNoColor)
 import U.Codebase.Branch (NamespaceStats (..))
 import U.Codebase.Branch.Diff (NameChanges (..))
@@ -2031,6 +2032,49 @@ notifyUser dir = \case
             "to delete the temporary branch and switch back to"
               <> P.group (prettyProjectBranchName aliceAndBob.alice.branch <> ".")
         ]
+  MergeFailureWithMergetool aliceAndBob temp mergetool exitCode ->
+    case exitCode of
+      ExitSuccess ->
+        pure $
+          P.lines $
+            [ P.wrap $
+                "I couldn't automatically merge"
+                  <> prettyMergeSource aliceAndBob.bob
+                  <> "into"
+                  <> P.group (prettyProjectAndBranchName aliceAndBob.alice <> ",")
+                  <> "so I'm running your UCM_MERGETOOL environment variable as",
+              "",
+              P.indentN 2 (P.text mergetool),
+              "",
+              P.wrap "When you're done, you can run",
+              "",
+              P.indentN 2 (IP.makeExampleNoBackticks IP.mergeCommitInputPattern []),
+              "",
+              P.wrap $
+                "to merge your changes back into"
+                  <> prettyProjectBranchName aliceAndBob.alice.branch
+                  <> "and delete the temporary branch. Or, if you decide to cancel the merge instead, you can run",
+              "",
+              P.indentN 2 (IP.makeExampleNoBackticks IP.deleteBranch [prettySlashProjectBranchName temp]),
+              "",
+              P.wrap $
+                "to delete the temporary branch and switch back to"
+                  <> P.group (prettyProjectBranchName aliceAndBob.alice.branch <> ".")
+            ]
+      ExitFailure code ->
+        pure $
+          P.lines $
+            [ P.wrap $
+                "I couldn't automatically merge"
+                  <> prettyMergeSource aliceAndBob.bob
+                  <> "into"
+                  <> P.group (prettyProjectAndBranchName aliceAndBob.alice <> ",")
+                  <> "so I tried to run your UCM_MERGETOOL environment variable as",
+              "",
+              P.indentN 2 (P.text mergetool),
+              "",
+              P.wrap ("but it failed with exit code" <> P.group (P.num code <> "."))
+            ]
   MergeSuccess aliceAndBob ->
     pure . P.wrap $
       "I merged"

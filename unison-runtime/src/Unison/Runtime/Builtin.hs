@@ -14,6 +14,7 @@ module Unison.Runtime.Builtin
     builtinTermBackref,
     builtinTypeBackref,
     builtinForeigns,
+    builtinArities,
     sandboxedForeigns,
     numberedTermLookup,
     Sandbox (..),
@@ -3659,6 +3660,11 @@ baseSandboxInfo =
       | (r, (sb, _)) <- Map.toList builtinLookup,
         sb == Tracked
     ]
+
+builtinArities :: Map Reference Int
+builtinArities =
+  Map.fromList $
+    [ (r, arity s) | (r, (_, s)) <- Map.toList builtinLookup ]
 
 unsafeSTMToIO :: STM.STM a -> IO a
 unsafeSTMToIO (STM.STM m) = IO m

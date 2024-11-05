@@ -77,6 +77,8 @@ bindNames unsafeVarToName nameToVar localVars namespace =
                 & bindExternal namespaceResolutions
                 -- Apply local resolutions (replacing "Foo" with "Full.Name.Foo" where "Full.Name.Foo" is in local vars)
                 & ABT.substsInheritAnnotation [(v, Type.var () (nameToVar name)) | (v, name) <- localResolutions]
+                -- Clean up ability lists again – we might have something to de-dupe after resolution
+                & Type.cleanupAbilityLists
   where
     resolveTypeName :: Name -> Set (ResolvesTo TypeReference)
     resolveTypeName =

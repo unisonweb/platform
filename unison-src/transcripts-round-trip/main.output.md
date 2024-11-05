@@ -20,7 +20,7 @@ x = ()
 So we can see the pretty-printed output:
 
 ``` ucm
-scratch/a1> edit 1-1000
+scratch/a1> edit.new 1-1000
 
   ☝️
   
@@ -825,7 +825,7 @@ x = ()
 ```
 
 ``` ucm
-scratch/a3> edit 1-5000
+scratch/a3> edit.new 1-5000
 
   ☝️
   
@@ -871,7 +871,7 @@ scratch/main> diff.namespace /a3_new: /a3:
 ```
 ## Other regression tests not covered by above
 
-### Builtins should appear commented out in the edit command
+### Builtins should appear commented out in the edit.new command
 
 Regression test for https://github.com/unisonweb/unison/pull/3548
 
@@ -880,7 +880,7 @@ scratch/regressions> alias.term ##Nat.+ plus
 
   Done.
 
-scratch/regressions> edit plus
+scratch/regressions> edit.new plus
 
   ☝️
   

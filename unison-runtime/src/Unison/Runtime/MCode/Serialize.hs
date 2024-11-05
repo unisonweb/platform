@@ -14,10 +14,10 @@ import Data.Bytes.Get
 import Data.Bytes.Put
 import Data.Bytes.Serial
 import Data.Bytes.VarInt
-import Data.Primitive.PrimArray
 import Data.Void (Void)
 import Data.Word (Word64)
 import GHC.Exts (IsList (..))
+import Unison.Runtime.Array (PrimArray)
 import Unison.Runtime.MCode hiding (MatchT)
 import Unison.Runtime.Serialize
 import Unison.Util.Text qualified as Util.Text
@@ -34,8 +34,8 @@ instance Tag CombT where
 
 putComb :: (MonadPut m) => (clos -> m ()) -> GComb clos comb -> m ()
 putComb pClos = \case
-  (Lam ua ba uf bf body) ->
-    putTag LamT *> pInt ua *> pInt ba *> pInt uf *> pInt bf *> putSection body
+  (Lam a f body) ->
+    putTag LamT *> pInt a *> pInt f *> putSection body
   (CachedClosure w c) ->
     putTag CachedClosureT *> putNat w *> pClos c
 
@@ -43,7 +43,7 @@ getComb :: (MonadGet m) => m (GComb Void CombIx)
 getComb =
   getTag >>= \case
     LamT ->
-      Lam <$> gInt <*> gInt <*> gInt <*> gInt <*> getSection
+      Lam <$> gInt <*> gInt <*> getSection
     CachedClosureT -> error "getComb: Unexpected serialized Cached Closure"
 
 data SectionT
@@ -96,12 +96,11 @@ putSection = \case
   Match i b -> putTag MatchT *> pInt i *> putBranch b
   Yield a -> putTag YieldT *> putArgs a
   Ins i s -> putTag InsT *> putInstr i *> putSection s
-  Let s ci uf bf bd ->
+  Let s ci f bd ->
     putTag LetT
       *> putSection s
       *> putCombIx ci
-      *> pInt uf
-      *> pInt bf
+      *> pInt f
       *> putSection bd
   Die s -> putTag DieT *> serialize s
   Exit -> putTag ExitT
@@ -127,7 +126,7 @@ getSection =
     YieldT -> Yield <$> getArgs
     InsT -> Ins <$> getInstr <*> getSection
     LetT ->
-      Let <$> getSection <*> getCombIx <*> gInt <*> gInt <*> getSection
+      Let <$> getSection <*> getCombIx <*> gInt <*> getSection
     DieT -> Die <$> deserialize
     ExitT -> pure Exit
     DMatchT -> DMatch <$> getMaybe getReference <*> gInt <*> getBranch
@@ -240,82 +239,45 @@ getInstr =
 
 data ArgsT
   = ZArgsT
-  | UArg1T
-  | UArg2T
-  | BArg1T
-  | BArg2T
-  | DArg2T
-  | UArgRT
-  | BArgRT
-  | DArgRT
-  | BArgNT
-  | UArgNT
-  | DArgNT
-  | DArgVT
+  | Arg1T
+  | Arg2T
+  | ArgRT
+  | ArgNT
+  | ArgVT
 
 instance Tag ArgsT where
   tag2word ZArgsT = 0
-  tag2word UArg1T = 1
-  tag2word UArg2T = 2
-  tag2word BArg1T = 3
-  tag2word BArg2T = 4
-  tag2word DArg2T = 5
-  tag2word UArgRT = 6
-  tag2word BArgRT = 7
-  tag2word DArgRT = 8
-  tag2word BArgNT = 9
-  tag2word UArgNT = 10
-  tag2word DArgNT = 11
-  tag2word DArgVT = 12
+  tag2word Arg1T = 1
+  tag2word Arg2T = 2
+  tag2word ArgRT = 3
+  tag2word ArgNT = 4
+  tag2word ArgVT = 5
 
   word2tag 0 = pure ZArgsT
-  word2tag 1 = pure UArg1T
-  word2tag 2 = pure UArg2T
-  word2tag 3 = pure BArg1T
-  word2tag 4 = pure BArg2T
-  word2tag 5 = pure DArg2T
-  word2tag 6 = pure UArgRT
-  word2tag 7 = pure BArgRT
-  word2tag 8 = pure DArgRT
-  word2tag 9 = pure BArgNT
-  word2tag 10 = pure UArgNT
-  word2tag 11 = pure DArgNT
-  word2tag 12 = pure DArgVT
+  word2tag 1 = pure Arg1T
+  word2tag 2 = pure Arg2T
+  word2tag 3 = pure ArgRT
+  word2tag 4 = pure ArgNT
+  word2tag 5 = pure ArgVT
   word2tag n = unknownTag "ArgsT" n
 
 putArgs :: (MonadPut m) => Args -> m ()
 putArgs ZArgs = putTag ZArgsT
-putArgs (UArg1 i) = putTag UArg1T *> pInt i
-putArgs (UArg2 i j) = putTag UArg1T *> pInt i *> pInt j
-putArgs (BArg1 i) = putTag BArg1T *> pInt i
-putArgs (BArg2 i j) = putTag BArg2T *> pInt i *> pInt j
-putArgs (DArg2 i j) = putTag DArg2T *> pInt i *> pInt j
-putArgs (UArgR i j) = putTag UArgRT *> pInt i *> pInt j
-putArgs (BArgR i j) = putTag BArgRT *> pInt i *> pInt j
-putArgs (DArgR i j k l) =
-  putTag DArgRT *> pInt i *> pInt j *> pInt k *> pInt l
-putArgs (BArgN pa) = putTag BArgNT *> putIntArr pa
-putArgs (UArgN pa) = putTag UArgNT *> putIntArr pa
-putArgs (DArgN ua ba) =
-  putTag DArgNT *> putIntArr ua *> putIntArr ba
-putArgs (DArgV i j) = putTag DArgVT *> pInt i *> pInt j
+putArgs (VArg1 i) = putTag Arg1T *> pInt i
+putArgs (VArg2 i j) = putTag Arg2T *> pInt i *> pInt j
+putArgs (VArgR i j) = putTag ArgRT *> pInt i *> pInt j
+putArgs (VArgN pa) = putTag ArgNT *> putIntArr pa
+putArgs (VArgV i) = putTag ArgVT *> pInt i
 
 getArgs :: (MonadGet m) => m Args
 getArgs =
   getTag >>= \case
     ZArgsT -> pure ZArgs
-    UArg1T -> UArg1 <$> gInt
-    UArg2T -> UArg2 <$> gInt <*> gInt
-    BArg1T -> BArg1 <$> gInt
-    BArg2T -> BArg2 <$> gInt <*> gInt
-    DArg2T -> DArg2 <$> gInt <*> gInt
-    UArgRT -> UArgR <$> gInt <*> gInt
-    BArgRT -> BArgR <$> gInt <*> gInt
-    DArgRT -> DArgR <$> gInt <*> gInt <*> gInt <*> gInt
-    BArgNT -> BArgN <$> getIntArr
-    UArgNT -> UArgN <$> getIntArr
-    DArgNT -> DArgN <$> getIntArr <*> getIntArr
-    DArgVT -> DArgV <$> gInt <*> gInt
+    Arg1T -> VArg1 <$> gInt
+    Arg2T -> VArg2 <$> gInt <*> gInt
+    ArgRT -> VArgR <$> gInt <*> gInt
+    ArgNT -> VArgN <$> getIntArr
+    ArgVT -> VArgV <$> gInt
 
 data RefT = StkT | EnvT | DynT
 
