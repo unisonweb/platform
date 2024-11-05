@@ -2497,10 +2497,6 @@ universalCompare frn = cmpVal False
       (BoxedVal {}) (UnboxedVal {}) -> GT
       (NatVal i) (NatVal j) -> compare i j
       (UnboxedVal v1 t1) (UnboxedVal v2 t2) -> cmpUnboxed tyEq (t1, v1) (t2, v2)
-    compareUnboxedTypes t1 t2 =
-      if matchUnboxedTypes t1 t2
-        then EQ
-        else compare t1 t2
     cmpl :: (a -> b -> Ordering) -> [a] -> [b] -> Ordering
     cmpl cm l r =
       compare (length l) (length r) <> fold (zipWith cm l r)
@@ -2533,27 +2529,24 @@ universalCompare frn = cmpVal False
       c d -> comparing closureNum c d
 
     cmpUnboxed :: Bool -> (UnboxedTypeTag, Int) -> (UnboxedTypeTag, Int) -> Ordering
-    cmpUnboxed tyEq (t1, v1) (t2, v2)
-      | (t1 == IntTag || t1 == NatTag) && (t2 == IntTag || t2 == NatTag) =
-          compare v1 v2
-      | t1 == FloatTag && t2 == FloatTag =
-          compareAsFloat v1 v2
-      | otherwise =
-          -- We don't need to mask the tags since unboxed types are
-          -- always treated like nullary constructors and have an empty ctag.
-          Monoid.whenM tyEq (compareUnboxedTypes t1 t2)
-            <> compare v1 v2
+    cmpUnboxed tyEq = \cases
+      -- Need to cast to Nat or else maxNat == -1 and it flips comparisons of large Nats.
+      -- TODO: Investigate whether bit-twiddling is faster than using Haskell's fromIntegral.
+      (IntTag, n1) (IntTag, n2) -> compare n1 n2
+      (NatTag, n1) (NatTag, n2) -> compare (fromIntegral n1 :: Word64) (fromIntegral n2 :: Word64)
+      (NatTag, n1) (IntTag, n2)
+        | n2 < 0 -> GT
+        | otherwise -> compare (fromIntegral n1 :: Word64) (fromIntegral n2 :: Word64)
+      (IntTag, n1) (NatTag, n2)
+        | n1 < 0 -> LT
+        | otherwise -> compare (fromIntegral n1 :: Word64) (fromIntegral n2 :: Word64)
+      (FloatTag, n1) (FloatTag, n2) -> compareAsFloat n1 n2
+      (t1, v1) (t2, v2) ->
+        Monoid.whenM tyEq (compare t1 t2)
+          <> compare v1 v2
 
     cmpValList :: Bool -> [Val] -> [Val] -> Ordering
-    cmpValList tyEq vs1 vs2 =
-      -- Written in a strange way way to maintain back-compat with the
-      -- old val lists which had boxed/unboxed separated
-      let partitionVals = foldMap \case
-            UnboxedVal v tt -> ([(tt, v)], mempty)
-            BoxedVal clos -> (mempty, [clos])
-          (us1, bs1) = partitionVals vs1
-          (us2, bs2) = partitionVals vs2
-       in cmpl (cmpUnboxed tyEq) us1 us2 <> cmpl (cmpc tyEq) bs1 bs2
+    cmpValList tyEq vs1 vs2 = cmpl (cmpVal tyEq) vs1 vs2
 
     cmpK :: Bool -> K -> K -> Ordering
     cmpK tyEq = \cases

@@ -60,4 +60,12 @@ casting = (Nat.toInt 100,
 -- This helps to counter a different issue we have, where `load (save +10)` will load a `Nat` runtime type rather than
 -- an Int, since we don't actually store the type of numerics in the ANF.Value type.
 > Universal.compare (Any [1, 2]) (Any [+1, +2])
+
+-- Regression test for a problem with universalCompare where Nats larger than maxInt would compare incorrectly, but only
+-- when nested within other types due to how lists of constructor fields were compared.
+> Universal.compare (1,()) (maxNat, ())
+
+-- Types in tuples should compare one by one left-to-right
+> Universal.compare (1, "", 2) (1, "", 3)
+> Universal.compare (1, "", 3) (1, "", 2)
 ```
