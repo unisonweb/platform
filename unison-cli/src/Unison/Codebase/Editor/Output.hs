@@ -27,6 +27,7 @@ import Data.Time (UTCTime)
 import Network.URI (URI)
 import Servant.Client qualified as Servant (ClientError)
 import System.Console.Haskeline qualified as Completion
+import System.Exit (ExitCode)
 import U.Codebase.Branch.Diff (NameChanges)
 import U.Codebase.HashTags (CausalHash)
 import U.Codebase.Sqlite.Project qualified as Sqlite
@@ -425,6 +426,7 @@ data Output
   | UpgradeFailure !ProjectBranchName !ProjectBranchName !FilePath !NameSegment !NameSegment
   | UpgradeSuccess !NameSegment !NameSegment
   | MergeFailure !FilePath !MergeSourceAndTarget !ProjectBranchName
+  | MergeFailureWithMergetool !MergeSourceAndTarget !ProjectBranchName !Text !ExitCode
   | MergeSuccess !MergeSourceAndTarget
   | MergeSuccessFastForward !MergeSourceAndTarget
   | MergeConflictedAliases !MergeSourceOrTarget !(Defn (Name, Name) (Name, Name))
@@ -673,6 +675,7 @@ isFailure o = case o of
   UpgradeFailure {} -> True
   UpgradeSuccess {} -> False
   MergeFailure {} -> True
+  MergeFailureWithMergetool {} -> True
   MergeSuccess {} -> False
   MergeSuccessFastForward {} -> False
   MergeConflictedAliases {} -> True
