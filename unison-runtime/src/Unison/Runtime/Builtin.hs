@@ -373,7 +373,7 @@ shli = binop SHLI
 shri = binop SHRI
 powi = binop POWI
 
-addn, subn, muln, divn, modn, shln, shrn, pown :: (Var v) => SuperNormal v
+addn, subn, muln, divn, modn, shln, shrn, pown, dropn :: (Var v) => SuperNormal v
 addn = binop ADDN
 subn = binop SUBN
 muln = binop MULN
@@ -382,6 +382,7 @@ modn = binop MODN
 shln = binop SHLN
 shrn = binop SHRN
 pown = binop POWN
+dropn = binop DRPN
 
 eqi, eqn, lti, ltn, lei, len :: (Var v) => SuperNormal v
 eqi = cmpop EQLI
@@ -490,17 +491,7 @@ i2f = unop ITOF
 n2f = unop NTOF
 
 trni :: (Var v) => SuperNormal v
-trni = unop0 4 $ \[x, z, b, tag, n] ->
-  -- TODO: Do we need to do all calculations _before_ the branch?
-  -- Should probably just replace this with an instruction.
-  TLetD z UN (TLit $ N 0)
-    . TLetD b UN (TPrm LEQI [x, z])
-    . TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt NatTag)
-    . TLetD n UN (TPrm CAST [x, tag])
-    . TMatch b
-    $ MatchIntegral
-      (mapSingleton 1 $ TVar z)
-      (Just $ TVar n)
+trni = unop TRNC
 
 modular :: (Var v) => POp -> (Bool -> ANormal v) -> SuperNormal v
 modular pop ret =
@@ -517,20 +508,6 @@ evni = modular MODI (\b -> if b then fls else tru)
 oddi = modular MODI (\b -> if b then tru else fls)
 evnn = modular MODN (\b -> if b then fls else tru)
 oddn = modular MODN (\b -> if b then tru else fls)
-
-dropn :: (Var v) => SuperNormal v
-dropn = binop0 4 $ \[x, y, b, r, tag, n] ->
-  TLetD b UN (TPrm LEQN [x, y])
-    -- TODO: Can we avoid this work until after the branch?
-  -- Should probably just replace this with an instruction.
-    . TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt NatTag)
-    . TLetD r UN (TPrm SUBN [x, y])
-    . TLetD n UN (TPrm CAST [r, tag])
-    $ ( TMatch b $
-          MatchIntegral
-            (mapSingleton 1 $ TLit $ N 0)
-            (Just $ TVar n)
-      )
 
 appendt, taket, dropt, indext, indexb, sizet, unconst, unsnoct :: (Var v) => SuperNormal v
 appendt = binop0 0 $ \[x, y] -> TPrm CATT [x, y]
@@ -815,8 +792,8 @@ andb = binop0 0 $ \[p, q] ->
 coerceType :: UnboxedTypeTag -> SuperNormal Symbol
 coerceType destType =
   unop0 1 $ \[v, tag] ->
-      TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt destType) $
-        TPrm CAST [v, tag]
+    TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt destType) $
+      TPrm CAST [v, tag]
 
 -- This version of unsafeCoerce is the identity function. It works
 -- only if the two types being coerced between are actually the same,

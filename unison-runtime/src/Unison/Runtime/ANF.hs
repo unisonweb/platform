@@ -1291,9 +1291,11 @@ data POp
   | DECI -- dec
   | LEQI -- <=
   | EQLI -- ==
+  | TRNC -- truncate0
   -- Nat
   | ADDN -- +
   | SUBN -- -
+  | DRPN -- drop
   | MULN
   | DIVN -- /
   | MODN -- mod

@@ -328,6 +328,7 @@ instance Tag UPrim1 where
   tag2word FLOR = 30
   tag2word TRNF = 31
   tag2word RNDF = 32
+  tag2word TRNC = 33
 
   word2tag 0 = pure DECI
   word2tag 1 = pure DECN
@@ -362,6 +363,7 @@ instance Tag UPrim1 where
   word2tag 30 = pure FLOR
   word2tag 31 = pure TRNF
   word2tag 32 = pure RNDF
+  word2tag 33 = pure TRNC
   word2tag n = unknownTag "UPrim1" n
 
 instance Tag UPrim2 where
@@ -403,6 +405,7 @@ instance Tag UPrim2 where
   tag2word MAXF = 35
   tag2word MINF = 36
   tag2word CAST = 37
+  tag2word DRPN = 38
 
   word2tag 0 = pure ADDI
   word2tag 1 = pure ADDN
@@ -442,6 +445,7 @@ instance Tag UPrim2 where
   word2tag 35 = pure MAXF
   word2tag 36 = pure MINF
   word2tag 37 = pure CAST
+  word2tag 38 = pure DRPN
   word2tag n = unknownTag "UPrim2" n
 
 instance Tag BPrim1 where

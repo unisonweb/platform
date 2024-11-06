@@ -1062,6 +1062,11 @@ uprim1 !stk INCN !i = do
   stk <- bump stk
   pokeN stk (m + 1)
   pure stk
+uprim1 !stk TRNC !i = do
+  v <- peekOffI stk i
+  stk <- bump stk
+  unsafePokeIasN stk (max 0 v)
+  pure stk
 uprim1 !stk NEGI !i = do
   m <- upeekOff stk i
   stk <- bump stk
@@ -1227,6 +1232,13 @@ uprim2 !stk SUBI !i !j = do
   n <- upeekOff stk j
   stk <- bump stk
   pokeI stk (m - n)
+  pure stk
+uprim2 !stk DRPN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  let r = if n >= m then 0 else m - n
+  pokeN stk r
   pure stk
 uprim2 !stk SUBN !i !j = do
   m <- peekOffI stk i
