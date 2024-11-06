@@ -1417,8 +1417,12 @@ data POp
   | SDBL -- sandbox link list
   | SDBV -- sandbox check for Values
   -- Refs
-  | RREF -- Ref.read
-  | WREF -- Ref.write
+  | REFN -- Ref.new
+  | REFR -- Ref.read
+  | REFW -- Ref.write
+  | RCAS -- Ref.cas
+  | RRFC -- Ref.readForCas
+  | TIKR -- Ref.Ticket.read
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 type ANormal = ABTN.Term ANormalF

@@ -403,7 +403,10 @@ data BPrim1
   | DBTX -- debug text
   | SDBL -- sandbox link list
   | -- Refs
-    RREF -- Ref.read
+    REFN -- Ref.new
+  | REFR -- Ref.read
+  | RRFC
+  | TIKR
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data BPrim2
@@ -440,7 +443,7 @@ data BPrim2
   | SDBX -- sandbox
   | SDBV -- sandbox Value
   -- Refs
-  | WREF -- Ref.write
+  | REFW -- Ref.write
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data MLit
@@ -478,6 +481,9 @@ data GInstr comb
       !BPrim2
       !Int
       !Int
+  | -- Use a check-and-set ticket to update a reference
+    -- (ref stack index, ticket stack index, new value stack index)
+    RefCAS !Int !Int !Int
   | -- Call out to a Haskell function. This is considerably slower
     -- for very simple operations, hence the primops.
     ForeignCall
@@ -1332,8 +1338,12 @@ emitPOp ANF.EROR = emitBP2 THRO
 emitPOp ANF.TRCE = emitBP2 TRCE
 emitPOp ANF.DBTX = emitBP1 DBTX
 -- Refs
-emitPOp ANF.RREF = emitBP1 RREF
-emitPOp ANF.WREF = emitBP2 WREF
+emitPOp ANF.REFN = emitBP1 REFN
+emitPOp ANF.REFR = emitBP1 REFR
+emitPOp ANF.REFW = emitBP2 REFW
+emitPOp ANF.RCAS = refCAS
+emitPOp ANF.RRFC = emitBP1 RRFC
+emitPOp ANF.TIKR = emitBP1 TIKR
 -- non-prim translations
 emitPOp ANF.BLDS = Seq
 emitPOp ANF.FORK = \case
@@ -1390,6 +1400,13 @@ emitBP2 p a =
   internalBug $
     "wrong number of args for binary boxed primop: "
       ++ show (p, a)
+
+refCAS :: Args -> Instr
+refCAS (VArgN (primArrayToList -> [i, j, k])) = RefCAS i j k
+refCAS a =
+  internalBug $
+    "wrong number of args for refCAS: "
+      ++ show a
 
 emitDataMatching ::
   (Var v) =>

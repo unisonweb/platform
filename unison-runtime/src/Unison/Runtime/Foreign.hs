@@ -22,6 +22,7 @@ where
 import Control.Concurrent (MVar, ThreadId)
 import Control.Concurrent.STM (TVar)
 import Crypto.Hash qualified as Hash
+import Data.Atomics qualified as Atomic
 import Data.IORef (IORef)
 import Data.Tagged (Tagged (..))
 import Data.X509 qualified as X509
@@ -260,6 +261,8 @@ instance BuiltinForeign Code where foreignRef = Tagged Ty.codeRef
 instance BuiltinForeign Value where foreignRef = Tagged Ty.valueRef
 
 instance BuiltinForeign TimeSpec where foreignRef = Tagged Ty.timeSpecRef
+
+instance BuiltinForeign (Atomic.Ticket a) where foreignRef = Tagged Ty.ticketRef
 
 data HashAlgorithm where
   -- Reference is a reference to the hash algorithm

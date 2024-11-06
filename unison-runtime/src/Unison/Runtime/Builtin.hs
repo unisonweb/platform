@@ -49,10 +49,6 @@ import Data.ByteString (hGet, hGetSome, hPut)
 import Data.ByteString.Lazy qualified as L
 import Data.Default (def)
 import Data.Digest.Murmur64 (asWord64, hash64)
-import Data.IORef as SYS
-  ( IORef,
-    newIORef,
-  )
 import Data.IP (IP)
 import Data.Map qualified as Map
 import Data.PEM (PEM, pemContent, pemParseLBS)
@@ -180,11 +176,7 @@ import Unison.Util.Bytes qualified as Bytes
 import Unison.Util.EnumContainers as EC
 import Unison.Util.RefPromise
   ( Promise,
-    Ticket,
-    casIORef,
     newPromise,
-    peekTicket,
-    readForCAS,
     readPromise,
     tryReadPromise,
     writePromise,
@@ -998,11 +990,29 @@ any'extract =
 
 ref'read :: SuperNormal Symbol
 ref'read =
-  unop0 0 $ \[ref] -> (TPrm RREF [ref])
+  unop0 0 $ \[ref] -> (TPrm REFR [ref])
 
 ref'write :: SuperNormal Symbol
 ref'write =
-  binop0 0 $ \[ref, val] -> (TPrm WREF [ref, val])
+  binop0 0 $ \[ref, val] -> (TPrm REFW [ref, val])
+
+ref'cas :: SuperNormal Symbol
+ref'cas =
+  Lambda [BX, BX, BX]
+    . TAbss [x, y, z]
+    . TLetD b UN (TPrm RCAS [x, y, z])
+    $ boolift b
+  where
+    (x, y, z, b) = fresh
+
+ref'ticket'read :: SuperNormal Symbol
+ref'ticket'read = unop0 0 $ TPrm TIKR
+
+ref'readForCas :: SuperNormal Symbol
+ref'readForCas = unop0 0 $ TPrm RRFC
+
+ref'new :: SuperNormal Symbol
+ref'new = unop0 0 $ TPrm REFN
 
 seek'handle :: ForeignOp
 seek'handle instr =
@@ -1882,7 +1892,12 @@ builtinLookup =
         ("sandboxLinks", (Tracked, sandbox'links)),
         ("IO.tryEval", (Tracked, try'eval)),
         ("Ref.read", (Tracked, ref'read)),
-        ("Ref.write", (Tracked, ref'write))
+        ("Ref.write", (Tracked, ref'write)),
+        ("Ref.cas", (Tracked, ref'cas)),
+        ("Ref.Ticket.read", (Tracked, ref'ticket'read)),
+        ("Ref.readForCas", (Tracked, ref'readForCas)),
+        ("Scope.ref", (Untracked, ref'new)),
+        ("IO.ref", (Tracked, ref'new))
       ]
       ++ foreignWrappers
 
@@ -2380,40 +2395,6 @@ declareForeigns = do
 
   declareForeign Tracked "STM.retry" unitDirect . mkForeign $
     \() -> unsafeSTMToIO STM.retry :: IO Val
-
-  -- Scope and Ref stuff
-  declareForeign Untracked "Scope.ref" (argNDirect 1)
-    . mkForeign
-    $ \(c :: Val) -> newIORef c
-
-  declareForeign Tracked "IO.ref" (argNDirect 1)
-    . mkForeign
-    $ \(c :: Val) -> evaluate c >>= newIORef
-
-  declareForeign Tracked "Ref.readForCas" (argNDirect 1) . mkForeign $
-    \(r :: IORef Val) -> readForCAS r
-
-  declareForeign Tracked "Ref.Ticket.read" (argNDirect 1) . mkForeign $
-    \(t :: Ticket Val) -> pure $ peekTicket t
-
-  -- In GHC, CAS returns both a Boolean and the current value of the
-  -- IORef, which can be used to retry a failed CAS.
-  -- This strategy is more efficient than returning a Boolean only
-  -- because it uses a single call to cmpxchg in assembly (see [1]) to
-  -- avoid an extra read per CAS iteration, however it's not supported
-  -- in Scheme.
-  -- Therefore, we adopt the more common signature that only returns a
-  -- Boolean, which doesn't even suffer from spurious failures because
-  -- GHC issues loads of mutable variables with memory_order_acquire
-  -- (see [2])
-  --
-  -- [1]: https://github.com/ghc/ghc/blob/master/rts/PrimOps.cmm#L697
-  -- [2]: https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L285
-  declareForeign Tracked "Ref.cas" (argNToBool 3) . mkForeign $
-    \(r :: IORef Val, t :: Ticket Val, v :: Val) -> fmap fst $
-      do
-        t <- evaluate t
-        casIORef r t v
 
   declareForeign Tracked "Promise.new" unitDirect . mkForeign $
     \() -> newPromise @Val

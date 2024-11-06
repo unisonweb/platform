@@ -8,6 +8,7 @@ import Control.Concurrent (ThreadId)
 import Control.Concurrent.STM as STM
 import Control.Exception
 import Control.Lens
+import Data.Atomics qualified as Atomic
 import Data.Bits
 import Data.Functor.Classes (Eq1 (..), Ord1 (..))
 import Data.IORef (IORef)
@@ -547,6 +548,15 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim2 TRCE i j)
       pure (denv, stk, k)
 exec !_ !denv !_trackThreads !stk !k _ (BPrim2 op i j) = do
   stk <- bprim2 stk op i j
+  pure (denv, stk, k)
+exec !_ !denv !_activeThreads !stk !k _ (RefCAS refI ticketI valI) = do
+  (ref :: IORef Val) <- peekOffBi stk refI
+  (ticket :: Atomic.Ticket Val) <- peekOffBi stk ticketI
+  v <- peekOff stk valI
+  ticket <- evaluate ticket
+  (r, _) <- Atomic.casIORef ref ticket v
+  stk <- bump stk
+  pokeBool stk r
   pure (denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (Pack r t args) = do
   clo <- buildData stk r t args
@@ -1623,10 +1633,28 @@ bprim1 !stk FLTB i = do
 -- [1] https://hackage.haskell.org/package/base-4.17.0.0/docs/Data-IORef.html#g:2
 -- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
 -- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
-bprim1 !stk RREF i = do
+bprim1 !stk REFR i = do
   (ref :: IORef Val) <- peekOffBi stk i
   v <- IORef.readIORef ref
   stk <- bump stk
+  poke stk v
+  pure stk
+bprim1 !stk REFN i = do
+  v <- peekOff stk i
+  ref <- IORef.newIORef v
+  stk <- bump stk
+  pokeBi stk ref
+  pure stk
+bprim1 !stk RRFC i = do
+  (ref :: IORef Val) <- peekOffBi stk i
+  ticket <- Atomic.readForCAS ref
+  stk <- bump stk
+  pokeBi stk ticket
+  pure stk
+bprim1 !stk TIKR i = do
+  (t :: Atomic.Ticket Val) <- peekOffBi stk i
+  stk <- bump stk
+  let v = Atomic.peekTicket t
   poke stk v
   pure stk
 
@@ -1834,7 +1862,7 @@ bprim2 !stk CATB i j = do
   stk <- bump stk
   pokeBi stk (l <> r :: By.Bytes)
   pure stk
-bprim2 !stk WREF i j = do
+bprim2 !stk REFW i j = do
   (ref :: IORef Val) <- peekOffBi stk i
   v <- peekOff stk j
   IORef.writeIORef ref v
