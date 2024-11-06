@@ -278,7 +278,13 @@ pattern Foreign x = Closure (GForeign x)
 
 pattern BlackHole = Closure GBlackHole
 
-pattern UnboxedTypeTag t = Closure (GUnboxedTypeTag t)
+pattern UnboxedTypeTag t <- Closure (GUnboxedTypeTag t)
+  where
+    UnboxedTypeTag t = case t of
+      CharTag -> charTypeTag
+      FloatTag -> floatTypeTag
+      IntTag -> intTypeTag
+      NatTag -> natTypeTag
 
 {-# COMPLETE PAp, Enum, Data1, Data2, DataG, Captured, Foreign, UnboxedTypeTag, BlackHole #-}
 
@@ -290,19 +296,19 @@ pattern UnboxedTypeTag t = Closure (GUnboxedTypeTag t)
 
 -- We can avoid allocating a closure for common type tags on each poke by having shared top-level closures for them.
 natTypeTag :: Closure
-natTypeTag = UnboxedTypeTag NatTag
+natTypeTag = (Closure (GUnboxedTypeTag NatTag))
 {-# NOINLINE natTypeTag #-}
 
 intTypeTag :: Closure
-intTypeTag = UnboxedTypeTag IntTag
+intTypeTag = (Closure (GUnboxedTypeTag IntTag))
 {-# NOINLINE intTypeTag #-}
 
 charTypeTag :: Closure
-charTypeTag = UnboxedTypeTag CharTag
+charTypeTag = (Closure (GUnboxedTypeTag CharTag))
 {-# NOINLINE charTypeTag #-}
 
 floatTypeTag :: Closure
-floatTypeTag = UnboxedTypeTag FloatTag
+floatTypeTag = (Closure (GUnboxedTypeTag FloatTag))
 {-# NOINLINE floatTypeTag #-}
 
 traceK :: Reference -> K -> [(Reference, Int)]
@@ -368,7 +374,7 @@ matchCharVal = \case
 pattern CharVal :: Char -> Val
 pattern CharVal c <- (matchCharVal -> Just c)
   where
-    CharVal c = UnboxedVal (Char.ord c) CharTag
+    CharVal c = Val (Char.ord c) charTypeTag
 
 matchNatVal :: Val -> Maybe Word64
 matchNatVal = \case
@@ -378,7 +384,7 @@ matchNatVal = \case
 pattern NatVal :: Word64 -> Val
 pattern NatVal n <- (matchNatVal -> Just n)
   where
-    NatVal n = UnboxedVal (fromIntegral n) NatTag
+    NatVal n = Val (fromIntegral n) natTypeTag
 
 matchDoubleVal :: Val -> Maybe Double
 matchDoubleVal = \case
@@ -388,7 +394,7 @@ matchDoubleVal = \case
 pattern DoubleVal :: Double -> Val
 pattern DoubleVal d <- (matchDoubleVal -> Just d)
   where
-    DoubleVal d = UnboxedVal (doubleToInt d) FloatTag
+    DoubleVal d = Val (doubleToInt d) floatTypeTag
 
 matchIntVal :: Val -> Maybe Int
 matchIntVal = \case
@@ -398,7 +404,7 @@ matchIntVal = \case
 pattern IntVal :: Int -> Val
 pattern IntVal i <- (matchIntVal -> Just i)
   where
-    IntVal i = UnboxedVal i IntTag
+    IntVal i = Val i intTypeTag
 
 doubleToInt :: Double -> Int
 doubleToInt d = indexByteArray (BA.byteArrayFromList [d]) 0
@@ -693,9 +699,9 @@ upeekOff _stk@(Stack _ _ sp ustk _) i = do
   readByteArray ustk (sp - i)
 {-# INLINE upeekOff #-}
 
-upokeT :: DebugCallStack => Stack -> UVal -> UnboxedTypeTag -> IO ()
+upokeT :: DebugCallStack => Stack -> UVal -> BVal -> IO ()
 upokeT !stk@(Stack _ _ sp ustk _) !u !t = do
-  bpoke stk (UnboxedTypeTag t)
+  bpoke stk t
   writeByteArray ustk sp u
 {-# INLINE upokeT #-}
 
@@ -713,7 +719,7 @@ poke _stk@(Stack _ _ sp ustk bstk) (Val u b) = do
 -- checks.
 unsafePokeIasN :: DebugCallStack => Stack -> Int -> IO ()
 unsafePokeIasN stk n = do
-  upokeT stk n NatTag
+  upokeT stk n natTypeTag
 {-# INLINE unsafePokeIasN #-}
 
 -- | Store an unboxed tag to later match on.
@@ -758,9 +764,9 @@ pokeOff stk i (Val u t) = do
   writeByteArray (ustk stk) (sp stk - i) u
 {-# INLINE pokeOff #-}
 
-upokeOffT :: DebugCallStack => Stack -> Off -> UVal -> UnboxedTypeTag -> IO ()
+upokeOffT :: DebugCallStack => Stack -> Off -> UVal -> BVal -> IO ()
 upokeOffT stk i u t = do
-  bpokeOff stk i (UnboxedTypeTag t)
+  bpokeOff stk i t
   writeByteArray (ustk stk) (sp stk - i) u
 {-# INLINE upokeOffT #-}
 
@@ -1062,7 +1068,7 @@ pokeOffI stk@(Stack _ _ sp ustk _) i n = do
 
 pokeOffC :: Stack -> Int -> Char -> IO ()
 pokeOffC stk i c = do
-  upokeOffT stk i (Char.ord c) CharTag
+  upokeOffT stk i (Char.ord c) charTypeTag
 {-# INLINE pokeOffC #-}
 
 pokeBi :: (BuiltinForeign b) => Stack -> b -> IO ()
