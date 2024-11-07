@@ -988,6 +988,13 @@ any'extract =
 
 -- Refs
 
+ -- The docs for IORef state that IORef operations can be observed
+  -- out of order ([1]) but actually GHC does emit the appropriate
+  -- load and store barriers nowadays ([2], [3]).
+  --
+  -- [1] https://hackage.haskell.org/package/base-4.17.0.0/docs/Data-IORef.html#g:2
+  -- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
+  -- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
 ref'read :: SuperNormal Symbol
 ref'read =
   unop0 0 $ \[ref] -> (TPrm REFR [ref])
@@ -996,6 +1003,19 @@ ref'write :: SuperNormal Symbol
 ref'write =
   binop0 0 $ \[ref, val] -> (TPrm REFW [ref, val])
 
+-- In GHC, CAS returns both a Boolean and the current value of the
+-- IORef, which can be used to retry a failed CAS.
+-- This strategy is more efficient than returning a Boolean only
+-- because it uses a single call to cmpxchg in assembly (see [1]) to
+-- avoid an extra read per CAS iteration, however it's not supported
+-- in Scheme.
+-- Therefore, we adopt the more common signature that only returns a
+-- Boolean, which doesn't even suffer from spurious failures because
+-- GHC issues loads of mutable variables with memory_order_acquire
+-- (see [2])
+--
+-- [1]: https://github.com/ghc/ghc/blob/master/rts/PrimOps.cmm#L697
+-- [2]: https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L285
 ref'cas :: SuperNormal Symbol
 ref'cas =
   Lambda [BX, BX, BX]

@@ -1641,6 +1641,7 @@ bprim1 !stk REFR i = do
   pure stk
 bprim1 !stk REFN i = do
   v <- peekOff stk i
+  v <- evaluate v
   ref <- IORef.newIORef v
   stk <- bump stk
   pokeBi stk ref
