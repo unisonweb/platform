@@ -572,7 +572,7 @@ loop e = do
                   delete input doutput getTerms getTypes hqs
                 DeleteTarget'Type doutput hqs -> delete input doutput (const (pure Set.empty)) getTypes hqs
                 DeleteTarget'Term doutput hqs -> delete input doutput getTerms (const (pure Set.empty)) hqs
-                DeleteTarget'Namespace insistence path -> handleDeleteNamespace input inputDescription insistence path
+                DeleteTarget'Namespace insistence path -> handleDeleteNamespace input insistence path
                 DeleteTarget'ProjectBranch name -> handleDeleteBranch name
                 DeleteTarget'Project name -> handleDeleteProject name
             DisplayI outputLoc namesToDisplay -> do
@@ -1457,7 +1457,7 @@ checkDeletes typesTermsTuples doutput inputs = do
     Cli.runTransaction $
       traverse
         ( \targetToDelete ->
-            getEndangeredDependents targetToDelete (allTermsToDelete) projectNames
+            getEndangeredDependents targetToDelete allTermsToDelete projectNames
         )
         toDelete
   -- If the overall dependency map is not completely empty, abort deletion

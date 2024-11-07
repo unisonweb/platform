@@ -5,6 +5,7 @@ module Unison.Codebase.Editor.HandleInput.DeleteNamespace
 where
 
 import Control.Lens hiding (from)
+import Control.Lens qualified as Lens
 import Control.Monad.State qualified as State
 import Data.Map qualified as Map
 import Data.Set qualified as Set
@@ -22,6 +23,7 @@ import Unison.Codebase.Editor.Input
 import Unison.Codebase.Editor.Output
 import Unison.Codebase.Path (Path)
 import Unison.Codebase.Path qualified as Path
+import Unison.Codebase.ProjectPath qualified as ProjectPath
 import Unison.LabeledDependency (LabeledDependency)
 import Unison.LabeledDependency qualified as LD
 import Unison.NameSegment qualified as NameSegment
@@ -33,25 +35,18 @@ import Unison.PrettyPrintEnvDecl.Names qualified as PPED
 import Unison.Referent qualified as Referent
 import Unison.Sqlite qualified as Sqlite
 
-handleDeleteNamespace ::
-  Input ->
-  (Input -> Cli Text) ->
-  Insistence ->
-  Maybe (Path, NameSegment.NameSegment) ->
-  Cli ()
-handleDeleteNamespace input inputDescription insistence = \case
+handleDeleteNamespace :: Input -> Insistence -> Maybe (Path, NameSegment.NameSegment) -> Cli ()
+handleDeleteNamespace input insistence = \case
   Nothing -> do
-    hasConfirmed <- confirmedCommand input
-    if hasConfirmed || insistence == Force
+    loopState <- State.get
+    if loopState.lastInput == Just input || insistence == Force
       then do
-        description <- inputDescription input
         pp <- Cli.getCurrentProjectPath
-        _ <- Cli.updateAt description pp (const Branch.empty)
+        _ <- Cli.updateAt (commandName <> " .") pp (const Branch.empty)
         Cli.respond DeletedEverything
       else Cli.respond DeleteEverythingConfirmation
   Just p@(parentPath, childName) -> do
     branch <- Cli.expectBranchAtPath (Path.unsplit p)
-    description <- inputDescription input
     let toDelete =
           Names.prefix0
             (Path.nameFromSplit' $ first (Path.RelativePath' . Path.Relative) p)
@@ -71,17 +66,23 @@ handleDeleteNamespace input inputDescription insistence = \case
           Cli.respondNumbered $ CantDeleteNamespace ppeDecl endangerments
           Cli.returnEarlyWithoutOutput
     parentPathAbs <- Cli.resolvePath parentPath
+    let description = commandName <> " " <> into @Text (parentPathAbs & ProjectPath.absPath_ %~ (`Lens.snoc` childName))
     -- We have to modify the parent in order to also wipe out the history at the
     -- child.
-    Cli.updateAt description parentPathAbs \parentBranch ->
-      parentBranch
-        & Branch.modifyAt (Path.singleton childName) \_ -> Branch.empty
+    Cli.updateAt description parentPathAbs (Branch.modifyAt (Path.singleton childName) \_ -> Branch.empty)
     afterDelete
+  where
+    commandName :: Text
+    commandName =
+      case insistence of
+        Try -> "delete.namespace"
+        Force -> "delete.namespace.force"
 
-confirmedCommand :: Input -> Cli Bool
-confirmedCommand i = do
-  loopState <- State.get
-  pure $ Just i == (loopState ^. #lastInput)
+-- How I might do it (is this any better than the current algorithm?)
+--
+-- 1. Get all direct dependents of the deleted things in the current namespace.
+-- 2. For each direct dependent, check a Names built from the deleted namespace – is it there? If not it's the last
+--    name.
 
 -- | Goal: When deleting, we might be removing the last name of a given definition (i.e. the
 -- definition is going "extinct"). In this case we may wish to take some action or warn the
