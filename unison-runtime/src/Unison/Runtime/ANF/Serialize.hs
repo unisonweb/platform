@@ -662,6 +662,17 @@ pOpCode op = case op of
   RCAS -> 134
   RRFC -> 135
   TIKR -> 136
+  LESI -> 137
+  NEQI -> 138
+  LESN -> 139
+  NEQN -> 140
+  LESF -> 141
+  NEQF -> 142
+  LEQU -> 143
+  LESU -> 144
+  NOTB -> 145
+  ANDB -> 146
+  IORB -> 147
 
 pOpAssoc :: [(POp, Word16)]
 pOpAssoc = map (\op -> (op, pOpCode op)) [minBound .. maxBound]

@@ -324,6 +324,8 @@ data UPrim1
   | TRNF -- truncate
   | RNDF -- round
   | TRNC -- truncate
+  -- Bools
+  | NOTB -- not
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data UPrim2
@@ -374,6 +376,9 @@ data UPrim2
   | MINF -- min
   | CAST -- unboxed runtime type cast (int to nat, etc.)
   | DRPN -- dropn
+  -- Bools
+  | ANDB -- and
+  | IORB -- or
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data BPrim1
@@ -419,6 +424,8 @@ data BPrim2
   = -- universal
     EQLU -- ==
   | CMPU -- compare
+  | LEQU -- <=
+  | LESU -- <
   -- text
   | DRPT -- drop
   | CATT -- append
@@ -1333,6 +1340,8 @@ emitPOp ANF.FLTB = emitBP1 FLTB
 emitPOp ANF.CATB = emitBP2 CATB
 -- universal comparison
 emitPOp ANF.EQLU = emitBP2 EQLU
+emitPOp ANF.LEQU = emitBP2 LEQU
+emitPOp ANF.LESU = emitBP2 LESU
 emitPOp ANF.CMPU = emitBP2 CMPU
 -- code operations
 emitPOp ANF.MISS = emitBP1 MISS
@@ -1358,6 +1367,10 @@ emitPOp ANF.RRFC = emitBP1 RRFC
 emitPOp ANF.TIKR = emitBP1 TIKR
 -- non-prim translations
 emitPOp ANF.BLDS = Seq
+-- Bools
+emitPOp ANF.NOTB = emitP1 NOTB
+emitPOp ANF.ANDB = emitP2 ANDB
+emitPOp ANF.IORB = emitP2 IORB
 emitPOp ANF.FORK = \case
   VArg1 i -> Fork i
   _ -> internalBug "fork takes exactly one boxed argument"

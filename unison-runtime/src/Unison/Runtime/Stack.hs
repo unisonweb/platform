@@ -81,6 +81,8 @@ module Unison.Runtime.Stack
     peekOffBi,
     pokeBi,
     pokeOffBi,
+    peekBool,
+    peekOffBool,
     peekOffS,
     pokeS,
     pokeOffS,
@@ -1116,6 +1118,22 @@ peekBi stk = unwrapForeign . marshalToForeign <$> bpeek stk
 peekOffBi :: (BuiltinForeign b) => Stack -> Int -> IO b
 peekOffBi stk i = unwrapForeign . marshalToForeign <$> bpeekOff stk i
 {-# INLINE peekOffBi #-}
+
+peekBool :: Stack -> IO Bool
+peekBool stk = do
+  b <- bpeek stk
+  pure $ case b of
+    Enum _ t -> t /= TT.falseTag
+    _ -> error "peekBool: not a boolean"
+{-# INLINE peekBool #-}
+
+peekOffBool :: Stack -> Int -> IO Bool
+peekOffBool stk i = do
+  b <- bpeekOff stk i
+  pure $ case b of
+    Enum _ t -> t /= TT.falseTag
+    _ -> error "peekBool: not a boolean"
+{-# INLINE peekOffBool #-}
 
 peekOffS :: Stack -> Int -> IO USeq
 peekOffS stk i =
