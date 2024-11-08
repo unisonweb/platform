@@ -551,9 +551,11 @@ exec !_ !denv !_trackThreads !stk !k _ (BPrim2 op i j) = do
   pure (denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (RefCAS refI ticketI valI) = do
   (ref :: IORef Val) <- peekOffBi stk refI
-  (ticket :: Atomic.Ticket Val) <- peekOffBi stk ticketI
+  -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
+  -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
+  -- forcing of the values and tickets.
+  !(ticket :: Atomic.Ticket Val) <- peekOffBi stk ticketI
   v <- peekOff stk valI
-  ticket <- evaluate ticket
   (r, _) <- Atomic.casIORef ref ticket v
   stk <- bump stk
   pokeBool stk r
@@ -1640,8 +1642,10 @@ bprim1 !stk REFR i = do
   poke stk v
   pure stk
 bprim1 !stk REFN i = do
-  v <- peekOff stk i
-  v <- evaluate v
+  -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
+  -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
+  -- forcing of the values and tickets.
+  !v <- peekOff stk i
   ref <- IORef.newIORef v
   stk <- bump stk
   pokeBi stk ref
