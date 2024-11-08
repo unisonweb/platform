@@ -325,28 +325,19 @@ binop ::
 binop pop =
   binop0 0 $ \[x, y] -> TPrm pop [x, y]
 
--- | Lift a comparison op.
-cmpop :: (Var v) => POp -> SuperNormal v
-cmpop pop =
-  binop0 1 $ \[x, y, b] ->
-    TLetD b UN (TPrm pop [x, y]) $
-      boolift b
+-- | Like `binop`, but swaps the arguments.
+binopSwap :: (Var v) => POp -> SuperNormal v
+binopSwap pop =
+  binop0 0 $ \[x, y] -> TPrm pop [y, x]
 
--- | Like `cmpop`, but swaps the arguments.
+-- | Like `binop`, but swaps the arguments.
 cmpopb :: (Var v) => POp -> SuperNormal v
 cmpopb pop =
   binop0 1 $ \[x, y, b] ->
     TLetD b UN (TPrm pop [y, x]) $
       boolift b
 
--- | Like `cmpop`, but negates the result.
-cmpopn :: (Var v) => POp -> SuperNormal v
-cmpopn pop =
-  binop0 1 $ \[x, y, b] ->
-    TLetD b UN (TPrm pop [x, y]) $
-      notlift b
-
--- | Like `cmpop`, but swaps arguments then negates the result.
+-- | Like `binop`, but swaps arguments then negates the result.
 cmpopbn :: (Var v) => POp -> SuperNormal v
 cmpopbn pop =
   binop0 1 $ \[x, y, b] ->
@@ -375,17 +366,17 @@ pown = binop POWN
 dropn = binop DRPN
 
 eqi, eqn, lti, ltn, lei, len :: (Var v) => SuperNormal v
-eqi = cmpop EQLI
-lti = cmpopbn LEQI
-lei = cmpop LEQI
-eqn = cmpop EQLN
-ltn = cmpopbn LEQN
-len = cmpop LEQN
+eqi = binop EQLI
+lti = binop LESI
+lei = binop LEQI
+eqn = binop EQLN
+ltn = binop LESN
+len = binop LEQN
 
 gti, gtn, gei, gen :: (Var v) => SuperNormal v
-gti = cmpopn LEQI
+gti = binopSwap LESI
 gei = cmpopb LEQI
-gtn = cmpopn LEQN
+gtn = binopSwap LESN
 gen = cmpopb LEQN
 
 inci, incn :: (Var v) => SuperNormal v
@@ -462,11 +453,11 @@ atan2f = binop ATN2
 
 ltf, gtf, lef, gef, eqf, neqf :: (Var v) => SuperNormal v
 ltf = cmpopbn LEQF
-gtf = cmpopn LEQF
-lef = cmpop LEQF
+gtf = binopSwap LESF
+lef = binop LEQF
 gef = cmpopb LEQF
-eqf = cmpop EQLF
-neqf = cmpopn EQLF
+eqf = binop EQLF
+neqf = binop NEQF
 
 minf, maxf :: (Var v) => SuperNormal v
 minf = binop MINF
@@ -988,13 +979,13 @@ any'extract =
 
 -- Refs
 
- -- The docs for IORef state that IORef operations can be observed
-  -- out of order ([1]) but actually GHC does emit the appropriate
-  -- load and store barriers nowadays ([2], [3]).
-  --
-  -- [1] https://hackage.haskell.org/package/base-4.17.0.0/docs/Data-IORef.html#g:2
-  -- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
-  -- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
+-- The docs for IORef state that IORef operations can be observed
+-- out of order ([1]) but actually GHC does emit the appropriate
+-- load and store barriers nowadays ([2], [3]).
+--
+-- [1] https://hackage.haskell.org/package/base-4.17.0.0/docs/Data-IORef.html#g:2
+-- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
+-- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
 ref'read :: SuperNormal Symbol
 ref'read =
   unop0 0 $ \[ref] -> (TPrm REFR [ref])

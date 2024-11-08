@@ -774,9 +774,7 @@ peekTagOff = peekOffI
 
 pokeBool :: DebugCallStack => Stack -> Bool -> IO ()
 pokeBool stk b =
-  -- Currently this is implemented as a tag, which is branched on to put a packed bool constructor on the stack, but
-  -- we'll want to change it to have its own unboxed type tag eventually.
-  pokeTag stk $ if b then 1 else 0
+  poke stk $ if b then trueVal else falseVal
 {-# INLINE pokeBool #-}
 
 -- | Store a boxed value.

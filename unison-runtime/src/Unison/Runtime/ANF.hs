@@ -1292,7 +1292,9 @@ data POp
   | INCI -- inc
   | DECI -- dec
   | LEQI -- <=
+  | LESI -- <
   | EQLI -- ==
+  | NEQI -- !=
   | TRNC -- truncate0
   -- Nat
   | ADDN -- +
@@ -1314,7 +1316,9 @@ data POp
   | INCN -- inc
   | DECN -- dec
   | LEQN -- <=
+  | LESN -- <
   | EQLN -- ==
+  | NEQN -- !=
   -- Float
   | ADDF -- +
   | SUBF -- -
@@ -1323,7 +1327,9 @@ data POp
   | MINF -- min
   | MAXF -- max
   | LEQF -- <=
+  | LESF -- <
   | EQLF -- ==
+  | NEQF -- !=
   | POWF -- pow
   | EXPF -- exp
   | SQRT -- sqrt
