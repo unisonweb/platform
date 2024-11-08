@@ -1325,11 +1325,23 @@ uprim2 !stk EQLI !i !j = do
   stk <- bump stk
   pokeBool stk $ m == n
   pure stk
+uprim2 !stk NEQI !i !j = do
+  m <- upeekOff stk i
+  n <- upeekOff stk j
+  stk <- bump stk
+  pokeBool stk $ m /= n
+  pure stk
 uprim2 !stk EQLN !i !j = do
   m <- peekOffN stk i
   n <- peekOffN stk j
   stk <- bump stk
   pokeBool stk $ m == n
+  pure stk
+uprim2 !stk NEQN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  pokeBool stk $ m /= n
   pure stk
 uprim2 !stk LEQI !i !j = do
   m <- upeekOff stk i
@@ -1342,6 +1354,18 @@ uprim2 !stk LEQN !i !j = do
   n <- peekOffN stk j
   stk <- bump stk
   pokeBool stk $ m <= n
+  pure stk
+uprim2 !stk LESI !i !j = do
+  m <- upeekOff stk i
+  n <- upeekOff stk j
+  stk <- bump stk
+  pokeBool stk $ m < n
+  pure stk
+uprim2 !stk LESN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  pokeBool stk $ m < n
   pure stk
 uprim2 !stk DIVN !i !j = do
   m <- peekOffN stk i
@@ -1409,11 +1433,23 @@ uprim2 !stk EQLF !i !j = do
   stk <- bump stk
   pokeBool stk $ x == y
   pure stk
+uprim2 !stk NEQF !i !j = do
+  x <- peekOffD stk i
+  y <- peekOffD stk j
+  stk <- bump stk
+  pokeBool stk $ x /= y
+  pure stk
 uprim2 !stk LEQF !i !j = do
   x <- peekOffD stk i
   y <- peekOffD stk j
   stk <- bump stk
   pokeBool stk $ x <= y
+  pure stk
+uprim2 !stk LESF !i !j = do
+  x <- peekOffD stk i
+  y <- peekOffD stk j
+  stk <- bump stk
+  pokeBool stk $ x < y
   pure stk
 uprim2 !stk ATN2 !i !j = do
   x <- peekOffD stk i
