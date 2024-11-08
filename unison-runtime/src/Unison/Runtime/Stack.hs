@@ -40,10 +40,13 @@ module Unison.Runtime.Stack
         NatVal,
         DoubleVal,
         IntVal,
+        BoolVal,
         UnboxedVal,
         BoxedVal
       ),
     emptyVal,
+    falseVal,
+    trueVal,
     boxedVal,
     USeq,
     traceK,
@@ -140,6 +143,7 @@ import Unison.Runtime.ANF (PackedTag)
 import Unison.Runtime.Array
 import Unison.Runtime.Foreign
 import Unison.Runtime.MCode
+import Unison.Runtime.TypeTags qualified as TT
 import Unison.Type qualified as Ty
 import Unison.Util.EnumContainers as EC
 import Prelude hiding (words)
@@ -413,6 +417,25 @@ pattern IntVal :: Int -> Val
 pattern IntVal i <- (matchIntVal -> Just i)
   where
     IntVal i = Val i intTypeTag
+
+matchBoolVal :: Val -> Maybe Bool
+matchBoolVal = \case
+  (BoxedVal (Enum r t)) | r == Ty.booleanRef -> Just (t == TT.falseTag)
+  _ -> Nothing
+
+pattern BoolVal :: Bool -> Val
+pattern BoolVal b <- (matchBoolVal -> Just b)
+  where
+    BoolVal b = if b then (BoxedVal (Enum Ty.booleanRef TT.trueTag)) else (BoxedVal (Enum Ty.booleanRef TT.trueTag))
+
+-- Define singletons we can use for the bools to prevent allocation where possible.
+falseVal :: Val
+falseVal = BoxedVal (Enum Ty.booleanRef TT.falseTag)
+{-# NOINLINE falseVal #-}
+
+trueVal :: Val
+trueVal = BoxedVal (Enum Ty.booleanRef TT.trueTag)
+{-# NOINLINE trueVal #-}
 
 doubleToInt :: Double -> Int
 doubleToInt d = indexByteArray (BA.byteArrayFromList [d]) 0
