@@ -1414,15 +1414,6 @@ arg2To0 instr =
   where
     (arg1, arg2) = fresh
 
--- ... -> Bool
-argNToBool :: Int -> ForeignOp
-argNToBool n instr =
-  (replicate n BX,)
-    . TAbss args
-    $ TFOp instr args
-  where
-    args = freshes n
-
 argNDirect :: Int -> ForeignOp
 argNDirect n instr =
   (replicate n BX,)
@@ -2253,7 +2244,7 @@ declareForeigns = do
     . mkForeignIOF
     $ \(mv :: MVar Val, x) -> swapMVar mv x
 
-  declareForeign Tracked "MVar.isEmpty" (argNToBool 1)
+  declareForeign Tracked "MVar.isEmpty" (argNDirect 1)
     . mkForeign
     $ \(mv :: MVar Val) -> isEmptyMVar mv
 
@@ -2348,7 +2339,7 @@ declareForeigns = do
   declareForeign Tracked "Promise.tryRead" argToMaybe . mkForeign $
     \(p :: Promise Val) -> tryReadPromise p
 
-  declareForeign Tracked "Promise.write" (argNToBool 2) . mkForeign $
+  declareForeign Tracked "Promise.write" (argNDirect 2) . mkForeign $
     \(p :: Promise Val, a :: Val) -> writePromise p a
 
   declareForeign Tracked "Tls.newClient.impl.v3" arg2ToEF . mkForeignTls $
@@ -2784,7 +2775,7 @@ declareForeigns = do
   declareForeign Untracked "Pattern.run" arg2ToMaybeTup . mkForeign $
     \(TPat.CP _ matcher, input :: Text) -> pure $ matcher input
 
-  declareForeign Untracked "Pattern.isMatch" (argNToBool 2) . mkForeign $
+  declareForeign Untracked "Pattern.isMatch" (argNDirect 2) . mkForeign $
     \(TPat.CP _ matcher, input :: Text) -> pure . isJust $ matcher input
 
   declareForeign Untracked "Char.Class.any" direct . mkForeign $ \() -> pure TPat.Any
@@ -2809,7 +2800,7 @@ declareForeigns = do
   declareForeign Untracked "Char.Class.symbol" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Symbol)
   declareForeign Untracked "Char.Class.separator" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Separator)
   declareForeign Untracked "Char.Class.letter" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Letter)
-  declareForeign Untracked "Char.Class.is" (argNToBool 2) . mkForeign $ \(cl, c) -> evaluate $ TPat.charPatternPred cl c
+  declareForeign Untracked "Char.Class.is" (argNDirect 2) . mkForeign $ \(cl, c) -> evaluate $ TPat.charPatternPred cl c
   declareForeign Untracked "Text.patterns.char" (argNDirect 1) . mkForeign $ \c ->
     let v = TPat.cpattern (TPat.Char c) in pure v
 
