@@ -1404,6 +1404,8 @@ data POp
   | -- Universal operations
     EQLU -- ==
   | CMPU -- compare
+  | LEQU -- <=
+  | LESU -- <
   | EROR -- error
   | -- Code
     MISS -- isMissing
@@ -1431,6 +1433,10 @@ data POp
   | RCAS -- Ref.cas
   | RRFC -- Ref.readForCas
   | TIKR -- Ref.Ticket.read
+  -- Bools
+  | NOTB -- not
+  | ANDB -- and
+  | IORB -- or
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 type ANormal = ABTN.Term ANormalF

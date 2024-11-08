@@ -282,14 +282,6 @@ seqViewEmpty = TCon Ty.seqViewRef (fromIntegral Ty.seqViewEmpty) []
 seqViewElem :: (Var v) => v -> v -> ANormal v
 seqViewElem l r = TCon Ty.seqViewRef (fromIntegral Ty.seqViewElem) [l, r]
 
-boolift :: (Var v) => v -> ANormal v
-boolift v =
-  TMatch v $ MatchIntegral (mapFromList [(0, fls), (1, tru)]) Nothing
-
-notlift :: (Var v) => v -> ANormal v
-notlift v =
-  TMatch v $ MatchIntegral (mapFromList [(1, fls), (0, tru)]) Nothing
-
 unenum :: (Var v) => Int -> v -> Reference -> v -> ANormal v -> ANormal v
 unenum n v0 r v nx =
   TMatch v0 $ MatchData r cases Nothing
@@ -330,20 +322,6 @@ binopSwap :: (Var v) => POp -> SuperNormal v
 binopSwap pop =
   binop0 0 $ \[x, y] -> TPrm pop [y, x]
 
--- | Like `binop`, but swaps the arguments.
-cmpopb :: (Var v) => POp -> SuperNormal v
-cmpopb pop =
-  binop0 1 $ \[x, y, b] ->
-    TLetD b UN (TPrm pop [y, x]) $
-      boolift b
-
--- | Like `binop`, but swaps arguments then negates the result.
-cmpopbn :: (Var v) => POp -> SuperNormal v
-cmpopbn pop =
-  binop0 1 $ \[x, y, b] ->
-    TLetD b UN (TPrm pop [y, x]) $
-      notlift b
-
 addi, subi, muli, divi, modi, shli, shri, powi :: (Var v) => SuperNormal v
 addi = binop ADDI
 subi = binop SUBI
@@ -375,9 +353,9 @@ len = binop LEQN
 
 gti, gtn, gei, gen :: (Var v) => SuperNormal v
 gti = binopSwap LESI
-gei = cmpopb LEQI
+gei = binopSwap LEQI
 gtn = binopSwap LESN
-gen = cmpopb LEQN
+gen = binopSwap LEQN
 
 inci, incn :: (Var v) => SuperNormal v
 inci = unop INCI
@@ -452,10 +430,10 @@ atanhf = unop ATNH
 atan2f = binop ATN2
 
 ltf, gtf, lef, gef, eqf, neqf :: (Var v) => SuperNormal v
-ltf = cmpopbn LEQF
+ltf = binop LESF
 gtf = binopSwap LESF
 lef = binop LEQF
-gef = cmpopb LEQF
+gef = binopSwap LEQF
 eqf = binop EQLF
 neqf = binop NEQF
 
@@ -628,24 +606,18 @@ splitrs = binop0 3 $ \[n, s, t, l, r] ->
       ]
 
 eqt, neqt, leqt, geqt, lesst, great :: SuperNormal Symbol
-eqt = binop0 1 $ \[x, y, b] ->
-  TLetD b UN (TPrm EQLT [x, y]) $
-    boolift b
+eqt = binop EQLT
 neqt = binop0 1 $ \[x, y, b] ->
   TLetD b UN (TPrm EQLT [x, y]) $
-    notlift b
-leqt = binop0 1 $ \[x, y, b] ->
-  TLetD b UN (TPrm LEQT [x, y]) $
-    boolift b
-geqt = binop0 1 $ \[x, y, b] ->
-  TLetD b UN (TPrm LEQT [y, x]) $
-    boolift b
+    TPrm NOTB [b]
+leqt = binop LEQT
+geqt = binopSwap LEQT
 lesst = binop0 1 $ \[x, y, b] ->
   TLetD b UN (TPrm LEQT [y, x]) $
-    notlift b
+    TPrm NOTB [b]
 great = binop0 1 $ \[x, y, b] ->
   TLetD b UN (TPrm LEQT [x, y]) $
-    notlift b
+    TPrm NOTB [b]
 
 packt, unpackt :: SuperNormal Symbol
 packt = unop0 0 $ \[s] -> TPrm PAKT [s]
@@ -712,61 +684,31 @@ t2f = unop0 2 $ \[x, t, f] ->
       ]
 
 equ :: SuperNormal Symbol
-equ = binop0 1 $ \[x, y, b] ->
-  TLetD b UN (TPrm EQLU [x, y]) $
-    boolift b
+equ = binop EQLU
 
 cmpu :: SuperNormal Symbol
-cmpu = binop0 1 $ \[x, y, c] ->
-  TLetD c UN (TPrm CMPU [x, y]) $
-    (TPrm DECI [c])
+cmpu = binop CMPU
 
 ltu :: SuperNormal Symbol
-ltu = binop0 1 $ \[x, y, c] ->
-  TLetD c UN (TPrm CMPU [x, y])
-    . TMatch c
-    $ MatchIntegral
-      (mapFromList [(0, TCon Ty.booleanRef 1 [])])
-      (Just $ TCon Ty.booleanRef 0 [])
+ltu = binop LESU
 
 gtu :: SuperNormal Symbol
-gtu = binop0 1 $ \[x, y, c] ->
-  TLetD c UN (TPrm CMPU [x, y])
-    . TMatch c
-    $ MatchIntegral
-      (mapFromList [(2, TCon Ty.booleanRef 1 [])])
-      (Just $ TCon Ty.booleanRef 0 [])
+gtu = binopSwap LESU
 
 geu :: SuperNormal Symbol
-geu = binop0 1 $ \[x, y, c] ->
-  TLetD c UN (TPrm CMPU [x, y])
-    . TMatch c
-    $ MatchIntegral
-      (mapFromList [(0, TCon Ty.booleanRef 0 [])])
-      (Just $ TCon Ty.booleanRef 1 [])
+geu = binopSwap LEQU
 
 leu :: SuperNormal Symbol
-leu = binop0 1 $ \[x, y, c] ->
-  TLetD c UN (TPrm CMPU [x, y])
-    . TMatch c
-    $ MatchIntegral
-      (mapFromList [(2, TCon Ty.booleanRef 0 [])])
-      (Just $ TCon Ty.booleanRef 1 [])
+leu = binop LEQU
 
 notb :: SuperNormal Symbol
-notb = unop0 0 $ \[b] ->
-  TMatch b . flip (MatchData Ty.booleanRef) Nothing $
-    mapFromList [(0, ([], tru)), (1, ([], fls))]
+notb = unop NOTB
 
 orb :: SuperNormal Symbol
-orb = binop0 0 $ \[p, q] ->
-  TMatch p . flip (MatchData Ty.booleanRef) Nothing $
-    mapFromList [(1, ([], tru)), (0, ([], TVar q))]
+orb = binop IORB
 
 andb :: SuperNormal Symbol
-andb = binop0 0 $ \[p, q] ->
-  TMatch p . flip (MatchData Ty.booleanRef) Nothing $
-    mapFromList [(0, ([], fls)), (1, ([], TVar q))]
+andb = binop ANDB
 
 -- A runtime type-cast. Used to unsafely coerce between unboxed
 -- types at runtime without changing their representation.
@@ -865,10 +807,7 @@ debug'text =
         ]
 
 code'missing :: SuperNormal Symbol
-code'missing =
-  unop0 1 $ \[link, b] ->
-    TLetD b UN (TPrm MISS [link]) $
-      boolift b
+code'missing = unop MISS
 
 code'cache :: SuperNormal Symbol
 code'cache = unop0 0 $ \[new] -> TPrm CACH [new]
@@ -923,13 +862,7 @@ value'create :: SuperNormal Symbol
 value'create = unop0 0 $ \[x] -> TPrm VALU [x]
 
 check'sandbox :: SuperNormal Symbol
-check'sandbox =
-  Lambda [BX, BX]
-    . TAbss [refs, val]
-    . TLetD b UN (TPrm SDBX [refs, val])
-    $ boolift b
-  where
-    (refs, val, b) = fresh
+check'sandbox = binop SDBX
 
 sandbox'links :: SuperNormal Symbol
 sandbox'links = Lambda [BX] . TAbs ln $ TPrm SDBL [ln]
@@ -1011,10 +944,9 @@ ref'cas :: SuperNormal Symbol
 ref'cas =
   Lambda [BX, BX, BX]
     . TAbss [x, y, z]
-    . TLetD b UN (TPrm RCAS [x, y, z])
-    $ boolift b
+    $ TPrm RCAS [x, y, z]
   where
-    (x, y, z, b) = fresh
+    (x, y, z) = fresh
 
 ref'ticket'read :: SuperNormal Symbol
 ref'ticket'read = unop0 0 $ TPrm TIKR
@@ -1391,8 +1323,7 @@ outIoFailBool stack1 stack2 stack3 extra fail result =
         ( 1,
           ([UN],)
             . TAbs stack3
-            . TLet (Indirect 1) extra BX (boolift stack3)
-            $ right extra
+            $ right stack3
         )
       ]
 
@@ -1488,9 +1419,9 @@ argNToBool :: Int -> ForeignOp
 argNToBool n instr =
   (replicate n BX,)
     . TAbss args
-    $ TLetD result UN (TFOp instr args) (boolift result)
+    $ TFOp instr args
   where
-    (result : args) = freshes (n + 1)
+    args = freshes n
 
 argNDirect :: Int -> ForeignOp
 argNDirect n instr =
