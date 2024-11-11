@@ -10,7 +10,7 @@ assignees: ''
 **Describe and demonstrate the bug**
 This should be written as a [ucm transcript](https://www.unison-lang.org/docs/tooling/transcripts/) if possible, calling out the unexpected behavior in the text. e.g.
 
-``` unison :hidec
+``` unison :hide
 a = 1
 ```
 
