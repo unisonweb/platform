@@ -37,7 +37,18 @@ data TestConfig = TestConfig
   }
   deriving (Show)
 
-type TestBuilder = FilePath -> FilePath -> [String] -> String -> Test ()
+type TestBuilder =
+  -- | path to the native runtime
+  FilePath ->
+  -- | directory containing prelude & transcript `FilePath`s
+  FilePath ->
+  -- | directory to write output files to (often the same as the previous argument)
+  FilePath ->
+  -- | prelude files (relative to previous directory `FilePath`)
+  [FilePath] ->
+  -- | transcript file (relative to earlier directory `FilePath`)
+  FilePath ->
+  Test ()
 
 testBuilder ::
   Bool ->
@@ -45,63 +56,88 @@ testBuilder ::
   ((FilePath, Text) -> IO ()) ->
   FilePath ->
   FilePath ->
-  [String] ->
-  String ->
+  FilePath ->
+  [FilePath] ->
+  FilePath ->
   Test ()
-testBuilder expectFailure replaceOriginal recordFailure runtimePath dir prelude transcript = scope transcript $ do
-  outputs <- io . withTemporaryUcmCodebase SC.init Verbosity.Silent "transcript" SC.DoLock $ \(codebasePath, codebase) ->
-    let isTest = True
-     in Transcript.withRunner isTest Verbosity.Silent "TODO: pass version here" runtimePath \runTranscript ->
-          for files \filePath -> do
-            transcriptSrc <- readUtf8 filePath
-            out <- silence $ runTranscript filePath transcriptSrc (codebasePath, codebase)
-            pure (filePath, out)
-  for_ outputs \case
-    (filePath, Left err) -> do
-      let outputFile = outputFileForTranscript filePath
-      case err of
-        Transcript.ParseError errors -> do
-          let bundle = MP.errorBundlePretty errors
-              errMsg = "Error parsing " <> filePath <> ": " <> bundle
-          -- Drop the file name, to avoid POSIX/Windows conflicts
-          io . writeUtf8 outputFile . Text.dropWhile (/= ':') $ Text.pack bundle
-          when (not expectFailure) $ do
-            io $ recordFailure (filePath, Text.pack errMsg)
-            crash errMsg
-        Transcript.RunFailure errOutput -> do
-          let errText = Transcript.formatStanzas $ toList errOutput
-          io $ writeUtf8 outputFile errText
-          when (not expectFailure) $ do
-            io $ Text.putStrLn errText
-            io $ recordFailure (filePath, errText)
-            crash $ "Failure in " <> filePath
-    (filePath, Right out) -> do
-      let outputFile = if replaceOriginal then filePath else outputFileForTranscript filePath
-      io . writeUtf8 outputFile . Transcript.formatStanzas $ toList out
-      when expectFailure $ do
-        let errMsg = "Expected a failure, but transcript was successful."
-        io $ recordFailure (filePath, Text.pack errMsg)
-        crash errMsg
-  ok
+testBuilder expectFailure replaceOriginal recordFailure runtimePath inputDir outputDir prelude transcript =
+  scope transcript do
+    outputs <-
+      io $ withTemporaryUcmCodebase SC.init Verbosity.Silent "transcript" SC.DoLock \(codebasePath, codebase) ->
+        let isTest = True
+         in Transcript.withRunner isTest Verbosity.Silent "TODO: pass version here" runtimePath \runTranscript ->
+              for files \filePath -> do
+                transcriptSrc <- readUtf8 $ inputDir </> filePath
+                out <- silence $ runTranscript filePath transcriptSrc (codebasePath, codebase)
+                pure (filePath, out)
+    for_ outputs \case
+      (filePath, Left err) -> do
+        let outputFile = outputDir </> outputFileForTranscript filePath
+        case err of
+          Transcript.ParseError errors -> do
+            let bundle = MP.errorBundlePretty errors
+                errMsg = "Error parsing " <> filePath <> ": " <> bundle
+            -- Drop the file name, to avoid POSIX/Windows conflicts
+            io . writeUtf8 outputFile . Text.dropWhile (/= ':') $ Text.pack bundle
+            when (not expectFailure) $ do
+              io $ recordFailure (inputDir </> filePath, Text.pack errMsg)
+              crash errMsg
+          Transcript.RunFailure errOutput -> do
+            let errText = Transcript.formatStanzas $ toList errOutput
+            io $ writeUtf8 outputFile errText
+            when (not expectFailure) $ do
+              io $ Text.putStrLn errText
+              io $ recordFailure (inputDir </> filePath, errText)
+              crash $ "Failure in " <> filePath
+      (filePath, Right out) -> do
+        let outputFile = outputDir </> if replaceOriginal then filePath else outputFileForTranscript filePath
+        io . createDirectoryIfMissing True $ takeDirectory outputFile
+        io . writeUtf8 outputFile . Transcript.formatStanzas $ toList out
+        when expectFailure $ do
+          let errMsg = "Expected a failure, but transcript was successful."
+          io $ recordFailure (filePath, Text.pack errMsg)
+          crash errMsg
+    ok
   where
-    files = fmap (dir </>) (prelude ++ [transcript])
+    files = prelude ++ [transcript]
 
 outputFileForTranscript :: FilePath -> FilePath
 outputFileForTranscript filePath =
   replaceExtension filePath ".output.md"
 
-buildTests :: TestConfig -> TestBuilder -> FilePath -> Test ()
-buildTests TestConfig {..} testBuilder dir = do
+enumerateTests :: TestConfig -> TestBuilder -> [FilePath] -> Test ()
+enumerateTests TestConfig {..} testBuilder files = do
   io . putStrLn . unlines $
     [ "",
-      "Searching for transcripts to run in: " ++ dir
+      "Running explicitly-named transcripts"
     ]
-  files <- io $ listDirectory dir
   -- Any files that start with _ are treated as prelude
   let (prelude, transcripts) =
         files
           & sort
-          & filter (\f -> takeExtensions f == ".md")
+          & partition (isPrefixOf "_" . snd . splitFileName)
+          -- if there is a matchPrefix set, filter non-prelude files by that prefix - or return True
+          & second (filter (\f -> maybe True (`isPrefixOf` f) matchPrefix))
+
+  case length transcripts of
+    0 -> pure ()
+    -- EasyTest exits early with "no test results recorded" if you don't give it any tests, this keeps it going till the
+    -- end so we can search all transcripts for prefix matches.
+    _ ->
+      tests (testBuilder runtimePath "." ("unison-src" </> "transcripts" </> "project-outputs") prelude <$> transcripts)
+
+buildTests :: TestConfig -> TestBuilder -> FilePath -> Maybe FilePath -> Test ()
+buildTests TestConfig {..} testBuilder inputDir outputDir = do
+  io . putStrLn . unlines $
+    [ "",
+      "Searching for transcripts to run in: " ++ inputDir
+    ]
+  files <- io $ listDirectory inputDir
+  -- Any files that start with _ are treated as prelude
+  let (prelude, transcripts) =
+        files
+          & sort
+          & filter (\f -> let ext = takeExtensions f in ext == ".md" || ext == ".markdown")
           & partition (isPrefixOf "_" . snd . splitFileName)
           -- if there is a matchPrefix set, filter non-prelude files by that prefix - or return True
           & second (filter (\f -> maybe True (`isPrefixOf` f) matchPrefix))
@@ -112,7 +148,7 @@ buildTests TestConfig {..} testBuilder dir = do
     -- if you don't give it any tests, this keeps it going
     -- till the end so we can search all transcripts for
     -- prefix matches.
-    _ -> tests (testBuilder runtimePath dir prelude <$> transcripts)
+    _ -> tests (testBuilder runtimePath inputDir (fromMaybe inputDir outputDir) prelude <$> transcripts)
 
 -- Transcripts that exit successfully get cleaned-up by the transcript parser.
 -- Any remaining folders matching "transcript-.*" are output directories
@@ -138,10 +174,13 @@ test config = do
   -- what went wrong in CI
   failuresVar <- io $ STM.newTVarIO []
   let recordFailure failure = STM.atomically $ STM.modifyTVar' failuresVar (failure :)
-  buildTests config (testBuilder False False recordFailure) $ "unison-src" </> "transcripts"
-  buildTests config (testBuilder False True recordFailure) $ "unison-src" </> "transcripts" </> "idempotent"
-  buildTests config (testBuilder False False recordFailure) $ "unison-src" </> "transcripts-using-base"
-  buildTests config (testBuilder True False recordFailure) $ "unison-src" </> "transcripts" </> "errors"
+  buildTests config (testBuilder False False recordFailure) ("unison-src" </> "transcripts") Nothing
+  buildTests config (testBuilder False True recordFailure) ("unison-src" </> "transcripts" </> "idempotent") Nothing
+  buildTests config (testBuilder False False recordFailure) ("unison-src" </> "transcripts-using-base") Nothing
+  buildTests config (testBuilder True False recordFailure) ("unison-src" </> "transcripts" </> "errors") Nothing
+  buildTests config (testBuilder False False recordFailure) "docs" . Just $
+    "unison-src" </> "transcripts" </> "project-outputs" </> "docs"
+  enumerateTests config (testBuilder False False recordFailure) [".github/ISSUE_TEMPLATE/bug_report.md"]
   failures <- io $ STM.readTVarIO failuresVar
   -- Print all aggregated failures
   when (not $ null failures) . io $ Text.putStrLn $ "Failures:"

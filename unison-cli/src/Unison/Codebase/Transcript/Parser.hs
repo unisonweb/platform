@@ -22,6 +22,7 @@ import Data.Bool (bool)
 import Data.Char qualified as Char
 import Data.Text qualified as Text
 import Text.Megaparsec qualified as P
+import Text.Megaparsec.Char qualified as P
 import Unison.Codebase.Transcript hiding (expectingError, generated, hidden)
 import Unison.Prelude
 import Unison.Project (fullyQualifiedProjectAndBranchNamesParser)
@@ -75,16 +76,18 @@ ucmLine = ucmOutputLine <|> ucmComment <|> ucmCommand
     ucmCommand :: P UcmLine
     ucmCommand =
       UcmCommand
-        <$> fmap UcmContextProject (fullyQualifiedProjectAndBranchNamesParser <* lineToken (word ">") <* nonNewlineSpaces)
+        <$> fmap
+          UcmContextProject
+          (fullyQualifiedProjectAndBranchNamesParser <* lineToken (P.chunk ">") <* nonNewlineSpaces)
         <*> restOfLine
 
     ucmComment :: P UcmLine
     ucmComment =
       P.label "comment (delimited with “--”)" $
-        UcmComment <$> (word "--" *> restOfLine)
+        UcmComment <$> (P.chunk "--" *> restOfLine)
 
     ucmOutputLine :: P UcmLine
-    ucmOutputLine = UcmOutputLine <$> (word "  " *> restOfLine <|> "" <$ P.single '\n' <|> "" <$ P.chunk " \n")
+    ucmOutputLine = UcmOutputLine <$> (P.chunk "  " *> restOfLine <|> "" <$ P.single '\n' <|> "" <$ P.chunk " \n")
 
 restOfLine :: P Text
 restOfLine = P.takeWhileP Nothing (/= '\n') <* P.single '\n'
@@ -92,8 +95,8 @@ restOfLine = P.takeWhileP Nothing (/= '\n') <* P.single '\n'
 apiRequest :: P APIRequest
 apiRequest =
   GetRequest <$> (word "GET" *> spaces *> restOfLine)
-    <|> APIComment <$> (word "--" *> restOfLine)
-    <|> APIResponseLine <$> (word "  " *> restOfLine <|> "" <$ P.single '\n' <|> "" <$ P.chunk " \n")
+    <|> APIComment <$> (P.chunk "--" *> restOfLine)
+    <|> APIResponseLine <$> (P.chunk "  " *> restOfLine <|> "" <$ P.single '\n' <|> "" <$ P.chunk " \n")
 
 formatInfoString :: (a -> Text) -> Text -> InfoTags a -> Text
 formatInfoString formatA language infoTags =
@@ -124,7 +127,7 @@ fenced = do
     _ -> pure Nothing
 
 word :: Text -> P Text
-word = P.chunk
+word text = P.chunk text <* P.notFollowedBy P.alphaNumChar
 
 lineToken :: P a -> P a
 lineToken p = p <* nonNewlineSpaces
