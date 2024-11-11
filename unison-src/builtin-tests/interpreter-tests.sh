@@ -1,10 +1,13 @@
 #!/bin/bash
 set -ex
 
-ucm=$(stack exec -- which unison)
-echo "$ucm"
+if [ -z "$1" ]; then
+  ucm=$(stack exec -- which unison)
+else
+  ucm="$1"
+fi
 
-runtime_tests_version="@unison/runtime-tests/releases/0.0.2"
+runtime_tests_version="@unison/runtime-tests/releases/0.0.1"
 echo $runtime_tests_version
 
 codebase=${XDG_CACHE_HOME:-"$HOME/.cache"}/unisonlanguage/runtime-tests.unison

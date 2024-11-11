@@ -1,46 +1,33 @@
 #lang racket/base
 
-(require unison/chunked-seq unison/data unison/boot)
+(require unison/chunked-seq unison/data unison/data-info unison/boot)
 
-(provide
- (rename-out [encodeNat16be unison-FOp-Bytes.encodeNat16be])
- (prefix-out
-  unison-FOp-Bytes.
-  (combine-out
-   decodeNat16be
-   decodeNat16le
-   decodeNat32be
-   decodeNat32le
-   decodeNat64be
-   decodeNat64le
-   encodeNat16be
-   encodeNat16le
-   encodeNat32be
-   encodeNat32le
-   encodeNat64be
-   encodeNat64le)))
+(provide decodeNatBe decodeNatLe
+         encodeNatBe encodeNatLe)
 
+; TODO: this algorithm isn't good for large bytes values. It flattens
+; the entire byte rope to a single chunk, reads the value off, builds
+; a sub-chunk, then rebuilds the byte rope from the subchunk.
 (define (decodeNatBe bytes size)
   (if (< (chunked-bytes-length bytes) size)
-      none
+      ref-optional-none
       (let ([buf (chunked-bytes->bytes bytes)])
         (define (loop acc n)
           (if (> n 0)
-          (begin
               (loop
                (+
                 (arithmetic-shift acc 8)
                 (bytes-ref buf (- size n)))
                (- n 1))
-          )
-              acc
-              ))
-        (sum 1 (loop 0 size) (bytes->chunked-bytes
-                              (subbytes buf size))))))
+              acc))
+        (ref-optional-some
+          (unison-tuple
+            (loop 0 size)
+            (bytes->chunked-bytes (subbytes buf size)))))))
 
 (define (decodeNatLe bytes size)
   (if (< (chunked-bytes-length bytes) size)
-      none
+      ref-optional-none
       (let ([buf (chunked-bytes->bytes bytes)])
         (define (loop acc n)
           (if (> n 0)
@@ -50,8 +37,10 @@
                 (bytes-ref buf (- n 1)))
                (- n 1))
               acc))
-        (sum 1 (loop 0 size) (bytes->chunked-bytes
-                              (subbytes buf size))))))
+        (ref-optional-some
+          (unison-tuple
+            (loop 0 size)
+            (bytes->chunked-bytes (subbytes buf size)))))))
 
 (define (encodeNatBe num size)
   (define buf (make-bytes size 0))

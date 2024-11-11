@@ -394,8 +394,8 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
           . Map.lookup name
           =<< readIORef unisonFiles
 
-      writeSourceFile :: ScratchFileName -> Text -> IO ()
-      writeSourceFile fp contents = do
+      writeSource :: ScratchFileName -> Text -> Bool -> IO ()
+      writeSource fp contents _addFold = do
         shouldShowSourceChanges <- (== Shown) <$> readIORef isHidden
         when shouldShowSourceChanges . atomically $ Q.enqueue ucmScratchFileUpdatesQueue (fp, contents)
         updateVirtualFile fp contents
@@ -465,7 +465,7 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
               i <- atomicModifyIORef' seedRef \i -> let !i' = i + 1 in (i', i)
               pure (Parser.uniqueBase32Namegen (Random.drgNewSeed (Random.seedFromInteger (fromIntegral i)))),
             loadSource = loadPreviousUnisonBlock,
-            writeSource = writeSourceFile,
+            writeSource,
             notify = print,
             notifyNumbered = printNumbered,
             runtime,

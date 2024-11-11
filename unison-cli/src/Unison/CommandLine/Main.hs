@@ -208,12 +208,14 @@ main dir welcome ppIds initialInputs runtime sbRuntime nRuntime codebase serverB
                 writeIORef pageOutput True
                 pure x
 
-  let foldLine :: Text
-      foldLine = "\n\n---- Anything below this line is ignored by Unison.\n\n"
-  let writeSourceFile :: Text -> Text -> IO ()
-      writeSourceFile fp contents = do
+  let writeSource :: Text -> Text -> Bool -> IO ()
+      writeSource fp contents addFold = do
         path <- Directory.canonicalizePath (Text.unpack fp)
-        prependUtf8 path (contents <> foldLine)
+        prependUtf8
+          path
+          if addFold
+            then contents <> "\n\n---- Anything below this line is ignored by Unison.\n\n"
+            else contents <> "\n\n"
 
   let env =
         Cli.Env
@@ -221,7 +223,7 @@ main dir welcome ppIds initialInputs runtime sbRuntime nRuntime codebase serverB
             codebase,
             credentialManager,
             loadSource = loadSourceFile,
-            writeSource = writeSourceFile,
+            writeSource,
             generateUniqueName = Parser.uniqueBase32Namegen <$> Random.getSystemDRG,
             notify,
             notifyNumbered = \o ->

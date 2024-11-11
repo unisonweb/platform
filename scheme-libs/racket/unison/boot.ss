@@ -89,6 +89,9 @@
   exception->string
   raise-unison-exception
 
+  exn:io?
+  exn:arith?
+
   request
   request-case
   sum
@@ -137,7 +140,6 @@
   unison/data
   unison/sandbox
   unison/data-info
-  unison/crypto
   (only-in unison/chunked-seq
            string->chunked-string
            chunked-string->string
@@ -216,12 +218,17 @@
 ; This builds the core definition for a unison definition. It is just
 ; a lambda expression with the original code, but with an additional
 ; keyword argument for threading purity information.
-(define-for-syntax (make-impl name:impl:stx arg:stx body:stx)
+(define-for-syntax (make-impl value? name:impl:stx arg:stx body:stx)
   (with-syntax ([name:impl name:impl:stx]
                 [args arg:stx]
                 [body body:stx])
-    (syntax/loc body:stx
-      (define (name:impl . args) . body))))
+    (cond
+      [value?
+        (syntax/loc body:stx
+          (define name:impl . body))]
+      [else
+       (syntax/loc body:stx
+         (define (name:impl . args) . body))])))
 
 (define frame-contents (gensym))
 
@@ -235,6 +242,7 @@
 (define-for-syntax
   (make-fast-path
     #:force-pure force-pure?
+    #:value value?
     loc ; original location
     name:fast:stx name:impl:stx
     arg:stx)
@@ -242,34 +250,45 @@
   (with-syntax ([name:impl name:impl:stx]
                 [name:fast name:fast:stx]
                 [args arg:stx])
-    (if force-pure?
-      (syntax/loc loc
-        ; note: for some reason this performs better than
-        ; (define name:fast name:impl)
-        (define (name:fast . args) (name:impl . args)))
+    (cond
+      [value?
+       (syntax/loc loc
+         (define (name:fast) name:impl))]
 
-      (syntax/loc loc
-        (define (name:fast #:pure pure? . args)
-          (if pure?
-            (name:impl #:pure pure? . args)
-            (with-continuation-mark
-              frame-contents
-              (vector . args)
-              (name:impl #:pure pure? . args))))))))
+      [force-pure?
+       (syntax/loc loc
+         ; note: for some reason this performs better than
+         ; (define name:fast name:impl)
+         (define (name:fast . args) (name:impl . args)))]
+
+      [else
+       (syntax/loc loc
+         (define (name:fast #:pure pure? . args)
+           (if pure?
+             (name:impl #:pure pure? . args)
+             (with-continuation-mark
+               frame-contents
+               (vector . args)
+               (name:impl #:pure pure? . args)))))])))
 
 (define-for-syntax
-  (make-main loc inline? name:stx ref:stx name:impl:stx n)
+  (make-main loc value? inline? name:stx ref:stx name:impl:stx n)
   (with-syntax ([name name:stx]
                 [name:impl name:impl:stx]
                 [gr ref:stx]
                 [n (datum->syntax loc n)])
-    (if inline?
-      (syntax/loc loc
-        (define name
-          (unison-curry #:inline n gr name:impl)))
-      (syntax/loc loc
-        (define name
-          (unison-curry n gr name:impl))))))
+    (cond
+      [value?
+       (syntax/loc loc
+         (define (name) name:impl))]
+      [inline?
+       (syntax/loc loc
+         (define name
+           (unison-curry #:inline n gr name:impl)))]
+      [else
+       (syntax/loc loc
+         (define name
+           (unison-curry n gr name:impl)))])))
 
 (define-for-syntax
   (link-decl no-link-decl? loc name:stx name:fast:stx name:impl:stx)
@@ -299,7 +318,8 @@
              [no-link-decl? #f]
              [trace? #f]
              [inline? #f]
-             [recursive? #f])
+             [recursive? #f]
+             [value? #f])
             ([h hs])
     (values
       (or internal? (eq? h 'internal))
@@ -308,7 +328,8 @@
       (or no-link-decl? (eq? h 'no-link-decl))
       (or trace? (eq? h 'trace))
       (or inline? (eq? h 'inline))
-      (or recursive? (eq? h 'recursive)))))
+      (or recursive? (eq? h 'recursive))
+      (or value? (eq? h 'value)))))
 
 (define-for-syntax
   (make-link-def gen-link? loc name:stx name:link:stx)
@@ -343,7 +364,8 @@
                   no-link-decl?
                   trace?
                   inline?
-                  recursive?)
+                  recursive?
+                  value?)
     (process-hints hints))
 
 
@@ -356,9 +378,10 @@
       ([(link ...) (make-link-def gen-link? loc name:stx name:link:stx)]
        [fast (make-fast-path
                #:force-pure #t ; force-pure?
+               #:value value?
                loc name:fast:stx name:impl:stx arg:stx)]
-       [impl (make-impl name:impl:stx arg:stx expr:stx)]
-       [main (make-main loc inline? name:stx ref:stx name:impl:stx arity)]
+       [impl (make-impl value? name:impl:stx arg:stx expr:stx)]
+       [main (make-main loc value? inline? name:stx ref:stx name:impl:stx arity)]
        ; [(decls ...)
        ;  (link-decl no-link-decl? loc name:stx name:fast:stx name:impl:stx)]
        [(traces ...)
@@ -812,3 +835,13 @@
     ref-runtimefailure:typelink
     (string->chunked-string (exn:bug-msg b))
     (exn:bug-val b)))
+
+(define (exn:io? e)
+  (or (exn:fail:read? e)
+      (exn:fail:filesystem? e)
+      (exn:fail:network? e)))
+
+(define (exn:arith? e)
+  (or (exn:fail:contract:divide-by-zero? e)
+      (exn:fail:contract:non-fixnum-result? e)))
+

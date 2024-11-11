@@ -36,7 +36,9 @@ module Unison.Runtime.ANF
     Cacheability (..),
     Direction (..),
     SuperNormal (..),
+    arity,
     SuperGroup (..),
+    arities,
     POp (..),
     FOp,
     close,
@@ -55,6 +57,8 @@ module Unison.Runtime.ANF
     Tag (..),
     GroupRef (..),
     Code (..),
+    UBValue,
+    ValList,
     Value (..),
     Cont (..),
     BLit (..),
@@ -72,6 +76,8 @@ module Unison.Runtime.ANF
     valueTermLinks,
     valueLinks,
     groupTermLinks,
+    buildInlineMap,
+    inline,
     foldGroup,
     foldGroupLinks,
     overGroup,
@@ -86,7 +92,7 @@ module Unison.Runtime.ANF
 where
 
 import Control.Exception (throw)
-import Control.Lens (snoc, unsnoc)
+import Control.Lens (foldMapOf, folded, snoc, unsnoc, _Right)
 import Control.Monad.Reader (ReaderT (..), ask, local)
 import Control.Monad.State (MonadState (..), State, gets, modify, runState)
 import Data.Bifoldable (Bifoldable (..))
@@ -95,7 +101,6 @@ import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.Functor.Compose (Compose (..))
 import Data.List hiding (and, or)
 import Data.Map qualified as Map
-import Data.Primitive qualified as PA
 import Data.Set qualified as Set
 import Data.Text qualified as Data.Text
 import GHC.Stack (CallStack, callStack)
@@ -110,8 +115,9 @@ import Unison.Pattern qualified as P
 import Unison.Prelude
 import Unison.Reference (Id, Reference, Reference' (Builtin, DerivedId))
 import Unison.Referent (Referent, pattern Con, pattern Ref)
+import Unison.Runtime.Array qualified as PA
 import Unison.Symbol (Symbol)
-import Unison.Term hiding (List, Ref, Text, float, fresh, resolve)
+import Unison.Term hiding (List, Ref, Text, arity, float, fresh, resolve)
 import Unison.Type qualified as Ty
 import Unison.Typechecker.Components (minimize')
 import Unison.Util.Bytes (Bytes)
@@ -646,6 +652,38 @@ saturate dat = ABT.visitPure $ \case
         fvs = foldMap freeVars args
         args' = saturate dat <$> args
 
+-- Performs inlining on a supergroup using the inlining information
+-- in the map. The map can be created from typical SuperGroup data
+-- using the `buildInlineMap` function.
+inline ::
+  (Var v) =>
+  Map Reference (Int, ANormal v) ->
+  SuperGroup v ->
+  SuperGroup v
+inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
+  where
+    go0 (Lambda ccs body) = Lambda ccs $ go (30 :: Int) body
+    -- Note: number argument bails out in recursive inlining cases
+    go n | n <= 0 = id
+    go n = ABTN.visitPure \case
+      TApp (FComb r) args
+        | Just (arity, expr) <- Map.lookup r inls ->
+          go (n-1) <$> tweak expr args arity
+      _ -> Nothing
+
+    tweak (ABTN.TAbss vs body) args arity
+      -- exactly saturated
+      | length args == arity,
+        rn <- Map.fromList (zip vs args) =
+          Just $ ABTN.renames rn body
+      -- oversaturated, only makes sense if body is a call
+      | length args > arity,
+        (pre, post) <- splitAt arity args,
+        rn <- Map.fromList (zip vs pre),
+        TApp f pre <- ABTN.renames rn body =
+          Just $ TApp f (pre ++ post)
+      | otherwise = Nothing
+
 addDefaultCases :: (Var v) => (Monoid a) => Text -> Term v a -> Term v a
 addDefaultCases = ABT.visitPure . defaultCaseVisitor
 
@@ -691,6 +729,13 @@ data CTE v s
 pattern ST1 :: Direction Word16 -> v -> Mem -> s -> CTE v s
 pattern ST1 d v m s = ST d [v] [m] s
 
+-- All variables, both bound and free occurring in a CTE. This is
+-- useful for avoiding both free and bound variables when
+-- freshening.
+cteVars :: (Ord v) => Cte v -> Set v
+cteVars (ST _ vs _ e) = Set.fromList vs `Set.union` ABTN.freeVars e
+cteVars (LZ v r as) = Set.fromList (either (const id) (:) r $ v : as)
+
 data ANormalF v e
   = ALet (Direction Word16) [Mem] e e
   | AName (Either Reference v) [v] e
@@ -702,7 +747,7 @@ data ANormalF v e
   | AApp (Func v) [v]
   | AFrc v
   | AVar v
-  deriving (Show, Eq)
+  deriving (Show, Eq, Functor, Foldable, Traversable)
 
 -- Types representing components that will go into the runtime tag of
 -- a data type value. RTags correspond to references, while CTags
@@ -769,18 +814,6 @@ instance Num CTag where
   abs = internalBug "CTag: abs"
   signum = internalBug "CTag: signum"
   negate = internalBug "CTag: negate"
-
-instance Functor (ANormalF v) where
-  fmap _ (AVar v) = AVar v
-  fmap _ (ALit l) = ALit l
-  fmap _ (ABLit l) = ABLit l
-  fmap f (ALet d m bn bo) = ALet d m (f bn) (f bo)
-  fmap f (AName n as bo) = AName n as $ f bo
-  fmap f (AMatch v br) = AMatch v $ f <$> br
-  fmap f (AHnd rs h e) = AHnd rs h $ f e
-  fmap f (AShift i e) = AShift i $ f e
-  fmap _ (AFrc v) = AFrc v
-  fmap _ (AApp f args) = AApp f args
 
 instance Bifunctor ANormalF where
   bimap f _ (AVar v) = AVar (f v)
@@ -1499,6 +1532,75 @@ data SGEqv v
   | -- mismatched subterms in corresponding definition
     Subterms (ANormal v) (ANormal v)
 
+-- Yields the number of arguments directly accepted by a combinator.
+arity :: SuperNormal v -> Int
+arity (Lambda ccs _) = length ccs
+
+-- Yields the numbers of arguments directly accepted by the
+-- combinators in a group. The main entry is the first element, and
+-- local bindings follow in their original order.
+arities :: SuperGroup v -> [Int]
+arities (Rec bs e) = arity e : fmap (arity . snd) bs
+
+-- Checks the body of a SuperGroup makes it eligible for inlining.
+-- See below for the discussion.
+isInlinable :: Var v => Reference -> ANormal v -> Bool
+isInlinable r (TApp (FComb s) _) = r /= s
+isInlinable _ TApp {} = True
+isInlinable _ TBLit {} = True
+isInlinable _ TVar {} = True
+isInlinable _ _       = False
+
+-- Checks a SuperGroup makes it eligible to be inlined.
+-- Unfortunately we need to be quite conservative about this.
+--
+-- The heuristic implemented below is as follows:
+--
+--   1. There are no local bindings, so only the 'entry point'
+--      matters.
+--   2. The entry point body is just a single expression, that is,
+--      an application, variable or literal.
+--
+-- The first condition ensures that there isn't any need to jump
+-- into a non-entrypoint from outside a group. These should be rare
+-- anyway, because the local bindings are no longer used for
+-- (unison-level) local function definitions (those are lifted
+-- out). The second condition ensures that inlining the body should
+-- have no effect on the runtime stack of of the function we're
+-- inlining into, because the combinator is just a wrapper around
+-- the simple expression.
+--
+-- Fortunately, it should be possible to make _most_ builtins have
+-- this form, so that their instructions can be inlined directly
+-- into the call sites when saturated.
+--
+-- The result of this function is the information necessary to
+-- inline the combinator—an arity and the body expression with
+-- bound variables. This should allow checking if the call is
+-- saturated and make it possible to locally substitute for an
+-- inlined expression.
+--
+-- The `Reference` argument allows us to check if the body is a
+-- direct recursive call to the same function, which would result
+-- in infinite inlining. This isn't the only such scenario, but
+-- it's one we can opportunistically rule out.
+inlineInfo :: (Var v) => Reference -> SuperGroup v -> Maybe (Int, ANormal v)
+inlineInfo r (Rec [] (Lambda ccs body@(ABTN.TAbss _ e)))
+  | isInlinable r e = Just (length ccs, body)
+inlineInfo _ _ = Nothing
+
+-- Builds inlining information from a collection of SuperGroups.
+-- They are all tested for inlinability, and the result map
+-- contains only the information for groups that are able to be
+-- inlined.
+buildInlineMap
+  :: (Var v) =>
+     Map Reference (SuperGroup v) ->
+     Map Reference (Int, ANormal v)
+buildInlineMap =
+  runIdentity .
+    Map.traverseMaybeWithKey (\r g -> Identity $ inlineInfo r g)
+
 -- Checks if two SuperGroups are equivalent up to renaming. The rest
 -- of the structure must match on the nose. If the two groups are not
 -- equivalent, an example of conflicting structure is returned.
@@ -1531,14 +1633,21 @@ type ANFM v =
 type ANFD v = Compose (ANFM v) (Directed ())
 
 data GroupRef = GR Reference Word64
-  deriving (Show)
+  deriving (Show, Eq)
+
+-- | A value which is either unboxed or boxed.
+type UBValue = Either Word64 Value
+
+-- | A list of either unboxed or boxed values.
+-- Each slot is one of unboxed or boxed but not both.
+type ValList = [UBValue]
 
 data Value
-  = Partial GroupRef [Word64] [Value]
-  | Data Reference Word64 [Word64] [Value]
-  | Cont [Word64] [Value] Cont
+  = Partial GroupRef ValList
+  | Data Reference Word64 ValList
+  | Cont ValList Cont
   | BLit BLit
-  deriving (Show)
+  deriving (Show, Eq)
 
 -- Since we can now track cacheability of supergroups, this type
 -- pairs the two together. This is the type that should be used
@@ -1556,20 +1665,29 @@ instance Eq Code where
 overGroup :: (SuperGroup Symbol -> SuperGroup Symbol) -> Code -> Code
 overGroup f (CodeRep sg ch) = CodeRep (f sg) ch
 
-foldGroup :: Monoid m => (SuperGroup Symbol -> m) -> Code -> m
+foldGroup :: (Monoid m) => (SuperGroup Symbol -> m) -> Code -> m
 foldGroup f (CodeRep sg _) = f sg
 
 traverseGroup ::
-  Applicative f =>
+  (Applicative f) =>
   (SuperGroup Symbol -> f (SuperGroup Symbol)) ->
-  Code -> f Code
+  Code ->
+  f Code
 traverseGroup f (CodeRep sg ch) = flip CodeRep ch <$> f sg
 
 data Cont
   = KE
-  | Mark Word64 Word64 [Reference] (Map Reference Value) Cont
-  | Push Word64 Word64 Word64 Word64 GroupRef Cont
-  deriving (Show)
+  | Mark
+      Word64 -- pending args
+      [Reference]
+      (Map Reference Value)
+      Cont
+  | Push
+      Word64 -- Frame size
+      Word64 -- Pending args
+      GroupRef
+      Cont
+  deriving (Show, Eq)
 
 data BLit
   = Text Util.Text.Text
@@ -1585,7 +1703,7 @@ data BLit
   | Char Char
   | Float Double
   | Arr (PA.Array Value)
-  deriving (Show)
+  deriving (Show, Eq)
 
 groupVars :: ANFM v (Set v)
 groupVars = ask
@@ -1688,8 +1806,16 @@ tru = TCon Ty.booleanRef 1 []
 -- binding during ANF translation. Renames a variable in a
 -- context, and returns an indication of whether the varible
 -- was shadowed by one of the context bindings.
+--
+-- Note: this assumes that `u` is not bound by any of the context
+-- entries, as no effort is made to rename them to avoid capturing
+-- `u`.
 renameCtx :: (Var v) => v -> v -> Ctx v -> (Ctx v, Bool)
-renameCtx v u (d, ctx) | (ctx, b) <- rn [] ctx = ((d, ctx), b)
+renameCtx v u (d, ctx) | (ctx, b) <- renameCtes v u ctx = ((d, ctx), b)
+
+-- As above, but without the Direction.
+renameCtes :: (Var v) => v -> v -> [Cte v] -> ([Cte v], Bool)
+renameCtes v u = rn []
   where
     swap w
       | w == v = u
@@ -1707,7 +1833,92 @@ renameCtx v u (d, ctx) | (ctx, b) <- rn [] ctx = ((d, ctx), b)
       where
         e = LZ w (swap <$> f) (swap <$> as)
 
-anfBlock :: (Var v) => Term v a -> ANFM v (Ctx v, DNormal v)
+-- Simultaneously renames variables in a list of context entries.
+--
+-- Assumes that the variables being renamed to are not bound by the
+-- context entries, so that it is unnecessary to rename them.
+renamesCtes :: (Var v) => Map v v -> [Cte v] -> [Cte v]
+renamesCtes rn = map f
+  where
+    swap w
+      | Just u <- Map.lookup w rn = u
+      | otherwise = w
+
+    f (ST d vs ccs b) = ST d vs ccs (ABTN.renames rn b)
+    f (LZ v r as) = LZ v (second swap r) (map swap as)
+
+-- Calculates the free variables occurring in a context. This
+-- consists of the free variables in the expressions being bound,
+-- but with previously bound variables subtracted.
+freeVarsCtx :: (Ord v) => Ctx v -> Set v
+freeVarsCtx = freeVarsCte . snd
+
+freeVarsCte :: (Ord v) => [Cte v] -> Set v
+freeVarsCte = foldr m Set.empty
+  where
+    m (ST _ vs _ bn) rest =
+      ABTN.freeVars bn `Set.union` (rest Set.\\ Set.fromList vs)
+    m (LZ v r as) rest =
+      Set.fromList (either (const id) (:) r as)
+        `Set.union` Set.delete v rest
+
+-- Conditionally freshens a list of variables. The predicate
+-- argument selects which variables to freshen, and the set is a set
+-- of variables to avoid for freshness. The process ensures that the
+-- result is mutually fresh, and returns a new set of variables to
+-- avoid, which includes the freshened variables.
+--
+-- Presumably any variables selected by the predicate should be
+-- included in the set, but the set may contain additional variables
+-- to avoid, when freshening.
+freshens :: (Var v) => (v -> Bool) -> Set v -> [v] -> (Set v, [v])
+freshens p avoid0 vs =
+  mapAccumL f (Set.union avoid0 (Set.fromList vs)) vs
+  where
+    f avoid v
+      | p v, u <- Var.freshIn avoid v = (Set.insert u avoid, u)
+      | otherwise = (avoid, v)
+
+-- Freshens the variable bindings in a context to avoid a set of
+-- variables. Returns the renaming necessary for anything that was
+-- bound in the freshened context.
+--
+-- Note: this only freshens if it's necessary to avoid variables in
+-- the _original_ set. We need to keep track of other variables to
+-- avoid when making up new names for those, but it it isn't
+-- necessary to freshen variables to remove shadowing _within_ the
+-- context, since it is presumably already correctly formed.
+freshenCtx :: (Var v) => Set v -> Ctx v -> (Map v v, Ctx v)
+freshenCtx avoid0 (d, ctx) =
+  case go lavoid Map.empty [] $ reverse ctx of
+    (rn, ctx) -> (rn, (d, ctx))
+  where
+    -- precalculate all variable occurrences in the context to just
+    -- completely avoid those as well.
+    lavoid =
+      foldl (flip $ Set.union . cteVars) avoid0 ctx
+
+    go _ rns fresh [] = (rns, fresh)
+    go avoid rns fresh (bn : bns) = case bn of
+      LZ v r as
+        | v `Set.member` avoid0,
+          u <- Var.freshIn avoid v,
+          (fresh, _) <- renameCtes v u fresh,
+          avoid <- Set.insert u avoid,
+          rns <- Map.alter (Just . fromMaybe u) v rns ->
+            go avoid rns (LZ u r as : fresh) bns
+      ST d vs ccs expr
+        | (avoid, us) <- freshens (`Set.member` avoid0) avoid vs,
+          rn <- Map.fromList (filter (uncurry (/=)) $ zip vs us),
+          not (Map.null rn),
+          fresh <- renamesCtes rn fresh,
+          -- Note: rns union left-biased, so inner contexts take
+          -- priority.
+          rns <- Map.union rns rn ->
+            go avoid rns (ST d us ccs expr : fresh) bns
+      _ -> go avoid rns (bn : fresh) bns
+
+anfBlock :: (Ord v, Var v) => Term v a -> ANFM v (Ctx v, DNormal v)
 anfBlock (Var' v) = pure (mempty, pure $ TVar v)
 anfBlock (If' c t f) = do
   (cctx, cc) <- anfBlock c
@@ -1857,14 +2068,24 @@ anfBlock (Let1Named' v b e) =
   anfBlock b >>= \case
     (bctx, (Direct, TVar u)) -> do
       (ectx, ce) <- anfBlock e
+      (brn, bctx) <- fixupBctx bctx ectx ce
+      u <- pure $ Map.findWithDefault u u brn
       (ectx, shaded) <- pure $ renameCtx v u ectx
       ce <- pure $ if shaded then ce else ABTN.rename v u <$> ce
       pure (bctx <> ectx, ce)
     (bctx, (d0, cb)) -> bindLocal [v] $ do
       (ectx, ce) <- anfBlock e
       d <- bindDirection d0
+      (brn, bctx) <- fixupBctx bctx ectx ce
+      cb <- pure $ ABTN.renames brn cb
       let octx = bctx <> directed [ST1 d v BX cb] <> ectx
       pure (octx, ce)
+  where
+    fixupBctx bctx ectx (_, ce) =
+      pure $ freshenCtx (Set.union ecfvs efvs) bctx
+      where
+        ecfvs = freeVarsCtx ectx
+        efvs = ABTN.freeVars ce
 anfBlock (Apps' (Blank' b) args) = do
   nm <- fresh
   (actx, cas) <- anfArgs args
@@ -2000,18 +2221,18 @@ valueTermLinks = Set.toList . valueLinks f
     f _ _ = Set.empty
 
 valueLinks :: (Monoid a) => (Bool -> Reference -> a) -> Value -> a
-valueLinks f (Partial (GR cr _) _ bs) =
-  f False cr <> foldMap (valueLinks f) bs
-valueLinks f (Data dr _ _ bs) =
-  f True dr <> foldMap (valueLinks f) bs
-valueLinks f (Cont _ bs k) =
-  foldMap (valueLinks f) bs <> contLinks f k
+valueLinks f (Partial (GR cr _) vs) =
+  f False cr <> foldMapOf (folded . _Right) (valueLinks f) vs
+valueLinks f (Data dr _ vs) =
+  f True dr <> foldMapOf (folded . _Right) (valueLinks f) vs
+valueLinks f (Cont vs k) =
+  foldMapOf (folded . _Right) (valueLinks f) vs <> contLinks f k
 valueLinks f (BLit l) = blitLinks f l
 
 contLinks :: (Monoid a) => (Bool -> Reference -> a) -> Cont -> a
-contLinks f (Push _ _ _ _ (GR cr _) k) =
+contLinks f (Push _ _ (GR cr _) k) =
   f False cr <> contLinks f k
-contLinks f (Mark _ _ ps de k) =
+contLinks f (Mark _ ps de k) =
   foldMap (f True) ps
     <> Map.foldMapWithKey (\k c -> f True k <> valueLinks f c) de
     <> contLinks f k

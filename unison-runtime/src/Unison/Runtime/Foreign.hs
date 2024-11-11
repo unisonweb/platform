@@ -23,7 +23,6 @@ import Control.Concurrent (MVar, ThreadId)
 import Control.Concurrent.STM (TVar)
 import Crypto.Hash qualified as Hash
 import Data.IORef (IORef)
-import Data.Primitive (ByteArray, MutableArray, MutableByteArray)
 import Data.Tagged (Tagged (..))
 import Data.X509 qualified as X509
 import Network.Socket (Socket)
@@ -35,6 +34,7 @@ import System.Process (ProcessHandle)
 import Unison.Reference (Reference)
 import Unison.Referent (Referent)
 import Unison.Runtime.ANF (Code, Value)
+import Unison.Runtime.Array
 import Unison.Type qualified as Ty
 import Unison.Util.Bytes (Bytes)
 import Unison.Util.Text (Text)
@@ -256,6 +256,7 @@ instance BuiltinForeign FilePath where foreignRef = Tagged Ty.filePathRef
 instance BuiltinForeign TLS.Context where foreignRef = Tagged Ty.tlsRef
 
 instance BuiltinForeign Code where foreignRef = Tagged Ty.codeRef
+
 instance BuiltinForeign Value where foreignRef = Tagged Ty.valueRef
 
 instance BuiltinForeign TimeSpec where foreignRef = Tagged Ty.timeSpecRef

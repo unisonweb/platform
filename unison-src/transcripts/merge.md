@@ -1747,3 +1747,51 @@ scratch/alice> names Bar
 ``` ucm :hide
 scratch/main> project.delete scratch
 ```
+
+### Using Alice's names for Bob's things
+
+Previously, we'd render Alice's stuff with her names and Bob's stuff with his. But because Alice is doing the merge,
+we now use her names whenever possible. In this example, Alice calls something `foo` and Bob calls it `bar`. When
+rendering conflicts, in Bob's term that references (what he calls) `bar`, we render `foo` instead.
+
+``` ucm :hide
+scratch/main> builtins.mergeio lib.builtins
+```
+
+``` unison
+hello = 17
+```
+
+``` ucm
+scratch/main> add
+scratch/main> branch alice
+```
+
+``` unison
+hello = 18 + foo
+foo = 100
+```
+
+``` ucm
+scratch/alice> update
+scratch/main> branch bob
+```
+
+``` unison
+hello = 19 + bar
+bar = 100
+```
+
+``` ucm
+scratch/bob> update
+```
+
+Note Bob's `hello` references `foo` (Alice's name), not `bar` (Bob's name).
+
+``` ucm :error
+scratch/alice> merge /bob
+```
+
+``` ucm :hide
+scratch/main> project.delete scratch
+```

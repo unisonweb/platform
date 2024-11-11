@@ -25,20 +25,15 @@ shuffle =
 
 runTestCase : Text ->{Exception,IO} (Text, Test.Result)
 runTestCase name =
-  sfile = directory ++ name ++ ".v5.ser"
+  sfile = directory ++ name ++ ".v4.ser"
   ls3file = directory ++ name ++ ".v3.ser"
-  ls4file = directory ++ name ++ ".v4.ser"
   ofile = directory ++ name ++ ".out"
-  hfile = directory ++ name ++ ".v5.hash"
+  hfile = directory ++ name ++ ".v4.hash"
 
   p@(f, i) = loadSelfContained sfile
   pl3@(fl3, il3) =
     if fileExists ls3file
     then loadSelfContained ls3file
-    else p
-  pl4@(fl4, il4) =
-    if fileExists ls4file
-    then loadSelfContained ls4file
     else p
   o = fromUtf8 (readFile ofile)
   h = readFile hfile
@@ -50,8 +45,6 @@ runTestCase name =
     then Fail (name ++ " hash mismatch")
     else if not (fl3 il3 == f i)
     then Fail (name ++ " legacy v3 mismatch")
-    else if not (fl4 il4 == f i)
-    then Fail (name ++ " legacy v4 mismatch")
     else Ok name
   (name, result)
 

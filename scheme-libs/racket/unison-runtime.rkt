@@ -30,7 +30,6 @@
   unison/data-info
   unison/chunked-seq
   unison/primops
-  unison/builtin
   unison/primops-generated
   unison/builtin-generated)
 

@@ -8,7 +8,7 @@ if [ -z "$1" ]; then
   exit 1
 fi
 
-runtime_tests_version="@unison/runtime-tests/releases/0.0.2"
+runtime_tests_version="@unison/runtime-tests/releases/0.0.1"
 echo $runtime_tests_version
 
 codebase=${XDG_CACHE_HOME:-"$HOME/.cache"}/unisonlanguage/runtime-tests.unison

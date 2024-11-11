@@ -25,7 +25,7 @@ products = cases (x, y, z) ->
   "(" ++ toText px ++ ", " ++ toText py ++ ", \"" ++ toText pz ++ "\")"
 
 mkTestCase = do
-  saveTestCase "case-02" "v5" products (l1, l2, l3)
+  saveTestCase "case-02" "v4" products (l1, l2, l3)
 
 ```
 

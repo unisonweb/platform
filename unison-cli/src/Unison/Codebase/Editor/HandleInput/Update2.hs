@@ -151,7 +151,7 @@ handleUpdate2 = do
         secondTuf <-
           parseAndTypecheck prettyUnisonFile parsingEnv & onNothingM do
             scratchFilePath <- fst <$> Cli.expectLatestFile
-            liftIO $ env.writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 prettyUnisonFile)
+            liftIO $ env.writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 prettyUnisonFile) True
             Cli.returnEarly Output.UpdateTypecheckingFailure
 
         Cli.respond Output.UpdateTypecheckingSuccess

@@ -3007,3 +3007,155 @@ scratch/alice> names Bar
 ``` ucm :hide
 scratch/main> project.delete scratch
 ```
+
+### Using Alice's names for Bob's things
+
+Previously, we'd render Alice's stuff with her names and Bob's stuff with his. But because Alice is doing the merge,
+we now use her names whenever possible. In this example, Alice calls something `foo` and Bob calls it `bar`. When
+rendering conflicts, in Bob's term that references (what he calls) `bar`, we render `foo` instead.
+
+``` ucm :hide
+scratch/main> builtins.mergeio lib.builtins
+```
+
+``` unison
+hello = 17
+```
+
+``` ucm :added-by-ucm
+
+  Loading changes detected in scratch.u.
+
+  I found and typechecked these definitions in scratch.u. If you
+  do an `add` or `update`, here's how your codebase would
+  change:
+
+    ⍟ These new definitions are ok to `add`:
+    
+      hello : Nat
+```
+
+``` ucm
+scratch/main> add
+
+  ⍟ I've added these definitions:
+
+    hello : Nat
+scratch/main> branch alice
+
+  Done. I've created the alice branch based off of main.
+
+  Tip: To merge your work back into the main branch, first
+       `switch /main` then `merge /alice`.
+```
+
+``` unison
+hello = 18 + foo
+foo = 100
+```
+
+``` ucm :added-by-ucm
+
+  Loading changes detected in scratch.u.
+
+  I found and typechecked these definitions in scratch.u. If you
+  do an `add` or `update`, here's how your codebase would
+  change:
+
+    ⍟ These new definitions are ok to `add`:
+    
+      foo : Nat
+    
+    ⍟ These names already exist. You can `update` them to your
+      new definition:
+    
+      hello : Nat
+```
+
+``` ucm
+scratch/alice> update
+
+  Okay, I'm searching the branch for code that needs to be
+  updated...
+
+  Done.
+scratch/main> branch bob
+
+  Done. I've created the bob branch based off of main.
+
+  Tip: To merge your work back into the main branch, first
+       `switch /main` then `merge /bob`.
+```
+
+``` unison
+hello = 19 + bar
+bar = 100
+```
+
+``` ucm :added-by-ucm
+
+  Loading changes detected in scratch.u.
+
+  I found and typechecked these definitions in scratch.u. If you
+  do an `add` or `update`, here's how your codebase would
+  change:
+
+    ⍟ These new definitions are ok to `add`:
+    
+      bar : Nat
+    
+    ⍟ These names already exist. You can `update` them to your
+      new definition:
+    
+      hello : Nat
+```
+
+``` ucm
+scratch/bob> update
+
+  Okay, I'm searching the branch for code that needs to be
+  updated...
+
+  Done.
+```
+
+Note Bob's `hello` references `foo` (Alice's name), not `bar` (Bob's name).
+
+``` ucm :error
+scratch/alice> merge /bob
+
+  I couldn't automatically merge scratch/bob into scratch/alice.
+  However, I've added the definitions that need attention to the
+  top of scratch.u.
+
+  When you're done, you can run
+
+    merge.commit
+
+  to merge your changes back into alice and delete the temporary
+  branch. Or, if you decide to cancel the merge instead, you can
+  run
+
+    delete.branch /merge-bob-into-alice
+
+  to delete the temporary branch and switch back to alice.
+```
+
+``` unison :added-by-ucm scratch.u
+-- scratch/alice
+hello : Nat
+hello =
+  use Nat +
+  18 + foo
+
+-- scratch/bob
+hello : Nat
+hello =
+  use Nat +
+  19 + foo
+
+```
+
+``` ucm :hide
+scratch/main> project.delete scratch
+```
