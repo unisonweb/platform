@@ -180,7 +180,10 @@ test config = do
   buildTests config (testBuilder True False recordFailure) ("unison-src" </> "transcripts" </> "errors") Nothing
   buildTests config (testBuilder False False recordFailure) "docs" . Just $
     "unison-src" </> "transcripts" </> "project-outputs" </> "docs"
-  enumerateTests config (testBuilder False False recordFailure) [".github/ISSUE_TEMPLATE/bug_report.md"]
+  enumerateTests config (testBuilder False False recordFailure) $
+    [ ".github/ISSUE_TEMPLATE/bug_report.md",
+      ".github/pull_request_template.md"
+    ]
   failures <- io $ STM.readTVarIO failuresVar
   -- Print all aggregated failures
   when (not $ null failures) . io $ Text.putStrLn $ "Failures:"
