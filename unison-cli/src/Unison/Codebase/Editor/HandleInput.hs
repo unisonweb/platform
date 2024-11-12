@@ -56,6 +56,7 @@ import Unison.Codebase.Editor.HandleInput.DebugDefinition qualified as DebugDefi
 import Unison.Codebase.Editor.HandleInput.DebugFoldRanges qualified as DebugFoldRanges
 import Unison.Codebase.Editor.HandleInput.DebugSynhashTerm (handleDebugSynhashTerm)
 import Unison.Codebase.Editor.HandleInput.DeleteBranch (handleDeleteBranch)
+import Unison.Codebase.Editor.HandleInput.DeleteNamespace (getEndangeredDependents, handleDeleteNamespace)
 import Unison.Codebase.Editor.HandleInput.DeleteProject (handleDeleteProject)
 import Unison.Codebase.Editor.HandleInput.EditNamespace (handleEditNamespace)
 import Unison.Codebase.Editor.HandleInput.FindAndReplace (handleStructuredFindI, handleStructuredFindReplaceI, handleTextFindI)
@@ -176,7 +177,6 @@ import Unison.Var (Var)
 import Unison.Var qualified as Var
 import Unison.WatchKind qualified as WK
 import UnliftIO.Directory qualified as Directory
-import Unison.Codebase.Editor.HandleInput.DeleteNamespace (handleDeleteNamespace, getEndangeredDependents)
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Main loop
@@ -938,7 +938,8 @@ inputDescription input =
     UndoI {} -> pure "undo"
     ExecuteI s args -> pure ("execute " <> Text.unwords (HQ.toText s : fmap Text.pack args))
     IOTestI native hq -> pure (cmd <> HQ.toText hq)
-      where cmd | native = "io.test.native " | otherwise = "io.test "
+      where
+        cmd | native = "io.test.native " | otherwise = "io.test "
     IOTestAllI native ->
       pure (if native then "io.test.native.all" else "io.test.all")
     UpdateBuiltinsI -> pure "builtins.update"
@@ -1448,7 +1449,9 @@ checkDeletes typesTermsTuples doutput inputs = do
       toRel setRef name = R.fromList (fmap (name,) (toList setRef))
   let toDelete = fmap (\(_, names, types, terms) -> Names (toRel terms names) (toRel types names)) splitsNames
   -- make sure endangered is compeletely contained in paths
-  projectNames <- Branch.toNames <$> Cli.getCurrentProjectRoot0
+  currentBranch <- Cli.getCurrentProjectRoot0
+  let projectNames = Branch.toNames currentBranch
+      projectNamesSansLib = Branch.toNames (Branch.deleteLibdeps currentBranch)
   -- get only once for the entire deletion set
   let allTermsToDelete :: Set LabeledDependency
       allTermsToDelete = Set.unions (fmap Names.labeledReferences toDelete)
@@ -1456,9 +1459,7 @@ checkDeletes typesTermsTuples doutput inputs = do
   endangered <-
     Cli.runTransaction $
       traverse
-        ( \targetToDelete ->
-            getEndangeredDependents targetToDelete allTermsToDelete projectNames
-        )
+        (\targetToDelete -> getEndangeredDependents targetToDelete allTermsToDelete projectNames projectNamesSansLib)
         toDelete
   -- If the overall dependency map is not completely empty, abort deletion
   let endangeredDeletions = List.filter (\m -> not $ null m || Map.foldr (\s b -> null s || b) False m) endangered

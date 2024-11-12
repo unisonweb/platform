@@ -15,7 +15,6 @@ import U.Codebase.Sqlite.Queries qualified as Queries
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
-import Unison.Cli.NamesUtils qualified as Cli
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Branch qualified as Branch
 import Unison.Codebase.Branch.Names qualified as Branch
@@ -52,8 +51,10 @@ handleDeleteNamespace input insistence = \case
             (Path.nameFromSplit' $ first (Path.RelativePath' . Path.Relative) p)
             (Branch.toNames (Branch.head branch))
     afterDelete <- do
-      names <- Cli.currentNames
-      endangerments <- Cli.runTransaction (getEndangeredDependents toDelete Set.empty names)
+      currentBranch <- Cli.getCurrentProjectRoot0
+      let names = Branch.toNames currentBranch
+          namesSansLib = Branch.toNames (Branch.deleteLibdeps currentBranch)
+      endangerments <- Cli.runTransaction (getEndangeredDependents toDelete Set.empty names namesSansLib)
       case (null endangerments, insistence) of
         (True, _) -> pure (Cli.respond Success)
         (False, Force) -> do
@@ -97,37 +98,37 @@ getEndangeredDependents ::
   Set LabeledDependency ->
   -- | Names from the current branch
   Names ->
+  -- | Names from the current branch, sans `lib`
+  Names ->
   -- | map from references going extinct to the set of endangered dependents
   Sqlite.Transaction (Map LabeledDependency (NESet LabeledDependency))
-getEndangeredDependents targetToDelete otherDesiredDeletions rootNames = do
-  -- names of terms left over after target deletion
-  let remainingNames :: Names
-      remainingNames = rootNames `Names.difference` targetToDelete
-  -- target refs for deletion
-  let refsToDelete :: Set LabeledDependency
-      refsToDelete = Names.labeledReferences targetToDelete
-  -- refs left over after deleting target
-  let remainingRefs :: Set LabeledDependency
-      remainingRefs = Names.labeledReferences remainingNames
-  -- remove the other targets for deletion from the remaining terms
-  let remainingRefsWithoutOtherTargets :: Set LabeledDependency
-      remainingRefsWithoutOtherTargets = Set.difference remainingRefs otherDesiredDeletions
+getEndangeredDependents targetToDelete otherDesiredDeletions rootNames rootNamesSansLib = do
   -- deleting and not left over
   let extinct :: Set LabeledDependency
-      extinct = refsToDelete `Set.difference` remainingRefs
+      extinct = Names.labeledReferences targetToDelete `Set.difference` refsAfterDeletingTarget rootNames
+
   let accumulateDependents :: LabeledDependency -> Sqlite.Transaction (Map LabeledDependency (Set LabeledDependency))
       accumulateDependents ld =
         let ref = LD.fold id Referent.toReference ld
          in Map.singleton ld . Set.map LD.termRef <$> Codebase.dependents Queries.ExcludeOwnComponent ref
+
   -- All dependents of extinct, including terms which might themselves be in the process of being deleted.
   allDependentsOfExtinct :: Map LabeledDependency (Set LabeledDependency) <-
     Map.unionsWith (<>) <$> for (Set.toList extinct) accumulateDependents
 
-  -- Filtered to only include dependencies which are not being deleted, but depend one which
-  -- is going extinct.
+  -- Of all the dependents of things going extinct, we filter down to only those that are not themselves being deleted
+  -- too (per `otherDesiredDeletion`), and are also somewhere outside `lib`. This allows us to proceed with deleting
+  -- an entire dependency out of `lib` even if for some reason it contains the only source of names for some other
+  -- dependency.
   let extinctToEndangered :: Map LabeledDependency (NESet LabeledDependency)
       extinctToEndangered =
-        allDependentsOfExtinct & Map.mapMaybe \endangeredDeps ->
-          let remainingEndangered = endangeredDeps `Set.intersection` remainingRefsWithoutOtherTargets
-           in NESet.nonEmptySet remainingEndangered
+        Map.mapMaybe
+          ( NESet.nonEmptySet
+              . Set.intersection (Set.difference (refsAfterDeletingTarget rootNamesSansLib) otherDesiredDeletions)
+          )
+          allDependentsOfExtinct
   pure extinctToEndangered
+  where
+    refsAfterDeletingTarget :: Names -> Set LabeledDependency
+    refsAfterDeletingTarget names =
+      Names.labeledReferences (names `Names.difference` targetToDelete)
