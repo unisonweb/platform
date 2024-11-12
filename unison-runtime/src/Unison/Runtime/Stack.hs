@@ -158,8 +158,12 @@ assertBumped :: HasCallStack => Stack -> Off -> IO ()
 assertBumped (Stack _ _ sp ustk bstk) i = do
   u <- readByteArray ustk (sp - i)
   b :: BVal <- readArray bstk (sp - i)
-  when (u /= unboxedSentinel || b /= boxedSentinel) do
+  when (u /= unboxedSentinel || not (isBoxedSentinel b)) do
             error $ "Expected stack slot to have been bumped, but it was:" <> show (Val u b)
+  where
+    isBoxedSentinel :: Closure -> Bool
+    isBoxedSentinel (Closure GUnboxedSentinel) = True
+    isBoxedSentinel _ = False
 
 assertUnboxed :: HasCallStack => Stack -> Off -> IO ()
 assertUnboxed (Stack _ _ sp ustk bstk) i = do
