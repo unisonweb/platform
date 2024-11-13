@@ -144,7 +144,10 @@ import Prelude hiding (words)
 
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
+import System.Posix.Process qualified as Posix
 import Unison.Debug qualified as Debug
+import Data.Text.IO (hPutStrLn)
+import UnliftIO (stderr)
 
 type DebugCallStack = (HasCallStack :: Constraint)
 
@@ -159,7 +162,8 @@ assertBumped (Stack _ _ sp ustk bstk) i = do
   u <- readByteArray ustk (sp - i)
   b :: BVal <- readArray bstk (sp - i)
   when (u /= unboxedSentinel || not (isBoxedSentinel b)) do
-            error $ "Expected stack slot to have been bumped, but it was:" <> show (Val u b)
+            hPutStrLn stderr $ "Expected stack slot to have been bumped, but it was:" <> (tShow (Val u b))
+            Posix.exitImmediately (ExitFailure 456)
   where
     isBoxedSentinel :: Closure -> Bool
     isBoxedSentinel (Closure GUnboxedSentinel) = True
@@ -171,7 +175,9 @@ assertUnboxed (Stack _ _ sp ustk bstk) i = do
   b <- readArray bstk (sp - i)
   case b of
     UnboxedTypeTag _ -> pure ()
-    _ -> error $ "Expected stack val to be unboxed, but it was:" <> show (Val u b)
+    _ -> do
+      hPutStrLn stderr $ "Expected stack val to be unboxed, but it was:" <> tShow (Val u b)
+      Posix.exitImmediately (ExitFailure 456)
 
 pokeSentinelOff :: Stack -> Off -> IO ()
 pokeSentinelOff (Stack _ _ sp ustk bstk) off = do
