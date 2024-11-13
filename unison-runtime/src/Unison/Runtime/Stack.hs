@@ -666,7 +666,7 @@ peekI _stk@(Stack _ _ sp ustk _) = do
 peekOffI :: DebugCallStack => Stack -> Off -> IO Int
 peekOffI _stk@(Stack _ _ sp ustk _) i = do
 #ifdef STACK_CHECK
-  assertUnboxed _stk 0
+  assertUnboxed _stk i
 #endif
   readByteArray ustk (sp - i)
 {-# INLINE peekOffI #-}
