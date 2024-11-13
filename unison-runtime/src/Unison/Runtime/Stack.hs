@@ -144,7 +144,9 @@ import Prelude hiding (words)
 
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
-import Unison.Debug qualified as Debug
+import Data.Text.IO (hPutStrLn)
+import UnliftIO (stderr, throwIO)
+import GHC.Stack (CallStack, callStack)
 
 type DebugCallStack = (HasCallStack :: Constraint)
 
@@ -666,7 +668,7 @@ peekI _stk@(Stack _ _ sp ustk _) = do
 peekOffI :: DebugCallStack => Stack -> Off -> IO Int
 peekOffI _stk@(Stack _ _ sp ustk _) i = do
 #ifdef STACK_CHECK
-  assertUnboxed _stk 0
+  assertUnboxed _stk i
 #endif
   readByteArray ustk (sp - i)
 {-# INLINE peekOffI #-}
@@ -756,7 +758,6 @@ pokeBool stk b =
 bpoke :: DebugCallStack => Stack -> BVal -> IO ()
 bpoke _stk@(Stack _ _ sp _ bstk) b = do
 #ifdef STACK_CHECK
-  Debug.debugLogM Debug.Interpreter "before assert bumped"
   assertBumped _stk 0
 #endif
   writeArray bstk sp b
