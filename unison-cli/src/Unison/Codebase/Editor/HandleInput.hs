@@ -17,7 +17,6 @@ import Data.List.Extra (nubOrd)
 import Data.List.NonEmpty qualified as Nel
 import Data.Map qualified as Map
 import Data.Set qualified as Set
-import Data.Set.NonEmpty (NESet)
 import Data.Set.NonEmpty qualified as NESet
 import Data.Text qualified as Text
 import Data.Time (UTCTime)
@@ -57,6 +56,7 @@ import Unison.Codebase.Editor.HandleInput.DebugDefinition qualified as DebugDefi
 import Unison.Codebase.Editor.HandleInput.DebugFoldRanges qualified as DebugFoldRanges
 import Unison.Codebase.Editor.HandleInput.DebugSynhashTerm (handleDebugSynhashTerm)
 import Unison.Codebase.Editor.HandleInput.DeleteBranch (handleDeleteBranch)
+import Unison.Codebase.Editor.HandleInput.DeleteNamespace (getEndangeredDependents, handleDeleteNamespace)
 import Unison.Codebase.Editor.HandleInput.DeleteProject (handleDeleteProject)
 import Unison.Codebase.Editor.HandleInput.EditNamespace (handleEditNamespace)
 import Unison.Codebase.Editor.HandleInput.FindAndReplace (handleStructuredFindI, handleStructuredFindReplaceI, handleTextFindI)
@@ -150,7 +150,6 @@ import Unison.Server.SearchResult (SearchResult)
 import Unison.Server.SearchResult qualified as SR
 import Unison.Share.Codeserver qualified as Codeserver
 import Unison.ShortHash qualified as SH
-import Unison.Sqlite qualified as Sqlite
 import Unison.Symbol (Symbol)
 import Unison.Syntax.HashQualified qualified as HQ (parseTextWith, toText)
 import Unison.Syntax.Lexer.Unison qualified as L
@@ -573,43 +572,7 @@ loop e = do
                   delete input doutput getTerms getTypes hqs
                 DeleteTarget'Type doutput hqs -> delete input doutput (const (pure Set.empty)) getTypes hqs
                 DeleteTarget'Term doutput hqs -> delete input doutput getTerms (const (pure Set.empty)) hqs
-                DeleteTarget'Namespace insistence Nothing -> do
-                  hasConfirmed <- confirmedCommand input
-                  if hasConfirmed || insistence == Force
-                    then do
-                      description <- inputDescription input
-                      pp <- Cli.getCurrentProjectPath
-                      _ <- Cli.updateAt description pp (const Branch.empty)
-                      Cli.respond DeletedEverything
-                    else Cli.respond DeleteEverythingConfirmation
-                DeleteTarget'Namespace insistence (Just p@(parentPath, childName)) -> do
-                  branch <- Cli.expectBranchAtPath (Path.unsplit p)
-                  description <- inputDescription input
-                  let toDelete =
-                        Names.prefix0
-                          (Path.nameFromSplit' $ first (Path.RelativePath' . Path.Relative) p)
-                          (Branch.toNames (Branch.head branch))
-                  afterDelete <- do
-                    names <- Cli.currentNames
-                    endangerments <- Cli.runTransaction (getEndangeredDependents toDelete Set.empty names)
-                    case (null endangerments, insistence) of
-                      (True, _) -> pure (Cli.respond Success)
-                      (False, Force) -> do
-                        let ppeDecl = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
-                        pure do
-                          Cli.respond Success
-                          Cli.respondNumbered $ DeletedDespiteDependents ppeDecl endangerments
-                      (False, Try) -> do
-                        let ppeDecl = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
-                        Cli.respondNumbered $ CantDeleteNamespace ppeDecl endangerments
-                        Cli.returnEarlyWithoutOutput
-                  parentPathAbs <- Cli.resolvePath parentPath
-                  -- We have to modify the parent in order to also wipe out the history at the
-                  -- child.
-                  Cli.updateAt description parentPathAbs \parentBranch ->
-                    parentBranch
-                      & Branch.modifyAt (Path.singleton childName) \_ -> Branch.empty
-                  afterDelete
+                DeleteTarget'Namespace insistence path -> handleDeleteNamespace input insistence path
                 DeleteTarget'ProjectBranch name -> handleDeleteBranch name
                 DeleteTarget'Project name -> handleDeleteProject name
             DisplayI outputLoc namesToDisplay -> do
@@ -975,7 +938,8 @@ inputDescription input =
     UndoI {} -> pure "undo"
     ExecuteI s args -> pure ("execute " <> Text.unwords (HQ.toText s : fmap Text.pack args))
     IOTestI native hq -> pure (cmd <> HQ.toText hq)
-      where cmd | native = "io.test.native " | otherwise = "io.test "
+      where
+        cmd | native = "io.test.native " | otherwise = "io.test "
     IOTestAllI native ->
       pure (if native then "io.test.native.all" else "io.test.all")
     UpdateBuiltinsI -> pure "builtins.update"
@@ -1485,7 +1449,9 @@ checkDeletes typesTermsTuples doutput inputs = do
       toRel setRef name = R.fromList (fmap (name,) (toList setRef))
   let toDelete = fmap (\(_, names, types, terms) -> Names (toRel terms names) (toRel types names)) splitsNames
   -- make sure endangered is compeletely contained in paths
-  projectNames <- Branch.toNames <$> Cli.getCurrentProjectRoot0
+  currentBranch <- Cli.getCurrentProjectRoot0
+  let projectNames = Branch.toNames currentBranch
+      projectNamesSansLib = Branch.toNames (Branch.deleteLibdeps currentBranch)
   -- get only once for the entire deletion set
   let allTermsToDelete :: Set LabeledDependency
       allTermsToDelete = Set.unions (fmap Names.labeledReferences toDelete)
@@ -1493,9 +1459,7 @@ checkDeletes typesTermsTuples doutput inputs = do
   endangered <-
     Cli.runTransaction $
       traverse
-        ( \targetToDelete ->
-            getEndangeredDependents targetToDelete (allTermsToDelete) projectNames
-        )
+        (\targetToDelete -> getEndangeredDependents targetToDelete allTermsToDelete projectNames projectNamesSansLib)
         toDelete
   -- If the overall dependency map is not completely empty, abort deletion
   let endangeredDeletions = List.filter (\m -> not $ null m || Map.foldr (\s b -> null s || b) False m) endangered
@@ -1522,54 +1486,6 @@ checkDeletes typesTermsTuples doutput inputs = do
       let ppeDecl = PPED.makePPED (PPE.hqNamer 10 projectNames) (PPE.suffixifyByHash projectNames)
       let combineRefs = List.foldl (Map.unionWith NESet.union) Map.empty endangeredDeletions
       Cli.respondNumbered (CantDeleteDefinitions ppeDecl combineRefs)
-
--- | Goal: When deleting, we might be removing the last name of a given definition (i.e. the
--- definition is going "extinct"). In this case we may wish to take some action or warn the
--- user about these "endangered" definitions which would now contain unnamed references.
--- The argument `otherDesiredDeletions` is included in this function because the user might want to
--- delete a term and all its dependencies in one command, so we give this function access to
--- the full set of entities that the user wishes to delete.
-getEndangeredDependents ::
-  -- | Prospective target for deletion
-  Names ->
-  -- | All entities we want to delete (including the target)
-  Set LabeledDependency ->
-  -- | Names from the current branch
-  Names ->
-  -- | map from references going extinct to the set of endangered dependents
-  Sqlite.Transaction (Map LabeledDependency (NESet LabeledDependency))
-getEndangeredDependents targetToDelete otherDesiredDeletions rootNames = do
-  -- names of terms left over after target deletion
-  let remainingNames :: Names
-      remainingNames = rootNames `Names.difference` targetToDelete
-  -- target refs for deletion
-  let refsToDelete :: Set LabeledDependency
-      refsToDelete = Names.labeledReferences targetToDelete
-  -- refs left over after deleting target
-  let remainingRefs :: Set LabeledDependency
-      remainingRefs = Names.labeledReferences remainingNames
-  -- remove the other targets for deletion from the remaining terms
-  let remainingRefsWithoutOtherTargets :: Set LabeledDependency
-      remainingRefsWithoutOtherTargets = Set.difference remainingRefs otherDesiredDeletions
-  -- deleting and not left over
-  let extinct :: Set LabeledDependency
-      extinct = refsToDelete `Set.difference` remainingRefs
-  let accumulateDependents :: LabeledDependency -> Sqlite.Transaction (Map LabeledDependency (Set LabeledDependency))
-      accumulateDependents ld =
-        let ref = LD.fold id Referent.toReference ld
-         in Map.singleton ld . Set.map LD.termRef <$> Codebase.dependents Queries.ExcludeOwnComponent ref
-  -- All dependents of extinct, including terms which might themselves be in the process of being deleted.
-  allDependentsOfExtinct :: Map LabeledDependency (Set LabeledDependency) <-
-    Map.unionsWith (<>) <$> for (Set.toList extinct) accumulateDependents
-
-  -- Filtered to only include dependencies which are not being deleted, but depend one which
-  -- is going extinct.
-  let extinctToEndangered :: Map LabeledDependency (NESet LabeledDependency)
-      extinctToEndangered =
-        allDependentsOfExtinct & Map.mapMaybe \endangeredDeps ->
-          let remainingEndangered = endangeredDeps `Set.intersection` remainingRefsWithoutOtherTargets
-           in NESet.nonEmptySet remainingEndangered
-  pure extinctToEndangered
 
 displayI ::
   OutputLocation ->
