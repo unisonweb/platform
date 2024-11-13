@@ -307,8 +307,8 @@ litToVal = \case
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
 debugger :: (Show a) => Stack -> String -> a -> Bool
-debugger stk msg a = unsafePerformIO $ do
-  dumpStack stk
+debugger _stk msg a = unsafePerformIO $ do
+  -- dumpStack stk
   Debug.debugLogM Debug.Interpreter (msg ++ ": " ++ show a)
   pure False
 

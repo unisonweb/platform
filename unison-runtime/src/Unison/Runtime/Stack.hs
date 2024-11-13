@@ -144,6 +144,7 @@ import Prelude hiding (words)
 
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
+import System.Exit
 import System.Posix.Process qualified as Posix
 import Unison.Debug qualified as Debug
 import Data.Text.IO (hPutStrLn)
