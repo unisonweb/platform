@@ -68,6 +68,7 @@ import UnliftIO.Concurrent qualified as UnliftIO
 #ifdef STACK_CHECK
 import Unison.Debug qualified as Debug
 import System.IO.Unsafe (unsafePerformIO)
+import Data.Typeable (cast)
 #endif
 {- ORMOLU_ENABLE -}
 
@@ -596,6 +597,12 @@ exec !env !denv !activeThreads !stk !k _ (TryForce i)
       v <- peekOff stk i
       stk <- bump stk -- Bump the boxed stack to make a slot for the result, which will be written in the callback if we succeed.
       ev <- Control.Exception.try $ nestEval env activeThreads (poke stk) v
+      case ev of
+        Right () -> pure ()
+        Left (SomeException e) ->
+          case cast @_ @ExitImmediately e of
+            Just {} -> throwIO e
+            Nothing -> pure ()
       stk <- encodeExn stk ev
       pure (denv, stk, k)
 {-# INLINE exec #-}

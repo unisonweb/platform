@@ -3,6 +3,7 @@
 
 module Unison.Runtime.Stack
   ( K (..),
+    ExitImmediately (..),
     GClosure (..),
     Closure
       ( ..,
@@ -144,11 +145,10 @@ import Prelude hiding (words)
 
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
-import System.Exit
-import System.Posix.Process qualified as Posix
 import Unison.Debug qualified as Debug
 import Data.Text.IO (hPutStrLn)
-import UnliftIO (stderr)
+import UnliftIO (stderr, throwIO)
+import GHC.Stack (CallStack, callStack)
 
 type DebugCallStack = (HasCallStack :: Constraint)
 
@@ -158,13 +158,14 @@ unboxedSentinel = -99
 boxedSentinel :: Closure
 boxedSentinel = (Closure GUnboxedSentinel)
 
+
 assertBumped :: HasCallStack => Stack -> Off -> IO ()
 assertBumped (Stack _ _ sp ustk bstk) i = do
   u <- readByteArray ustk (sp - i)
   b :: BVal <- readArray bstk (sp - i)
   when (u /= unboxedSentinel || not (isBoxedSentinel b)) do
             hPutStrLn stderr $ "Expected stack slot to have been bumped, but it was:" <> (tShow (Val u b))
-            Posix.exitImmediately (ExitFailure 456)
+            throwIO $ ExitImmediately callStack $ "Expected stack slot to have been bumped, but it was: "  <> (show (Val u b))
   where
     isBoxedSentinel :: Closure -> Bool
     isBoxedSentinel (Closure GUnboxedSentinel) = True
@@ -178,7 +179,7 @@ assertUnboxed (Stack _ _ sp ustk bstk) i = do
     UnboxedTypeTag _ -> pure ()
     _ -> do
       hPutStrLn stderr $ "Expected stack val to be unboxed, but it was:" <> tShow (Val u b)
-      Posix.exitImmediately (ExitFailure 456)
+      throwIO $ ExitImmediately callStack $ "Expected stack val to be unboxed, but it was:" <> (show (Val u b))
 
 pokeSentinelOff :: Stack -> Off -> IO ()
 pokeSentinelOff (Stack _ _ sp ustk bstk) off = do
@@ -189,6 +190,11 @@ pokeSentinelOff (Stack _ _ sp ustk bstk) off = do
 type DebugCallStack = (() :: Constraint)
 #endif
 {- ORMOLU_ENABLE -}
+
+data ExitImmediately = ExitImmediately CallStack String
+  deriving stock (Show)
+
+instance Exception ExitImmediately
 
 newtype Callback = Hook (Stack -> IO ())
 
