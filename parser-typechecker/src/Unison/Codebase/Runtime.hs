@@ -34,7 +34,7 @@ data CompileOpts = COpts
   }
 
 defaultCompileOpts :: CompileOpts
-defaultCompileOpts = COpts { profile = False }
+defaultCompileOpts = COpts {profile = False}
 
 data Runtime v = Runtime
   { terminate :: IO (),

@@ -57,6 +57,8 @@ import Data.Bits (shiftL, shiftR, (.|.))
 import Data.Coerce
 import Data.Functor ((<&>))
 import Data.Map.Strict qualified as M
+import Data.Primitive.PrimArray
+import Data.Primitive.PrimArray qualified as PA
 import Data.Text as Text (unpack)
 import Data.Void (Void, absurd)
 import Data.Word (Word16, Word64)
@@ -71,6 +73,7 @@ import Unison.Runtime.ANF
     Direction (..),
     Func (..),
     Mem (..),
+    PackedTag (..),
     SuperGroup (..),
     SuperNormal (..),
     internalBug,
@@ -89,9 +92,6 @@ import Unison.Runtime.ANF
     pattern TVar,
   )
 import Unison.Runtime.ANF qualified as ANF
-import Unison.Runtime.Array
-import Unison.Runtime.Array qualified as PA
-import Unison.Runtime.Builtin.Types (builtinTypeNumbering)
 import Unison.Util.EnumContainers as EC
 import Unison.Util.Text (Text)
 import Unison.Var (Var)
@@ -289,101 +289,114 @@ countArgs (VArgV {}) = internalBug "countArgs: DArgV"
 
 data UPrim1
   = -- integral
-    DECI
-  | INCI
-  | NEGI
-  | SGNI -- decrement,increment,negate,signum
-  | LZRO
-  | TZRO
-  | COMN
-  | POPC -- leading/trailingZeroes,complement
+    DECI -- decrement
+  | DECN
+  | INCI -- increment
+  | INCN
+  | NEGI -- negate
+  | SGNI -- signum
+  | LZRO -- leadingZeroes
+  | TZRO -- trailingZeroes
+  | COMN -- complement
+  | COMI -- complement
+  | POPC -- popCount
   -- floating
-  | ABSF
-  | EXPF
-  | LOGF
-  | SQRT -- abs,exp,log,sqrt
-  | COSF
-  | ACOS
-  | COSH
-  | ACSH -- cos,acos,cosh,acosh
-  | SINF
-  | ASIN
-  | SINH
-  | ASNH -- sin,asin,sinh,asinh
-  | TANF
-  | ATAN
-  | TANH
-  | ATNH -- tan,atan,tanh,atanh
-  | ITOF
-  | NTOF
-  | CEIL
-  | FLOR -- intToFloat,natToFloat,ceiling,floor
-  | TRNF
-  | RNDF -- truncate,round
+  | ABSF -- abs
+  | EXPF -- exp
+  | LOGF -- log
+  | SQRT -- sqrt
+  | COSF -- cos
+  | ACOS -- acos
+  | COSH -- cosh
+  | ACSH -- acosh
+  | SINF -- sin
+  | ASIN -- asin
+  | SINH -- sinh
+  | ASNH -- asinh
+  | TANF -- tan
+  | ATAN -- atan
+  | TANH -- tanh
+  | ATNH -- atanh
+  | ITOF -- intToFloat
+  | NTOF -- natToFloat
+  | CEIL -- ceiling
+  | FLOR -- floor
+  | TRNF -- truncate
+  | RNDF -- round
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data UPrim2
   = -- integral
-    ADDI
-  | SUBI
+    ADDI -- +
+  | ADDN
+  | SUBI -- -
+  | SUBN
   | MULI
-  | DIVI
-  | MODI -- +,-,*,/,mod
+  | MULN
+  | DIVI -- /
   | DIVN
+  | MODI -- mod
   | MODN
-  | SHLI
-  | SHRI
+  | SHLI -- shiftl
+  | SHLN
+  | SHRI -- shiftr
   | SHRN
-  | POWI -- shiftl,shiftr,shiftr,pow
-  | EQLI
-  | LEQI
-  | LEQN -- ==,<=,<=
-  | ANDN
-  | IORN
-  | XORN -- and,or,xor
-  -- floating
-  | EQLF
-  | LEQF -- ==,<=
-  | ADDF
-  | SUBF
+  | POWI -- pow
+  | POWN
+  | EQLI -- ==
+  | EQLN
+  | LEQI -- <=
+  | LEQN
+  | ANDN -- and
+  | ANDI
+  | IORN -- or
+  | IORI
+  | XORN -- xor
+  | XORI
+  | -- floating
+    EQLF -- ==
+  | LEQF -- <=
+  | ADDF -- +
+  | SUBF -- -
   | MULF
-  | DIVF
-  | ATN2 -- +,-,*,/,atan2
-  | POWF
-  | LOGB
-  | MAXF
-  | MINF -- pow,low,max,min
+  | DIVF -- /
+  | ATN2 -- atan2
+  | POWF -- pow
+  | LOGB -- logBase
+  | MAXF -- max
+  | MINF -- min
+  | CAST -- unboxed runtime type cast (int to nat, etc.)
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data BPrim1
   = -- text
-    SIZT
-  | USNC
-  | UCNS -- size,unsnoc,uncons
-  | ITOT
-  | NTOT
-  | FTOT -- intToText,natToText,floatToText
-  | TTOI
-  | TTON
-  | TTOF -- textToInt,textToNat,textToFloat
-  | PAKT
-  | UPKT -- pack,unpack
+    SIZT -- size
+  | USNC -- unsnoc
+  | UCNS -- uncons
+  | ITOT -- intToText
+  | NTOT -- natToText
+  | FTOT -- floatToText
+  | TTOI -- textToInt
+  | TTON -- textToNat
+  | TTOF -- textToFloat
+  | PAKT -- pack
+  | UPKT -- unpack
   -- sequence
-  | VWLS
-  | VWRS
-  | SIZS -- viewl,viewr,size
-  | PAKB
-  | UPKB
-  | SIZB -- pack,unpack,size
+  | VWLS -- viewl
+  | VWRS -- viewr
+  | SIZS -- size
+  | PAKB -- pack
+  | UPKB -- unpack
+  | SIZB -- size
   | FLTB -- flatten
   -- code
-  | MISS
-  | CACH
-  | LKUP
-  | LOAD -- isMissing,cache_,lookup,load
+  | MISS -- isMissing
+  | CACH -- cache
+  | LKUP -- lookup
+  | LOAD -- load
   | CVLD -- validate
-  | VALU
-  | TLTT -- value, Term.Link.toText
+  | VALU -- value
+  | TLTT --  Term.Link.toText
   -- debug
   | DBTX -- debug text
   | SDBL -- sandbox link list
@@ -391,30 +404,30 @@ data BPrim1
 
 data BPrim2
   = -- universal
-    EQLU
-  | CMPU -- ==,compare
+    EQLU -- ==
+  | CMPU -- compare
   -- text
-  | DRPT
-  | CATT
-  | TAKT -- drop,append,take
+  | DRPT -- drop
+  | CATT -- append
+  | TAKT -- take
   | IXOT -- indexof
-  | EQLT
-  | LEQT
-  | LEST -- ==,<=,<
+  | EQLT -- ==
+  | LEQT -- <=
+  | LEST -- <
   -- sequence
-  | DRPS
-  | CATS
-  | TAKS -- drop,append,take
-  | CONS
-  | SNOC
-  | IDXS -- cons,snoc,index
-  | SPLL
-  | SPLR -- splitLeft,splitRight
+  | DRPS -- drop
+  | CATS -- append
+  | TAKS -- take
+  | CONS -- cons
+  | SNOC -- snoc
+  | IDXS -- index
+  | SPLL -- splitLeft
+  | SPLR -- splitRight
   -- bytes
-  | TAKB
-  | DRPB
-  | IDXB
-  | CATB -- take,drop,index,append
+  | TAKB -- take
+  | DRPB -- drop
+  | IDXB -- index
+  | CATB -- append
   | IXOB -- indexof
   -- general
   | THRO -- throw
@@ -426,15 +439,17 @@ data BPrim2
 
 data MLit
   = MI !Int
+  | MN !Word64
+  | MC !Char
   | MD !Double
   | MT !Text
-  | MM !Referent
-  | MY !Reference
+  | MM !Referent -- Term Link
+  | MY !Reference -- Type Link
   deriving (Show, Eq, Ord)
 
 type Instr = GInstr CombIx
 
-type RInstr clos = GInstr (RComb clos)
+type RInstr val = GInstr (RComb val)
 
 -- Instructions for manipulating the data stack in the main portion of
 -- a block
@@ -481,12 +496,10 @@ data GInstr comb
     -- on the stack.
     Pack
       !Reference -- data type reference
-      !Word64 -- tag
+      !PackedTag -- tag
       !Args -- arguments to pack
   | -- Push a particular value onto the appropriate stack
     Lit !MLit -- value to push onto the stack
-  | -- Push a particular value directly onto the boxed stack
-    BLit !Reference !Word64 {- packed type tag for the ref -} !MLit
   | -- Print a value on the unboxed stack
     Print !Int -- index of the primitive value to print
   | -- Put a delimiter on the continuation
@@ -503,7 +516,7 @@ data GInstr comb
 
 type Section = GSection CombIx
 
-type RSection clos = GSection (RComb clos)
+type RSection val = GSection (RComb val)
 
 data GSection comb
   = -- Apply a function to arguments. This is the 'slow path', and
@@ -609,18 +622,18 @@ data GCombInfo comb
       !(GSection comb) -- Entry
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
-data GComb clos comb
+data GComb val comb
   = Comb {-# UNPACK #-} !(GCombInfo comb)
   | -- A pre-evaluated comb, typically a pure top-level const
-    CachedClosure !Word64 {- top level comb ix -} !clos
+    CachedVal !Word64 {- top level comb ix -} !val
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 pattern Lam ::
-  Int -> Int -> GSection comb -> GComb clos comb
+  Int -> Int -> GSection comb -> GComb val comb
 pattern Lam a f sect = Comb (LamI a f sect)
 
 -- it seems GHC can't figure this out itself
-{-# COMPLETE CachedClosure, Lam #-}
+{-# COMPLETE CachedVal, Lam #-}
 
 instance Bifunctor GComb where
   bimap = bimapDefault
@@ -629,36 +642,48 @@ instance Bifoldable GComb where
   bifoldMap = bifoldMapDefault
 
 instance Bitraversable GComb where
-  bitraverse f _ (CachedClosure cix c) = CachedClosure cix <$> f c
+  bitraverse f _ (CachedVal cix c) = CachedVal cix <$> f c
   bitraverse _ f (Lam a fr s) = Lam a fr <$> traverse f s
 
-type RCombs clos = GCombs clos (RComb clos)
+type RCombs val = GCombs val (RComb val)
 
 -- | The fixed point of a GComb where all references to a Comb are themselves Combs.
-newtype RComb clos = RComb {unRComb :: GComb clos (RComb clos)}
+newtype RComb val = RComb {unRComb :: GComb val (RComb val)}
 
-type RCombInfo clos = GCombInfo (RComb clos)
+type RCombInfo val = GCombInfo (RComb val)
 
-instance Show (RComb clos) where
+instance Show (RComb val) where
   show _ = "<RCOMB>"
 
 -- | Map of combinators, parameterized by comb reference type
-type GCombs clos comb = EnumMap Word64 (GComb clos comb)
+type GCombs val comb = EnumMap Word64 (GComb val comb)
 
 -- | A reference to a combinator, parameterized by comb
 type Ref = GRef CombIx
 
-type RRef clos = GRef (RComb clos)
+type RRef val = GRef (RComb val)
 
 data GRef comb
   = Stk !Int -- stack reference to a closure
   | Env !CombIx {- Lazy! Might be cyclic -} comb
   | Dyn !Word64 -- dynamic scope reference to a closure
-  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+  deriving (Show, Functor, Foldable, Traversable)
+
+instance Eq (GRef comb) where
+  a == b = compare a b == EQ
+
+instance Ord (GRef comb) where
+  compare (Stk a) (Stk b) = compare a b
+  compare (Stk {}) _ = LT
+  compare _ (Stk {}) = GT
+  compare (Env a _) (Env b _) = compare a b
+  compare (Env {}) _ = LT
+  compare _ (Env {}) = GT
+  compare (Dyn a) (Dyn b) = compare a b
 
 type Branch = GBranch CombIx
 
-type RBranch clos = GBranch (RComb clos)
+type RBranch val = GBranch (RComb val)
 
 data GBranch comb
   = -- if tag == n then t else f
@@ -783,10 +808,10 @@ emitCombs rns grpr grpn (Rec grp ent) =
 -- tying the knot recursively when necessary.
 resolveCombs ::
   -- Existing in-scope combs that might be referenced
-  Maybe (EnumMap Word64 (RCombs clos)) ->
+  Maybe (EnumMap Word64 (RCombs val)) ->
   -- Combinators which need their knots tied.
-  EnumMap Word64 (GCombs clos CombIx) ->
-  EnumMap Word64 (RCombs clos)
+  EnumMap Word64 (GCombs val CombIx) ->
+  EnumMap Word64 (RCombs val)
 resolveCombs mayExisting combs =
   -- Fixed point lookup;
   -- We make sure not to force resolved Combs or we'll loop forever.
@@ -955,7 +980,7 @@ emitSection _ _ _ _ ctx (TLit l) =
       | ANF.LY {} <- l = addCount 1
       | otherwise = addCount 1
 emitSection _ _ _ _ ctx (TBLit l) =
-  addCount 1 . countCtx ctx . Ins (emitBLit l) . Yield $ VArg1 0
+  addCount 1 . countCtx ctx . Ins (emitLit l) . Yield $ VArg1 0
 emitSection rns grpr grpn rec ctx (TMatch v bs)
   | Just (i, BX) <- ctxResolve ctx v,
     MatchData r cs df <- bs =
@@ -1135,7 +1160,7 @@ emitLet ::
 emitLet _ _ _ _ _ _ _ (TLit l) =
   fmap (Ins $ emitLit l)
 emitLet _ _ _ _ _ _ _ (TBLit l) =
-  fmap (Ins $ emitBLit l)
+  fmap (Ins $ emitLit l)
 -- emitLet rns grp _   _ _   ctx (TApp (FComb r) args)
 --   -- We should be able to tell if we are making a saturated call
 --   -- or not here. We aren't carrying the information here yet, though.
@@ -1168,38 +1193,42 @@ emitLet rns grpr grpn rec d vcs ctx bnd
 emitPOp :: ANF.POp -> Args -> Instr
 -- Integral
 emitPOp ANF.ADDI = emitP2 ADDI
-emitPOp ANF.ADDN = emitP2 ADDI
+emitPOp ANF.ADDN = emitP2 ADDN
 emitPOp ANF.SUBI = emitP2 SUBI
-emitPOp ANF.SUBN = emitP2 SUBI
+emitPOp ANF.SUBN = emitP2 SUBN
 emitPOp ANF.MULI = emitP2 MULI
-emitPOp ANF.MULN = emitP2 MULI
+emitPOp ANF.MULN = emitP2 MULN
 emitPOp ANF.DIVI = emitP2 DIVI
 emitPOp ANF.DIVN = emitP2 DIVN
 emitPOp ANF.MODI = emitP2 MODI -- TODO: think about how these behave
 emitPOp ANF.MODN = emitP2 MODN -- TODO: think about how these behave
 emitPOp ANF.POWI = emitP2 POWI
-emitPOp ANF.POWN = emitP2 POWI
+emitPOp ANF.POWN = emitP2 POWN
 emitPOp ANF.SHLI = emitP2 SHLI
-emitPOp ANF.SHLN = emitP2 SHLI -- Note: left shift behaves uniformly
+emitPOp ANF.SHLN = emitP2 SHLN -- Note: left shift behaves uniformly
 emitPOp ANF.SHRI = emitP2 SHRI
 emitPOp ANF.SHRN = emitP2 SHRN
 emitPOp ANF.LEQI = emitP2 LEQI
 emitPOp ANF.LEQN = emitP2 LEQN
 emitPOp ANF.EQLI = emitP2 EQLI
-emitPOp ANF.EQLN = emitP2 EQLI
+emitPOp ANF.EQLN = emitP2 EQLN
 emitPOp ANF.SGNI = emitP1 SGNI
 emitPOp ANF.NEGI = emitP1 NEGI
 emitPOp ANF.INCI = emitP1 INCI
-emitPOp ANF.INCN = emitP1 INCI
+emitPOp ANF.INCN = emitP1 INCN
 emitPOp ANF.DECI = emitP1 DECI
-emitPOp ANF.DECN = emitP1 DECI
+emitPOp ANF.DECN = emitP1 DECN
 emitPOp ANF.TZRO = emitP1 TZRO
 emitPOp ANF.LZRO = emitP1 LZRO
 emitPOp ANF.POPC = emitP1 POPC
 emitPOp ANF.ANDN = emitP2 ANDN
+emitPOp ANF.ANDI = emitP2 ANDI
 emitPOp ANF.IORN = emitP2 IORN
+emitPOp ANF.IORI = emitP2 IORI
+emitPOp ANF.XORI = emitP2 XORI
 emitPOp ANF.XORN = emitP2 XORN
 emitPOp ANF.COMN = emitP1 COMN
+emitPOp ANF.COMI = emitP1 COMI
 -- Float
 emitPOp ANF.ADDF = emitP2 ADDF
 emitPOp ANF.SUBF = emitP2 SUBF
@@ -1241,6 +1270,7 @@ emitPOp ANF.FTOT = emitBP1 FTOT
 emitPOp ANF.TTON = emitBP1 TTON
 emitPOp ANF.TTOI = emitBP1 TTOI
 emitPOp ANF.TTOF = emitBP1 TTOF
+emitPOp ANF.CAST = emitP2 CAST
 -- text
 emitPOp ANF.CATT = emitBP2 CATT
 emitPOp ANF.TAKT = emitBP2 TAKT
@@ -1456,33 +1486,17 @@ emitSumCase rns grpr grpn rec ctx v (ccs, TAbss vs bo) =
   emitSection rns grpr grpn rec (sumCtx ctx v $ zip vs ccs) bo
 
 litToMLit :: ANF.Lit -> MLit
-litToMLit (ANF.I i) = MI $ fromIntegral i
-litToMLit (ANF.N n) = MI $ fromIntegral n
-litToMLit (ANF.C c) = MI $ fromEnum c
+litToMLit (ANF.I i) = MI (fromIntegral i)
+litToMLit (ANF.N n) = MN n
+litToMLit (ANF.C c) = MC c
 litToMLit (ANF.F d) = MD d
 litToMLit (ANF.T t) = MT t
 litToMLit (ANF.LM r) = MM r
 litToMLit (ANF.LY r) = MY r
 
+-- | Emit a literal as a machine literal of the correct boxed/unboxed format.
 emitLit :: ANF.Lit -> Instr
 emitLit = Lit . litToMLit
-
-doubleToInt :: Double -> Int
-doubleToInt d = indexByteArray (byteArrayFromList [d]) 0
-
-emitBLit :: ANF.Lit -> Instr
-emitBLit l = case l of
-  (ANF.F d) -> BLit lRef builtinTypeTag (MI $ doubleToInt d)
-  _ -> BLit lRef builtinTypeTag (litToMLit l)
-  where
-    lRef = ANF.litRef l
-    builtinTypeTag :: Word64
-    builtinTypeTag =
-      case M.lookup (ANF.litRef l) builtinTypeNumbering of
-        Nothing -> error "emitBLit: unknown builtin type reference"
-        Just n ->
-          let rt = toEnum (fromIntegral n)
-           in (packTags rt 0)
 
 -- Emits some fix-up code for calling functions. Some of the
 -- variables in scope come from the top-level let rec, but these
@@ -1510,7 +1524,7 @@ emitClosures grpr grpn rec ctx args k =
           let cix = (CIx grpr grpn n)
            in Ins (Name (Env cix cix) ZArgs) <$> allocate (Var a BX ctx) as k
       | otherwise =
-          internalBug $ "emitClosures: unknown reference: " ++ show a
+          internalBug $ "emitClosures: unknown reference: " ++ show a ++ show grpr
 
 emitArgs :: (Var v) => Word64 -> Ctx v -> [v] -> Args
 emitArgs grpn ctx args
@@ -1532,13 +1546,13 @@ demuxArgs = \case
   [(i, _), (j, _)] -> VArg2 i j
   args -> VArgN $ PA.primArrayFromList (fst <$> args)
 
-combDeps :: GComb clos comb -> [Word64]
+combDeps :: GComb val comb -> [Word64]
 combDeps (Lam _ _ s) = sectionDeps s
-combDeps (CachedClosure {}) = []
+combDeps (CachedVal {}) = []
 
 combTypes :: GComb any comb -> [Word64]
 combTypes (Lam _ _ s) = sectionTypes s
-combTypes (CachedClosure {}) = []
+combTypes (CachedVal {}) = []
 
 sectionDeps :: GSection comb -> [Word64]
 sectionDeps (App _ (Env (CIx _ w _) _) _) = [w]
@@ -1566,7 +1580,7 @@ sectionTypes (RMatch _ pu br) =
 sectionTypes _ = []
 
 instrTypes :: GInstr comb -> [Word64]
-instrTypes (Pack _ w _) = [w `shiftR` 16]
+instrTypes (Pack _ (PackedTag w) _) = [w `shiftR` 16]
 instrTypes (Reset ws) = setToList ws
 instrTypes (Capture w) = [w]
 instrTypes (SetDyn w _) = [w]
@@ -1603,7 +1617,7 @@ prettyCombs w es =
     id
     (mapToList es)
 
-prettyComb :: (Show clos, Show comb) => Word64 -> Word64 -> GComb clos comb -> ShowS
+prettyComb :: (Show val, Show comb) => Word64 -> Word64 -> GComb val comb -> ShowS
 prettyComb w i = \case
   (Lam a _ s) ->
     shows w
@@ -1613,7 +1627,7 @@ prettyComb w i = \case
       . shows a
       . showString "\n"
       . prettySection 2 s
-  (CachedClosure a b) ->
+  (CachedVal a b) ->
     shows w
       . showString ":"
       . shows i
@@ -1718,13 +1732,8 @@ prettyIns (Pack r i as) =
     . shows i
     . (' ' :)
     . prettyArgs as
-prettyIns (BLit r t l) =
-  showString "BLit "
-    . prettyRef r
-    . (' ' :)
-    . shows t
-    . (' ' :)
-    . showsPrec 11 l
+prettyIns (Lit l) =
+  showString "Lit " . showsPrec 11 l
 prettyIns (Name r as) =
   showString "Name "
     . prettyGRef 12 r
