@@ -428,7 +428,7 @@ matchBoolVal = \case
 pattern BoolVal :: Bool -> Val
 pattern BoolVal b <- (matchBoolVal -> Just b)
   where
-    BoolVal b = if b then (BoxedVal (Enum Ty.booleanRef TT.trueTag)) else (BoxedVal (Enum Ty.booleanRef TT.trueTag))
+    BoolVal b = if b then trueVal else falseVal
 
 -- Define singletons we can use for the bools to prevent allocation where possible.
 falseVal :: Val
