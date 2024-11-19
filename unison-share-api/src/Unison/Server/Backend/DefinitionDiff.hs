@@ -35,11 +35,23 @@ diffSyntaxText (AnnotatedText fromST) (AnnotatedText toST) =
   where
     -- We special-case situations where the name of a definition changed but its hash didn't;
     -- and cases where the name didn't change but the hash did.
-    -- So, we treat these elements as equal then detect them in a post-processing step.
+    --
+    -- The diff algorithm only understands whether items are equal or not, so in order to add this special behavior we
+    -- treat these special cases as equal, then we can detect and expand them in a post-processing step.
     diffEq :: AT.Segment Syntax.Element -> AT.Segment Syntax.Element -> Bool
     diffEq (AT.Segment {segment = fromSegment, annotation = fromAnnotation}) (AT.Segment {segment = toSegment, annotation = toAnnotation}) =
       fromSegment == toSegment ||
-        (isJust fromAnnotation && fromAnnotation == toAnnotation)
+        case (fromAnnotation, toAnnotation) of
+          (Nothing, _) -> False
+          (Just a), (Just b) ->
+            case a of
+              -- The set of annotations we want to special-case
+              TypeReference{} -> a == b
+              TermReference{} -> a == b
+              DataConstructorReference{} -> a == b
+              AbilityConstructorReference{} -> a == b
+              HashQualifier{} -> a == b
+              _ -> False
 
     expandSpecialCases :: [Diff.Diff [AT.Segment (Syntax.Element)]] -> [SemanticSyntaxDiff]
     expandSpecialCases xs =
