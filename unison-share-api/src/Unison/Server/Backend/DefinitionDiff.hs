@@ -43,14 +43,15 @@ diffSyntaxText (AnnotatedText fromST) (AnnotatedText toST) =
       fromSegment == toSegment ||
         case (fromAnnotation, toAnnotation) of
           (Nothing, _) -> False
-          (Just a), (Just b) ->
+          (_, Nothing) -> False
+          (Just a, Just b) ->
             case a of
               -- The set of annotations we want to special-case
-              TypeReference{} -> a == b
-              TermReference{} -> a == b
-              DataConstructorReference{} -> a == b
-              AbilityConstructorReference{} -> a == b
-              HashQualifier{} -> a == b
+              Syntax.TypeReference{} -> a == b
+              Syntax.TermReference{} -> a == b
+              Syntax.DataConstructorReference{} -> a == b
+              Syntax.AbilityConstructorReference{} -> a == b
+              Syntax.HashQualifier{} -> a == b
               _ -> False
 
     expandSpecialCases :: [Diff.Diff [AT.Segment (Syntax.Element)]] -> [SemanticSyntaxDiff]
