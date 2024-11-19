@@ -1585,7 +1585,8 @@ isInlinable _ _       = False
 -- in infinite inlining. This isn't the only such scenario, but
 -- it's one we can opportunistically rule out.
 inlineInfo :: (Var v) => Reference -> SuperGroup v -> Maybe (Int, ANormal v)
-inlineInfo r (Rec [] (Lambda ccs body@(ABTN.TAbss _ e)))
+inlineInfo r (Rec [] (Lambda ccs body@(ABTN.TAbss vs e)))
+  | length ccs /= length vs = error "inlineInfo: ccs/vs mismatch"
   | isInlinable r e = Just (length ccs, body)
 inlineInfo _ _ = Nothing
 
