@@ -228,12 +228,26 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=te
                 ]
             },
             {
-                "annotation": {
-                    "tag": "TextLiteral"
-                },
-                "diffTag": "segmentChange",
-                "fromSegment": "\"Here's some text\"",
-                "toSegment": "\"Here's some different text\""
+                "diffTag": "old",
+                "elements": [
+                    {
+                        "annotation": {
+                            "tag": "TextLiteral"
+                        },
+                        "segment": "\"Here's some text\""
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": {
+                            "tag": "TextLiteral"
+                        },
+                        "segment": "\"Here's some different text\""
+                    }
+                ]
             },
             {
                 "diffTag": "both",
@@ -270,12 +284,26 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=te
                 ]
             },
             {
-                "annotation": {
-                    "tag": "NumericLiteral"
-                },
-                "diffTag": "segmentChange",
-                "fromSegment": "1",
-                "toSegment": "2"
+                "diffTag": "old",
+                "elements": [
+                    {
+                        "annotation": {
+                            "tag": "NumericLiteral"
+                        },
+                        "segment": "1"
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": {
+                            "tag": "NumericLiteral"
+                        },
+                        "segment": "2"
+                    }
+                ]
             }
         ],
         "tag": "UserObject"
@@ -1019,11 +1047,31 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ta
                             "tag": "ControlKeyword"
                         },
                         "segment": " then"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": "\n"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": "  "
+                    },
+                    {
+                        "annotation": null,
+                        "segment": "  "
+                    },
+                    {
+                        "annotation": null,
+                        "segment": "  "
+                    },
+                    {
+                        "annotation": null,
+                        "segment": "  "
                     }
                 ]
             },
             {
-                "diffTag": "new",
+                "diffTag": "both",
                 "elements": [
                     {
                         "annotation": {
@@ -1031,35 +1079,21 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ta
                             "tag": "TermReference"
                         },
                         "segment": "emit"
-                    }
-                ]
-            },
-            {
-                "annotation": null,
-                "diffTag": "segmentChange",
-                "fromSegment": "\n",
-                "toSegment": " "
-            },
-            {
-                "diffTag": "new",
-                "elements": [
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    },
                     {
                         "annotation": {
                             "tag": "Var"
                         },
                         "segment": "a"
-                    }
-                ]
-            },
-            {
-                "annotation": null,
-                "diffTag": "segmentChange",
-                "fromSegment": "  ",
-                "toSegment": "\n"
-            },
-            {
-                "diffTag": "both",
-                "elements": [
+                    },
+                    {
+                        "annotation": null,
+                        "segment": "\n"
+                    },
                     {
                         "annotation": null,
                         "segment": "  "
@@ -1078,11 +1112,8 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ta
                 "diffTag": "old",
                 "elements": [
                     {
-                        "annotation": {
-                            "contents": "#b035k0tpdv9jbs80ig29hujmv9kpkubda6or4320o5g7aj7edsudislnp2uovntgu5b0e6a18p0p7j8r2hcpr20blls7am8nll6t2ro#a0",
-                            "tag": "TermReference"
-                        },
-                        "segment": "emit"
+                        "annotation": null,
+                        "segment": "  "
                     }
                 ]
             },
@@ -1094,66 +1125,32 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ta
                             "tag": "ControlKeyword"
                         },
                         "segment": "if"
-                    }
-                ]
-            },
-            {
-                "diffTag": "both",
-                "elements": [
-                    {
-                        "annotation": null,
-                        "segment": " "
-                    }
-                ]
-            },
-            {
-                "annotation": {
-                    "tag": "Var"
-                },
-                "diffTag": "segmentChange",
-                "fromSegment": "a",
-                "toSegment": "n"
-            },
-            {
-                "annotation": null,
-                "diffTag": "segmentChange",
-                "fromSegment": "\n",
-                "toSegment": " "
-            },
-            {
-                "diffTag": "old",
-                "elements": [
-                    {
-                        "annotation": null,
-                        "segment": "  "
                     },
                     {
                         "annotation": null,
-                        "segment": "  "
-                    }
-                ]
-            },
-            {
-                "diffTag": "new",
-                "elements": [
+                        "segment": " "
+                    },
+                    {
+                        "annotation": {
+                            "tag": "Var"
+                        },
+                        "segment": "n"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    },
                     {
                         "annotation": {
                             "contents": "##Nat.>",
                             "tag": "TermReference"
                         },
                         "segment": ">"
-                    }
-                ]
-            },
-            {
-                "annotation": null,
-                "diffTag": "segmentChange",
-                "fromSegment": "  ",
-                "toSegment": " "
-            },
-            {
-                "diffTag": "new",
-                "elements": [
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    },
                     {
                         "annotation": {
                             "tag": "NumericLiteral"
@@ -1165,14 +1162,12 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ta
                             "tag": "ControlKeyword"
                         },
                         "segment": " then"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
                     }
                 ]
-            },
-            {
-                "annotation": null,
-                "diffTag": "segmentChange",
-                "fromSegment": "  ",
-                "toSegment": " "
             },
             {
                 "diffTag": "both",
@@ -1265,17 +1260,11 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ta
                 ]
             },
             {
-                "annotation": null,
-                "diffTag": "segmentChange",
-                "fromSegment": "\n",
-                "toSegment": " "
-            },
-            {
                 "diffTag": "old",
                 "elements": [
                     {
                         "annotation": null,
-                        "segment": "  "
+                        "segment": "\n"
                     },
                     {
                         "annotation": null,
@@ -1284,6 +1273,19 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ta
                     {
                         "annotation": null,
                         "segment": "  "
+                    },
+                    {
+                        "annotation": null,
+                        "segment": "  "
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": null,
+                        "segment": " "
                     }
                 ]
             },
@@ -1387,33 +1389,24 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ta
                 ]
             },
             {
-                "annotation": {
-                    "tag": "ControlKeyword"
-                },
-                "diffTag": "segmentChange",
-                "fromSegment": "handle",
-                "toSegment": "if"
-            },
-            {
-                "diffTag": "both",
+                "diffTag": "new",
                 "elements": [
+                    {
+                        "annotation": {
+                            "tag": "ControlKeyword"
+                        },
+                        "segment": "if"
+                    },
                     {
                         "annotation": null,
                         "segment": " "
-                    }
-                ]
-            },
-            {
-                "annotation": {
-                    "tag": "Var"
-                },
-                "diffTag": "segmentChange",
-                "fromSegment": "s",
-                "toSegment": "n"
-            },
-            {
-                "diffTag": "new",
-                "elements": [
+                    },
+                    {
+                        "annotation": {
+                            "tag": "Var"
+                        },
+                        "segment": "n"
+                    },
                     {
                         "annotation": null,
                         "segment": " "
@@ -1444,7 +1437,12 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ta
                     {
                         "annotation": null,
                         "segment": " "
-                    },
+                    }
+                ]
+            },
+            {
+                "diffTag": "both",
+                "elements": [
                     {
                         "annotation": {
                             "tag": "ControlKeyword"
@@ -1460,12 +1458,7 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ta
                             "tag": "Var"
                         },
                         "segment": "s"
-                    }
-                ]
-            },
-            {
-                "diffTag": "both",
-                "elements": [
+                    },
                     {
                         "annotation": {
                             "tag": "Unit"
