@@ -1546,7 +1546,6 @@ arities (Rec bs e) = arity e : fmap (arity . snd) bs
 -- See below for the discussion.
 isInlinable :: Var v => Reference -> ANormal v -> Bool
 isInlinable r (TApp (FComb s) _) = r /= s
-isInlinable _ (TApp (FReq _ _) _) = False
 isInlinable _ TApp {} = True
 isInlinable _ TBLit {} = True
 isInlinable _ TVar {} = True
