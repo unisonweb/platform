@@ -38,7 +38,8 @@ diffSyntaxText (AnnotatedText fromST) (AnnotatedText toST) =
     -- So, we treat these elements as equal then detect them in a post-processing step.
     diffEq :: AT.Segment Syntax.Element -> AT.Segment Syntax.Element -> Bool
     diffEq (AT.Segment {segment = fromSegment, annotation = fromAnnotation}) (AT.Segment {segment = toSegment, annotation = toAnnotation}) =
-      fromSegment == toSegment || fromAnnotation == toAnnotation
+      fromSegment == toSegment ||
+        (isJust fromAnnotation && fromAnnotation == toAnnotation)
 
     expandSpecialCases :: [Diff.Diff [AT.Segment (Syntax.Element)]] -> [SemanticSyntaxDiff]
     expandSpecialCases xs =
