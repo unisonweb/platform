@@ -16,6 +16,7 @@ import Unison.Codebase.Branch.Names qualified as Branch
 import Unison.Codebase.Editor.HandleInput.EditNamespace (getNamesForEdit)
 import Unison.Codebase.Editor.HandleInput.ShowDefinition (showDefinitions)
 import Unison.Codebase.Editor.Input (OutputLocation (..), RelativeToFold (..))
+import Unison.Codebase.Editor.Output qualified as Output
 import Unison.ConstructorReference qualified as ConstructorReference
 import Unison.HashQualified qualified as HQ
 import Unison.Name (Name)
@@ -43,41 +44,48 @@ handleEditDependents name = do
               Referent.Ref ref -> Defns.fromTerms (Set.singleton ref)
          in Defns Set.empty refs0.types <> foldMap f refs0.terms
 
-  -- Load the current project namespace and throw away the libdeps
-  branch <- Cli.getCurrentBranch0
-  let ppe =
-        let names = Branch.toNames branch
-         in PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHashName names)
+  (ppe, types, terms) <-
+    Cli.withRespondRegion \respondRegion -> do
+      respondRegion (Output.Literal "Loading branch...")
 
-  -- Throw away the libdeps
-  let branchWithoutLibdeps = Branch.deleteLibdeps branch
+      -- Load the current project namespace and throw away the libdeps
+      branch <- Cli.getCurrentBranch0
+      let ppe =
+            let names = Branch.toNames branch
+             in PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHashName names)
 
-  -- Identify the local dependents of the input name
-  dependents <-
-    Cli.runTransaction do
-      Operations.transitiveDependentsWithinScope
-        (Branch.deepTermReferenceIds branchWithoutLibdeps <> Branch.deepTypeReferenceIds branchWithoutLibdeps)
-        (bifold refs)
+      -- Throw away the libdeps
+      let branchWithoutLibdeps = Branch.deleteLibdeps branch
 
-  (types, terms) <- do
-    env <- ask
-    Cli.runTransaction
-      ( getNamesForEdit
-          env.codebase
-          ppe
-          Names
-            { terms =
-                branchWithoutLibdeps
-                  & Branch.deepTerms
-                  & Relation.restrictDom (Set.mapMonotonic Referent.fromTermReferenceId dependents.terms)
-                  & Relation.swap,
-              types =
-                branchWithoutLibdeps
-                  & Branch.deepTypes
-                  & Relation.restrictDom (Set.mapMonotonic Reference.fromId dependents.types)
-                  & Relation.swap
-            }
-      )
+      -- Identify the local dependents of the input name
+      respondRegion (Output.Literal "Identifying dependents...")
+      dependents <-
+        Cli.runTransaction do
+          Operations.transitiveDependentsWithinScope
+            (Branch.deepTermReferenceIds branchWithoutLibdeps <> Branch.deepTypeReferenceIds branchWithoutLibdeps)
+            (bifold refs)
+
+      respondRegion (Output.Literal "Loading dependents...")
+      env <- ask
+      (types, terms) <-
+        Cli.runTransaction
+          ( getNamesForEdit
+              env.codebase
+              ppe
+              Names
+                { terms =
+                    branchWithoutLibdeps
+                      & Branch.deepTerms
+                      & Relation.restrictDom (Set.mapMonotonic Referent.fromTermReferenceId dependents.terms)
+                      & Relation.swap,
+                  types =
+                    branchWithoutLibdeps
+                      & Branch.deepTypes
+                      & Relation.restrictDom (Set.mapMonotonic Reference.fromId dependents.types)
+                      & Relation.swap
+                }
+          )
+      pure (ppe, types, terms)
 
   let misses = []
   showDefinitions (LatestFileLocation WithinFold) ppe terms types misses
