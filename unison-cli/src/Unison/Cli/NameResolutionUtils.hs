@@ -1,10 +1,12 @@
 -- | Utilities related to resolving names to things.
 module Unison.Cli.NameResolutionUtils
-  ( resolveHQToLabeledDependencies,
+  ( resolveHQName,
+    resolveHQToLabeledDependencies,
   )
 where
 
 import Control.Monad.Reader (ask)
+import Data.Bifoldable (bifoldMap)
 import Data.Set qualified as Set
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
@@ -16,26 +18,34 @@ import Unison.Name (Name)
 import Unison.Name qualified as Name
 import Unison.Names qualified as Names
 import Unison.Prelude
+import Unison.Reference (TypeReference)
+import Unison.Referent (Referent)
 import Unison.Server.NameSearch.Sqlite qualified as Sqlite
+import Unison.ShortHash (ShortHash)
+import Unison.Util.Defns (Defns (..), DefnsF)
 
--- todo: compare to `getHQTerms` / `getHQTypes`.  Is one universally better?
-resolveHQToLabeledDependencies :: HQ.HashQualified Name -> Cli (Set LabeledDependency)
-resolveHQToLabeledDependencies = \case
-  HQ.NameOnly n -> do
+resolveHQName :: HQ.HashQualified Name -> Cli (DefnsF Set Referent TypeReference)
+resolveHQName = \case
+  HQ.NameOnly name -> do
     names <- Cli.currentNames
-    let terms, types :: Set LabeledDependency
-        terms = Set.map LD.referent . Name.searchBySuffix n $ Names.terms names
-        types = Set.map LD.typeRef . Name.searchBySuffix n $ Names.types names
-    pure $ terms <> types
+    pure
+      Defns
+        { terms = Name.searchByRankedSuffix name names.terms,
+          types = Name.searchByRankedSuffix name names.types
+        }
   -- rationale: the hash should be unique enough that the name never helps
-  HQ.HashQualified _n sh -> resolveHashOnly sh
-  HQ.HashOnly sh -> resolveHashOnly sh
+  -- mitchell says: that seems wrong
+  HQ.HashQualified _n hash -> resolveHashOnly hash
+  HQ.HashOnly hash -> resolveHashOnly hash
   where
-    resolveHashOnly sh = do
-      Cli.Env {codebase} <- ask
-      (terms, types) <-
-        Cli.runTransaction do
-          terms <- Sqlite.termReferentsByShortHash codebase sh
-          types <- Sqlite.typeReferencesByShortHash sh
-          pure (terms, types)
-      pure $ Set.map LD.referent terms <> Set.map LD.typeRef types
+    resolveHashOnly :: ShortHash -> Cli (DefnsF Set Referent TypeReference)
+    resolveHashOnly hash = do
+      env <- ask
+      Cli.runTransaction do
+        terms <- Sqlite.termReferentsByShortHash env.codebase hash
+        types <- Sqlite.typeReferencesByShortHash hash
+        pure Defns {terms, types}
+
+resolveHQToLabeledDependencies :: HQ.HashQualified Name -> Cli (Set LabeledDependency)
+resolveHQToLabeledDependencies =
+  fmap (bifoldMap (Set.map LD.referent) (Set.map LD.typeRef)) . resolveHQName

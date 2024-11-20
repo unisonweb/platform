@@ -244,6 +244,7 @@ data Input
   | UpgradeCommitI
   | MergeCommitI
   | DebugSynhashTermI !Name
+  | EditDependentsI !(HQ.HashQualified Name)
   deriving (Eq, Show)
 
 -- | The source of a `branch` command: what to make the new branch from.

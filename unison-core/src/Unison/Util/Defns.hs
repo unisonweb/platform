@@ -6,6 +6,8 @@ module Unison.Util.Defns
     DefnsF4,
     alignDefnsWith,
     defnsAreEmpty,
+    fromTerms,
+    fromTypes,
     hoistDefnsF,
     mapDefns,
     unzipDefns,
@@ -64,6 +66,14 @@ alignDefnsWith f defns =
 defnsAreEmpty :: (Foldable f, Foldable g) => Defns (f a) (g b) -> Bool
 defnsAreEmpty defns =
   null defns.terms && null defns.types
+
+fromTerms :: (Monoid types) => terms -> Defns terms types
+fromTerms terms =
+  Defns {terms, types = mempty}
+
+fromTypes :: (Monoid terms) => types -> Defns terms types
+fromTypes types =
+  Defns {terms = mempty, types}
 
 hoistDefnsF :: (forall x. f x -> g x) -> DefnsF f a b -> DefnsF g a b
 hoistDefnsF f (Defns x y) =

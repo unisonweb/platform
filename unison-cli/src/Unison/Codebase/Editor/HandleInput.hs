@@ -61,6 +61,7 @@ import Unison.Codebase.Editor.HandleInput.DeleteBranch (handleDeleteBranch)
 import Unison.Codebase.Editor.HandleInput.DeleteProject (handleDeleteProject)
 import Unison.Codebase.Editor.HandleInput.Dependents (handleDependents)
 import Unison.Codebase.Editor.HandleInput.EditNamespace (handleEditNamespace)
+import Unison.Codebase.Editor.HandleInput.EditDependents (handleEditDependents)
 import Unison.Codebase.Editor.HandleInput.FindAndReplace (handleStructuredFindI, handleStructuredFindReplaceI, handleTextFindI)
 import Unison.Codebase.Editor.HandleInput.FormatFile qualified as Format
 import Unison.Codebase.Editor.HandleInput.Global qualified as Global
@@ -884,6 +885,7 @@ loop e = do
             UpgradeCommitI -> handleCommitUpgrade
             LibInstallI remind libdep -> handleInstallLib remind libdep
             DebugSynhashTermI name -> handleDebugSynhashTerm name
+            EditDependentsI name -> handleEditDependents name
 
 inputDescription :: Input -> Cli Text
 inputDescription input =
@@ -1025,6 +1027,7 @@ inputDescription input =
     DisplayI {} -> wat
     DocsI {} -> wat
     DocsToHtmlI {} -> wat
+    EditDependentsI {} -> wat
     FindI {} -> wat
     FindShallowI {} -> wat
     HistoryI {} -> wat

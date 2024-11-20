@@ -51,6 +51,7 @@ module Unison.CommandLine.InputPatterns
     docs,
     docsToHtml,
     edit,
+    editDependents,
     editNamespace,
     execute,
     find,
@@ -2404,6 +2405,19 @@ editNew =
           . NE.nonEmpty
     }
 
+editDependents :: InputPattern
+editDependents =
+  InputPattern
+    { patternName = "edit.dependents",
+      aliases = [],
+      visibility = I.Visible,
+      args = [("definition to edit", Required, definitionQueryArg)],
+      help = "Like `edit`, but also includes all transitive dependents in the current project.",
+      parse = \case
+        [name] -> Input.EditDependentsI <$> handleHashQualifiedNameArg name
+        args -> wrongArgsLength "exactly one argument" args
+    }
+
 editNamespace :: InputPattern
 editNamespace =
   InputPattern
@@ -3601,6 +3615,7 @@ validInputs =
       docs,
       docsToHtml,
       edit,
+      editDependents,
       editNamespace,
       editNew,
       execute,
