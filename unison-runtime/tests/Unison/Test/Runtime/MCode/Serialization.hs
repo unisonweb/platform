@@ -16,6 +16,7 @@ import Unison.Prelude
 import Unison.Runtime.Interface
 import Unison.Runtime.MCode (Args (..), BPrim1, BPrim2, Branch, Comb, CombIx (..), GBranch (..), GComb (..), GCombInfo (..), GInstr (..), GRef (..), GSection (..), Instr, MLit (..), Ref, Section, UPrim1, UPrim2)
 import Unison.Runtime.Machine (Combs)
+import Unison.Runtime.TypeTags (PackedTag(..))
 import Unison.Test.Gen
 import Unison.Util.EnumContainers (EnumMap, EnumSet)
 import Unison.Util.EnumContainers qualified as EC
@@ -105,6 +106,9 @@ genMLit =
       MY <$> genReference
     ]
 
+genPackedTag :: Gen PackedTag
+genPackedTag = PackedTag <$> genSmallWord64
+
 genInstr :: Gen Instr
 genInstr =
   Gen.choice
@@ -117,9 +121,8 @@ genInstr =
       Capture <$> genSmallWord64,
       Name <$> genGRef <*> genArgs,
       Info <$> Gen.string (Range.linear 0 10) Gen.alphaNum,
-      Pack <$> genReference <*> genSmallWord64 <*> genArgs,
+      Pack <$> genReference <*> genPackedTag <*> genArgs,
       Lit <$> genMLit,
-      BLit <$> genReference <*> genSmallWord64 <*> genMLit,
       Print <$> genSmallInt,
       Reset <$> genEnumSet genSmallWord64,
       Fork <$> genSmallInt,

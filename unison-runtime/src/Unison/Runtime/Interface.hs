@@ -505,14 +505,14 @@ compileValue base =
   flip pair (rf base) . ANF.BLit . List . Seq.fromList . fmap cpair
   where
     rf = ANF.BLit . TmLink . RF.Ref
-    cons x y = Data RF.pairRef 0 [Right x, Right y]
+    cons x y = Data RF.pairRef 0 [x, y]
     tt = Data RF.unitRef 0 []
     code sg = ANF.BLit (Code sg)
     pair x y = cons x (cons y tt)
     cpair (r, sg) = pair (rf r) (code sg)
 
 decompileCtx ::
-  EnumMap Word64 Reference -> EvalCtx -> Closure -> DecompResult Symbol
+  EnumMap Word64 Reference -> EvalCtx -> Val -> DecompResult Symbol
 decompileCtx crs ctx = decompile ib $ backReferenceTm crs fr ir dt
   where
     ib = intermedToBase ctx
@@ -858,8 +858,8 @@ prepareEvaluation ppe tm ctx = do
       Just r -> r
       Nothing -> error "prepareEvaluation: could not remap main ref"
 
-watchHook :: IORef Closure -> Stack -> IO ()
-watchHook r stk = bpeek stk >>= writeIORef r
+watchHook :: IORef Val -> Stack -> IO ()
+watchHook r stk = peek stk >>= writeIORef r
 
 backReferenceTm ::
   EnumMap Word64 Reference ->
@@ -1029,7 +1029,7 @@ evalInContext ::
   Word64 ->
   IO (Either Error ([Error], Term Symbol))
 evalInContext ppe ctx activeThreads w = do
-  r <- newIORef BlackHole
+  r <- newIORef (boxedVal BlackHole)
   crs <- readTVarIO (combRefs $ ccache ctx)
   let hook = watchHook r
       decom = decompileCtx crs ctx
@@ -1041,14 +1041,14 @@ evalInContext ppe ctx activeThreads w = do
         where
           tr = first (backmapRef ctx) <$> tr0
 
-      debugText fancy c = case decom c of
+      debugText fancy val = case decom val of
         (errs, dv)
           | null errs ->
               SimpleTrace . debugTextFormat fancy $ pretty ppe dv
           | otherwise ->
               MsgTrace
                 (debugTextFormat fancy $ tabulateErrors errs)
-                (show c)
+                (show val)
                 (debugTextFormat fancy $ pretty ppe dv)
 
   result <-
@@ -1063,7 +1063,7 @@ executeMainComb ::
   CCache ->
   IO (Either (Pretty ColorText) ())
 executeMainComb init cc = do
-  rSection <- resolveSection cc $ Ins (Pack RF.unitRef 0 ZArgs) $ Call True init init (VArg1 0)
+  rSection <- resolveSection cc $ Ins (Pack RF.unitRef (PackedTag 0) ZArgs) $ Call True init init (VArg1 0)
   result <-
     UnliftIO.try . eval0 cc Nothing $ rSection
   case result of
@@ -1365,7 +1365,7 @@ restoreCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
     srcCombs =
       let builtinCombs = mapWithKey (\k v -> emitComb @Symbol rns (rf k) k mempty (0, v)) numberedTermLookup
        in builtinCombs <> cs
-    combs :: EnumMap Word64 (RCombs Closure)
+    combs :: EnumMap Word64 (RCombs Val)
     combs =
       srcCombs
         & absurdCombs
