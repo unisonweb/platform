@@ -67,20 +67,23 @@ diffSyntaxText (AnnotatedText fromST) (AnnotatedText toST) =
                 ( \next acc -> case (acc, next) of
                     (Both xs : rest, Left seg) -> Both (seg : xs) : rest
                     (_, Left seg) -> Both [seg] : acc
-                    (_, Right diff) -> diff : acc
+                    (_, Right diff) -> diff ++ acc
                 )
-    detectSpecialCase :: AT.Segment Syntax.Element -> AT.Segment Syntax.Element -> Either (AT.Segment Syntax.Element) SemanticSyntaxDiff
+    detectSpecialCase :: AT.Segment Syntax.Element -> AT.Segment Syntax.Element -> Either (AT.Segment Syntax.Element) [SemanticSyntaxDiff]
     detectSpecialCase fromSegment toSegment
       | fromSegment == toSegment = Left fromSegment
-      | AT.annotation fromSegment == AT.annotation toSegment = Right (SegmentChange (AT.segment fromSegment, AT.segment toSegment) (AT.annotation fromSegment))
+      | AT.annotation fromSegment == AT.annotation toSegment = Right [SegmentChange (AT.segment fromSegment, AT.segment toSegment) (AT.annotation fromSegment)]
       -- We only emit an annotation change if it's a change in just the hash of the element (optionally the KIND of hash reference can change too).
       | AT.segment fromSegment == AT.segment toSegment,
         Just _fromHash <- AT.annotation fromSegment >>= elementHash,
         Just _toHash <- AT.annotation toSegment >>= elementHash =
-          Right (AnnotationChange (AT.segment fromSegment) (AT.annotation fromSegment, AT.annotation toSegment))
+          Right [AnnotationChange (AT.segment fromSegment) (AT.annotation fromSegment, AT.annotation toSegment)]
       | otherwise =
-          -- Otherwise it must not be a special-case, just something that's equal.
-          Left toSegment
+          -- the annotation changed, but it's not a recognized hash change.
+          -- This can happen in certain special cases, e.g. a paren changed from being a syntax element into being part
+          -- of a unit.
+          -- We just emit both as old/new segments.
+          Right [Old [fromSegment], New [toSegment]]
       where
         elementHash :: Syntax.Element -> Maybe Syntax.UnisonHash
         elementHash = \case
