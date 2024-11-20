@@ -10,9 +10,7 @@ import Control.Concurrent.Async (race)
 import Control.Exception (ErrorCall (..), throwIO)
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
-import Crypto.Random qualified as Crypto
 import Data.Aeson ()
-import Data.ByteArray.Encoding qualified as BE
 import Data.ByteString qualified as Strict
 import Data.ByteString.Char8 (unpack)
 import Data.ByteString.Char8 qualified as C8
@@ -37,7 +35,6 @@ import Network.Wai.Handler.Warp
     setBeforeMainLoop,
     setHost,
     setPort,
-    withApplicationSettings,
   )
 import Network.Wai.Middleware.Cors (cors, corsMethods, corsOrigins, simpleCorsResourcePolicy)
 import Servant
@@ -48,7 +45,7 @@ import Servant
     serve,
     throwError,
   )
-import Servant qualified as Servant
+import Servant qualified
 import Servant.API
   ( Accept (..),
     Capture,
@@ -398,21 +395,6 @@ app ::
 app env rt codebase uiPath expectedToken allowCorsHost =
   corsPolicy allowCorsHost $ serve appAPI $ server env rt codebase uiPath expectedToken
 
--- | The Token is used to help prevent multiple users on a machine gain access to
--- each others codebases.
---
--- Generate a cryptographically secure random token.
--- https://neilmadden.blog/2018/08/30/moving-away-from-uuids/
---
---  E.g.
--- >>> genToken
--- "uxf85C7Y0B6om47"
-genToken :: IO Strict.ByteString
-genToken = do
-  BE.convertToBase @ByteString BE.Base64URLUnpadded <$> Crypto.getRandomBytes numRandomBytes
-  where
-    numRandomBytes = 10
-
 data Waiter a = Waiter
   { notify :: a -> IO (),
     waitFor :: IO a
@@ -475,21 +457,23 @@ startServer env opts rt codebase onStart = do
   envUI <- canonicalizePath $ fromMaybe (FilePath.takeDirectory exePath </> "ui") (codebaseUIPath opts)
   token <- case token opts of
     Just t -> return $ C8.pack t
-    _ -> genToken
+    Nothing -> return $ C8.pack "codebase"
   let baseUrl = BaseUrl (fromMaybe "http://127.0.0.1" (host opts)) token
   let settings =
         defaultSettings
-          & maybe id setPort (port opts)
-          & maybe id (setHost . fromString) (host opts)
-  let a = app env rt codebase envUI token (allowCorsHost opts)
+          & maybe (setPort 5858) setPort (port opts)
+          & maybe (setHost $ fromString "127.0.0.1") (setHost . fromString) (host opts)
+  let app' = app env rt codebase envUI token (allowCorsHost opts)
   case port opts of
-    Nothing -> withApplicationSettings settings (pure a) (onStart . baseUrl)
-    Just p -> do
+    Nothing -> withPort settings baseUrl app' 5858
+    Just p -> withPort settings baseUrl app' p
+  where
+    withPort settings baseUrl app' p = do
       started <- mkWaiter
       let settings' = setBeforeMainLoop (notify started ()) settings
       result <-
         race
-          (runSettings settings' a)
+          (runSettings settings' app')
           (waitFor started *> onStart (baseUrl p))
       case result of
         Left () -> throwIO $ ErrorCall "Server exited unexpectedly!"
@@ -518,16 +502,30 @@ serveIndex path = do
 serveUI :: FilePath -> Server WebUI
 serveUI path _ = serveIndex path
 
--- Apply cors if there is allow-cors-host defined
+{-
+  Allows CORS requests from UCM Desktop:
+    * Mac/Linux: tauri://localhost
+    * Windows: https://tauri.localhost, http://tauri.localhost
+-}
 corsPolicy :: Maybe String -> Middleware
-corsPolicy = maybe id \allowCorsHost ->
-  cors $
-    const $
-      Just
-        simpleCorsResourcePolicy
-          { corsMethods = ["GET", "OPTIONS"],
-            corsOrigins = Just ([C8.pack allowCorsHost], True)
-          }
+corsPolicy allowCorsHost =
+  case allowCorsHost of
+    Just host ->
+      corsPolicy_ (host : tauriHosts)
+    Nothing ->
+      corsPolicy_ tauriHosts
+  where
+    tauriHosts =
+      ["tauri://localhost", "https://tauri.localhost", "http://tauri.localhost"]
+
+    corsPolicy_ hosts =
+      cors $
+        const $
+          Just
+            simpleCorsResourcePolicy
+              { corsMethods = ["GET", "OPTIONS"],
+                corsOrigins = Just (fmap C8.pack hosts, True)
+              }
 
 server ::
   BackendEnv ->
@@ -577,35 +575,35 @@ serveProjectsCodebaseServerAPI codebase rt projectName branchName = do
     projectAndBranchName = ProjectAndBranch projectName branchName
     namespaceListingEndpoint rel name = do
       root <- resolveProjectRootHash codebase projectAndBranchName
-      setCacheControl <$> NamespaceListing.serve codebase (Right $ root) rel name
+      setCacheControl <$> NamespaceListing.serve codebase (Right root) rel name
     namespaceDetailsEndpoint namespaceName renderWidth = do
       root <- resolveProjectRootHash codebase projectAndBranchName
-      setCacheControl <$> NamespaceDetails.namespaceDetails rt codebase namespaceName (Right $ root) renderWidth
+      setCacheControl <$> NamespaceDetails.namespaceDetails rt codebase namespaceName (Right root) renderWidth
 
     serveDefinitionsEndpoint relativePath rawHqns renderWidth suff = do
       root <- resolveProjectRootHash codebase projectAndBranchName
-      setCacheControl <$> serveDefinitions rt codebase (Right $ root) relativePath rawHqns renderWidth suff
+      setCacheControl <$> serveDefinitions rt codebase (Right root) relativePath rawHqns renderWidth suff
 
     serveFuzzyFindEndpoint relativePath limit renderWidth query = do
       root <- resolveProjectRootHash codebase projectAndBranchName
-      setCacheControl <$> serveFuzzyFind codebase (Right $ root) relativePath limit renderWidth query
+      setCacheControl <$> serveFuzzyFind codebase (Right root) relativePath limit renderWidth query
 
     serveTermSummaryEndpoint shortHash mayName relativeTo renderWidth = do
       root <- resolveProjectRootHash codebase projectAndBranchName
-      setCacheControl <$> serveTermSummary codebase shortHash mayName (Right $ root) relativeTo renderWidth
+      setCacheControl <$> serveTermSummary codebase shortHash mayName (Right root) relativeTo renderWidth
 
     serveTypeSummaryEndpoint shortHash mayName relativeTo renderWidth = do
       root <- resolveProjectRootHash codebase projectAndBranchName
-      setCacheControl <$> serveTypeSummary codebase shortHash mayName (Right $ root) relativeTo renderWidth
+      setCacheControl <$> serveTypeSummary codebase shortHash mayName (Right root) relativeTo renderWidth
 
-resolveProjectRoot :: (Codebase IO v a) -> (ProjectAndBranch ProjectName ProjectBranchName) -> Backend IO (V2.CausalBranch Sqlite.Transaction)
+resolveProjectRoot :: Codebase IO v a -> ProjectAndBranch ProjectName ProjectBranchName -> Backend IO (V2.CausalBranch Sqlite.Transaction)
 resolveProjectRoot codebase projectAndBranchName@(ProjectAndBranch projectName branchName) = do
   mayCB <- liftIO . Codebase.runTransaction codebase $ Codebase.getShallowProjectRootByNames projectAndBranchName
   case mayCB of
     Nothing -> throwError (Backend.ProjectBranchNameNotFound projectName branchName)
     Just cb -> pure cb
 
-resolveProjectRootHash :: (Codebase IO v a) -> (ProjectAndBranch ProjectName ProjectBranchName) -> Backend IO CausalHash
+resolveProjectRootHash :: Codebase IO v a -> ProjectAndBranch ProjectName ProjectBranchName -> Backend IO CausalHash
 resolveProjectRootHash codebase projectAndBranchName = do
   resolveProjectRoot codebase projectAndBranchName <&> Causal.causalHash
 
@@ -628,11 +626,11 @@ serveProjectDiffTermsEndpoint codebase rt projectName oldBranchRef newBranchRef 
   where
     width = Pretty.Width 80
 
-contextForProjectBranch :: (Codebase IO v a) -> ProjectName -> ProjectBranchName -> Backend IO (PrettyPrintEnvDecl, NameSearch Sqlite.Transaction)
+contextForProjectBranch :: Codebase IO v a -> ProjectName -> ProjectBranchName -> Backend IO (PrettyPrintEnvDecl, NameSearch Sqlite.Transaction)
 contextForProjectBranch codebase projectName branchName = do
   projectRootHash <- resolveProjectRootHash codebase (ProjectAndBranch projectName branchName)
   projectRootBranch <- liftIO $ Codebase.expectBranchForHash codebase projectRootHash
-  hashLength <- liftIO $ Codebase.runTransaction codebase $ Codebase.hashLength
+  hashLength <- liftIO $ Codebase.runTransaction codebase Codebase.hashLength
   let names = Branch.toNames (Branch.head projectRootBranch)
   let pped = PPED.makePPED (PPE.hqNamer hashLength names) (PPE.suffixifyByHash names)
   let nameSearch = Names.makeNameSearch hashLength names
