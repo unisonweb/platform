@@ -90,7 +90,7 @@ data DocG specialForm
   | UntitledSection [(DocG specialForm)]
   | Column [(DocG specialForm)]
   | Group (DocG specialForm)
-  deriving stock (Eq, Show, Generic, Functor, Foldable, Traversable)
+  deriving stock (Eq, Ord, Show, Generic, Functor, Foldable, Traversable)
   deriving anyclass (ToJSON)
 
 deriving instance (ToSchema specialForm) => ToSchema (DocG specialForm)
@@ -98,13 +98,13 @@ deriving instance (ToSchema specialForm) => ToSchema (DocG specialForm)
 type UnisonHash = Text
 
 data Ref a = Term a | Type a
-  deriving stock (Eq, Show, Generic, Functor, Foldable, Traversable)
+  deriving stock (Eq, Ord, Show, Generic, Functor, Foldable, Traversable)
   deriving anyclass (ToJSON)
 
 instance (ToSchema a) => ToSchema (Ref a)
 
 data MediaSource = MediaSource {mediaSourceUrl :: Text, mediaSourceMimeType :: Maybe Text}
-  deriving stock (Eq, Show, Generic)
+  deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (ToJSON, ToSchema)
 
 data RenderedSpecialForm
@@ -124,7 +124,7 @@ data RenderedSpecialForm
   | LaTeXInline Text
   | Svg Text
   | RenderError (RenderError SyntaxText)
-  deriving stock (Eq, Show, Generic)
+  deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (ToJSON, ToSchema)
 
 data EvaluatedSpecialForm v
@@ -146,11 +146,11 @@ data EvaluatedSpecialForm v
   | ELaTeXInline Text
   | ESvg Text
   | ERenderError (RenderError (Term v ()))
-  deriving stock (Eq, Show, Generic)
+  deriving stock (Eq, Ord, Show, Generic)
 
 -- `Src folded unfolded`
 data Src = Src SyntaxText SyntaxText
-  deriving stock (Eq, Show, Generic)
+  deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (ToJSON, ToSchema)
 
 -- | Evaluate the doc, then render it.
@@ -447,7 +447,7 @@ evalDoc terms typeOf eval types tm =
 
 data RenderError trm
   = InvalidTerm trm
-  deriving stock (Eq, Show, Generic)
+  deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (ToJSON)
 
 deriving anyclass instance (ToSchema trm) => ToSchema (RenderError trm)
@@ -455,20 +455,20 @@ deriving anyclass instance (ToSchema trm) => ToSchema (RenderError trm)
 data EvaluatedSrc v
   = EvaluatedSrcDecl (EvaluatedDecl v)
   | EvaluatedSrcTerm (EvaluatedTerm v)
-  deriving stock (Show, Eq, Generic)
+  deriving stock (Show, Ord, Eq, Generic)
 
 data EvaluatedDecl v
   = MissingDecl Reference
   | BuiltinDecl Reference
   | FoundDecl Reference (DD.Decl v ())
-  deriving stock (Show, Eq, Generic)
+  deriving stock (Show, Ord, Eq, Generic)
 
 data EvaluatedTerm v
   = MissingTerm Reference
   | BuiltinTypeSig Reference (Type v ())
   | MissingBuiltinTypeSig Reference
   | FoundTerm Reference (Type v ()) (Term v ())
-  deriving stock (Show, Eq, Generic)
+  deriving stock (Show, Eq, Ord, Generic)
 
 -- Determines all dependencies which will be required to render a doc.
 dependencies :: (Ord v) => EvaluatedDoc v -> Set LD.LabeledDependency
