@@ -24,6 +24,21 @@ take n s =
                          else None
     { r }  -> Some r
   handle s() with h n
+
+fakeRefModify f g = g []
+
+foreach f xs = match xs with
+    [] -> ()
+    x +: rest -> let
+      f x
+      foreach f rest
+
+handleRequest =
+  use List +:
+  finalizers = [1, 2, 3]
+  addFinalizer f = fakeRefModify finalizers (fs -> f +: fs)
+  foreach (f -> ()) finalizers
+
 ```
 
 ``` ucm
@@ -53,6 +68,20 @@ take n s =
   if n > 0
     then handle s () with h (n - 1)
     else None
+
+fakeRefModify2 f g = g []
+
+foreach xs f = match xs with
+    [] -> ()
+    x +: rest -> let
+      f x
+      foreach rest f
+
+handleRequest =
+    use List +:
+    finalizers = [1, 2, 3]
+    addFinalizer f = fakeRefModify2 finalizers (fs -> (f +: fs, ()))
+    foreach finalizers (f -> ())
 ```
 
 ``` ucm
@@ -69,6 +98,12 @@ More complex diff
 
 ``` api
 GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=take&newTerm=take
+```
+
+Regression test
+
+``` api
+GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=handleRequest&newTerm=handleRequest
 ```
 
 
