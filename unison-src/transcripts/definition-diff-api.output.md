@@ -33,19 +33,8 @@ take n s =
     { r }  -> Some r
   handle s() with h n
 
-fakeRefModify f g = g []
-
-foreach f xs = match xs with
-    [] -> ()
-    x +: rest -> let
-      f x
-      foreach f rest
-
-handleRequest =
-  use List +:
-  finalizers = [1, 2, 3]
-  addFinalizer f = fakeRefModify finalizers (fs -> f +: fs)
-  foreach (f -> ()) finalizers
+id x = x
+unitCase = id (x -> 1)
 
 ```
 
@@ -61,11 +50,10 @@ handleRequest =
     
       ability Stream a
       type Type
-      fakeRefModify : f -> ([elem] ->{g} t) ->{g} t
-      foreach       : (i ->{g} ()) -> [i] ->{g} ()
-      handleRequest : ()
-      take          : Nat -> '{g} t ->{g, Stream a} Optional t
-      term          : Nat
+      id       : x -> x
+      take     : Nat -> '{g} t ->{g, Stream a} Optional t
+      term     : Nat
+      unitCase : x -> Nat
 
 ```
 ``` ucm
@@ -75,11 +63,10 @@ diffs/main> add
   
     ability Stream a
     type Type
-    fakeRefModify : f -> ([elem] ->{g} t) ->{g} t
-    foreach       : (i ->{g} ()) -> [i] ->{g} ()
-    handleRequest : ()
-    take          : Nat -> '{g} t ->{g, Stream a} Optional t
-    term          : Nat
+    id       : x -> x
+    take     : Nat -> '{g} t ->{g, Stream a} Optional t
+    term     : Nat
+    unitCase : x -> Nat
 
 diffs/main> branch.create new
 
@@ -112,19 +99,8 @@ take n s =
     then handle s () with h (n - 1)
     else None
 
-fakeRefModify2 f g = g []
-
-foreach xs f = match xs with
-    [] -> ()
-    x +: rest -> let
-      f x
-      foreach rest f
-
-handleRequest =
-    use List +:
-    finalizers = [1, 2, 3]
-    addFinalizer f = fakeRefModify2 finalizers (fs -> (f +: fs, ()))
-    foreach finalizers (f -> ())
+id x = x
+unitCase = id (x -> (1, ()))
 ```
 
 ``` ucm
@@ -135,21 +111,15 @@ handleRequest =
   do an `add` or `update`, here's how your codebase would
   change:
   
-    ⊡ Previously added definitions will be ignored: Stream
-    
-    ⍟ These new definitions are ok to `add`:
-    
-      fakeRefModify2 : f -> ([elem] ->{g} t) ->{g} t
-        (also named fakeRefModify)
+    ⊡ Previously added definitions will be ignored: Stream id
     
     ⍟ These names already exist. You can `update` them to your
       new definition:
     
       type Type a
-      foreach       : [t] -> (t ->{g} ()) ->{g} ()
-      handleRequest : ()
-      take          : Nat -> '{g} t ->{g, Stream a} Optional t
-      term          : Nat
+      take     : Nat -> '{g} t ->{g, Stream a} Optional t
+      term     : Nat
+      unitCase : x -> (Nat, ())
 
 ```
 ``` ucm
@@ -3387,10 +3357,10 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ta
 }
 ```
 
-Regression test
+Regression test for weird behavior w/r to unit and parens.
 
 ``` api
-GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=handleRequest&newTerm=handleRequest
+GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=unitCase&newTerm=unitCase
 {
     "diff": {
         "contents": [
@@ -3399,10 +3369,10 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                 "elements": [
                     {
                         "annotation": {
-                            "contents": "handleRequest",
+                            "contents": "unitCase",
                             "tag": "HashQualifier"
                         },
-                        "segment": "handleRequest"
+                        "segment": "unitCase"
                     },
                     {
                         "annotation": {
@@ -3415,6 +3385,60 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                         "segment": " "
                     },
                     {
+                        "annotation": {
+                            "tag": "Var"
+                        },
+                        "segment": "x"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    },
+                    {
+                        "annotation": {
+                            "tag": "TypeOperator"
+                        },
+                        "segment": "->"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": null,
+                        "segment": "("
+                    }
+                ]
+            },
+            {
+                "diffTag": "both",
+                "elements": [
+                    {
+                        "annotation": {
+                            "contents": "##Nat",
+                            "tag": "TypeReference"
+                        },
+                        "segment": "Nat"
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": null,
+                        "segment": ","
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    },
+                    {
                         "annotation": null,
                         "segment": "("
                     },
@@ -3424,35 +3448,23 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                     },
                     {
                         "annotation": null,
-                        "segment": "\n"
-                    },
-                    {
-                        "annotation": {
-                            "contents": "handleRequest",
-                            "tag": "HashQualifier"
-                        },
-                        "segment": "handleRequest"
-                    },
-                    {
-                        "annotation": {
-                            "tag": "BindingEquals"
-                        },
-                        "segment": " ="
-                    },
+                        "segment": ")"
+                    }
+                ]
+            },
+            {
+                "diffTag": "both",
+                "elements": [
                     {
                         "annotation": null,
                         "segment": "\n"
                     },
                     {
-                        "annotation": null,
-                        "segment": "  "
-                    },
-                    {
                         "annotation": {
-                            "contents": "finalizers",
+                            "contents": "unitCase",
                             "tag": "HashQualifier"
                         },
-                        "segment": "finalizers"
+                        "segment": "unitCase"
                     },
                     {
                         "annotation": {
@@ -3466,169 +3478,57 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                     },
                     {
                         "annotation": {
-                            "contents": "##Sequence",
+                            "contents": "#ttjui80dbufvf3vgaddmcr065dpgl0rtp68i5cdht6tq4t2vk3i2vg60hi77rug368qijgijf8oui27te7o5oq0t0osm6dg65c080i0",
+                            "tag": "TermReference"
+                        },
+                        "segment": "id"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    },
+                    {
+                        "annotation": {
+                            "tag": "Parenthesis"
+                        },
+                        "segment": "("
+                    },
+                    {
+                        "annotation": null,
+                        "segment": "x"
+                    },
+                    {
+                        "annotation": {
+                            "tag": "ControlKeyword"
+                        },
+                        "segment": " ->"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": {
+                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
                             "tag": "TypeReference"
                         },
-                        "segment": "["
-                    },
+                        "segment": "("
+                    }
+                ]
+            },
+            {
+                "diffTag": "both",
+                "elements": [
                     {
                         "annotation": {
                             "tag": "NumericLiteral"
                         },
                         "segment": "1"
-                    },
-                    {
-                        "annotation": {
-                            "contents": "##Sequence",
-                            "tag": "TypeReference"
-                        },
-                        "segment": ", "
-                    },
-                    {
-                        "annotation": {
-                            "tag": "NumericLiteral"
-                        },
-                        "segment": "2"
-                    },
-                    {
-                        "annotation": {
-                            "contents": "##Sequence",
-                            "tag": "TypeReference"
-                        },
-                        "segment": ", "
-                    },
-                    {
-                        "annotation": {
-                            "tag": "NumericLiteral"
-                        },
-                        "segment": "3"
-                    },
-                    {
-                        "annotation": {
-                            "contents": "##Sequence",
-                            "tag": "TypeReference"
-                        },
-                        "segment": "]"
-                    },
-                    {
-                        "annotation": null,
-                        "segment": "\n"
-                    },
-                    {
-                        "annotation": null,
-                        "segment": "  "
-                    },
-                    {
-                        "annotation": {
-                            "contents": "addFinalizer",
-                            "tag": "HashQualifier"
-                        },
-                        "segment": "addFinalizer"
-                    },
-                    {
-                        "annotation": null,
-                        "segment": " "
-                    },
-                    {
-                        "annotation": {
-                            "tag": "Var"
-                        },
-                        "segment": "f"
-                    },
-                    {
-                        "annotation": {
-                            "tag": "BindingEquals"
-                        },
-                        "segment": " ="
-                    },
-                    {
-                        "annotation": null,
-                        "segment": " "
-                    },
-                    {
-                        "annotation": {
-                            "contents": "#a85req9b0u8gkt82fgebosrcu3ba5g1aoqgt1vu5ohd93vpbdlo184e9pf9hgc4nml73aeohru6enhnnpch5oqilutaf0h40uv8dfvg",
-                            "tag": "TermReference"
-                        },
-                        "segment": "fakeRefModify"
-                    },
-                    {
-                        "annotation": null,
-                        "segment": " "
-                    },
-                    {
-                        "annotation": {
-                            "tag": "Var"
-                        },
-                        "segment": "finalizers"
-                    },
-                    {
-                        "annotation": null,
-                        "segment": " "
-                    },
-                    {
-                        "annotation": {
-                            "tag": "Parenthesis"
-                        },
-                        "segment": "("
-                    },
-                    {
-                        "annotation": null,
-                        "segment": "fs"
-                    },
-                    {
-                        "annotation": {
-                            "tag": "ControlKeyword"
-                        },
-                        "segment": " ->"
-                    },
-                    {
-                        "annotation": null,
-                        "segment": " "
-                    }
-                ]
-            },
-            {
-                "diffTag": "new",
-                "elements": [
-                    {
-                        "annotation": {
-                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
-                            "tag": "TypeReference"
-                        },
-                        "segment": "("
-                    }
-                ]
-            },
-            {
-                "diffTag": "both",
-                "elements": [
-                    {
-                        "annotation": {
-                            "tag": "Var"
-                        },
-                        "segment": "f"
-                    },
-                    {
-                        "annotation": null,
-                        "segment": " "
-                    },
-                    {
-                        "annotation": {
-                            "contents": "##List.cons",
-                            "tag": "TermReference"
-                        },
-                        "segment": "+:"
-                    },
-                    {
-                        "annotation": null,
-                        "segment": " "
-                    },
-                    {
-                        "annotation": {
-                            "tag": "Var"
-                        },
-                        "segment": "fs"
                     }
                 ]
             },
@@ -3648,130 +3548,6 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                             "tag": "TypeReference"
                         },
                         "segment": "("
-                    }
-                ]
-            },
-            {
-                "diffTag": "both",
-                "elements": [
-                    {
-                        "annotation": {
-                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
-                            "tag": "TypeReference"
-                        },
-                        "segment": ")"
-                    }
-                ]
-            },
-            {
-                "diffTag": "new",
-                "elements": [
-                    {
-                        "annotation": {
-                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
-                            "tag": "TypeReference"
-                        },
-                        "segment": ")"
-                    },
-                    {
-                        "annotation": {
-                            "tag": "Parenthesis"
-                        },
-                        "segment": ")"
-                    }
-                ]
-            },
-            {
-                "diffTag": "both",
-                "elements": [
-                    {
-                        "annotation": null,
-                        "segment": "\n"
-                    },
-                    {
-                        "annotation": null,
-                        "segment": "  "
-                    }
-                ]
-            },
-            {
-                "diffTag": "annotationChange",
-                "fromAnnotation": {
-                    "contents": "#bcar3v5qe5466tnl5vc1crcpo13mv0pbspfmtm0g9d9i66pp3og6f75bmk6bhv7ah09igb3un5pmdjdo5ghm0n6krnbne7u2ngi770g",
-                    "tag": "TermReference"
-                },
-                "segment": "foreach",
-                "toAnnotation": {
-                    "contents": "#jb1dd16mkieu352mk4ijml6ksvobs3e31b6q0mt219rrnk9dt6o7rgs87b3kglpfo27nsqmu8ts4q8e55t44e6v894kg9d4361gj4po",
-                    "tag": "TermReference"
-                }
-            },
-            {
-                "diffTag": "both",
-                "elements": [
-                    {
-                        "annotation": null,
-                        "segment": " "
-                    }
-                ]
-            },
-            {
-                "diffTag": "new",
-                "elements": [
-                    {
-                        "annotation": {
-                            "tag": "Var"
-                        },
-                        "segment": "finalizers"
-                    },
-                    {
-                        "annotation": null,
-                        "segment": " "
-                    }
-                ]
-            },
-            {
-                "diffTag": "both",
-                "elements": [
-                    {
-                        "annotation": {
-                            "tag": "Parenthesis"
-                        },
-                        "segment": "("
-                    },
-                    {
-                        "annotation": null,
-                        "segment": "f"
-                    },
-                    {
-                        "annotation": {
-                            "tag": "ControlKeyword"
-                        },
-                        "segment": " ->"
-                    },
-                    {
-                        "annotation": null,
-                        "segment": " "
-                    },
-                    {
-                        "annotation": {
-                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
-                            "tag": "TypeReference"
-                        },
-                        "segment": "("
-                    },
-                    {
-                        "annotation": {
-                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
-                            "tag": "TypeReference"
-                        },
-                        "segment": ")"
-                    },
-                    {
-                        "annotation": {
-                            "tag": "Parenthesis"
-                        },
-                        "segment": ")"
                     }
                 ]
             },
@@ -3779,14 +3555,40 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                 "diffTag": "old",
                 "elements": [
                     {
-                        "annotation": null,
-                        "segment": " "
+                        "annotation": {
+                            "tag": "Parenthesis"
+                        },
+                        "segment": ")"
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": {
+                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
+                            "tag": "TypeReference"
+                        },
+                        "segment": ")"
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": {
+                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
+                            "tag": "TypeReference"
+                        },
+                        "segment": ")"
                     },
                     {
                         "annotation": {
-                            "tag": "Var"
+                            "tag": "Parenthesis"
                         },
-                        "segment": "finalizers"
+                        "segment": ")"
                     }
                 ]
             }
@@ -3796,12 +3598,55 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
     "diffKind": "diff",
     "newBranchRef": "new",
     "newTerm": {
-        "bestTermName": "handleRequest",
+        "bestTermName": "unitCase",
         "defnTermTag": "Plain",
         "signature": [
             {
+                "annotation": {
+                    "tag": "Var"
+                },
+                "segment": "x"
+            },
+            {
+                "annotation": null,
+                "segment": " "
+            },
+            {
+                "annotation": {
+                    "tag": "TypeOperator"
+                },
+                "segment": "->"
+            },
+            {
+                "annotation": null,
+                "segment": " "
+            },
+            {
                 "annotation": null,
                 "segment": "("
+            },
+            {
+                "annotation": {
+                    "contents": "##Nat",
+                    "tag": "TypeReference"
+                },
+                "segment": "Nat"
+            },
+            {
+                "annotation": null,
+                "segment": ","
+            },
+            {
+                "annotation": null,
+                "segment": " "
+            },
+            {
+                "annotation": null,
+                "segment": "("
+            },
+            {
+                "annotation": null,
+                "segment": ")"
             },
             {
                 "annotation": null,
@@ -3812,10 +3657,10 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
             "contents": [
                 {
                     "annotation": {
-                        "contents": "handleRequest",
+                        "contents": "unitCase",
                         "tag": "HashQualifier"
                     },
-                    "segment": "handleRequest"
+                    "segment": "unitCase"
                 },
                 {
                     "annotation": {
@@ -3828,8 +3673,51 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                     "segment": " "
                 },
                 {
+                    "annotation": {
+                        "tag": "Var"
+                    },
+                    "segment": "x"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "tag": "TypeOperator"
+                    },
+                    "segment": "->"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
                     "annotation": null,
                     "segment": "("
+                },
+                {
+                    "annotation": {
+                        "contents": "##Nat",
+                        "tag": "TypeReference"
+                    },
+                    "segment": "Nat"
+                },
+                {
+                    "annotation": null,
+                    "segment": ","
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": null,
+                    "segment": "("
+                },
+                {
+                    "annotation": null,
+                    "segment": ")"
                 },
                 {
                     "annotation": null,
@@ -3841,31 +3729,10 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                 },
                 {
                     "annotation": {
-                        "contents": "handleRequest",
+                        "contents": "unitCase",
                         "tag": "HashQualifier"
                     },
-                    "segment": "handleRequest"
-                },
-                {
-                    "annotation": {
-                        "tag": "BindingEquals"
-                    },
-                    "segment": " ="
-                },
-                {
-                    "annotation": null,
-                    "segment": "\n"
-                },
-                {
-                    "annotation": null,
-                    "segment": "  "
-                },
-                {
-                    "annotation": {
-                        "contents": "finalizers",
-                        "tag": "HashQualifier"
-                    },
-                    "segment": "finalizers"
+                    "segment": "unitCase"
                 },
                 {
                     "annotation": {
@@ -3879,10 +3746,41 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                 },
                 {
                     "annotation": {
-                        "contents": "##Sequence",
+                        "contents": "#ttjui80dbufvf3vgaddmcr065dpgl0rtp68i5cdht6tq4t2vk3i2vg60hi77rug368qijgijf8oui27te7o5oq0t0osm6dg65c080i0",
+                        "tag": "TermReference"
+                    },
+                    "segment": "id"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "tag": "Parenthesis"
+                    },
+                    "segment": "("
+                },
+                {
+                    "annotation": null,
+                    "segment": "x"
+                },
+                {
+                    "annotation": {
+                        "tag": "ControlKeyword"
+                    },
+                    "segment": " ->"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
                         "tag": "TypeReference"
                     },
-                    "segment": "["
+                    "segment": "("
                 },
                 {
                     "annotation": {
@@ -3892,149 +3790,6 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                 },
                 {
                     "annotation": {
-                        "contents": "##Sequence",
-                        "tag": "TypeReference"
-                    },
-                    "segment": ", "
-                },
-                {
-                    "annotation": {
-                        "tag": "NumericLiteral"
-                    },
-                    "segment": "2"
-                },
-                {
-                    "annotation": {
-                        "contents": "##Sequence",
-                        "tag": "TypeReference"
-                    },
-                    "segment": ", "
-                },
-                {
-                    "annotation": {
-                        "tag": "NumericLiteral"
-                    },
-                    "segment": "3"
-                },
-                {
-                    "annotation": {
-                        "contents": "##Sequence",
-                        "tag": "TypeReference"
-                    },
-                    "segment": "]"
-                },
-                {
-                    "annotation": null,
-                    "segment": "\n"
-                },
-                {
-                    "annotation": null,
-                    "segment": "  "
-                },
-                {
-                    "annotation": {
-                        "contents": "addFinalizer",
-                        "tag": "HashQualifier"
-                    },
-                    "segment": "addFinalizer"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Var"
-                    },
-                    "segment": "f"
-                },
-                {
-                    "annotation": {
-                        "tag": "BindingEquals"
-                    },
-                    "segment": " ="
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "contents": "#a85req9b0u8gkt82fgebosrcu3ba5g1aoqgt1vu5ohd93vpbdlo184e9pf9hgc4nml73aeohru6enhnnpch5oqilutaf0h40uv8dfvg",
-                        "tag": "TermReference"
-                    },
-                    "segment": "fakeRefModify"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Var"
-                    },
-                    "segment": "finalizers"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Parenthesis"
-                    },
-                    "segment": "("
-                },
-                {
-                    "annotation": null,
-                    "segment": "fs"
-                },
-                {
-                    "annotation": {
-                        "tag": "ControlKeyword"
-                    },
-                    "segment": " ->"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
-                        "tag": "TypeReference"
-                    },
-                    "segment": "("
-                },
-                {
-                    "annotation": {
-                        "tag": "Var"
-                    },
-                    "segment": "f"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "contents": "##List.cons",
-                        "tag": "TermReference"
-                    },
-                    "segment": "+:"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Var"
-                    },
-                    "segment": "fs"
-                },
-                {
-                    "annotation": {
                         "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
                         "tag": "TypeReference"
                     },
@@ -4053,75 +3808,6 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                         "tag": "TypeReference"
                     },
                     "segment": ")"
-                },
-                {
-                    "annotation": {
-                        "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
-                        "tag": "TypeReference"
-                    },
-                    "segment": ")"
-                },
-                {
-                    "annotation": {
-                        "tag": "Parenthesis"
-                    },
-                    "segment": ")"
-                },
-                {
-                    "annotation": null,
-                    "segment": "\n"
-                },
-                {
-                    "annotation": null,
-                    "segment": "  "
-                },
-                {
-                    "annotation": {
-                        "contents": "#jb1dd16mkieu352mk4ijml6ksvobs3e31b6q0mt219rrnk9dt6o7rgs87b3kglpfo27nsqmu8ts4q8e55t44e6v894kg9d4361gj4po",
-                        "tag": "TermReference"
-                    },
-                    "segment": "foreach"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Var"
-                    },
-                    "segment": "finalizers"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Parenthesis"
-                    },
-                    "segment": "("
-                },
-                {
-                    "annotation": null,
-                    "segment": "f"
-                },
-                {
-                    "annotation": {
-                        "tag": "ControlKeyword"
-                    },
-                    "segment": " ->"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
-                        "tag": "TypeReference"
-                    },
-                    "segment": "("
                 },
                 {
                     "annotation": {
@@ -4141,31 +3827,50 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
         },
         "termDocs": [],
         "termNames": [
-            "handleRequest"
+            "unitCase"
         ]
     },
     "oldBranchRef": "main",
     "oldTerm": {
-        "bestTermName": "handleRequest",
+        "bestTermName": "unitCase",
         "defnTermTag": "Plain",
         "signature": [
             {
-                "annotation": null,
-                "segment": "("
+                "annotation": {
+                    "tag": "Var"
+                },
+                "segment": "x"
             },
             {
                 "annotation": null,
-                "segment": ")"
+                "segment": " "
+            },
+            {
+                "annotation": {
+                    "tag": "TypeOperator"
+                },
+                "segment": "->"
+            },
+            {
+                "annotation": null,
+                "segment": " "
+            },
+            {
+                "annotation": {
+                    "contents": "##Nat",
+                    "tag": "TypeReference"
+                },
+                "segment": "Nat"
             }
         ],
         "termDefinition": {
             "contents": [
                 {
                     "annotation": {
-                        "contents": "handleRequest",
+                        "contents": "unitCase",
                         "tag": "HashQualifier"
                     },
-                    "segment": "handleRequest"
+                    "segment": "unitCase"
                 },
                 {
                     "annotation": {
@@ -4178,12 +3883,31 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                     "segment": " "
                 },
                 {
-                    "annotation": null,
-                    "segment": "("
+                    "annotation": {
+                        "tag": "Var"
+                    },
+                    "segment": "x"
                 },
                 {
                     "annotation": null,
-                    "segment": ")"
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "tag": "TypeOperator"
+                    },
+                    "segment": "->"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "contents": "##Nat",
+                        "tag": "TypeReference"
+                    },
+                    "segment": "Nat"
                 },
                 {
                     "annotation": null,
@@ -4191,31 +3915,10 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                 },
                 {
                     "annotation": {
-                        "contents": "handleRequest",
+                        "contents": "unitCase",
                         "tag": "HashQualifier"
                     },
-                    "segment": "handleRequest"
-                },
-                {
-                    "annotation": {
-                        "tag": "BindingEquals"
-                    },
-                    "segment": " ="
-                },
-                {
-                    "annotation": null,
-                    "segment": "\n"
-                },
-                {
-                    "annotation": null,
-                    "segment": "  "
-                },
-                {
-                    "annotation": {
-                        "contents": "finalizers",
-                        "tag": "HashQualifier"
-                    },
-                    "segment": "finalizers"
+                    "segment": "unitCase"
                 },
                 {
                     "annotation": {
@@ -4229,10 +3932,34 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                 },
                 {
                     "annotation": {
-                        "contents": "##Sequence",
-                        "tag": "TypeReference"
+                        "contents": "#ttjui80dbufvf3vgaddmcr065dpgl0rtp68i5cdht6tq4t2vk3i2vg60hi77rug368qijgijf8oui27te7o5oq0t0osm6dg65c080i0",
+                        "tag": "TermReference"
                     },
-                    "segment": "["
+                    "segment": "id"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "tag": "Parenthesis"
+                    },
+                    "segment": "("
+                },
+                {
+                    "annotation": null,
+                    "segment": "x"
+                },
+                {
+                    "annotation": {
+                        "tag": "ControlKeyword"
+                    },
+                    "segment": " ->"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
                 },
                 {
                     "annotation": {
@@ -4242,221 +3969,16 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ha
                 },
                 {
                     "annotation": {
-                        "contents": "##Sequence",
-                        "tag": "TypeReference"
-                    },
-                    "segment": ", "
-                },
-                {
-                    "annotation": {
-                        "tag": "NumericLiteral"
-                    },
-                    "segment": "2"
-                },
-                {
-                    "annotation": {
-                        "contents": "##Sequence",
-                        "tag": "TypeReference"
-                    },
-                    "segment": ", "
-                },
-                {
-                    "annotation": {
-                        "tag": "NumericLiteral"
-                    },
-                    "segment": "3"
-                },
-                {
-                    "annotation": {
-                        "contents": "##Sequence",
-                        "tag": "TypeReference"
-                    },
-                    "segment": "]"
-                },
-                {
-                    "annotation": null,
-                    "segment": "\n"
-                },
-                {
-                    "annotation": null,
-                    "segment": "  "
-                },
-                {
-                    "annotation": {
-                        "contents": "addFinalizer",
-                        "tag": "HashQualifier"
-                    },
-                    "segment": "addFinalizer"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Var"
-                    },
-                    "segment": "f"
-                },
-                {
-                    "annotation": {
-                        "tag": "BindingEquals"
-                    },
-                    "segment": " ="
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "contents": "#a85req9b0u8gkt82fgebosrcu3ba5g1aoqgt1vu5ohd93vpbdlo184e9pf9hgc4nml73aeohru6enhnnpch5oqilutaf0h40uv8dfvg",
-                        "tag": "TermReference"
-                    },
-                    "segment": "fakeRefModify"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Var"
-                    },
-                    "segment": "finalizers"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Parenthesis"
-                    },
-                    "segment": "("
-                },
-                {
-                    "annotation": null,
-                    "segment": "fs"
-                },
-                {
-                    "annotation": {
-                        "tag": "ControlKeyword"
-                    },
-                    "segment": " ->"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Var"
-                    },
-                    "segment": "f"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "contents": "##List.cons",
-                        "tag": "TermReference"
-                    },
-                    "segment": "+:"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Var"
-                    },
-                    "segment": "fs"
-                },
-                {
-                    "annotation": {
                         "tag": "Parenthesis"
                     },
                     "segment": ")"
-                },
-                {
-                    "annotation": null,
-                    "segment": "\n"
-                },
-                {
-                    "annotation": null,
-                    "segment": "  "
-                },
-                {
-                    "annotation": {
-                        "contents": "#bcar3v5qe5466tnl5vc1crcpo13mv0pbspfmtm0g9d9i66pp3og6f75bmk6bhv7ah09igb3un5pmdjdo5ghm0n6krnbne7u2ngi770g",
-                        "tag": "TermReference"
-                    },
-                    "segment": "foreach"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Parenthesis"
-                    },
-                    "segment": "("
-                },
-                {
-                    "annotation": null,
-                    "segment": "f"
-                },
-                {
-                    "annotation": {
-                        "tag": "ControlKeyword"
-                    },
-                    "segment": " ->"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
-                        "tag": "TypeReference"
-                    },
-                    "segment": "("
-                },
-                {
-                    "annotation": {
-                        "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
-                        "tag": "TypeReference"
-                    },
-                    "segment": ")"
-                },
-                {
-                    "annotation": {
-                        "tag": "Parenthesis"
-                    },
-                    "segment": ")"
-                },
-                {
-                    "annotation": null,
-                    "segment": " "
-                },
-                {
-                    "annotation": {
-                        "tag": "Var"
-                    },
-                    "segment": "finalizers"
                 }
             ],
             "tag": "UserObject"
         },
         "termDocs": [],
         "termNames": [
-            "handleRequest"
+            "unitCase"
         ]
     },
     "project": "diffs"

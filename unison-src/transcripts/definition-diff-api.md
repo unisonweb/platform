@@ -25,19 +25,8 @@ take n s =
     { r }  -> Some r
   handle s() with h n
 
-fakeRefModify f g = g []
-
-foreach f xs = match xs with
-    [] -> ()
-    x +: rest -> let
-      f x
-      foreach f rest
-
-handleRequest =
-  use List +:
-  finalizers = [1, 2, 3]
-  addFinalizer f = fakeRefModify finalizers (fs -> f +: fs)
-  foreach (f -> ()) finalizers
+id x = x
+unitCase = id (x -> 1)
 
 ```
 
@@ -69,19 +58,8 @@ take n s =
     then handle s () with h (n - 1)
     else None
 
-fakeRefModify2 f g = g []
-
-foreach xs f = match xs with
-    [] -> ()
-    x +: rest -> let
-      f x
-      foreach rest f
-
-handleRequest =
-    use List +:
-    finalizers = [1, 2, 3]
-    addFinalizer f = fakeRefModify2 finalizers (fs -> (f +: fs, ()))
-    foreach finalizers (f -> ())
+id x = x
+unitCase = id (x -> (1, ()))
 ```
 
 ``` ucm
@@ -100,10 +78,10 @@ More complex diff
 GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=take&newTerm=take
 ```
 
-Regression test
+Regression test for weird behavior w/r to unit and parens.
 
 ``` api
-GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=handleRequest&newTerm=handleRequest
+GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=unitCase&newTerm=unitCase
 ```
 
 
