@@ -666,10 +666,18 @@ inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
     -- Note: number argument bails out in recursive inlining cases
     go n | n <= 0 = id
     go n = ABTN.visitPure \case
-      TApp (FComb r) args
+      init@(TApp (FComb r) args)
         | Just (arity, expr) <- Map.lookup r inls ->
-          go (n-1) <$> tweak expr args arity
+          info n init $ tweak expr args arity
       _ -> Nothing
+
+    info _ init (Just final)
+      | trace msg False = error "traced"
+      where
+        pinit = prettyANF False 0 init ""
+        pfinal = prettyANF False 0 final ""
+        msg = "INLINE: inlining `" ++ pinit ++ "` to `" ++ pfinal ++ "`"
+    info n _ v = go (n-1) <$> v
 
     tweak (ABTN.TAbss vs body) args arity
       -- exactly saturated
