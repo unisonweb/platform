@@ -667,10 +667,12 @@ inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
     go n | n <= 0 = id
     go n = ABTN.visitPure \case
       TApp (FComb r) args
-        | Just (arity, expr) <- Map.lookup r inls ->
+        | Just (arity, _) <- Map.lookup r inls,
+          arity >= 0 ->
           -- identity substitution
           Just $ TApp (FComb r) args
-          -- go (n-1) <$> tweak expr args arity
+        | Just (arity, expr) <- Map.lookup r inls ->
+          go (n-1) <$> tweak expr args arity
       _ -> Nothing
 
     tweak (ABTN.TAbss vs body) args arity
