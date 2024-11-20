@@ -677,11 +677,11 @@ inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
         rn <- Map.fromList (zip vs args) =
           Just $ ABTN.renames rn body
       -- oversaturated, only makes sense if body is a call
-      -- | length args > arity,
-      --   (pre, post) <- splitAt arity args,
-      --   rn <- Map.fromList (zip vs pre),
-      --   TApp f pre <- ABTN.renames rn body =
-      --     Just $ TApp f (pre ++ post)
+      | length args > arity,
+        (pre, post) <- splitAt arity args,
+        rn <- Map.fromList (zip vs pre),
+        TApp f pre <- ABTN.renames rn body =
+          Just $ TApp f (pre ++ post)
       | otherwise = Nothing
 
 addDefaultCases :: (Var v) => (Monoid a) => Text -> Term v a -> Term v a
