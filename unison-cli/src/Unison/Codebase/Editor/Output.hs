@@ -16,6 +16,7 @@ module Unison.Codebase.Editor.Output
     UpdateOrUpgrade (..),
     isFailure,
     isNumberedFailure,
+    MergeProgress (..),
   )
 where
 
@@ -440,6 +441,15 @@ data Output
   | ConflictedDefn !Text {- what operation? -} !(Defn (Conflicted Name Referent) (Conflicted Name TypeReference))
   | IncoherentDeclDuringMerge !MergeSourceOrTarget !IncoherentDeclReason
   | IncoherentDeclDuringUpdate !IncoherentDeclReason
+  | MergeProgress !MergeProgress
+
+data MergeProgress
+  = MergeProgress'LoadingBranches
+  | MergeProgress'DiffingBranches
+  | MergeProgress'LoadingDependents
+  | MergeProgress'LoadingAndMergingLibdeps
+  | MergeProgress'RenderingUnisonFile
+  | MergeProgress'TypecheckingUnisonFile
 
 data MoreEntriesThanShown = MoreEntriesThanShown | AllEntriesShown
   deriving (Eq, Show)
@@ -680,6 +690,7 @@ isFailure o = case o of
   ConflictedDefn {} -> True
   IncoherentDeclDuringMerge {} -> True
   IncoherentDeclDuringUpdate {} -> True
+  MergeProgress _ -> False
 
 isNumberedFailure :: NumberedOutput -> Bool
 isNumberedFailure = \case
