@@ -662,7 +662,7 @@ inline ::
   SuperGroup v
 inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
   where
-    go0 (Lambda ccs body) = Lambda ccs $ go (30 :: Int) body
+    go0 (Lambda ccs body) = Lambda ccs $ go (1 :: Int) body
     -- Note: number argument bails out in recursive inlining cases
     go n | n <= 0 = id
     go n = ABTN.visitPure \case
