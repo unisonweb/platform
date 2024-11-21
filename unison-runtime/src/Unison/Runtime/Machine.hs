@@ -1209,7 +1209,7 @@ uprim1 !stk COMI !i = do
   pure stk
 {-# INLINE uprim1 #-}
 
-uprim2 :: (HasCallStack) => Stack -> UPrim2 -> Int -> Int -> IO Stack
+uprim2 :: Stack -> UPrim2 -> Int -> Int -> IO Stack
 uprim2 !stk ADDI !i !j = do
   m <- upeekOff stk i
   n <- upeekOff stk j
