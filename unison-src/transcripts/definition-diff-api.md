@@ -24,6 +24,10 @@ take n s =
                          else None
     { r }  -> Some r
   handle s() with h n
+
+id x = x
+unitCase = id (x -> 1)
+
 ```
 
 ``` ucm
@@ -53,6 +57,9 @@ take n s =
   if n > 0
     then handle s () with h (n - 1)
     else None
+
+id x = x
+unitCase = id (x -> (1, ()))
 ```
 
 ``` ucm
@@ -69,6 +76,12 @@ More complex diff
 
 ``` api
 GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=take&newTerm=take
+```
+
+Regression test for weird behavior w/r to unit and parens.
+
+``` api
+GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=unitCase&newTerm=unitCase
 ```
 
 

@@ -32,6 +32,10 @@ take n s =
                          else None
     { r }  -> Some r
   handle s() with h n
+
+id x = x
+unitCase = id (x -> 1)
+
 ```
 
 ``` ucm
@@ -46,8 +50,10 @@ take n s =
     
       ability Stream a
       type Type
-      take : Nat -> '{g} t ->{g, Stream a} Optional t
-      term : Nat
+      id       : x -> x
+      take     : Nat -> '{g} t ->{g, Stream a} Optional t
+      term     : Nat
+      unitCase : x -> Nat
 
 ```
 ``` ucm
@@ -57,8 +63,10 @@ diffs/main> add
   
     ability Stream a
     type Type
-    take : Nat -> '{g} t ->{g, Stream a} Optional t
-    term : Nat
+    id       : x -> x
+    take     : Nat -> '{g} t ->{g, Stream a} Optional t
+    term     : Nat
+    unitCase : x -> Nat
 
 diffs/main> branch.create new
 
@@ -90,6 +98,9 @@ take n s =
   if n > 0
     then handle s () with h (n - 1)
     else None
+
+id x = x
+unitCase = id (x -> (1, ()))
 ```
 
 ``` ucm
@@ -100,14 +111,15 @@ take n s =
   do an `add` or `update`, here's how your codebase would
   change:
   
-    ⊡ Previously added definitions will be ignored: Stream
+    ⊡ Previously added definitions will be ignored: Stream id
     
     ⍟ These names already exist. You can `update` them to your
       new definition:
     
       type Type a
-      take : Nat -> '{g} t ->{g, Stream a} Optional t
-      term : Nat
+      take     : Nat -> '{g} t ->{g, Stream a} Optional t
+      term     : Nat
+      unitCase : x -> (Nat, ())
 
 ```
 ``` ucm
@@ -3339,6 +3351,634 @@ GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=ta
         "termDocs": [],
         "termNames": [
             "take"
+        ]
+    },
+    "project": "diffs"
+}
+```
+
+Regression test for weird behavior w/r to unit and parens.
+
+``` api
+GET /api/projects/diffs/diff/terms?oldBranchRef=main&newBranchRef=new&oldTerm=unitCase&newTerm=unitCase
+{
+    "diff": {
+        "contents": [
+            {
+                "diffTag": "both",
+                "elements": [
+                    {
+                        "annotation": {
+                            "contents": "unitCase",
+                            "tag": "HashQualifier"
+                        },
+                        "segment": "unitCase"
+                    },
+                    {
+                        "annotation": {
+                            "tag": "TypeAscriptionColon"
+                        },
+                        "segment": " :"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    },
+                    {
+                        "annotation": {
+                            "tag": "Var"
+                        },
+                        "segment": "x"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    },
+                    {
+                        "annotation": {
+                            "tag": "TypeOperator"
+                        },
+                        "segment": "->"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": null,
+                        "segment": "("
+                    }
+                ]
+            },
+            {
+                "diffTag": "both",
+                "elements": [
+                    {
+                        "annotation": {
+                            "contents": "##Nat",
+                            "tag": "TypeReference"
+                        },
+                        "segment": "Nat"
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": null,
+                        "segment": ","
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    },
+                    {
+                        "annotation": null,
+                        "segment": "("
+                    },
+                    {
+                        "annotation": null,
+                        "segment": ")"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": ")"
+                    }
+                ]
+            },
+            {
+                "diffTag": "both",
+                "elements": [
+                    {
+                        "annotation": null,
+                        "segment": "\n"
+                    },
+                    {
+                        "annotation": {
+                            "contents": "unitCase",
+                            "tag": "HashQualifier"
+                        },
+                        "segment": "unitCase"
+                    },
+                    {
+                        "annotation": {
+                            "tag": "BindingEquals"
+                        },
+                        "segment": " ="
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    },
+                    {
+                        "annotation": {
+                            "contents": "#ttjui80dbufvf3vgaddmcr065dpgl0rtp68i5cdht6tq4t2vk3i2vg60hi77rug368qijgijf8oui27te7o5oq0t0osm6dg65c080i0",
+                            "tag": "TermReference"
+                        },
+                        "segment": "id"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    },
+                    {
+                        "annotation": {
+                            "tag": "Parenthesis"
+                        },
+                        "segment": "("
+                    },
+                    {
+                        "annotation": null,
+                        "segment": "x"
+                    },
+                    {
+                        "annotation": {
+                            "tag": "ControlKeyword"
+                        },
+                        "segment": " ->"
+                    },
+                    {
+                        "annotation": null,
+                        "segment": " "
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": {
+                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
+                            "tag": "TypeReference"
+                        },
+                        "segment": "("
+                    }
+                ]
+            },
+            {
+                "diffTag": "both",
+                "elements": [
+                    {
+                        "annotation": {
+                            "tag": "NumericLiteral"
+                        },
+                        "segment": "1"
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": {
+                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
+                            "tag": "TypeReference"
+                        },
+                        "segment": ", "
+                    },
+                    {
+                        "annotation": {
+                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
+                            "tag": "TypeReference"
+                        },
+                        "segment": "("
+                    }
+                ]
+            },
+            {
+                "diffTag": "old",
+                "elements": [
+                    {
+                        "annotation": {
+                            "tag": "Parenthesis"
+                        },
+                        "segment": ")"
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": {
+                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
+                            "tag": "TypeReference"
+                        },
+                        "segment": ")"
+                    }
+                ]
+            },
+            {
+                "diffTag": "new",
+                "elements": [
+                    {
+                        "annotation": {
+                            "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
+                            "tag": "TypeReference"
+                        },
+                        "segment": ")"
+                    },
+                    {
+                        "annotation": {
+                            "tag": "Parenthesis"
+                        },
+                        "segment": ")"
+                    }
+                ]
+            }
+        ],
+        "tag": "UserObject"
+    },
+    "diffKind": "diff",
+    "newBranchRef": "new",
+    "newTerm": {
+        "bestTermName": "unitCase",
+        "defnTermTag": "Plain",
+        "signature": [
+            {
+                "annotation": {
+                    "tag": "Var"
+                },
+                "segment": "x"
+            },
+            {
+                "annotation": null,
+                "segment": " "
+            },
+            {
+                "annotation": {
+                    "tag": "TypeOperator"
+                },
+                "segment": "->"
+            },
+            {
+                "annotation": null,
+                "segment": " "
+            },
+            {
+                "annotation": null,
+                "segment": "("
+            },
+            {
+                "annotation": {
+                    "contents": "##Nat",
+                    "tag": "TypeReference"
+                },
+                "segment": "Nat"
+            },
+            {
+                "annotation": null,
+                "segment": ","
+            },
+            {
+                "annotation": null,
+                "segment": " "
+            },
+            {
+                "annotation": null,
+                "segment": "("
+            },
+            {
+                "annotation": null,
+                "segment": ")"
+            },
+            {
+                "annotation": null,
+                "segment": ")"
+            }
+        ],
+        "termDefinition": {
+            "contents": [
+                {
+                    "annotation": {
+                        "contents": "unitCase",
+                        "tag": "HashQualifier"
+                    },
+                    "segment": "unitCase"
+                },
+                {
+                    "annotation": {
+                        "tag": "TypeAscriptionColon"
+                    },
+                    "segment": " :"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "tag": "Var"
+                    },
+                    "segment": "x"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "tag": "TypeOperator"
+                    },
+                    "segment": "->"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": null,
+                    "segment": "("
+                },
+                {
+                    "annotation": {
+                        "contents": "##Nat",
+                        "tag": "TypeReference"
+                    },
+                    "segment": "Nat"
+                },
+                {
+                    "annotation": null,
+                    "segment": ","
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": null,
+                    "segment": "("
+                },
+                {
+                    "annotation": null,
+                    "segment": ")"
+                },
+                {
+                    "annotation": null,
+                    "segment": ")"
+                },
+                {
+                    "annotation": null,
+                    "segment": "\n"
+                },
+                {
+                    "annotation": {
+                        "contents": "unitCase",
+                        "tag": "HashQualifier"
+                    },
+                    "segment": "unitCase"
+                },
+                {
+                    "annotation": {
+                        "tag": "BindingEquals"
+                    },
+                    "segment": " ="
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "contents": "#ttjui80dbufvf3vgaddmcr065dpgl0rtp68i5cdht6tq4t2vk3i2vg60hi77rug368qijgijf8oui27te7o5oq0t0osm6dg65c080i0",
+                        "tag": "TermReference"
+                    },
+                    "segment": "id"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "tag": "Parenthesis"
+                    },
+                    "segment": "("
+                },
+                {
+                    "annotation": null,
+                    "segment": "x"
+                },
+                {
+                    "annotation": {
+                        "tag": "ControlKeyword"
+                    },
+                    "segment": " ->"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
+                        "tag": "TypeReference"
+                    },
+                    "segment": "("
+                },
+                {
+                    "annotation": {
+                        "tag": "NumericLiteral"
+                    },
+                    "segment": "1"
+                },
+                {
+                    "annotation": {
+                        "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
+                        "tag": "TypeReference"
+                    },
+                    "segment": ", "
+                },
+                {
+                    "annotation": {
+                        "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
+                        "tag": "TypeReference"
+                    },
+                    "segment": "("
+                },
+                {
+                    "annotation": {
+                        "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
+                        "tag": "TypeReference"
+                    },
+                    "segment": ")"
+                },
+                {
+                    "annotation": {
+                        "contents": "#2lg4ah6ir6t129m33d7gssnigacral39qdamo20mn6r2vefliubpeqnjhejai9ekjckv0qnu9mlu3k9nbpfhl2schec4dohn7rjhjt8",
+                        "tag": "TypeReference"
+                    },
+                    "segment": ")"
+                },
+                {
+                    "annotation": {
+                        "tag": "Parenthesis"
+                    },
+                    "segment": ")"
+                }
+            ],
+            "tag": "UserObject"
+        },
+        "termDocs": [],
+        "termNames": [
+            "unitCase"
+        ]
+    },
+    "oldBranchRef": "main",
+    "oldTerm": {
+        "bestTermName": "unitCase",
+        "defnTermTag": "Plain",
+        "signature": [
+            {
+                "annotation": {
+                    "tag": "Var"
+                },
+                "segment": "x"
+            },
+            {
+                "annotation": null,
+                "segment": " "
+            },
+            {
+                "annotation": {
+                    "tag": "TypeOperator"
+                },
+                "segment": "->"
+            },
+            {
+                "annotation": null,
+                "segment": " "
+            },
+            {
+                "annotation": {
+                    "contents": "##Nat",
+                    "tag": "TypeReference"
+                },
+                "segment": "Nat"
+            }
+        ],
+        "termDefinition": {
+            "contents": [
+                {
+                    "annotation": {
+                        "contents": "unitCase",
+                        "tag": "HashQualifier"
+                    },
+                    "segment": "unitCase"
+                },
+                {
+                    "annotation": {
+                        "tag": "TypeAscriptionColon"
+                    },
+                    "segment": " :"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "tag": "Var"
+                    },
+                    "segment": "x"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "tag": "TypeOperator"
+                    },
+                    "segment": "->"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "contents": "##Nat",
+                        "tag": "TypeReference"
+                    },
+                    "segment": "Nat"
+                },
+                {
+                    "annotation": null,
+                    "segment": "\n"
+                },
+                {
+                    "annotation": {
+                        "contents": "unitCase",
+                        "tag": "HashQualifier"
+                    },
+                    "segment": "unitCase"
+                },
+                {
+                    "annotation": {
+                        "tag": "BindingEquals"
+                    },
+                    "segment": " ="
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "contents": "#ttjui80dbufvf3vgaddmcr065dpgl0rtp68i5cdht6tq4t2vk3i2vg60hi77rug368qijgijf8oui27te7o5oq0t0osm6dg65c080i0",
+                        "tag": "TermReference"
+                    },
+                    "segment": "id"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "tag": "Parenthesis"
+                    },
+                    "segment": "("
+                },
+                {
+                    "annotation": null,
+                    "segment": "x"
+                },
+                {
+                    "annotation": {
+                        "tag": "ControlKeyword"
+                    },
+                    "segment": " ->"
+                },
+                {
+                    "annotation": null,
+                    "segment": " "
+                },
+                {
+                    "annotation": {
+                        "tag": "NumericLiteral"
+                    },
+                    "segment": "1"
+                },
+                {
+                    "annotation": {
+                        "tag": "Parenthesis"
+                    },
+                    "segment": ")"
+                }
+            ],
+            "tag": "UserObject"
+        },
+        "termDocs": [],
+        "termNames": [
+            "unitCase"
         ]
     },
     "project": "diffs"
