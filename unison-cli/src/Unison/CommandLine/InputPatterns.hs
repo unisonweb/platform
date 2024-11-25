@@ -2021,10 +2021,10 @@ pushForce :: InputPattern
 pushForce =
   InputPattern
     "unsafe.force-push"
-    []
-    I.Hidden
+    ["push.unsafe-force"]
+    I.Visible
     [("remote destination", Optional, remoteNamespaceArg), ("local source", Optional, namespaceOrProjectBranchArg suggestionsConfig)]
-    (P.wrap "Like `push`, but overwrites any remote namespace.")
+    (P.wrap "Like `push`, but forcibly overwrites the remote namespace.")
     $ fmap
       ( \sourceTarget ->
           Input.PushRemoteBranchI
