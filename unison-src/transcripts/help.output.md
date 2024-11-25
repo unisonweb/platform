@@ -810,6 +810,9 @@ scratch/main> help
   undo
   `undo` reverts the most recent change to the codebase.
   
+  unsafe.force-push (or push.unsafe-force)
+  Like `push`, but forcibly overwrites the remote namespace.
+  
   update
   Adds everything in the most recently typechecked file to the
   namespace, replacing existing definitions having the same
