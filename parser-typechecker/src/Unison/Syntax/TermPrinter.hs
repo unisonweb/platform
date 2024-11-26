@@ -1285,7 +1285,6 @@ instance Monoid PrintAnnotation where
 
 suffixCounterTerm :: (Var v) => PrettyPrintEnv -> Set Name -> Set Name -> Term2 v at ap v a -> PrintAnnotation
 suffixCounterTerm n usedTm usedTy = \case
-  Var' v -> countHQ mempty $ HQ.unsafeFromVar v
   Ref' r -> countHQ usedTm $ PrettyPrintEnv.termName n (Referent.Ref r)
   Constructor' r | noImportRefs (r ^. ConstructorReference.reference_) -> mempty
   Constructor' r -> countHQ usedTm $ PrettyPrintEnv.termName n (Referent.Con r CT.Data)

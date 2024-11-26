@@ -40,16 +40,8 @@ genUBytes = Util.Bytes.fromByteString <$> Gen.bytes (Range.linear 0 4)
 genGroupRef :: Gen GroupRef
 genGroupRef = GR <$> genReference <*> genSmallWord64
 
-genUBValue :: Gen UBValue
-genUBValue =
-  Gen.choice
-    [ -- Unboxed values are no longer valid in ANF serialization.
-      -- Left <$> genSmallWord64,
-      Right <$> genValue
-    ]
-
 genValList :: Gen ValList
-genValList = Gen.list (Range.linear 0 4) genUBValue
+genValList = Gen.list (Range.linear 0 4) genValue
 
 genCont :: Gen Cont
 genCont = do

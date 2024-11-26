@@ -50,6 +50,7 @@ import Unison.Codebase.Editor.Input (BranchIdG (..))
 import Unison.Codebase.Editor.Input qualified as Input
 import Unison.Codebase.Editor.Output
   ( CreatedProjectBranchFrom (..),
+    MergeProgress (..),
     NumberedArgs,
     NumberedOutput (..),
     Output (..),
@@ -98,10 +99,7 @@ import Unison.Prelude
 import Unison.PrettyPrintEnv qualified as PPE
 import Unison.PrettyPrintEnv.Util qualified as PPE
 import Unison.PrettyPrintEnvDecl qualified as PPED
-import Unison.PrettyTerminal
-  ( clearCurrentLine,
-    putPretty',
-  )
+import Unison.PrettyTerminal (clearCurrentLine, putPretty')
 import Unison.PrintError
   ( prettyParseError,
     prettyResolutionFailures,
@@ -119,8 +117,7 @@ import Unison.Result qualified as Result
 import Unison.Server.Backend (ShallowListEntry (..), TypeEntry (..))
 import Unison.Server.Backend qualified as Backend
 import Unison.Server.SearchResultPrime qualified as SR'
-import Unison.Share.Sync qualified as Share
-import Unison.Share.Sync.Types (CodeserverTransportError (..))
+import Unison.Share.Sync.Types qualified as Share (CodeserverTransportError (..), GetCausalHashByPathError (..), PullError (..))
 import Unison.Sync.Types qualified as Share
 import Unison.Syntax.DeclPrinter qualified as DeclPrinter
 import Unison.Syntax.HashQualified qualified as HQ (toText, unsafeFromVar)
@@ -2264,6 +2261,12 @@ notifyUser dir = \case
                 <> IP.makeExample' IP.delete
                 <> "it. Then try the update again."
           ]
+  MergeProgress MergeProgress'LoadingBranches -> pure "Loading branches..."
+  MergeProgress MergeProgress'DiffingBranches -> pure "Computing diff between branches..."
+  MergeProgress MergeProgress'LoadingDependents -> pure "Loading dependents of changes..."
+  MergeProgress MergeProgress'LoadingAndMergingLibdeps -> pure "Loading and merging library dependencies..."
+  MergeProgress MergeProgress'RenderingUnisonFile -> pure "Rendering Unison file..."
+  MergeProgress MergeProgress'TypecheckingUnisonFile -> pure "Typechecking Unison file..."
 
 prettyShareError :: ShareError -> Pretty
 prettyShareError =
@@ -2346,28 +2349,28 @@ prettyEntityValidationFailure = \case
       Share.NamespaceDiffType -> "namespace diff"
       Share.CausalType -> "causal"
 
-prettyTransportError :: CodeserverTransportError -> Pretty
+prettyTransportError :: Share.CodeserverTransportError -> Pretty
 prettyTransportError = \case
-  DecodeFailure msg resp ->
+  Share.DecodeFailure msg resp ->
     (P.lines . catMaybes)
       [ Just ("The server sent a response that we couldn't decode: " <> P.text msg),
         responseRequestId resp <&> \responseId -> P.newline <> "Request ID: " <> P.blue (P.text responseId)
       ]
-  Unauthenticated codeServerURL ->
+  Share.Unauthenticated codeServerURL ->
     P.wrap . P.lines $
       [ "Authentication with this code server (" <> P.string (Servant.showBaseUrl codeServerURL) <> ") is missing or expired.",
         "Please run " <> makeExample' IP.authLogin <> "."
       ]
-  PermissionDenied msg -> P.hang "Permission denied:" (P.text msg)
-  UnreachableCodeserver codeServerURL ->
+  Share.PermissionDenied msg -> P.hang "Permission denied:" (P.text msg)
+  Share.UnreachableCodeserver codeServerURL ->
     P.lines $
       [ P.wrap $ "Unable to reach the code server hosted at:" <> P.string (Servant.showBaseUrl codeServerURL),
         "",
         P.wrap "Please check your network, ensure you've provided the correct location, or try again later."
       ]
-  RateLimitExceeded -> "Rate limit exceeded, please try again later."
-  Timeout -> "The code server timed-out when responding to your request. Please try again later or report an issue if the problem persists."
-  UnexpectedResponse resp ->
+  Share.RateLimitExceeded -> "Rate limit exceeded, please try again later."
+  Share.Timeout -> "The code server timed-out when responding to your request. Please try again later or report an issue if the problem persists."
+  Share.UnexpectedResponse resp ->
     (P.lines . catMaybes)
       [ Just
           ( "The server sent a "

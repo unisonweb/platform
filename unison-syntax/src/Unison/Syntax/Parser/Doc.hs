@@ -36,18 +36,13 @@ module Unison.Syntax.Parser.Doc
     italic,
     strikethrough,
     verbatim,
-    source,
-    foldedSource,
-    evalInline,
-    signatures,
-    signatureInline,
+    keyedInline,
     group,
     word,
 
     -- * other components
     column',
     embedLink,
-    embedSignatureLink,
     join,
   )
 where
@@ -57,10 +52,10 @@ import Control.Monad.Reader qualified as R
 import Data.Char (isControl, isSpace)
 import Data.List qualified as List
 import Data.List.Extra qualified as List
-import Data.List.NonEmpty (NonEmpty ((:|)))
+import Data.List.NonEmpty (NonEmpty ((:|)), nonEmpty)
 import Data.List.NonEmpty qualified as NonEmpty
 import Text.Megaparsec qualified as P
-import Text.Megaparsec.Char (char)
+import Text.Megaparsec.Char (char, letterChar)
 import Text.Megaparsec.Char qualified as CP
 import Text.Megaparsec.Char.Lexer qualified as LP
 import Unison.Parser.Ann (Ann (Ann))
@@ -143,11 +138,7 @@ leaf ident code closing =
     <|> italic ident code closing
     <|> strikethrough ident code closing
     <|> verbatim
-    <|> source ident code
-    <|> foldedSource ident code
-    <|> evalInline code
-    <|> signatures ident
-    <|> signatureInline ident
+    <|> keyedInline ident code
     <|> (Word' <$> word closing)
 
 leafy ::
@@ -166,22 +157,18 @@ leafy ident code closing = do
 comma :: (P.MonadParsec e String m) => m String
 comma = lit "," <* CP.space
 
-source :: (Ord e, P.MonadParsec e String m) => m ident -> (m () -> m code) -> m (Leaf ident code a)
-source ident = fmap Source . (lit "@source" *>) . sourceElements ident
-
-foldedSource :: (Ord e, P.MonadParsec e String m) => m ident -> (m () -> m code) -> m (Leaf ident code a)
-foldedSource ident = fmap FoldedSource . (lit "@foldedSource" *>) . sourceElements ident
-
-sourceElements ::
-  (Ord e, P.MonadParsec e String m) =>
-  m ident ->
-  (m () -> m code) ->
-  m (NonEmpty (SourceElement ident (Transclude code)))
-sourceElements ident code = do
-  _ <- (lit " {" <|> lit "{") *> CP.space
-  s <- sepBy1' srcElem comma
-  _ <- lit "}"
-  pure s
+-- | A syntactic pattern of “@keyword{…}”, where we process the contents differently depending on the keyword provided.
+keyedInline :: (Ord e, P.MonadParsec e String m) => m ident -> (m () -> m code) -> m (Leaf ident code a)
+keyedInline ident code = P.try do
+  keyword <- lit "@" *> P.many letterChar <* (lit " {" <|> lit "{")
+  case keyword of
+    "source" -> Source <$> sepBy1' srcElem comma <* lit "}"
+    "foldedSource" -> FoldedSource <$> sepBy1' srcElem comma <* lit "}"
+    "eval" -> fmap EvalInline . code . void $ lit "}"
+    "signature" -> Signature <$> sepBy1' (embedSignatureLink ident) comma <* lit "}"
+    "signatures" -> Signature <$> sepBy1' (embedSignatureLink ident) comma <* lit "}"
+    "inlineSignature" -> SignatureInline <$> embedSignatureLink ident <* lit "}"
+    keyword -> P.unexpected . maybe (P.Label $ '@' :| "keyword{...}") P.Tokens $ nonEmpty keyword
   where
     srcElem =
       SourceElement
@@ -192,34 +179,11 @@ sourceElements ident code = do
       where
         annotation = fmap Left ident <|> fmap Right (transclude code) <* CP.space
         annotations = P.some (EmbedAnnotation <$> annotation)
-
-signatures :: (Ord e, P.MonadParsec e String m) => m ident -> m (Leaf ident code a)
-signatures ident = fmap Signature $ do
-  _ <- (lit "@signatures" <|> lit "@signature") *> (lit " {" <|> lit "{") *> CP.space
-  s <- sepBy1' (embedSignatureLink ident) comma
-  _ <- lit "}"
-  pure s
-
-signatureInline :: (Ord e, P.MonadParsec e String m) => m ident -> m (Leaf ident code a)
-signatureInline ident = fmap SignatureInline $ do
-  _ <- lit "@inlineSignature" *> (lit " {" <|> lit "{") *> CP.space
-  s <- embedSignatureLink ident
-  _ <- lit "}"
-  pure s
-
-evalInline :: (P.MonadParsec e String m) => (m () -> m code) -> m (Leaf ident code a)
-evalInline code = fmap EvalInline $ do
-  _ <- lit "@eval" *> (lit " {" <|> lit "{") *> CP.space
-  let inlineEvalClose = void $ lit "}"
-  s <- code inlineEvalClose
-  pure s
+    embedSignatureLink ident = EmbedSignatureLink <$> ident <* CP.space
 
 -- | Not an actual node, but this pattern is referenced in multiple places
 embedLink :: (Ord e, P.MonadParsec e s m, P.TraversableStream s) => m ident -> m (EmbedLink ident)
 embedLink = fmap EmbedLink
-
-embedSignatureLink :: (Ord e, P.MonadParsec e String m) => m ident -> m (EmbedSignatureLink ident)
-embedSignatureLink ident = EmbedSignatureLink <$> ident <* CP.space
 
 verbatim :: (Ord e, P.MonadParsec e String m) => m (Leaf ident code a)
 verbatim =

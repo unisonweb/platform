@@ -188,244 +188,256 @@ doMerge info = do
         _ <- Cli.updateAt info.description (PP.projectBranchRoot info.alice.projectAndBranch) (\_aliceBranch -> bobBranch)
         done (Output.MergeSuccessFastForward mergeSourceAndTarget)
 
-      -- Load Alice/Bob/LCA causals
-      causals <-
-        Cli.runTransaction do
-          traverse
-            Operations.expectCausalBranchByCausalHash
-            Merge.TwoOrThreeWay
-              { alice = info.alice.causalHash,
-                bob = info.bob.causalHash,
-                lca = info.lca.causalHash
-              }
+      Cli.withRespondRegion \respondRegion -> do
+        respondRegion (Output.MergeProgress Output.MergeProgress'LoadingBranches)
 
-      liftIO (debugFunctions.debugCausals causals)
-
-      -- Load Alice/Bob/LCA branches
-      branches <-
-        Cli.runTransaction do
-          alice <- causals.alice.value
-          bob <- causals.bob.value
-          lca <- for causals.lca \causal -> causal.value
-          pure Merge.TwoOrThreeWay {lca, alice, bob}
-
-      -- Assert that neither Alice nor Bob have defns in lib
-      for_ [(mergeTarget, branches.alice), (mergeSource, branches.bob)] \(who, branch) -> do
-        whenM (Cli.runTransaction (hasDefnsInLib branch)) do
-          done (Output.MergeDefnsInLib who)
-
-      -- Load Alice/Bob/LCA definitions
-      --
-      -- FIXME: Oops, if this fails due to a conflicted name, we don't actually say where the conflicted name came from.
-      -- We should have a better error message (even though you can't do anything about conflicted names in the LCA).
-      nametrees3 :: Merge.ThreeWay (Nametree (DefnsF (Map NameSegment) Referent TypeReference)) <- do
-        let referent2to1 = Conversions.referent2to1 (Codebase.getDeclType env.codebase)
-        let action ::
-              (forall a. Defn (Conflicted Name Referent) (Conflicted Name TypeReference) -> Transaction a) ->
-              Transaction (Merge.ThreeWay (Nametree (DefnsF (Map NameSegment) Referent TypeReference)))
-            action rollback = do
-              alice <- loadNamespaceDefinitions referent2to1 branches.alice & onLeftM rollback
-              bob <- loadNamespaceDefinitions referent2to1 branches.bob & onLeftM rollback
-              lca <-
-                case branches.lca of
-                  Nothing -> pure Nametree {value = Defns Map.empty Map.empty, children = Map.empty}
-                  Just lca -> loadNamespaceDefinitions referent2to1 lca & onLeftM rollback
-              pure Merge.ThreeWay {alice, bob, lca}
-        Cli.runTransactionWithRollback2 (\rollback -> Right <$> action (rollback . Left))
-          & onLeftM (done . Output.ConflictedDefn "merge")
-
-      libdeps3 <- Cli.runTransaction (loadLibdeps branches)
-
-      let blob0 = Merge.makeMergeblob0 nametrees3 libdeps3
-
-      -- Hydrate
-      hydratedDefns ::
-        Merge.ThreeWay
-          ( DefnsF
-              (Map Name)
-              (TermReferenceId, (Term Symbol Ann, Type Symbol Ann))
-              (TypeReferenceId, Decl Symbol Ann)
-          ) <-
-        Cli.runTransaction $
-          traverse
-            ( hydrateDefns
-                (Codebase.unsafeGetTermComponent env.codebase)
-                Operations.expectDeclComponent
-            )
-            ( let f = Map.mapMaybe Referent.toTermReferenceId . BiMultimap.range
-                  g = Map.mapMaybe Reference.toId . BiMultimap.range
-               in bimap f g <$> blob0.defns
-            )
-
-      blob1 <-
-        Merge.makeMergeblob1 blob0 hydratedDefns & onLeft \case
-          Merge.Alice reason -> done (Output.IncoherentDeclDuringMerge mergeTarget reason)
-          Merge.Bob reason -> done (Output.IncoherentDeclDuringMerge mergeSource reason)
-
-      liftIO (debugFunctions.debugDiffs blob1.diffs)
-
-      liftIO (debugFunctions.debugCombinedDiff blob1.diff)
-
-      blob2 <-
-        Merge.makeMergeblob2 blob1 & onLeft \err ->
-          done case err of
-            Merge.Mergeblob2Error'ConflictedAlias defn0 ->
-              case defn0 of
-                Merge.Alice defn -> Output.MergeConflictedAliases mergeTarget defn
-                Merge.Bob defn -> Output.MergeConflictedAliases mergeSource defn
-            Merge.Mergeblob2Error'ConflictedBuiltin defn -> Output.MergeConflictInvolvingBuiltin defn
-
-      liftIO (debugFunctions.debugPartitionedDiff blob2.conflicts blob2.unconflicts)
-
-      dependents0 <-
-        Cli.runTransaction $
-          for ((,) <$> ThreeWay.forgetLca blob2.defns <*> blob2.coreDependencies) \(defns, deps) ->
-            getNamespaceDependentsOf3 defns deps
-
-      -- Load libdeps
-      (mergedLibdeps, lcaLibdeps) <- do
-        -- We make a fresh branch cache to load the branch of libdeps.
-        -- It would probably be better to reuse the codebase's branch cache.
-        -- FIXME how slow/bad is this without that branch cache?
-        Cli.runTransaction do
-          branchCache <- Sqlite.unsafeIO newBranchCache
-          let load children =
-                Conversions.branch2to1
-                  branchCache
-                  (Codebase.getDeclType env.codebase)
-                  V2.Branch {terms = Map.empty, types = Map.empty, patches = Map.empty, children}
-          mergedLibdeps <- load blob2.libdeps
-          lcaLibdeps <- load blob2.lcaLibdeps
-          pure (mergedLibdeps, lcaLibdeps)
-
-      let hasConflicts =
-            blob2.hasConflicts
-
-      let blob3 =
-            Merge.makeMergeblob3
-              blob2
-              dependents0
-              (Branch.toNames mergedLibdeps)
-              (Branch.toNames lcaLibdeps)
-              Merge.TwoWay
-                { alice = into @Text aliceBranchNames,
-                  bob =
-                    case info.bob.source of
-                      MergeSource'LocalProjectBranch bobBranchNames -> into @Text bobBranchNames
-                      MergeSource'RemoteProjectBranch bobBranchNames
-                        | aliceBranchNames == bobBranchNames -> "remote " <> into @Text bobBranchNames
-                        | otherwise -> into @Text bobBranchNames
-                      MergeSource'RemoteLooseCode info ->
-                        case Path.toName info.path of
-                          Nothing -> "<root>"
-                          Just name -> Name.toText name
+        -- Load Alice/Bob/LCA causals
+        causals <-
+          Cli.runTransaction do
+            traverse
+              Operations.expectCausalBranchByCausalHash
+              Merge.TwoOrThreeWay
+                { alice = info.alice.causalHash,
+                  bob = info.bob.causalHash,
+                  lca = info.lca.causalHash
                 }
 
-      maybeBlob5 <-
-        if hasConflicts
-          then pure Nothing
-          else case Merge.makeMergeblob4 blob3 of
-            Left _parseErr -> pure Nothing
-            Right blob4 -> do
-              typeLookup <- Cli.runTransaction (Codebase.typeLookupForDependencies env.codebase blob4.dependencies)
-              pure case Merge.makeMergeblob5 blob4 typeLookup of
-                Left _typecheckErr -> Nothing
-                Right blob5 -> Just blob5
+        liftIO (debugFunctions.debugCausals causals)
 
-      let parents =
-            causals <&> \causal -> (causal.causalHash, Codebase.expectBranchForHash env.codebase causal.causalHash)
+        -- Load Alice/Bob/LCA branches
+        branches <-
+          Cli.runTransaction do
+            alice <- causals.alice.value
+            bob <- causals.bob.value
+            lca <- for causals.lca \causal -> causal.value
+            pure Merge.TwoOrThreeWay {lca, alice, bob}
 
-      blob5 <-
-        maybeBlob5 & onNothing do
-          env <- ask
-          (_temporaryBranchId, temporaryBranchName) <-
-            HandleInput.Branch.createBranch
-              info.description
-              ( HandleInput.Branch.CreateFrom'NamespaceWithParent
-                  info.alice.projectAndBranch.branch
-                  ( Branch.mergeNode
-                      (defnsAndLibdepsToBranch0 env.codebase blob3.stageTwo mergedLibdeps)
-                      parents.alice
-                      parents.bob
-                  )
+        -- Assert that neither Alice nor Bob have defns in lib
+        for_ [(mergeTarget, branches.alice), (mergeSource, branches.bob)] \(who, branch) -> do
+          whenM (Cli.runTransaction (hasDefnsInLib branch)) do
+            done (Output.MergeDefnsInLib who)
+
+        -- Load Alice/Bob/LCA definitions
+        --
+        -- FIXME: Oops, if this fails due to a conflicted name, we don't actually say where the conflicted name came from.
+        -- We should have a better error message (even though you can't do anything about conflicted names in the LCA).
+        nametrees3 :: Merge.ThreeWay (Nametree (DefnsF (Map NameSegment) Referent TypeReference)) <- do
+          let referent2to1 = Conversions.referent2to1 (Codebase.getDeclType env.codebase)
+          let action ::
+                (forall a. Defn (Conflicted Name Referent) (Conflicted Name TypeReference) -> Transaction a) ->
+                Transaction (Merge.ThreeWay (Nametree (DefnsF (Map NameSegment) Referent TypeReference)))
+              action rollback = do
+                alice <- loadNamespaceDefinitions referent2to1 branches.alice & onLeftM rollback
+                bob <- loadNamespaceDefinitions referent2to1 branches.bob & onLeftM rollback
+                lca <-
+                  case branches.lca of
+                    Nothing -> pure Nametree {value = Defns Map.empty Map.empty, children = Map.empty}
+                    Just lca -> loadNamespaceDefinitions referent2to1 lca & onLeftM rollback
+                pure Merge.ThreeWay {alice, bob, lca}
+          Cli.runTransactionWithRollback2 (\rollback -> Right <$> action (rollback . Left))
+            & onLeftM (done . Output.ConflictedDefn "merge")
+
+        libdeps3 <- Cli.runTransaction (loadLibdeps branches)
+
+        let blob0 = Merge.makeMergeblob0 nametrees3 libdeps3
+
+        -- Hydrate
+        hydratedDefns ::
+          Merge.ThreeWay
+            ( DefnsF
+                (Map Name)
+                (TermReferenceId, (Term Symbol Ann, Type Symbol Ann))
+                (TypeReferenceId, Decl Symbol Ann)
+            ) <-
+          Cli.runTransaction $
+            traverse
+              ( hydrateDefns
+                  (Codebase.unsafeGetTermComponent env.codebase)
+                  Operations.expectDeclComponent
               )
-              info.alice.projectAndBranch.project
-              (findTemporaryBranchName info.alice.projectAndBranch.project.projectId mergeSourceAndTarget)
+              ( let f = Map.mapMaybe Referent.toTermReferenceId . BiMultimap.range
+                    g = Map.mapMaybe Reference.toId . BiMultimap.range
+                 in bimap f g <$> blob0.defns
+              )
 
-          --   Merge conflicts?    Have UCM_MERGETOOL?    Result
-          --   ----------------    -------------------    ------------------------------------------------------------
-          --                 No                     No           Put code that doesn't parse or typecheck in scratch.u
-          --                 No                    Yes           Put code that doesn't parse or typecheck in scratch.u
-          --                Yes                     No    Put code that doesn't parse (because conflicts) in scratch.u
-          --                Yes                    Yes                                              Run that cool tool
+        respondRegion (Output.MergeProgress Output.MergeProgress'DiffingBranches)
 
-          maybeMergetool <-
-            if hasConflicts
-              then liftIO (lookupEnv "UCM_MERGETOOL")
-              else pure Nothing
+        blob1 <-
+          Merge.makeMergeblob1 blob0 hydratedDefns & onLeft \case
+            Merge.Alice reason -> done (Output.IncoherentDeclDuringMerge mergeTarget reason)
+            Merge.Bob reason -> done (Output.IncoherentDeclDuringMerge mergeSource reason)
 
-          case maybeMergetool of
-            Nothing -> do
-              scratchFilePath <-
-                Cli.getLatestFile <&> \case
-                  Nothing -> "scratch.u"
-                  Just (file, _) -> file
-              liftIO $ env.writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 blob3.unparsedFile) True
-              done (Output.MergeFailure scratchFilePath mergeSourceAndTarget temporaryBranchName)
-            Just mergetool0 -> do
-              let aliceFilenameSlug = mangleBranchName mergeSourceAndTarget.alice.branch
-              let bobFilenameSlug = mangleMergeSource mergeSourceAndTarget.bob
-              makeTempFilename <-
-                liftIO do
-                  tmpdir0 <- getTemporaryDirectory
-                  tmpdir1 <- canonicalizePath tmpdir0
-                  tmpdir2 <- Temporary.createTempDirectory tmpdir1 "unison-merge"
-                  pure \filename -> Text.pack (tmpdir2 </> Text.unpack (Text.Builder.run filename))
-              let lcaFilename = makeTempFilename (aliceFilenameSlug <> "-" <> bobFilenameSlug <> "-base.u")
-              let aliceFilename = makeTempFilename (aliceFilenameSlug <> ".u")
-              let bobFilename = makeTempFilename (bobFilenameSlug <> ".u")
-              let mergedFilename = Text.Builder.run (aliceFilenameSlug <> "-" <> bobFilenameSlug <> "-merged.u")
-              let mergetool =
-                    mergetool0
-                      & Text.pack
-                      & Text.replace "$BASE" lcaFilename
-                      & Text.replace "$LOCAL" aliceFilename
-                      & Text.replace "$MERGED" mergedFilename
-                      & Text.replace "$REMOTE" bobFilename
-              exitCode <-
-                liftIO do
-                  let aliceFileContents = Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.alice)
-                  let bobFileContents = Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.bob)
-                  removeFile (Text.unpack mergedFilename) <|> pure ()
-                  env.writeSource lcaFilename (Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.lca)) True
-                  env.writeSource aliceFilename aliceFileContents True
-                  env.writeSource bobFilename bobFileContents True
-                  env.writeSource
-                    mergedFilename
-                    ( makeMergedFileContents
-                        mergeSourceAndTarget
-                        aliceFileContents
-                        bobFileContents
+        liftIO (debugFunctions.debugDiffs blob1.diffs)
+
+        liftIO (debugFunctions.debugCombinedDiff blob1.diff)
+
+        blob2 <-
+          Merge.makeMergeblob2 blob1 & onLeft \err ->
+            done case err of
+              Merge.Mergeblob2Error'ConflictedAlias defn0 ->
+                case defn0 of
+                  Merge.Alice defn -> Output.MergeConflictedAliases mergeTarget defn
+                  Merge.Bob defn -> Output.MergeConflictedAliases mergeSource defn
+              Merge.Mergeblob2Error'ConflictedBuiltin defn -> Output.MergeConflictInvolvingBuiltin defn
+
+        liftIO (debugFunctions.debugPartitionedDiff blob2.conflicts blob2.unconflicts)
+
+        respondRegion (Output.MergeProgress Output.MergeProgress'LoadingDependents)
+
+        dependents0 <-
+          Cli.runTransaction $
+            for ((,) <$> ThreeWay.forgetLca blob2.defns <*> blob2.coreDependencies) \(defns, deps) ->
+              getNamespaceDependentsOf3 defns deps
+
+        respondRegion (Output.MergeProgress Output.MergeProgress'LoadingAndMergingLibdeps)
+
+        -- Load libdeps
+        (mergedLibdeps, lcaLibdeps) <- do
+          -- We make a fresh branch cache to load the branch of libdeps.
+          -- It would probably be better to reuse the codebase's branch cache.
+          -- FIXME how slow/bad is this without that branch cache?
+          Cli.runTransaction do
+            branchCache <- Sqlite.unsafeIO newBranchCache
+            let load children =
+                  Conversions.branch2to1
+                    branchCache
+                    (Codebase.getDeclType env.codebase)
+                    V2.Branch {terms = Map.empty, types = Map.empty, patches = Map.empty, children}
+            mergedLibdeps <- load blob2.libdeps
+            lcaLibdeps <- load blob2.lcaLibdeps
+            pure (mergedLibdeps, lcaLibdeps)
+
+        let hasConflicts =
+              blob2.hasConflicts
+
+        respondRegion (Output.MergeProgress Output.MergeProgress'RenderingUnisonFile)
+
+        let blob3 =
+              Merge.makeMergeblob3
+                blob2
+                dependents0
+                (Branch.toNames mergedLibdeps)
+                (Branch.toNames lcaLibdeps)
+                Merge.TwoWay
+                  { alice = into @Text aliceBranchNames,
+                    bob =
+                      case info.bob.source of
+                        MergeSource'LocalProjectBranch bobBranchNames -> into @Text bobBranchNames
+                        MergeSource'RemoteProjectBranch bobBranchNames
+                          | aliceBranchNames == bobBranchNames -> "remote " <> into @Text bobBranchNames
+                          | otherwise -> into @Text bobBranchNames
+                        MergeSource'RemoteLooseCode info ->
+                          case Path.toName info.path of
+                            Nothing -> "<root>"
+                            Just name -> Name.toText name
+                  }
+
+        maybeBlob5 <-
+          if hasConflicts
+            then pure Nothing
+            else case Merge.makeMergeblob4 blob3 of
+              Left _parseErr -> pure Nothing
+              Right blob4 -> do
+                respondRegion (Output.MergeProgress Output.MergeProgress'TypecheckingUnisonFile)
+                typeLookup <- Cli.runTransaction (Codebase.typeLookupForDependencies env.codebase blob4.dependencies)
+                pure case Merge.makeMergeblob5 blob4 typeLookup of
+                  Left _typecheckErr -> Nothing
+                  Right blob5 -> Just blob5
+
+        let parents =
+              causals <&> \causal -> (causal.causalHash, Codebase.expectBranchForHash env.codebase causal.causalHash)
+
+        blob5 <-
+          maybeBlob5 & onNothing do
+            env <- ask
+            (_temporaryBranchId, temporaryBranchName) <-
+              HandleInput.Branch.createBranch
+                info.description
+                ( HandleInput.Branch.CreateFrom'NamespaceWithParent
+                    info.alice.projectAndBranch.branch
+                    ( Branch.mergeNode
+                        (defnsAndLibdepsToBranch0 env.codebase blob3.stageTwo mergedLibdeps)
+                        parents.alice
+                        parents.bob
                     )
-                    True
-                  let createProcess = (Process.shell (Text.unpack mergetool)) {Process.delegate_ctlc = True}
-                  Process.withCreateProcess createProcess \_ _ _ -> Process.waitForProcess
-              done (Output.MergeFailureWithMergetool mergeSourceAndTarget temporaryBranchName mergetool exitCode)
+                )
+                info.alice.projectAndBranch.project
+                (findTemporaryBranchName info.alice.projectAndBranch.project.projectId mergeSourceAndTarget)
 
-      Cli.runTransaction (Codebase.addDefsToCodebase env.codebase blob5.file)
-      Cli.updateProjectBranchRoot_
-        info.alice.projectAndBranch.branch
-        info.description
-        ( \_aliceBranch ->
-            Branch.mergeNode
-              ( Branch.batchUpdates
-                  (typecheckedUnisonFileToBranchAdds blob5.file)
-                  (defnsAndLibdepsToBranch0 env.codebase blob3.stageOne mergedLibdeps)
-              )
-              parents.alice
-              parents.bob
-        )
-      pure (Output.MergeSuccess mergeSourceAndTarget)
+            --   Merge conflicts?    Have UCM_MERGETOOL?    Result
+            --   ----------------    -------------------    ------------------------------------------------------------
+            --                 No                     No           Put code that doesn't parse or typecheck in scratch.u
+            --                 No                    Yes           Put code that doesn't parse or typecheck in scratch.u
+            --                Yes                     No    Put code that doesn't parse (because conflicts) in scratch.u
+            --                Yes                    Yes                                              Run that cool tool
+
+            maybeMergetool <-
+              if hasConflicts
+                then liftIO (lookupEnv "UCM_MERGETOOL")
+                else pure Nothing
+
+            case maybeMergetool of
+              Nothing -> do
+                scratchFilePath <-
+                  Cli.getLatestFile <&> \case
+                    Nothing -> "scratch.u"
+                    Just (file, _) -> file
+                liftIO $ env.writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 blob3.unparsedFile) True
+                done (Output.MergeFailure scratchFilePath mergeSourceAndTarget temporaryBranchName)
+              Just mergetool0 -> do
+                let aliceFilenameSlug = mangleBranchName mergeSourceAndTarget.alice.branch
+                let bobFilenameSlug = mangleMergeSource mergeSourceAndTarget.bob
+                makeTempFilename <-
+                  liftIO do
+                    tmpdir0 <- getTemporaryDirectory
+                    tmpdir1 <- canonicalizePath tmpdir0
+                    tmpdir2 <- Temporary.createTempDirectory tmpdir1 "unison-merge"
+                    pure \filename -> Text.pack (tmpdir2 </> Text.unpack (Text.Builder.run filename))
+                let lcaFilename = makeTempFilename (aliceFilenameSlug <> "-" <> bobFilenameSlug <> "-base.u")
+                let aliceFilename = makeTempFilename (aliceFilenameSlug <> ".u")
+                let bobFilename = makeTempFilename (bobFilenameSlug <> ".u")
+                let mergedFilename = Text.Builder.run (aliceFilenameSlug <> "-" <> bobFilenameSlug <> "-merged.u")
+                let mergetool =
+                      mergetool0
+                        & Text.pack
+                        & Text.replace "$BASE" lcaFilename
+                        & Text.replace "$LOCAL" aliceFilename
+                        & Text.replace "$MERGED" mergedFilename
+                        & Text.replace "$REMOTE" bobFilename
+                exitCode <-
+                  liftIO do
+                    let aliceFileContents = Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.alice)
+                    let bobFileContents = Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.bob)
+                    removeFile (Text.unpack mergedFilename) <|> pure ()
+                    env.writeSource lcaFilename (Text.pack (Pretty.toPlain 80 blob3.unparsedSoloFiles.lca)) True
+                    env.writeSource aliceFilename aliceFileContents True
+                    env.writeSource bobFilename bobFileContents True
+                    env.writeSource
+                      mergedFilename
+                      ( makeMergedFileContents
+                          mergeSourceAndTarget
+                          aliceFileContents
+                          bobFileContents
+                      )
+                      True
+                    let createProcess = (Process.shell (Text.unpack mergetool)) {Process.delegate_ctlc = True}
+                    Process.withCreateProcess createProcess \_ _ _ -> Process.waitForProcess
+                done (Output.MergeFailureWithMergetool mergeSourceAndTarget temporaryBranchName mergetool exitCode)
+
+        Cli.runTransaction (Codebase.addDefsToCodebase env.codebase blob5.file)
+        Cli.updateProjectBranchRoot_
+          info.alice.projectAndBranch.branch
+          info.description
+          ( \_aliceBranch ->
+              Branch.mergeNode
+                ( Branch.batchUpdates
+                    (typecheckedUnisonFileToBranchAdds blob5.file)
+                    (defnsAndLibdepsToBranch0 env.codebase blob3.stageOne mergedLibdeps)
+                )
+                parents.alice
+                parents.bob
+          )
+        pure (Output.MergeSuccess mergeSourceAndTarget)
 
   Cli.respond finalOutput
 
