@@ -737,6 +737,17 @@ handleProjectAndBranchNamesArg =
       SA.ProjectBranch (ProjectAndBranch mproj branch) -> pure $ maybe That These mproj branch
       otherNumArg -> Left $ wrongStructuredArgument "a project or branch" otherNumArg
 
+-- | The parser used by most UCM commands. It splits strings on spaces and replaces natural numbers with their
+--  `NumberedArg`.
+standardParser :: (I.Arguments -> Either (P.Pretty CT.ColorText) Input) -> I.Parser
+standardParser fn = fn . snd
+
+-- | A special case of the `standardParser`, when we don’t expect any arguments. This will fail if arguments are given.
+constParser :: Input -> I.Parser
+constParser input = standardParser \case
+  [] -> pure input
+  args -> wrongArgsLength "no arguments" args
+
 mergeBuiltins :: InputPattern
 mergeBuiltins =
   InputPattern
@@ -745,7 +756,7 @@ mergeBuiltins =
     I.Hidden
     [("namespace", Optional, namespaceArg)]
     "Adds the builtins (excluding `io` and misc) to the specified namespace. Defaults to `builtin.`"
-    \case
+    $ standardParser \case
       [] -> pure . Input.MergeBuiltinsI $ Nothing
       [p] -> Input.MergeBuiltinsI . Just <$> handlePathArg p
       args -> wrongArgsLength "no more than one argument" args
@@ -758,7 +769,7 @@ mergeIOBuiltins =
     I.Hidden
     [("namespace", Optional, namespaceArg)]
     "Adds all the builtins, including `io` and misc., to the specified namespace. Defaults to `builtin.`"
-    \case
+    $ standardParser \case
       [] -> pure . Input.MergeIOBuiltinsI $ Nothing
       [p] -> Input.MergeIOBuiltinsI . Just <$> handlePathArg p
       args -> wrongArgsLength "no more than one argument" args
@@ -773,7 +784,7 @@ updateBuiltins =
     ( "Adds all the builtins that are missing from this namespace, "
         <> "and deprecate the ones that don't exist in this version of Unison."
     )
-    (const . pure $ Input.UpdateBuiltinsI)
+    $ constParser Input.UpdateBuiltinsI
 
 todo :: InputPattern
 todo =
@@ -787,9 +798,7 @@ todo =
           <> "lists the current namespace's outstanding issues, including conflicted names, dependencies with missing"
           <> "names, and merge precondition violations."
     )
-    \case
-      [] -> Right Input.TodoI
-      args -> wrongArgsLength "no arguments" args
+    $ constParser Input.TodoI
 
 load :: InputPattern
 load =
@@ -807,7 +816,7 @@ load =
           )
         ]
     )
-    \case
+    $ standardParser \case
       [] -> pure $ Input.LoadI Nothing
       [file] -> Input.LoadI . Just <$> unsupportedStructuredArgument load "a file name" file
       args -> wrongArgsLength "no more than one argument" args
@@ -825,9 +834,7 @@ clear =
           )
         ]
     )
-    \case
-      [] -> pure Input.ClearI
-      args -> wrongArgsLength "no arguments" args
+    $ constParser Input.ClearI
 
 add :: InputPattern
 add =
@@ -839,6 +846,7 @@ add =
     ( "`add` adds to the codebase all the definitions from the most recently "
         <> "typechecked file."
     )
+    . standardParser
     $ fmap (Input.AddI . Set.fromList) . traverse handleNameArg
 
 previewAdd :: InputPattern
@@ -853,6 +861,7 @@ previewAdd =
         <> "results. Use `load` to reparse & typecheck the file if the context "
         <> "has changed."
     )
+    . standardParser
     $ fmap (Input.PreviewAddI . Set.fromList) . traverse handleNameArg
 
 update :: InputPattern
@@ -868,9 +877,7 @@ update =
             <> "replacing existing definitions having the same name, and attempts to update all the existing dependents accordingly. If the process"
             <> "can't be completed automatically, the dependents will be added back to the scratch file"
             <> "for your review.",
-      parse = \case
-        [] -> pure Input.Update2I
-        args -> wrongArgsLength "no arguments" args
+      parse = constParser Input.Update2I
     }
 
 updateOldNoPatch :: InputPattern
@@ -899,6 +906,7 @@ updateOldNoPatch =
             )
           ]
     )
+    . standardParser
     $ fmap (Input.UpdateI Input.NoPatch . Set.fromList) . traverse handleNameArg
 
 updateOld :: InputPattern
@@ -933,7 +941,7 @@ updateOld =
             )
           ]
     )
-    \case
+    $ standardParser \case
       patchStr : ws ->
         Input.UpdateI . Input.UsePatch <$> handleSplit'Arg patchStr <*> fmap Set.fromList (traverse handleNameArg ws)
       [] -> Right $ Input.UpdateI Input.DefaultPatch mempty
@@ -950,6 +958,7 @@ previewUpdate =
         <> "typechecking results. Use `load` to reparse & typecheck the file if "
         <> "the context has changed."
     )
+    . standardParser
     $ fmap (Input.PreviewUpdateI . Set.fromList) . traverse handleNameArg
 
 view :: InputPattern
@@ -970,13 +979,13 @@ view =
               <> "not `List.map.doc` (since ? only matches 1 name segment)."
         ]
     )
-    ( maybe
-        (wrongArgsLength "at least one argument" [])
-        ( fmap (Input.ShowDefinitionI Input.ConsoleLocation Input.ShowDefinitionLocal)
-            . traverse handleHashQualifiedNameArg
-        )
-        . NE.nonEmpty
-    )
+    . standardParser
+    $ maybe
+      (wrongArgsLength "at least one argument" [])
+      ( fmap (Input.ShowDefinitionI Input.ConsoleLocation Input.ShowDefinitionLocal)
+          . traverse handleHashQualifiedNameArg
+      )
+      . NE.nonEmpty
 
 viewGlobal :: InputPattern
 viewGlobal =
@@ -990,13 +999,13 @@ viewGlobal =
           "`view.global` without arguments invokes a search to select definitions to view, which requires that `fzf` can be found within your PATH."
         ]
     )
-    ( maybe
-        (wrongArgsLength "at least one argument" [])
-        ( fmap (Input.ShowDefinitionI Input.ConsoleLocation Input.ShowDefinitionGlobal)
-            . traverse handleHashQualifiedNameArg
-        )
-        . NE.nonEmpty
-    )
+    . standardParser
+    $ maybe
+      (wrongArgsLength "at least one argument" [])
+      ( fmap (Input.ShowDefinitionI Input.ConsoleLocation Input.ShowDefinitionGlobal)
+          . traverse handleHashQualifiedNameArg
+      )
+      . NE.nonEmpty
 
 display :: InputPattern
 display =
@@ -1010,6 +1019,7 @@ display =
           "`display` without arguments invokes a search to select a definition to display, which requires that `fzf` can be found within your PATH."
         ]
     )
+    . standardParser
     $ maybe
       (wrongArgsLength "at least one argument" [])
       (fmap (Input.DisplayI Input.ConsoleLocation) . traverse handleHashQualifiedNameArg)
@@ -1026,7 +1036,7 @@ displayTo =
         makeExample displayTo ["<filename>", "foo"]
           <> "prints a rendered version of the term `foo` to the given file."
     )
-    $ \case
+    $ standardParser \case
       file : defs ->
         maybe
           (wrongArgsLength "at least two arguments" [file])
@@ -1050,6 +1060,7 @@ docs =
           "`docs` without arguments invokes a search to select which definition to view documentation for, which requires that `fzf` can be found within your PATH."
         ]
     )
+    . standardParser
     $ maybe (wrongArgsLength "at least one argument" []) (fmap Input.DocsI . traverse handleNameArg) . NE.nonEmpty
 
 api :: InputPattern
@@ -1060,7 +1071,7 @@ api =
     I.Visible
     []
     "`api` provides details about the API."
-    (const $ pure Input.ApiI)
+    $ constParser Input.ApiI
 
 ui :: InputPattern
 ui =
@@ -1070,7 +1081,7 @@ ui =
       visibility = I.Visible,
       args = [("definition to load", Optional, namespaceOrDefinitionArg)],
       help = P.wrap "`ui` opens the Local UI in the default browser.",
-      parse = \case
+      parse = standardParser \case
         [] -> pure $ Input.UiI Path.relativeEmpty'
         [path] -> Input.UiI <$> handlePath'Arg path
         args -> wrongArgsLength "no more than one argument" args
@@ -1084,7 +1095,7 @@ undo =
     I.Visible
     []
     "`undo` reverts the most recent change to the codebase."
-    (const $ pure Input.UndoI)
+    $ constParser Input.UndoI
 
 textfind :: Bool -> InputPattern
 textfind allowLib =
@@ -1094,7 +1105,7 @@ textfind allowLib =
       if allowLib
         then ("text.find.all", ["grep.all"], "Use `text.find` to exclude `lib` from search.")
         else ("text.find", ["grep"], "Use `text.find.all` to include search of `lib`.")
-    parse = \case
+    parse = standardParser \case
       [] -> Left (P.text "Please supply at least one token.")
       words -> pure $ Input.TextFindI allowLib (untokenize $ [e | Left e <- words])
     msg =
@@ -1130,7 +1141,7 @@ sfind :: InputPattern
 sfind =
   InputPattern "rewrite.find" ["sfind"] I.Visible [("rewrite-rule definition", Required, definitionQueryArg)] msg parse
   where
-    parse = \case
+    parse = standardParser \case
       [q] -> Input.StructuredFindI (Input.FindLocal Path.relativeEmpty') <$> handleHashQualifiedNameArg q
       args -> wrongArgsLength "exactly one argument" args
     msg =
@@ -1162,8 +1173,9 @@ sfindReplace :: InputPattern
 sfindReplace =
   InputPattern "rewrite" ["sfind.replace"] I.Visible [("rewrite-rule definition", Required, definitionQueryArg)] msg parse
   where
-    parse [q] = Input.StructuredFindReplaceI <$> handleHashQualifiedNameArg q
-    parse args = wrongArgsLength "exactly one argument" args
+    parse = standardParser \case
+      [q] -> Input.StructuredFindReplaceI <$> handleHashQualifiedNameArg q
+      args -> wrongArgsLength "exactly one argument" args
     msg :: P.Pretty CT.ColorText
     msg =
       P.lines
@@ -1209,7 +1221,7 @@ findIn' cmd mkfscope =
     I.Visible
     [("namespace", Required, namespaceArg), ("query", ZeroPlus, exactDefinitionArg)]
     findHelp
-    \case
+    $ standardParser \case
       p : args -> Input.FindI False . mkfscope <$> handlePath'Arg p <*> pure (unifyArgument <$> args)
       args -> wrongArgsLength "at least one argument" args
 
@@ -1257,7 +1269,8 @@ find' cmd fscope =
     I.Visible
     [("query", ZeroPlus, exactDefinitionArg)]
     findHelp
-    (pure . Input.FindI False fscope . fmap unifyArgument)
+    . standardParser
+    $ pure . Input.FindI False fscope . fmap unifyArgument
 
 findShallow :: InputPattern
 findShallow =
@@ -1272,11 +1285,11 @@ findShallow =
           ("`list .foo`", "lists the '.foo' namespace.")
         ]
     )
-    ( fmap Input.FindShallowI . \case
-        [] -> pure Path.relativeEmpty'
-        [path] -> handlePath'Arg path
-        args -> wrongArgsLength "no more than one argument" args
-    )
+    . standardParser
+    $ fmap Input.FindShallowI . \case
+      [] -> pure Path.relativeEmpty'
+      [path] -> handlePath'Arg path
+      args -> wrongArgsLength "no more than one argument" args
 
 findVerbose :: InputPattern
 findVerbose =
@@ -1288,7 +1301,8 @@ findVerbose =
     ( "`find.verbose` searches for definitions like `find`, but includes hashes "
         <> "and aliases in the results."
     )
-    (pure . Input.FindI True (Input.FindLocal Path.relativeEmpty') . fmap unifyArgument)
+    . standardParser
+    $ pure . Input.FindI True (Input.FindLocal Path.relativeEmpty') . fmap unifyArgument
 
 findVerboseAll :: InputPattern
 findVerboseAll =
@@ -1300,7 +1314,8 @@ findVerboseAll =
     ( "`find.all.verbose` searches for definitions like `find.all`, but includes hashes "
         <> "and aliases in the results."
     )
-    (pure . Input.FindI True (Input.FindLocalAndDeps Path.relativeEmpty') . fmap unifyArgument)
+    . standardParser
+    $ pure . Input.FindI True (Input.FindLocalAndDeps Path.relativeEmpty') . fmap unifyArgument
 
 renameTerm :: InputPattern
 renameTerm =
@@ -1312,7 +1327,7 @@ renameTerm =
       ("new location", Required, newNameArg)
     ]
     "`move.term foo bar` renames `foo` to `bar`."
-    \case
+    $ standardParser \case
       [oldName, newName] -> Input.MoveTermI <$> handleHashQualifiedSplit'Arg oldName <*> handleNewName newName
       _ -> Left $ P.wrap "`rename.term` takes two arguments, like `rename.term oldname newname`."
 
@@ -1326,7 +1341,7 @@ moveAll =
       ("new location", Required, newNameArg)
     ]
     "`move foo bar` renames the term, type, and namespace foo to bar."
-    \case
+    $ standardParser \case
       [oldName, newName] -> Input.MoveAllI <$> handlePath'Arg oldName <*> handleNewPath newName
       _ -> Left $ P.wrap "`move` takes two arguments, like `move oldname newname`."
 
@@ -1340,7 +1355,7 @@ renameType =
       ("new location", Required, newNameArg)
     ]
     "`move.type foo bar` renames `foo` to `bar`."
-    \case
+    $ standardParser \case
       [oldName, newName] -> Input.MoveTypeI <$> handleHashQualifiedSplit'Arg oldName <*> handleNewName newName
       _ ->
         Left $ P.wrap "`rename.type` takes two arguments, like `rename.type oldname newname`."
@@ -1382,7 +1397,7 @@ deleteGen suffix queryCompletionArg target mkTarget =
         I.Visible
         [("definition to delete", OnePlus, queryCompletionArg)]
         info
-        \case
+        $ standardParser \case
           [] -> Left $ P.wrap warning
           queries -> Input.DeleteI . mkTarget <$> traverse handleHashQualifiedSplit'Arg queries
 
@@ -1415,7 +1430,7 @@ deleteProject =
         P.wrapColumn2
           [ ("`delete.project foo`", "deletes the local project `foo`")
           ],
-      parse = \case
+      parse = standardParser \case
         [name] -> Input.DeleteI . DeleteTarget'Project <$> handleProjectArg name
         args -> wrongArgsLength "exactly one argument" args
     }
@@ -1432,7 +1447,7 @@ deleteBranch =
           [ ("`delete.branch foo/bar`", "deletes the branch `bar` in the project `foo`"),
             ("`delete.branch /bar`", "deletes the branch `bar` in the current project")
           ],
-      parse = \case
+      parse = standardParser \case
         [name] -> Input.DeleteI . DeleteTarget'ProjectBranch <$> handleMaybeProjectBranchArg name
         args -> wrongArgsLength "exactly one argument" args
     }
@@ -1452,7 +1467,7 @@ aliasTerm =
       visibility = I.Visible,
       args = [("term to alias", Required, exactDefinitionTermQueryArg), ("alias name", Required, newNameArg)],
       help = "`alias.term foo bar` introduces `bar` with the same definition as `foo`.",
-      parse = \case
+      parse = standardParser \case
         [oldName, newName] -> Input.AliasTermI False <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
         _ -> Left $ P.wrap "`alias.term` takes two arguments, like `alias.term oldname newname`."
     }
@@ -1465,7 +1480,7 @@ debugAliasTermForce =
       visibility = I.Hidden,
       args = [("term to alias", Required, exactDefinitionTermQueryArg), ("alias name", Required, newNameArg)],
       help = "`debug.alias.term.force foo bar` introduces `bar` with the same definition as `foo`.",
-      parse = \case
+      parse = standardParser \case
         [oldName, newName] -> Input.AliasTermI True <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
         _ ->
           Left $
@@ -1480,7 +1495,7 @@ aliasType =
     I.Visible
     [("type to alias", Required, exactDefinitionTypeQueryArg), ("alias name", Required, newNameArg)]
     "`alias.type Foo Bar` introduces `Bar` with the same definition as `Foo`."
-    \case
+    $ standardParser \case
       [oldName, newName] -> Input.AliasTypeI False <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
       _ -> Left $ P.wrap "`alias.type` takes two arguments, like `alias.type oldname newname`."
 
@@ -1492,7 +1507,7 @@ debugAliasTypeForce =
       visibility = I.Hidden,
       args = [("type to alias", Required, exactDefinitionTypeQueryArg), ("alias name", Required, newNameArg)],
       help = "`debug.alias.type.force Foo Bar` introduces `Bar` with the same definition as `Foo`.",
-      parse = \case
+      parse = standardParser \case
         [oldName, newName] -> Input.AliasTypeI True <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
         _ ->
           Left $
@@ -1515,7 +1530,7 @@ aliasMany =
               <> "creates aliases `.quux.foo.foo` and `.quux.bar.bar`."
         ]
     )
-    \case
+    $ standardParser \case
       srcs@(_ : _) Cons.:> dest ->
         Input.AliasManyI <$> traverse handleHashQualifiedSplitArg srcs <*> handlePath'Arg dest
       args -> wrongArgsLength "at least two arguments" args
@@ -1528,9 +1543,7 @@ up =
     I.Hidden
     []
     (P.wrapColumn2 [(makeExample up [], "move current path up one level (deprecated)")])
-    \case
-      [] -> Right Input.UpI
-      args -> wrongArgsLength "no arguments" args
+    $ constParser Input.UpI
 
 cd :: InputPattern
 cd =
@@ -1558,7 +1571,7 @@ cd =
             ]
         ]
     )
-    \case
+    $ standardParser \case
       [Left ".."] -> Right Input.UpI
       [p] -> Input.SwitchBranchI <$> handlePath'Arg p
       args -> wrongArgsLength "exactly one argument" args
@@ -1576,9 +1589,7 @@ back =
           )
         ]
     )
-    \case
-      [] -> pure Input.PopBranchI
-      args -> wrongArgsLength "no arguments" args
+    $ constParser Input.PopBranchI
 
 deleteNamespace :: InputPattern
 deleteNamespace =
@@ -1602,8 +1613,8 @@ deleteNamespaceForce =
     )
     (deleteNamespaceParser Input.Force)
 
-deleteNamespaceParser :: Input.Insistence -> I.Arguments -> Either (P.Pretty CT.ColorText) Input
-deleteNamespaceParser insistence = \case
+deleteNamespaceParser :: Input.Insistence -> I.Parser
+deleteNamespaceParser insistence = standardParser \case
   [Left "."] -> first fromString . pure $ Input.DeleteI (DeleteTarget'Namespace insistence Nothing)
   [p] -> Input.DeleteI . DeleteTarget'Namespace insistence <$> (Just <$> handleSplitArg p)
   args -> wrongArgsLength "exactly one argument" args
@@ -1616,7 +1627,7 @@ renameBranch =
     I.Visible
     [("namespace to move", Required, namespaceArg), ("new location", Required, newNameArg)]
     "`move.namespace foo bar` renames the path `foo` to `bar`."
-    \case
+    $ standardParser \case
       [src, dest] -> Input.MoveBranchI <$> handlePath'Arg src <*> handlePath'Arg dest
       args -> wrongArgsLength "exactly two arguments" args
 
@@ -1636,7 +1647,7 @@ history =
           )
         ]
     )
-    \case
+    $ standardParser \case
       [src] -> Input.HistoryI (Just 10) (Just 10) <$> handleBranchIdArg src
       [] -> pure $ Input.HistoryI (Just 10) (Just 10) (BranchAtPath Path.currentPath)
       args -> wrongArgsLength "no more than one argument" args
@@ -1662,7 +1673,7 @@ forkLocal =
           )
         ]
     )
-    \case
+    $ standardParser \case
       [src, dest] -> Input.ForkLocalBranchI <$> handleBranchId2Arg src <*> handleBranchRelativePathArg dest
       args -> wrongArgsLength "exactly two arguments" args
 
@@ -1692,7 +1703,7 @@ libInstallInputPattern =
                 )
               ]
           ],
-      parse = \case
+      parse = standardParser \case
         [arg] -> Input.LibInstallI False <$> handleProjectMaybeBranchArg arg
         args -> wrongArgsLength "exactly one argument" args
     }
@@ -1716,7 +1727,7 @@ reset =
           P.wrap $ "If you make a mistake using reset, consult the " <> makeExample' branchReflog <> " command and use another " <> makeExample' reset <> " command to return to a previous state."
         ]
     )
-    \case
+    $ standardParser \case
       [resetTo] -> Input.ResetI <$> handleBranchId2Arg resetTo <*> pure Nothing
       [resetTo, branchToReset] -> Input.ResetI <$> handleBranchId2Arg resetTo <*> fmap pure (handleMaybeProjectBranchArg branchToReset)
       args -> wrongArgsLength "one or two arguments" args
@@ -1784,7 +1795,7 @@ pullImpl name aliases pullMode addendum = do
                 "",
                 explainRemote Pull
               ],
-          parse = \case
+          parse = standardParser \case
             [] -> pure $ Input.PullI Input.PullSourceTarget0 pullMode
             [sourceArg] -> do
               source <- handlePullSourceArg sourceArg
@@ -1857,7 +1868,8 @@ debugTabCompletion =
           P.wrap $ "Completions which are finished are prefixed with a * represent finished completions."
         ]
     )
-    (fmap Input.DebugTabCompletionI . traverse (unsupportedStructuredArgument debugTabCompletion "text"))
+    . standardParser
+    $ fmap Input.DebugTabCompletionI . traverse (unsupportedStructuredArgument debugTabCompletion "text")
 
 debugLspNameCompletion :: InputPattern
 debugLspNameCompletion =
@@ -1870,7 +1882,7 @@ debugLspNameCompletion =
         [ P.wrap $ "This command can be used to test and debug ucm's LSP name-completion within transcripts."
         ]
     )
-    \case
+    $ standardParser \case
       [prefix] -> Input.DebugLSPNameCompletionI . Text.pack <$> unsupportedStructuredArgument debugLspNameCompletion "text" prefix
       args -> wrongArgsLength "exactly one argument" args
 
@@ -1889,7 +1901,7 @@ debugFuzzyOptions =
           P.wrap $ "or `debug.fuzzy-options merge - _`"
         ]
     )
-    \case
+    $ standardParser \case
       (cmd : args) ->
         Input.DebugFuzzyOptionsI
           <$> unsupportedStructuredArgument debugFuzzyOptions "a command" cmd
@@ -1908,10 +1920,7 @@ debugFormat =
           makeExample' debugFormat
         ]
     )
-    ( \case
-        [] -> Right Input.DebugFormatI
-        args -> wrongArgsLength "no arguments" args
-    )
+    $ constParser Input.DebugFormatI
 
 push :: InputPattern
 push =
@@ -1944,6 +1953,7 @@ push =
           explainRemote Push
         ]
     )
+    . standardParser
     $ fmap
       ( \sourceTarget ->
           Input.PushRemoteBranchI
@@ -1995,6 +2005,7 @@ pushCreate =
           explainRemote Push
         ]
     )
+    . standardParser
     $ fmap
       ( \sourceTarget ->
           Input.PushRemoteBranchI
@@ -2025,6 +2036,7 @@ pushForce =
     I.Visible
     [("remote destination", Optional, remoteNamespaceArg), ("local source", Optional, namespaceOrProjectBranchArg suggestionsConfig)]
     (P.wrap "Like `push`, but forcibly overwrites the remote namespace.")
+    . standardParser
     $ fmap
       ( \sourceTarget ->
           Input.PushRemoteBranchI
@@ -2065,6 +2077,7 @@ pushExhaustive =
               <> "versions M1l and earlier. It may be extra slow!"
         ]
     )
+    . standardParser
     $ fmap
       ( \sourceTarget ->
           Input.PushRemoteBranchI
@@ -2104,7 +2117,7 @@ mergeOldSquashInputPattern =
             <> "discarding the history of `src` in the process."
             <> "The resulting `dest` will have (at most) 1"
             <> "additional history entry.",
-      parse = \case
+      parse = standardParser \case
         [src] ->
           Input.MergeLocalBranchI
             <$> handleBranchRelativePathArg src
@@ -2149,19 +2162,18 @@ mergeOldInputPattern =
           )
         ]
     )
-    ( \case
-        [src] ->
-          Input.MergeLocalBranchI
-            <$> handleBranchRelativePathArg src
-            <*> pure Nothing
-            <*> pure Branch.RegularMerge
-        [src, dest] ->
-          Input.MergeLocalBranchI
-            <$> handleBranchRelativePathArg src
-            <*> (Just <$> handleBranchRelativePathArg dest)
-            <*> pure Branch.RegularMerge
-        args -> wrongArgsLength "one or two arguments" args
-    )
+    $ standardParser \case
+      [src] ->
+        Input.MergeLocalBranchI
+          <$> handleBranchRelativePathArg src
+          <*> pure Nothing
+          <*> pure Branch.RegularMerge
+      [src, dest] ->
+        Input.MergeLocalBranchI
+          <$> handleBranchRelativePathArg src
+          <*> (Just <$> handleBranchRelativePathArg dest)
+          <*> pure Branch.RegularMerge
+      args -> wrongArgsLength "one or two arguments" args
   where
     config =
       ProjectBranchSuggestionsConfig
@@ -2188,10 +2200,9 @@ mergeInputPattern =
           )
         ],
       help = P.wrap $ makeExample mergeInputPattern ["/branch"] <> "merges `branch` into the current branch",
-      parse =
-        \case
-          [branchString] -> Input.MergeI <$> handleMaybeProjectBranchArg branchString
-          args -> wrongArgsLength "exactly one argument" args
+      parse = standardParser \case
+        [branchString] -> Input.MergeI <$> handleMaybeProjectBranchArg branchString
+        args -> wrongArgsLength "exactly one argument" args
     }
 
 mergeCommitInputPattern :: InputPattern
@@ -2231,9 +2242,7 @@ mergeCommitInputPattern =
                       makeExampleNoBackticks deleteBranch [prettySlashProjectBranchName tempBranch]
                     ]
                 ),
-      parse = \case
-        [] -> Right Input.MergeCommitI
-        args -> wrongArgsLength "no arguments" args
+      parse = constParser Input.MergeCommitI
     }
 
 diffNamespace :: InputPattern
@@ -2252,11 +2261,10 @@ diffNamespace =
           )
         ]
     )
-    ( \case
-        [before, after] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> handleBranchId2Arg after
-        [before] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> pure (Right . UnqualifiedPath $ Path.currentPath)
-        args -> wrongArgsLength "one or two arguments" args
-    )
+    $ standardParser \case
+      [before, after] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> handleBranchId2Arg after
+      [before] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> pure (Right . UnqualifiedPath $ Path.currentPath)
+      args -> wrongArgsLength "one or two arguments" args
   where
     suggestionsConfig =
       ProjectBranchSuggestionsConfig
@@ -2281,12 +2289,11 @@ mergeOldPreviewInputPattern =
           )
         ]
     )
-    ( \case
-        [src] -> Input.PreviewMergeLocalBranchI <$> handleBranchRelativePathArg src <*> pure Nothing
-        [src, dest] ->
-          Input.PreviewMergeLocalBranchI <$> handleBranchRelativePathArg src <*> (Just <$> handleBranchRelativePathArg dest)
-        args -> wrongArgsLength "one or two arguments" args
-    )
+    $ standardParser \case
+      [src] -> Input.PreviewMergeLocalBranchI <$> handleBranchRelativePathArg src <*> pure Nothing
+      [src, dest] ->
+        Input.PreviewMergeLocalBranchI <$> handleBranchRelativePathArg src <*> (Just <$> handleBranchRelativePathArg dest)
+      args -> wrongArgsLength "one or two arguments" args
   where
     suggestionsConfig =
       ProjectBranchSuggestionsConfig
@@ -2306,12 +2313,7 @@ deprecatedViewRootReflog =
         <> makeExample branchReflog []
         <> " which shows the reflog for the current project."
     )
-    ( \case
-        [] -> pure Input.ShowRootReflogI
-        _ ->
-          Left . P.string $
-            I.patternName deprecatedViewRootReflog ++ " doesn't take any arguments."
-    )
+    $ constParser Input.ShowRootReflogI
 
 branchReflog :: InputPattern
 branchReflog =
@@ -2325,11 +2327,10 @@ branchReflog =
           "`reflog /mybranch` lists all the changes that have affected /mybranch."
         ]
     )
-    ( \case
-        [] -> pure $ Input.ShowProjectBranchReflogI Nothing
-        [branchRef] -> Input.ShowProjectBranchReflogI <$> (Just <$> handleMaybeProjectBranchArg branchRef)
-        _ -> Left (I.help branchReflog)
-    )
+    $ standardParser \case
+      [] -> pure $ Input.ShowProjectBranchReflogI Nothing
+      [branchRef] -> Input.ShowProjectBranchReflogI <$> (Just <$> handleMaybeProjectBranchArg branchRef)
+      _ -> Left (I.help branchReflog)
 
 projectReflog :: InputPattern
 projectReflog =
@@ -2343,11 +2344,10 @@ projectReflog =
           "`project.reflog myproject` lists all the changes that have affected any branches in myproject."
         ]
     )
-    ( \case
-        [] -> pure $ Input.ShowProjectReflogI Nothing
-        [projectRef] -> Input.ShowProjectReflogI <$> (Just <$> handleProjectArg projectRef)
-        _ -> Left (I.help projectReflog)
-    )
+    $ standardParser \case
+      [] -> pure $ Input.ShowProjectReflogI Nothing
+      [projectRef] -> Input.ShowProjectReflogI <$> (Just <$> handleProjectArg projectRef)
+      _ -> Left (I.help projectReflog)
 
 globalReflog :: InputPattern
 globalReflog =
@@ -2360,10 +2360,7 @@ globalReflog =
         [ "`reflog.global` lists all recent changes across all projects and branches."
         ]
     )
-    ( \case
-        [] -> pure $ Input.ShowGlobalReflogI
-        _ -> Left (I.help globalReflog)
-    )
+    $ constParser Input.ShowGlobalReflogI
 
 edit :: InputPattern
 edit =
@@ -2379,12 +2376,13 @@ edit =
             "`edit` without arguments invokes a search to select a definition for editing, which requires that `fzf` can be found within your PATH."
           ],
       parse =
-        maybe
-          (wrongArgsLength "at least one argument" [])
-          ( fmap (Input.ShowDefinitionI (Input.LatestFileLocation Input.WithinFold) Input.ShowDefinitionLocal)
-              . traverse handleHashQualifiedNameArg
-          )
-          . NE.nonEmpty
+        standardParser $
+          maybe
+            (wrongArgsLength "at least one argument" [])
+            ( fmap (Input.ShowDefinitionI (Input.LatestFileLocation Input.WithinFold) Input.ShowDefinitionLocal)
+                . traverse handleHashQualifiedNameArg
+            )
+            . NE.nonEmpty
     }
 
 editNew :: InputPattern
@@ -2396,12 +2394,13 @@ editNew =
       args = [("definition to edit", OnePlus, definitionQueryArg)],
       help = "Like `edit`, but adds a new fold line below the definitions.",
       parse =
-        maybe
-          (wrongArgsLength "at least one argument" [])
-          ( fmap (Input.ShowDefinitionI (Input.LatestFileLocation Input.AboveFold) Input.ShowDefinitionLocal)
-              . traverse handleHashQualifiedNameArg
-          )
-          . NE.nonEmpty
+        standardParser $
+          maybe
+            (wrongArgsLength "at least one argument" [])
+            ( fmap (Input.ShowDefinitionI (Input.LatestFileLocation Input.AboveFold) Input.ShowDefinitionLocal)
+                . traverse handleHashQualifiedNameArg
+            )
+            . NE.nonEmpty
     }
 
 editNamespace :: InputPattern
@@ -2416,7 +2415,7 @@ editNamespace =
           [ "`edit.namespace` will load all terms and types contained within the current namespace into your scratch file. This includes definitions in namespaces, but excludes libraries.",
             "`edit.namespace ns1 ns2 ...` loads the terms and types contained within the provided namespaces."
           ],
-      parse = fmap Input.EditNamespaceI . traverse handlePathArg
+      parse = standardParser $ fmap Input.EditNamespaceI . traverse handlePathArg
     }
 
 topicNameArg :: ArgumentType
@@ -2436,7 +2435,7 @@ helpTopics =
     I.Visible
     [("topic", Optional, topicNameArg)]
     ("`help-topics` lists all topics and `help-topics <topic>` shows an explanation of that topic.")
-    ( \case
+    $ standardParser \case
         [] -> Right $ Input.CreateMessage topics
         [topic] -> do
           topic <- unsupportedStructuredArgument helpTopics "a help topic" topic
@@ -2444,7 +2443,6 @@ helpTopics =
             Nothing -> Left $ "I don't know of that topic. Try `help-topics`."
             Just t -> Right $ Input.CreateMessage t
         _ -> Left $ "Use `help-topics <topic>` or `help-topics`."
-    )
   where
     topics =
       P.callout "🌻" $
@@ -2620,7 +2618,7 @@ help =
     I.Visible
     [("command", Optional, commandNameArg)]
     "`help` shows general help and `help <cmd>` shows help for one command."
-    $ \case
+    $ standardParser \case
       [] ->
         Right . Input.CreateMessage $
           intercalateMap
@@ -2663,9 +2661,7 @@ quit =
     I.Visible
     []
     "Exits the Unison command line interface."
-    \case
-      [] -> pure Input.QuitI
-      _ -> Left "Use `quit`, `exit`, or <Ctrl-D> to quit."
+    $ constParser Input.QuitI
 
 names :: Input.IsGlobal -> InputPattern
 names isGlobal =
@@ -2675,6 +2671,7 @@ names isGlobal =
     I.Visible
     [("name or hash", Required, definitionQueryArg)]
     (P.wrap $ makeExample (names isGlobal) ["foo"] <> description)
+    . standardParser
     $ \case
       [thing] -> Input.NamesI isGlobal <$> handleHashQualifiedNameArg thing
       args -> wrongArgsLength "exactly one argument" args
@@ -2692,7 +2689,7 @@ dependents =
     I.Visible
     [("definition", Required, definitionQueryArg)]
     "List the named dependents of the specified definition."
-    $ \case
+    $ standardParser \case
       [thing] -> Input.ListDependentsI <$> handleHashQualifiedNameArg thing
       args -> wrongArgsLength "exactly one argument" args
 dependencies =
@@ -2702,6 +2699,7 @@ dependencies =
     I.Visible
     [("definition", Required, definitionQueryArg)]
     "List the dependencies of the specified definition."
+    . standardParser
     $ \case
       [thing] -> Input.ListDependenciesI <$> handleHashQualifiedNameArg thing
       args -> wrongArgsLength "exactly one argument" args
@@ -2714,6 +2712,7 @@ namespaceDependencies =
     I.Visible
     [("namespace", Optional, namespaceArg)]
     "List the external dependencies of the specified namespace."
+    . standardParser
     $ \case
       [p] -> Input.NamespaceDependenciesI . pure <$> handlePath'Arg p
       [] -> pure (Input.NamespaceDependenciesI Nothing)
@@ -2727,7 +2726,7 @@ debugNumberedArgs =
     I.Visible
     []
     "Dump the contents of the numbered args state."
-    (const $ Right Input.DebugNumberedArgsI)
+    $ constParser Input.DebugNumberedArgsI
 
 debugFileHashes :: InputPattern
 debugFileHashes =
@@ -2737,7 +2736,7 @@ debugFileHashes =
     I.Visible
     []
     "View details about the most recent successfully typechecked file."
-    (const $ Right Input.DebugTypecheckedUnisonFileI)
+    $ constParser Input.DebugTypecheckedUnisonFileI
 
 debugDumpNamespace :: InputPattern
 debugDumpNamespace =
@@ -2747,7 +2746,7 @@ debugDumpNamespace =
     I.Visible
     []
     "Dump the namespace to a text file"
-    (const $ Right Input.DebugDumpNamespacesI)
+    $ constParser Input.DebugDumpNamespacesI
 
 debugDumpNamespaceSimple :: InputPattern
 debugDumpNamespaceSimple =
@@ -2757,7 +2756,7 @@ debugDumpNamespaceSimple =
     I.Visible
     []
     "Dump the namespace to a text file"
-    (const $ Right Input.DebugDumpNamespaceSimpleI)
+    $ constParser Input.DebugDumpNamespaceSimpleI
 
 debugTerm :: InputPattern
 debugTerm =
@@ -2767,10 +2766,9 @@ debugTerm =
     I.Hidden
     [("term", Required, exactDefinitionTermQueryArg)]
     "View debugging information for a given term."
-    ( \case
-        [thing] -> Input.DebugTermI False <$> handleHashQualifiedNameArg thing
-        args -> wrongArgsLength "exactly one argument" args
-    )
+    $ standardParser \case
+      [thing] -> Input.DebugTermI False <$> handleHashQualifiedNameArg thing
+      args -> wrongArgsLength "exactly one argument" args
 
 debugTermVerbose :: InputPattern
 debugTermVerbose =
@@ -2780,10 +2778,9 @@ debugTermVerbose =
     I.Hidden
     [("term", Required, exactDefinitionTermQueryArg)]
     "View verbose debugging information for a given term."
-    ( \case
-        [thing] -> Input.DebugTermI True <$> handleHashQualifiedNameArg thing
-        args -> wrongArgsLength "exactly one argument" args
-    )
+    $ standardParser \case
+      [thing] -> Input.DebugTermI True <$> handleHashQualifiedNameArg thing
+      args -> wrongArgsLength "exactly one argument" args
 
 debugType :: InputPattern
 debugType =
@@ -2793,10 +2790,9 @@ debugType =
     I.Hidden
     [("type", Required, exactDefinitionTypeQueryArg)]
     "View debugging information for a given type."
-    ( \case
-        [thing] -> Input.DebugTypeI <$> handleHashQualifiedNameArg thing
-        args -> wrongArgsLength "exactly one argument" args
-    )
+    $ standardParser \case
+      [thing] -> Input.DebugTypeI <$> handleHashQualifiedNameArg thing
+      args -> wrongArgsLength "exactly one argument" args
 
 debugLSPFoldRanges :: InputPattern
 debugLSPFoldRanges =
@@ -2806,7 +2802,7 @@ debugLSPFoldRanges =
     I.Hidden
     []
     "Output the source from the most recently parsed file, but annotated with the computed fold ranges."
-    (const $ Right Input.DebugLSPFoldRangesI)
+    $ constParser Input.DebugLSPFoldRangesI
 
 debugClearWatchCache :: InputPattern
 debugClearWatchCache =
@@ -2816,7 +2812,7 @@ debugClearWatchCache =
     I.Visible
     []
     "Clear the watch expression cache"
-    (const $ Right Input.DebugClearWatchI)
+    $ constParser Input.DebugClearWatchI
 
 debugDoctor :: InputPattern
 debugDoctor =
@@ -2825,12 +2821,8 @@ debugDoctor =
     []
     I.Visible
     []
-    ( P.wrap "Analyze your codebase for errors and inconsistencies."
-    )
-    ( \case
-        [] -> Right $ Input.DebugDoctorI
-        args -> wrongArgsLength "no arguments" args
-    )
+    (P.wrap "Analyze your codebase for errors and inconsistencies.")
+    $ constParser Input.DebugDoctorI
 
 debugNameDiff :: InputPattern
 debugNameDiff =
@@ -2840,7 +2832,7 @@ debugNameDiff =
       visibility = I.Hidden,
       args = [("before namespace", Required, namespaceArg), ("after namespace", Required, namespaceArg)],
       help = P.wrap "List all name changes between two causal hashes. Does not detect patch changes.",
-      parse = \case
+      parse = standardParser \case
         [from, to] -> Input.DebugNameDiffI <$> handleShortCausalHashArg from <*> handleShortCausalHashArg to
         args -> wrongArgsLength "exactly two arguments" args
     }
@@ -2858,21 +2850,22 @@ test =
             ("`test foo`", "runs unit tests for the current branch defined in namespace `foo`")
           ],
       parse =
-        fmap
-          ( \path ->
-              Input.TestI
-                False
-                Input.TestInput
-                  { includeLibNamespace = False,
-                    path,
-                    showFailures = True,
-                    showSuccesses = True
-                  }
-          )
-          . \case
-            [] -> pure Path.empty
-            [pathString] -> handlePathArg pathString
-            args -> wrongArgsLength "no more than one argument" args
+        standardParser $
+          fmap
+            ( \path ->
+                Input.TestI
+                  False
+                  Input.TestInput
+                    { includeLibNamespace = False,
+                      path,
+                      showFailures = True,
+                      showSuccesses = True
+                    }
+            )
+            . \case
+              [] -> pure Path.empty
+              [pathString] -> handlePathArg pathString
+              args -> wrongArgsLength "no more than one argument" args
     }
 
 testNative :: InputPattern
@@ -2890,21 +2883,22 @@ testNative =
             ("`test foo`", "runs unit tests for the current branch defined in namespace `foo` on the native runtime")
           ],
       parse =
-        fmap
-          ( \path ->
-              Input.TestI
-                True
-                Input.TestInput
-                  { includeLibNamespace = False,
-                    path,
-                    showFailures = True,
-                    showSuccesses = True
-                  }
-          )
-          . \case
-            [] -> pure Path.empty
-            [pathString] -> handlePathArg pathString
-            args -> wrongArgsLength "no more than one argument" args
+        standardParser $
+          fmap
+            ( \path ->
+                Input.TestI
+                  True
+                  Input.TestInput
+                    { includeLibNamespace = False,
+                      path,
+                      showFailures = True,
+                      showSuccesses = True
+                    }
+            )
+            . \case
+              [] -> pure Path.empty
+              [pathString] -> handlePathArg pathString
+              args -> wrongArgsLength "no more than one argument" args
     }
 
 testAll :: InputPattern
@@ -2915,17 +2909,15 @@ testAll =
     I.Visible
     []
     "`test.all` runs unit tests for the current branch (including the `lib` namespace)."
-    ( const $
-        pure $
-          Input.TestI
-            False
-            Input.TestInput
-              { includeLibNamespace = True,
-                path = Path.empty,
-                showFailures = True,
-                showSuccesses = True
-              }
-    )
+    . constParser
+    $ Input.TestI
+      False
+      Input.TestInput
+        { includeLibNamespace = True,
+          path = Path.empty,
+          showFailures = True,
+          showSuccesses = True
+        }
 
 testAllNative :: InputPattern
 testAllNative =
@@ -2935,17 +2927,15 @@ testAllNative =
     I.Hidden
     []
     "`test.native.all` runs unit tests for the current branch (including the `lib` namespace) on the native runtime."
-    ( const $
-        pure $
-          Input.TestI
-            True
-            Input.TestInput
-              { includeLibNamespace = True,
-                path = Path.empty,
-                showFailures = True,
-                showSuccesses = True
-              }
-    )
+    . constParser
+    $ Input.TestI
+      True
+      Input.TestInput
+        { includeLibNamespace = True,
+          path = Path.empty,
+          showFailures = True,
+          showSuccesses = True
+        }
 
 docsToHtml :: InputPattern
 docsToHtml =
@@ -2963,7 +2953,7 @@ docsToHtml =
           )
         ]
     )
-    \case
+    $ standardParser \case
       [namespacePath, destinationFilePath] ->
         Input.DocsToHtmlI
           <$> handleBranchRelativePathArg namespacePath
@@ -2983,7 +2973,7 @@ docToMarkdown =
           )
         ]
     )
-    \case
+    $ standardParser \case
       [docNameText] -> Input.DocToMarkdownI <$> handleNameArg docNameText
       args -> wrongArgsLength "exactly one argument" args
 
@@ -3003,7 +2993,7 @@ execute =
           )
         ]
     )
-    $ \case
+    $ standardParser \case
       main : args ->
         Input.ExecuteI
           <$> handleHashQualifiedNameArg main
@@ -3020,7 +3010,7 @@ saveExecuteResult =
     ( "`add.run name` adds to the codebase the result of the most recent `run` command"
         <> " as `name`."
     )
-    $ \case
+    $ standardParser \case
       [w] -> Input.SaveExecuteResultI <$> handleNameArg w
       args -> wrongArgsLength "exactly one argument" args
 
@@ -3037,7 +3027,7 @@ ioTest =
               "Runs `!mytest`, where `mytest` is a delayed test that can use the `IO` and `Exception` abilities."
             )
           ],
-      parse = \case
+      parse = standardParser \case
         [thing] -> Input.IOTestI False <$> handleHashQualifiedNameArg thing
         args -> wrongArgsLength "exactly one argument" args
     }
@@ -3057,7 +3047,7 @@ ioTestNative =
                 <> "`Exception` abilities."
             )
           ],
-      parse = \case
+      parse = standardParser \case
         [thing] -> Input.IOTestI True <$> handleHashQualifiedNameArg thing
         args -> wrongArgsLength "exactly one argument" args
     }
@@ -3075,9 +3065,7 @@ ioTestAll =
               "runs unit tests for the current branch that use IO"
             )
           ],
-      parse = \case
-        [] -> Right (Input.IOTestAllI False)
-        args -> wrongArgsLength "no arguments" args
+      parse = constParser $ Input.IOTestAllI False
     }
 
 ioTestAllNative :: InputPattern
@@ -3093,9 +3081,7 @@ ioTestAllNative =
               "runs unit tests for the current branch that use IO"
             )
           ],
-      parse = \case
-        [] -> Right (Input.IOTestAllI True)
-        args -> wrongArgsLength "no arguments" args
+      parse = constParser $ Input.IOTestAllI True
     }
 
 makeStandalone :: InputPattern
@@ -3113,7 +3099,7 @@ makeStandalone =
           )
         ]
     )
-    $ \case
+    $ standardParser \case
       [main, file] ->
         Input.MakeStandaloneI
           <$> unsupportedStructuredArgument makeStandalone "a file name" file
@@ -3133,7 +3119,7 @@ runScheme =
           )
         ]
     )
-    $ \case
+    $ standardParser \case
       main : args ->
         Input.ExecuteSchemeI
           <$> handleHashQualifiedNameArg main
@@ -3159,7 +3145,7 @@ compileScheme =
           )
         ]
     )
-    $ \case
+    $ standardParser \case
       [main, file] -> mkCompileScheme False file main
       [main, file, prof] -> do
         unsupportedStructuredArgument compileScheme "profile" prof
@@ -3196,7 +3182,7 @@ createAuthor =
               <> backtick (P.group ("metadata.copyrightHolders" <> "."))
           )
     )
-    \case
+    $ standardParser \case
       symbolStr : authorStr@(_ : _) ->
         Input.CreateAuthorI
           <$> handleRelativeNameSegmentArg symbolStr
@@ -3225,10 +3211,7 @@ authLogin =
             <> "authenticates ucm with Unison Share."
         ]
     )
-    ( \case
-        [] -> Right $ Input.AuthLoginI
-        args -> wrongArgsLength "no arguments" args
-    )
+    $ constParser Input.AuthLoginI
 
 printVersion :: InputPattern
 printVersion =
@@ -3239,10 +3222,7 @@ printVersion =
     []
     ( P.wrap "Print the version of unison you're running"
     )
-    ( \case
-        [] -> Right $ Input.VersionI
-        args -> wrongArgsLength "no arguments" args
-    )
+    $ constParser Input.VersionI
 
 projectCreate :: InputPattern
 projectCreate =
@@ -3256,7 +3236,7 @@ projectCreate =
           [ ("`project.create`", "creates a project with a random name"),
             ("`project.create foo`", "creates a project named `foo`")
           ],
-      parse = \case
+      parse = standardParser \case
         [] -> pure $ Input.ProjectCreateI True Nothing
         [name] -> Input.ProjectCreateI True . pure <$> handleProjectArg name
         args -> wrongArgsLength "no more than one argument" args
@@ -3274,7 +3254,7 @@ projectCreateEmptyInputPattern =
           [ ("`project.create-empty`", "creates an empty project with a random name"),
             ("`project.create-empty foo`", "creates an empty project named `foo`")
           ],
-      parse = \case
+      parse = standardParser \case
         [] -> pure $ Input.ProjectCreateI False Nothing
         [name] -> Input.ProjectCreateI False . pure <$> handleProjectArg name
         args -> wrongArgsLength "no more than one argument" args
@@ -3291,7 +3271,7 @@ projectRenameInputPattern =
         P.wrapColumn2
           [ ("`project.rename foo`", "renames the current project to `foo`")
           ],
-      parse = \case
+      parse = standardParser \case
         [nameString] -> Input.ProjectRenameI <$> handleProjectArg nameString
         args -> wrongArgsLength "exactly one argument" args
     }
@@ -3310,7 +3290,7 @@ projectSwitch =
             ("`switch foo/`", "switches to the last branch you visited in the project `foo`"),
             ("`switch /bar`", "switches to the branch `bar` in the current project")
           ],
-      parse = \case
+      parse = standardParser \case
         [name] -> Input.ProjectSwitchI <$> handleProjectAndBranchNamesArg name
         args -> wrongArgsLength "exactly one argument" args
     }
@@ -3330,7 +3310,7 @@ projectsInputPattern =
       visibility = I.Visible,
       args = [],
       help = P.wrap "List projects.",
-      parse = \_ -> Right Input.ProjectsI
+      parse = constParser Input.ProjectsI
     }
 
 branchesInputPattern :: InputPattern
@@ -3345,7 +3325,7 @@ branchesInputPattern =
           [ ("`branches`", "lists all branches in the current project"),
             ("`branches foo`", "lists all branches in the project `foo`")
           ],
-      parse = \case
+      parse = standardParser \case
         [] -> Right (Input.BranchesI Nothing)
         [nameString] -> Input.BranchesI . pure <$> handleProjectArg nameString
         args -> wrongArgsLength "no more than one argument" args
@@ -3366,7 +3346,7 @@ branchInputPattern =
           [ ("`branch foo`", "forks the current project branch to a new branch `foo`"),
             ("`branch /bar foo`", "forks the branch `bar` of the current project to a new branch `foo`")
           ],
-      parse = \case
+      parse = standardParser \case
         [source0, name] ->
           Input.BranchI . Input.BranchSourceI'UnresolvedProjectBranch
             <$> handleMaybeProjectBranchArg source0
@@ -3396,7 +3376,7 @@ branchEmptyInputPattern =
       visibility = I.Visible,
       args = [],
       help = P.wrap "Create a new empty branch.",
-      parse = \case
+      parse = standardParser \case
         [name] ->
           Input.BranchI Input.BranchSourceI'Empty
             <$> handleMaybeProjectBranchArg name
@@ -3413,7 +3393,7 @@ branchRenameInputPattern =
       help =
         P.wrapColumn2
           [("`branch.rename foo`", "renames the current branch to `foo`")],
-      parse = \case
+      parse = standardParser \case
         [name] -> Input.BranchRenameI <$> handleProjectBranchNameArg name
         args -> wrongArgsLength "exactly one argument" args
     }
@@ -3447,7 +3427,7 @@ clone =
                 <> P.group (makeExample helpTopics ["remotes"] <> ")")
             )
           ],
-      parse = \case
+      parse = standardParser \case
         [remoteNames] -> Input.CloneI <$> handleProjectAndBranchNamesArg remoteNames <*> pure Nothing
         [remoteNames, localNames] ->
           Input.CloneI
@@ -3464,7 +3444,7 @@ releaseDraft =
       visibility = I.Visible,
       args = [],
       help = P.wrap "Draft a release.",
-      parse = \case
+      parse = standardParser \case
         [semverString] ->
           bimap (const "Couldn’t parse version number") Input.ReleaseDraftI
             . tryInto @Semver
@@ -3483,7 +3463,7 @@ upgrade =
       help =
         P.wrap $
           "`upgrade old new` upgrades library dependency `lib.old` to `lib.new`, and, if successful, deletes `lib.old`.",
-      parse = \case
+      parse = standardParser \case
         [oldString, newString] ->
           Input.UpgradeI <$> handleRelativeNameSegmentArg oldString <*> handleRelativeNameSegmentArg newString
         args -> wrongArgsLength "exactly two arguments" args
@@ -3526,9 +3506,7 @@ upgradeCommitInputPattern =
                       makeExampleNoBackticks deleteBranch [prettySlashProjectBranchName tempBranch]
                     ]
                 ),
-      parse = \case
-        [] -> Right Input.UpgradeCommitI
-        args -> wrongArgsLength "no arguments" args
+      parse = constParser Input.UpgradeCommitI
     }
 
 debugSynhashTermInputPattern :: InputPattern
@@ -3539,7 +3517,7 @@ debugSynhashTermInputPattern =
       visibility = I.Hidden,
       args = [("term", Required, exactDefinitionTermQueryArg)],
       help = mempty,
-      parse = \case
+      parse = standardParser \case
         [arg] -> Input.DebugSynhashTermI <$> handleNameArg arg
         args -> wrongArgsLength "exactly one argument" args
     }

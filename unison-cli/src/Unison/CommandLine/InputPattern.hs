@@ -8,6 +8,7 @@ module Unison.CommandLine.InputPattern
     ArgumentType (..),
     ArgumentDescription,
     Arguments,
+    Parser,
     argType,
     FZFResolver (..),
     IsOptional (..),
@@ -60,6 +61,13 @@ type Arguments = [Argument]
 -- e.g. "namespace to merge", "definition to delete", "remote target to push to" etc.
 type ArgumentDescription = Text
 
+-- | This provides the original whitespace-delimited `String`s, as well as any `StructuredArguments` that were parsed.
+--
+--  __NB__: There can be more `Arguments` than `String`s. This is because something like @1-3@ is a single `String`
+--          argument, but is three `StructuredArgument`s. This isn’t the best when we’re pulling items from each list,
+--          but any mismatches should be pretty edge-casey in practice.
+type Parser = ([String], Arguments) -> Either (P.Pretty CT.ColorText) Input
+
 data InputPattern = InputPattern
   { patternName :: String,
     aliases :: [String],
@@ -73,9 +81,7 @@ data InputPattern = InputPattern
     --         `wrap`, etc.), but shouldn’t include any general error components like a warninng flag or the full help
     --          message, and shouldn’t plan for the context it is being output to (e.g., don’t `P.indentN` the entire
     --          message).
-    parse ::
-      Arguments ->
-      Either (P.Pretty CT.ColorText) Input
+    parse :: Parser
   }
 
 data ArgumentType = ArgumentType

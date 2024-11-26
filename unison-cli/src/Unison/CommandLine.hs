@@ -110,13 +110,11 @@ parseInput codebase projPath currentProjectRoot numberedArgs patterns segments =
                                 <> IPs.makeExampleEOS pat []
                             )
                   )
-                $ parse resolvedArgs
+                $ parse (args, resolvedArgs)
             pure $ Just (Left command : resolvedArgs, parsedInput)
       Nothing ->
-        throwE
-          . warn
-          . P.wrap
-          $ "I don't know how to"
+        throwE . warn . P.wrap $
+          "I don't know how to"
             <> P.group (fromString command <> ".")
             <> "Type"
             <> IPs.makeExample' IPs.help
