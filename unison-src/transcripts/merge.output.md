@@ -48,6 +48,18 @@ Merge result:
 ``` ucm
 scratch/alice> merge /bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
+
   I merged scratch/bob into scratch/alice.
 
 scratch/alice> view foo bar
@@ -84,6 +96,18 @@ Merge result:
 
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
 
   I merged scratch/bob into scratch/alice.
 
@@ -131,6 +155,18 @@ Merge result:
 
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
 
   I merged scratch/bob into scratch/alice.
 
@@ -198,6 +234,18 @@ Merge result:
 
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
 
   I merged scratch/bob into scratch/alice.
 
@@ -273,6 +321,18 @@ Merge result:
 ``` ucm
 scratch/alice> merge /bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
+
   I merged scratch/bob into scratch/alice.
 
 scratch/alice> view foo bar baz
@@ -326,6 +386,18 @@ Merge result:
 ``` ucm
 scratch/alice> merge /bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
+
   I merged scratch/bob into scratch/alice.
 
 scratch/alice> view foo
@@ -370,6 +442,18 @@ Merge result:
 
 ``` ucm
 scratch/alice> merge bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
 
   I merged scratch/bob into scratch/alice.
 
@@ -553,6 +637,18 @@ scratch/bob> add
 
 scratch/alice> merge /bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
+
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
   top of scratch.u.
@@ -607,6 +703,18 @@ bar = foo ++ " - " ++ foo
 
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
 
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
@@ -673,6 +781,16 @@ baz = "bobs baz"
 
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
 
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
@@ -745,6 +863,16 @@ unique type Foo = MkFoo Nat Text
 ``` ucm
 scratch/alice> merge /bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
   top of scratch.u.
@@ -797,6 +925,16 @@ scratch/bob> move.term Foo.Qux Foo.BobQux
 ```
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
 
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
@@ -853,6 +991,16 @@ scratch/bob> move.term Foo.Qux Foo.Bob
 ``` ucm
 scratch/alice> merge bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
   top of scratch.u.
@@ -899,6 +1047,16 @@ unique ability my.cool where
 
 ``` ucm
 scratch/alice> merge bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
 
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
@@ -960,6 +1118,16 @@ These won't cleanly merge.
 
 ``` ucm
 scratch/alice> merge bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
 
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
@@ -1034,6 +1202,16 @@ Notably, Alice's "unconflicted" update on the name "Foo.Bar.Baz" (because she ch
 ``` ucm
 scratch/alice> merge bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
   top of scratch.u.
@@ -1093,6 +1271,16 @@ bob _ = 19
 
 ``` ucm
 scratch/alice> merge bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
 
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
@@ -1161,6 +1349,16 @@ Attempt to merge:
 
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
 
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
@@ -1294,6 +1492,10 @@ baz = "baz"
 ``` ucm
 scratch/alice> merge /bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
   Sorry, I wasn't able to perform the merge:
   
   On the merge ancestor, bar and foo were aliases for the same
@@ -1336,6 +1538,10 @@ unique type MyNat = MyNat Nat
 ``` ucm
 scratch/alice> merge /bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
   Sorry, I wasn't able to perform the merge:
   
   There's a merge conflict on type MyNat, but it's a builtin on
@@ -1372,6 +1578,10 @@ bob = 100
 
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
 
   Sorry, I wasn't able to perform the merge:
   
@@ -1410,6 +1620,10 @@ bob = 100
 
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
 
   Sorry, I wasn't able to perform the merge:
   
@@ -1450,6 +1664,10 @@ bob = 100
 ``` ucm
 scratch/alice> merge /bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
   On scratch/alice, the type A.inner.X is an alias of A. I'm not
   able to perform a merge when a type exists nested under an
   alias of itself. Please separate them or delete one copy, and
@@ -1487,6 +1705,10 @@ scratch/bob> add
 ``` ucm
 scratch/alice> merge bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
   Sorry, I wasn't able to perform the merge, because I need all
   constructor names to be nested somewhere beneath the
   corresponding type name.
@@ -1517,6 +1739,8 @@ bob = 100
 
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
 
   Sorry, I wasn't able to perform the merge:
   
@@ -1660,6 +1884,18 @@ Now we merge:
 ``` ucm
 scratch/alice> merge /bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
+
   I merged scratch/bob into scratch/alice.
 
 ```
@@ -1768,6 +2004,18 @@ scratch/bob> add
 ``` ucm
 scratch/alice> merge /bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
+
   I merged scratch/bob into scratch/alice.
 
 ```
@@ -1859,6 +2107,18 @@ scratch/main> update
 ```
 ``` ucm
 scratch/main> merge topic
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
 
   I merged scratch/topic into scratch/main.
 
@@ -1989,6 +2249,16 @@ the underlying namespace.
 
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
 
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
@@ -2153,9 +2423,33 @@ scratch/carol> add
 
 scratch/bob> merge /alice
 
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
+
   I merged scratch/alice into scratch/bob.
 
 scratch/carol> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
 
   I merged scratch/bob into scratch/carol.
 
@@ -2294,6 +2588,18 @@ scratch/alice> update
 ``` ucm
 scratch/alice> merge /bob
 
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
+
+  Typechecking Unison file...
+
   I merged scratch/bob into scratch/alice.
 
 ```
@@ -2354,6 +2660,16 @@ scratch/bob> move.term Foo.Lca Foo.Bob
 ```
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
 
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the
@@ -2538,6 +2854,16 @@ Note Bob's `hello` references `foo` (Alice's name), not `bar` (Bob's name).
 
 ``` ucm
 scratch/alice> merge /bob
+
+  Loading branches...
+
+  Computing diff between branches...
+
+  Loading dependents of changes...
+
+  Loading and merging library dependencies...
+
+  Rendering Unison file...
 
   I couldn't automatically merge scratch/bob into scratch/alice.
   However, I've added the definitions that need attention to the

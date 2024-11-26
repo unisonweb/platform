@@ -65,6 +65,20 @@ handleEditDependents name = do
             (Branch.deepTermReferenceIds branchWithoutLibdeps <> Branch.deepTypeReferenceIds branchWithoutLibdeps)
             (bifold refs)
 
+      let refsAndDependents =
+            Defns
+              { terms =
+                  Set.unions
+                    [ Set.mapMonotonic Referent.fromTermReference refs.terms,
+                      Set.mapMonotonic Referent.fromTermReferenceId dependents.terms
+                    ],
+                types =
+                  Set.unions
+                    [ refs.types,
+                      Set.mapMonotonic Reference.fromId dependents.types
+                    ]
+              }
+
       respondRegion (Output.Literal "Loading dependents...")
       env <- ask
       (types, terms) <-
@@ -76,12 +90,12 @@ handleEditDependents name = do
                 { terms =
                     branchWithoutLibdeps
                       & Branch.deepTerms
-                      & Relation.restrictDom (Set.mapMonotonic Referent.fromTermReferenceId dependents.terms)
+                      & Relation.restrictDom refsAndDependents.terms
                       & Relation.swap,
                   types =
                     branchWithoutLibdeps
                       & Branch.deepTypes
-                      & Relation.restrictDom (Set.mapMonotonic Reference.fromId dependents.types)
+                      & Relation.restrictDom refsAndDependents.types
                       & Relation.swap
                 }
           )

@@ -26,7 +26,6 @@ import U.Codebase.Branch.Diff qualified as V2Branch.Diff
 import U.Codebase.Causal qualified as V2Causal
 import U.Codebase.HashTags (CausalHash (..))
 import U.Codebase.Reflog qualified as Reflog
-import U.Codebase.Sqlite.Queries qualified as Queries
 import Unison.ABT qualified as ABT
 import Unison.Builtin qualified as Builtin
 import Unison.Builtin.Terms qualified as Builtin
