@@ -315,14 +315,6 @@ searchResultToHQ oprefix = \case
     addPrefix :: Name -> Name
     addPrefix = maybe id Path.prefixNameIfRel oprefix
 
-unsupportedStructuredArgument :: InputPattern -> Text -> I.Argument -> Either (P.Pretty CT.ColorText) String
-unsupportedStructuredArgument command expected =
-  either pure . const . Left . P.wrap $
-    makeExample' command
-      <> "can’t accept a numbered argument for"
-      <> P.text expected
-      <> "and it’s not yet possible to provide un-expanded numbers as arguments."
-
 expectedButActually' :: Text -> String -> P.Pretty CT.ColorText
 expectedButActually' expected actualValue =
   P.text $ "I expected " <> expected <> ", but couldn’t recognize “" <> Text.pack actualValue <> "” as one."
@@ -742,6 +734,10 @@ handleProjectAndBranchNamesArg =
 standardParser :: (I.Arguments -> Either (P.Pretty CT.ColorText) Input) -> I.Parser
 standardParser fn = fn . snd
 
+-- | A parser that doesn’t do anything after splitting the input string – doesn’t use numbered args or fuzzy resolution.
+bareParser :: ([String] -> Either (P.Pretty CT.ColorText) Input) -> I.Parser
+bareParser fn = fn . fst
+
 -- | A special case of the `standardParser`, when we don’t expect any arguments. This will fail if arguments are given.
 constParser :: Input -> I.Parser
 constParser input = standardParser \case
@@ -816,10 +812,10 @@ load =
           )
         ]
     )
-    $ standardParser \case
+    $ bareParser \case
       [] -> pure $ Input.LoadI Nothing
-      [file] -> Input.LoadI . Just <$> unsupportedStructuredArgument load "a file name" file
-      args -> wrongArgsLength "no more than one argument" args
+      [file] -> pure . Input.LoadI $ Just file
+      args -> wrongArgsLength "no more than one argument" $ Left <$> args
 
 clear :: InputPattern
 clear =
@@ -1036,17 +1032,13 @@ displayTo =
         makeExample displayTo ["<filename>", "foo"]
           <> "prints a rendered version of the term `foo` to the given file."
     )
-    $ standardParser \case
-      file : defs ->
+    $ \case
+      (file : _, _ : defs) ->
         maybe
           (wrongArgsLength "at least two arguments" [file])
-          ( \defs -> do
-              file <- unsupportedStructuredArgument displayTo "a file name" file
-              names <- traverse handleHashQualifiedNameArg defs
-              pure (Input.DisplayI (Input.FileLocation file Input.AboveFold) names)
-          )
+          (fmap (Input.DisplayI $ Input.FileLocation file Input.AboveFold) . traverse handleHashQualifiedNameArg)
           $ NE.nonEmpty defs
-      [] -> wrongArgsLength "at least two arguments" []
+      (_, _) -> wrongArgsLength "at least two arguments" []
 
 docs :: InputPattern
 docs =
@@ -1868,8 +1860,8 @@ debugTabCompletion =
           P.wrap $ "Completions which are finished are prefixed with a * represent finished completions."
         ]
     )
-    . standardParser
-    $ fmap Input.DebugTabCompletionI . traverse (unsupportedStructuredArgument debugTabCompletion "text")
+    . bareParser
+    $ pure . Input.DebugTabCompletionI
 
 debugLspNameCompletion :: InputPattern
 debugLspNameCompletion =
@@ -1882,9 +1874,9 @@ debugLspNameCompletion =
         [ P.wrap $ "This command can be used to test and debug ucm's LSP name-completion within transcripts."
         ]
     )
-    $ standardParser \case
-      [prefix] -> Input.DebugLSPNameCompletionI . Text.pack <$> unsupportedStructuredArgument debugLspNameCompletion "text" prefix
-      args -> wrongArgsLength "exactly one argument" args
+    $ bareParser \case
+      [prefix] -> pure . Input.DebugLSPNameCompletionI $ Text.pack prefix
+      args -> wrongArgsLength "exactly one argument" $ Left <$> args
 
 debugFuzzyOptions :: InputPattern
 debugFuzzyOptions =
@@ -1901,12 +1893,9 @@ debugFuzzyOptions =
           P.wrap $ "or `debug.fuzzy-options merge - _`"
         ]
     )
-    $ standardParser \case
-      (cmd : args) ->
-        Input.DebugFuzzyOptionsI
-          <$> unsupportedStructuredArgument debugFuzzyOptions "a command" cmd
-          <*> traverse (unsupportedStructuredArgument debugFuzzyOptions "text") args
-      args -> wrongArgsLength "at least one argument" args
+    $ bareParser \case
+      cmd : args -> pure $ Input.DebugFuzzyOptionsI cmd args
+      [] -> wrongArgsLength "at least one argument" []
 
 debugFormat :: InputPattern
 debugFormat =
@@ -2435,14 +2424,12 @@ helpTopics =
     I.Visible
     [("topic", Optional, topicNameArg)]
     ("`help-topics` lists all topics and `help-topics <topic>` shows an explanation of that topic.")
-    $ standardParser \case
-        [] -> Right $ Input.CreateMessage topics
-        [topic] -> do
-          topic <- unsupportedStructuredArgument helpTopics "a help topic" topic
-          case Map.lookup topic helpTopicsMap of
-            Nothing -> Left $ "I don't know of that topic. Try `help-topics`."
-            Just t -> Right $ Input.CreateMessage t
-        _ -> Left $ "Use `help-topics <topic>` or `help-topics`."
+    $ bareParser \case
+      [] -> Right $ Input.CreateMessage topics
+      [topic] -> case Map.lookup topic helpTopicsMap of
+        Nothing -> Left $ "I don't know of that topic. Try `help-topics`."
+        Just t -> Right $ Input.CreateMessage t
+      _ -> Left $ "Use `help-topics <topic>` or `help-topics`."
   where
     topics =
       P.callout "🌻" $
@@ -2618,15 +2605,14 @@ help =
     I.Visible
     [("command", Optional, commandNameArg)]
     "`help` shows general help and `help <cmd>` shows help for one command."
-    $ standardParser \case
+    $ bareParser \case
       [] ->
         Right . Input.CreateMessage $
           intercalateMap
             "\n\n"
             showPatternHelp
             visibleInputs
-      [cmd] -> do
-        cmd <- unsupportedStructuredArgument help "a command" cmd
+      [cmd] ->
         case (Map.lookup cmd commandsByName, isHelp cmd) of
           (Nothing, Just msg) -> Right $ Input.CreateMessage msg
           (Nothing, Nothing) -> Left $ "I don't know of that command. Try" <> makeExampleEOS help []
@@ -2953,12 +2939,11 @@ docsToHtml =
           )
         ]
     )
-    $ standardParser \case
-      [namespacePath, destinationFilePath] ->
-        Input.DocsToHtmlI
-          <$> handleBranchRelativePathArg namespacePath
-          <*> unsupportedStructuredArgument docsToHtml "a file name" destinationFilePath
-      args -> wrongArgsLength "exactly two arguments" args
+    $ \case
+      ([_, destinationFilePath], [namespacePath, _]) ->
+        Input.DocsToHtmlI <$> handleBranchRelativePathArg namespacePath <*> pure destinationFilePath
+      (_ : strs, arg : _) -> wrongArgsLength "exactly two arguments" $ arg : fmap Left strs
+      (_, _) -> wrongArgsLength "exactly two arguments" []
 
 docToMarkdown :: InputPattern
 docToMarkdown =
@@ -2993,12 +2978,9 @@ execute =
           )
         ]
     )
-    $ standardParser \case
-      main : args ->
-        Input.ExecuteI
-          <$> handleHashQualifiedNameArg main
-          <*> traverse (unsupportedStructuredArgument execute "a command-line argument") args
-      [] -> wrongArgsLength "at least one argument" []
+    $ \case
+      (_ : args, main : _) -> Input.ExecuteI <$> handleHashQualifiedNameArg main <*> pure args
+      (_, _) -> wrongArgsLength "at least one argument" []
 
 saveExecuteResult :: InputPattern
 saveExecuteResult =
@@ -3099,12 +3081,10 @@ makeStandalone =
           )
         ]
     )
-    $ standardParser \case
-      [main, file] ->
-        Input.MakeStandaloneI
-          <$> unsupportedStructuredArgument makeStandalone "a file name" file
-          <*> handleHashQualifiedNameArg main
-      args -> wrongArgsLength "exactly two arguments" args
+    $ \case
+      ([_, file], [main, _]) -> Input.MakeStandaloneI file <$> handleHashQualifiedNameArg main
+      (_ : strs, arg : _) -> wrongArgsLength "exactly two arguments" $ arg : fmap Left strs
+      (_, _) -> wrongArgsLength "exactly two arguments" []
 
 runScheme :: InputPattern
 runScheme =
@@ -3119,12 +3099,9 @@ runScheme =
           )
         ]
     )
-    $ standardParser \case
-      main : args ->
-        Input.ExecuteSchemeI
-          <$> handleHashQualifiedNameArg main
-          <*> traverse (unsupportedStructuredArgument runScheme "a command-line argument") args
-      [] -> wrongArgsLength "at least one argument" []
+    \case
+      (_ : args, main : _) -> Input.ExecuteSchemeI <$> handleHashQualifiedNameArg main <*> pure args
+      (_, _) -> wrongArgsLength "at least one argument" []
 
 compileScheme :: InputPattern
 compileScheme =
@@ -3145,24 +3122,21 @@ compileScheme =
           )
         ]
     )
-    $ standardParser \case
-      [main, file] -> mkCompileScheme False file main
-      [main, file, prof] -> do
-        unsupportedStructuredArgument compileScheme "profile" prof
-          >>= \case
-            "profile" -> mkCompileScheme True file main
-            parg ->
-              Left . P.text $
-                "I expected the third argument to be `profile`, but"
-                  <> " instead recieved `"
-                  <> Text.pack parg
-                  <> "`."
-      args -> wrongArgsLength "two or three arguments" args
+    $ \case
+      ([_, file], [main, _]) -> mkCompileScheme False file main
+      ([_, file, prof], [main, _, _]) ->
+        if prof == "profile"
+          then mkCompileScheme True file main
+          else
+            Left . P.text $
+              "I expected the third argument to be `profile`, but"
+                <> " instead recieved `"
+                <> Text.pack prof
+                <> "`."
+      (_ : strs, arg : _) -> wrongArgsLength "two or three arguments" $ arg : fmap Left strs
+      (_, _) -> wrongArgsLength "two or three arguments" []
   where
-    mkCompileScheme pf fn mn =
-      Input.CompileSchemeI pf . Text.pack
-        <$> unsupportedStructuredArgument compileScheme "a file name" fn
-        <*> handleHashQualifiedNameArg mn
+    mkCompileScheme pf fn = fmap (Input.CompileSchemeI pf (Text.pack fn)) . handleHashQualifiedNameArg
 
 createAuthor :: InputPattern
 createAuthor =
@@ -3182,14 +3156,13 @@ createAuthor =
               <> backtick (P.group ("metadata.copyrightHolders" <> "."))
           )
     )
-    $ standardParser \case
-      symbolStr : authorStr@(_ : _) ->
+    $ \case
+      (_ : authorStr@(_ : _), symbolStr : _) ->
         Input.CreateAuthorI
           <$> handleRelativeNameSegmentArg symbolStr
-          <*> fmap
-            (parseAuthorName . unwords)
-            (traverse (unsupportedStructuredArgument createAuthor "text") authorStr)
-      args -> wrongArgsLength "at least two arguments" args
+          <*> pure (parseAuthorName $ unwords authorStr)
+      (_ : strs, arg : _) -> wrongArgsLength "at least two arguments" $ arg : fmap Left strs
+      (_, _) -> wrongArgsLength "at least two arguments" []
   where
     -- let's have a real parser in not too long
     parseAuthorName :: String -> Text
@@ -3444,13 +3417,10 @@ releaseDraft =
       visibility = I.Visible,
       args = [],
       help = P.wrap "Draft a release.",
-      parse = standardParser \case
+      parse = bareParser \case
         [semverString] ->
-          bimap (const "Couldn’t parse version number") Input.ReleaseDraftI
-            . tryInto @Semver
-            . Text.pack
-            =<< unsupportedStructuredArgument releaseDraft "a version number" semverString
-        args -> wrongArgsLength "exactly one argument" args
+          bimap (const "Couldn’t parse version number") Input.ReleaseDraftI . tryInto @Semver $ Text.pack semverString
+        args -> wrongArgsLength "exactly one argument" $ Left <$> args
     }
 
 upgrade :: InputPattern
