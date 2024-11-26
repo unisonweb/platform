@@ -1,5 +1,6 @@
-:4:3:
+:4:1:
   |
 4 | .> ls
-  |   ^
-expecting comment (delimited with “--”), end of input, or spaces
+  | ^^
+unexpected ".>"
+expecting "  ", " <newline>", '@', comment (delimited with “--”), end of input, or newline

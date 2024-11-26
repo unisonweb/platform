@@ -43,14 +43,13 @@ mkTestCase = do
   saveTestCase "case-03" "v4" finish trip
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       structural ability DC r
@@ -65,13 +64,13 @@ mkTestCase = do
       mkTestCase : '{IO, Exception} ()
       reset      : '{DC r} r -> r
       suspSum    : [Nat] -> Delayed Nat
-
 ```
+
 ``` ucm
 scratch/main> add
 
   ⍟ I've added these definitions:
-  
+
     structural ability DC r
     structural type Delayed r
     feed       : Nat -> Delayed r -> r
@@ -87,5 +86,4 @@ scratch/main> add
 scratch/main> run mkTestCase
 
   ()
-
 ```

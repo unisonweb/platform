@@ -8,33 +8,18 @@ assignees: ''
 ---
 
 **Describe and demonstrate the bug**
-Please attach a [ucm transcript](https://www.unison-lang.org/docs/tooling/transcripts/) if possible, calling out the unexpected behavior in the text. e.g.
+This should be written as a [ucm transcript](https://www.unison-lang.org/docs/tooling/transcripts/) if possible, calling out the unexpected behavior in the text. e.g.
 
-Input:
-```` markdown
 ``` unison :hide
-a = 1
-```
-Here I typo the next command and `ucm` silently does nothing. I would have expected an error message:
-``` ucm
-.> add b
-```
-````
-
-Output:
-```` markdown
-``` unison
 a = 1
 ```
 
 Here I typo the next command and `ucm` silently does nothing, I would have expected an error message:
+
 ``` ucm
-.> add b
-
-
+scratch/main> add b
 
 ```
-````
 
 **Screenshots**
 If applicable, add screenshots to help explain your problem.

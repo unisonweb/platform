@@ -53,14 +53,13 @@ testABunchOfNats _ =
   (runTest (testNat 0))
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       type EncDec
@@ -73,13 +72,13 @@ testABunchOfNats _ =
       testABunchOfNats : ∀ _. _ ->{IO} [Result]
       testNat          : Nat -> '{IO, Stream Result} ()
       testRoundTrip    : Nat -> EncDec ->{IO, Stream Result} ()
-
 ```
+
 ``` ucm
 scratch/main> add
 
   ⍟ I've added these definitions:
-  
+
     type EncDec
     BE16             : EncDec
     BE32             : EncDec
@@ -94,7 +93,7 @@ scratch/main> add
 scratch/main> io.test testABunchOfNats
 
     New test results:
-  
+
     1. testABunchOfNats   ◉ successfully decoded 4294967295 using 64 bit Big Endian
                           ◉ consumed all input
                           ◉ successfully decoded 4294967295 using 64 bit Little Endian
@@ -163,9 +162,8 @@ scratch/main> io.test testABunchOfNats
                           ◉ consumed all input
                           ◉ successfully decoded 0 using 16 bit Little Endian
                           ◉ consumed all input
-  
-  ✅ 68 test(s) passing
-  
-  Tip: Use view 1 to view the source of a test.
 
+  ✅ 68 test(s) passing
+
+  Tip: Use view 1 to view the source of a test.
 ```

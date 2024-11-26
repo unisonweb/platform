@@ -6,18 +6,16 @@ When an error is encountered in a `ucm :hide` block
 then the transcript parser should print the stanza
 and surface a helpful message.
 
-``` ucm
+``` ucm :hide
 scratch/main> move.namespace foo bar
 ```
-
-
 
 🛑
 
 The transcript failed due to an error in the stanza above. The error is:
 
+``` 
+⚠️
 
-  ⚠️
-  
-  The namespace foo doesn't exist.
-
+The namespace foo doesn't exist.
+```

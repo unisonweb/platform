@@ -1,5 +1,6 @@
-:1:11:
+:1:9:
   |
 1 | ``` ucm :hode
-  |           ^
-expecting comment (delimited with “--”), end of input, or spaces
+  |         ^
+unexpected ':'
+expecting ":added-by-ucm", ":error", ":hide", ":hide:all", or newline
