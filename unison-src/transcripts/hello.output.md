@@ -84,7 +84,7 @@ hmm = "Not, in fact, a number"
 
   Loading changes detected in scratch.u.
 
-  I found a value  of type:  Text
+  I found a value of type:   Text
   where I expected to find:  Nat
   
       1 | hmm : .builtin.Nat

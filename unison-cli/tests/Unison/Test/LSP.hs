@@ -23,6 +23,7 @@ import Unison.Codebase.SqliteCodebase qualified as SC
 import Unison.ConstructorReference (GConstructorReference (..))
 import Unison.FileParsers qualified as FileParsers
 import Unison.LSP.Conversions qualified as Cv
+import Unison.LSP.FileAnalysis qualified as FileAnalysis
 import Unison.LSP.FileAnalysis.UnusedBindings qualified as UnusedBindings
 import Unison.LSP.Queries qualified as LSPQ
 import Unison.Lexer.Pos qualified as Lexer
@@ -31,6 +32,7 @@ import Unison.Parser.Ann qualified as Ann
 import Unison.Parsers qualified as Parsers
 import Unison.Pattern qualified as Pattern
 import Unison.Prelude
+import Unison.PrettyPrintEnv qualified as PPE
 import Unison.Reference qualified as Reference
 import Unison.Result qualified as Result
 import Unison.Symbol (Symbol)
@@ -50,7 +52,8 @@ test = do
       ]
   scope "diagnostics" $
     tests
-      [ unusedBindingLocations
+      [ unusedBindingLocations,
+        typeMismatchLocations
       ]
 
 trm :: Term.F Symbol () () (ABT.Term (Term.F Symbol () ()) Symbol ()) -> LSPQ.SourceNode ()
@@ -252,35 +255,44 @@ term = let
 extractCursor :: Text -> Test (Lexer.Pos, Text)
 extractCursor txt =
   case splitOnDelimiter '^' txt of
-    Nothing -> crash "expected exactly one cursor"
     Just (before, pos, after) -> pure (pos, before <> after)
+    _ -> crash "expected exactly one cursor"
 
 -- | Splits a text on a delimiter, returning the text before and after the delimiter, along with the position of the delimiter.
 --
 -- >>> splitOnDelimiter '^' "foo b^ar baz"
--- Just ("foo b",Pos {line = 0, column = 5},"ar baz")
+-- Just ("foo b",Pos {line = 1, column = 5},"ar baz")
 splitOnDelimiter :: Char -> Text -> Maybe (Text, Lexer.Pos, Text)
 splitOnDelimiter sym txt =
-  case Text.splitOn (Text.singleton sym) txt of
-    [before, after] ->
-      let col = (Text.length $ Text.takeWhileEnd (/= '\n') before) + 1
+  case second Text.uncons $ Text.breakOn (Text.singleton sym) txt of
+    (_before, Nothing) -> Nothing
+    (before, Just (_delim, after)) ->
+      let col = (Text.length $ Text.takeWhileEnd (/= '\n') before)
           line = Text.count "\n" before + 1
-       in Just $ (before, Lexer.Pos line col, after)
-    _ -> Nothing
+       in Just (before, Lexer.Pos line col, after)
 
--- | Test helper which lets you specify a cursor position inline with source text as a '^'.
+-- | Test helper which lets you specify a relevant block of source inline using specified delimiters
 --
--- >>> extractDelimitedBlock ('{', '}') "foo {bar} baz"
--- Just (Ann {start = Pos {line = 1, column = 4}, end = Pos {line = 1, column = 7}},"bar","foo bar baz")
+-- >>> extractDelimitedBlocks ('{', '}') "foo {bar} baz"
+-- Just ("foo bar baz",[(Ann {start = Pos {line = 1, column = 5}, end = Pos {line = 1, column = 8}},"bar")])
 --
--- >>> extractDelimitedBlock ('{', '}') "term =\n  {foo} = 12345"
--- Just (Ann {start = Pos {line = 2, column = 2}, end = Pos {line = 2, column = 5}},"foo","term =\n  foo = 12345")
-extractDelimitedBlock :: (Char, Char) -> Text -> Maybe (Ann {- ann spanning the inside of the delimiters -}, Text {- Text within the delimiters -}, Text {- entire source text with the delimiters stripped -})
-extractDelimitedBlock (startDelim, endDelim) txt = do
-  (beforeStart, startPos, afterStart) <- splitOnDelimiter startDelim txt
-  (beforeEnd, endPos, afterEnd) <- splitOnDelimiter endDelim (beforeStart <> afterStart)
-  let ann = Ann startPos endPos
-  pure (ann, Text.takeWhile (/= endDelim) afterStart, beforeEnd <> afterEnd)
+-- >>> extractDelimitedBlocks ('{', '}') "term =\n  {foo} = 12345"
+-- Just ("term =\n  foo = 12345",[(Ann {start = Pos {line = 2, column = 3}, end = Pos {line = 2, column = 6}},"foo")])
+--
+-- >>> extractDelimitedBlocks ('{', '}') "term =\n  {foo} = {12345} + 10"
+-- Just ("term =\n  foo = 12345 + 10",[(Ann {start = Pos {line = 2, column = 3}, end = Pos {line = 2, column = 6}},"foo"),(Ann {start = Pos {line = 3, column = 4}, end = Pos {line = 3, column = 9}},"12345")])
+extractDelimitedBlocks :: (Char, Char) -> Text -> Maybe (Text {- entire source text with the delimiters stripped -}, [(Ann {- ann spanning the inside of the delimiters -}, Text {- Text within the delimiters -})])
+extractDelimitedBlocks (startDelim, endDelim) txt =
+  extractDelimitedBlocksHelper mempty txt
+  where
+    extractDelimitedBlocksHelper :: Lexer.Pos -> Text -> Maybe (Text, [(Ann, Text)])
+    extractDelimitedBlocksHelper offset txt = do
+      (beforeStart, startPos, afterStart) <- splitOnDelimiter startDelim txt
+      (beforeEnd, endPos, afterEnd) <- splitOnDelimiter endDelim (beforeStart <> afterStart)
+      let ann = Ann (offset <> startPos) (offset <> endPos)
+      case extractDelimitedBlocksHelper endPos afterEnd of
+        Nothing -> pure (beforeEnd <> afterEnd, [(ann, Text.takeWhile (/= endDelim) afterStart)])
+        Just (cleanSrc, splits) -> pure $ (beforeEnd <> cleanSrc, (ann, Text.takeWhile (/= endDelim) afterStart) : splits)
 
 makeNodeSelectionTest :: (String, Text, Bool, LSPQ.SourceNode ()) -> Test ()
 makeNodeSelectionTest (name, testSrc, testTypechecked, expected) = scope name $ do
@@ -417,31 +429,59 @@ withTestCodebase action = do
     Codebase.Init.withCreatedCodebase SC.init "lsp-test" tmpDir SC.DontLock action
   either (crash . show) pure r
 
-makeDiagnosticRangeTest :: (String, Text) -> Test ()
-makeDiagnosticRangeTest (testName, testSrc) = scope testName $ do
-  let (cleanSrc, mayExpectedDiagnostic) = case extractDelimitedBlock ('«', '»') testSrc of
-        Nothing -> (testSrc, Nothing)
-        Just (ann, block, clean) -> (clean, Just (ann, block))
+makeUnusedBindingRangeTest :: (String, Text) -> Test ()
+makeUnusedBindingRangeTest (testName, testSrc) = scope testName $ do
+  (cleanSrc, ranges) <- case extractDelimitedBlocks ('«', '»') testSrc of
+    Nothing -> pure (testSrc, [])
+    Just (cleanSrc, ranges) -> pure (cleanSrc, ranges)
   (pf, _mayTypecheckedFile) <- typecheckSrc testName cleanSrc
   UF.terms pf
     & Map.elems
     & \case
       [(_a, trm)] -> do
-        case (mayExpectedDiagnostic, UnusedBindings.analyseTerm (LSP.Uri "test") trm) of
-          (Just (ann, _block), [diag]) -> do
-            let expectedRange = Cv.annToRange ann
-            let actualRange = Just (diag ^. LSP.range)
-            when (expectedRange /= actualRange) do
-              crash $ "Expected diagnostic at range: " <> show expectedRange <> ", got: " <> show actualRange
-          (Nothing, []) -> pure ()
-          (expected, actual) -> case expected of
-            Nothing -> crash $ "Expected no diagnostics, got: " <> show actual
-            Just _ -> crash $ "Expected exactly one diagnostic, but got " <> show actual
+        let diags = UnusedBindings.analyseTerm (LSP.Uri "test") trm
+        matchDiagnostics ranges diags
       _ -> crash "Expected exactly one term"
+
+makeTypecheckerDiagnosticRangeTest :: (String, Text) -> Test ()
+makeTypecheckerDiagnosticRangeTest (testName, testSrc) = scope testName $ do
+  (cleanSrc, ranges) <- case extractDelimitedBlocks ('«', '»') testSrc of
+    Nothing -> pure (testSrc, [])
+    Just (cleanSrc, ranges) -> pure (cleanSrc, ranges)
+  (_pf, tf) <- typecheckSrc testName cleanSrc
+  case tf of
+    Left notes -> do
+      let codebase = error "unexpected use of codebase"
+      let ppe = PPE.empty
+      (diags, _codeActions) <- FileAnalysis.analyseNotes codebase (LSP.Uri "test") ppe "test" notes
+      matchDiagnostics ranges diags
+    Right _ -> crash "Expected typechecking to fail"
+
+matchDiagnostics :: [(Ann, Text)] -> [LSP.Diagnostic] -> Test ()
+matchDiagnostics ranges diags = case (ranges, diags) of
+  ([], []) -> pure ()
+  ([], _ : _) -> crash $ "Got diagnostics that weren't matched: " <> show diags
+  (_ : _, []) -> crash $ "Expected diagnostics that weren't provided" <> show ranges
+  (range@(ann, _src) : rest, diags) ->
+    diags
+      & popFind
+        ( \diag ->
+            let expectedRange = Cv.annToRange ann
+                actualRange = Just (diag ^. LSP.range)
+             in (expectedRange /= actualRange)
+        )
+      & \case
+        Nothing -> crash $ "Expected diagnostic not found" <> show range <> ", remaining diagnostics: " <> show diags
+        Just (_, diags) -> matchDiagnostics rest diags
+  where
+    popFind :: (a -> Bool) -> [a] -> Maybe (a, [a])
+    popFind p = \case
+      [] -> Nothing
+      x : xs -> if p x then Just (x, xs) else second (x :) <$> popFind p xs
 
 unusedBindingLocations :: Test ()
 unusedBindingLocations =
-  scope "unused bindings" . tests . fmap makeDiagnosticRangeTest $
+  scope "unused bindings" . tests . fmap makeUnusedBindingRangeTest $
     [ ( "Unused binding in let block",
         [here|term =
   usedOne = true
@@ -465,5 +505,39 @@ unusedBindingLocations =
         [here|term = cases
   (used, _ignored) -> used
     |]
+      )
+    ]
+
+typeMismatchLocations :: Test ()
+typeMismatchLocations =
+  scope "type mismatch locations" . tests . fmap makeTypecheckerDiagnosticRangeTest $
+    [ ( "Should highlight the actual incorrect terminal expression in a let block",
+        [here|
+type Foo = Foo
+term : Foo
+term =
+  _blah = true
+  _foo = true
+  _baz = true
+  «"incorrect"»
+        |]
+      ),
+      ( "Should highlight the actual incorrect terminal expression in an if-block",
+        [here|
+type Foo = Foo
+term : Foo
+term = if true
+  then «"wrong"»
+  else «"also wrong"»
+|]
+      ),
+      ( "Should highlight the handler of handle expressions",
+        [here|
+type Foo = Foo
+term : Foo
+term =
+  const a b = a
+  handle "" with const «"wrong"»
+|]
       )
     ]

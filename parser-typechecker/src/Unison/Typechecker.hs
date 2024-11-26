@@ -10,6 +10,7 @@ module Unison.Typechecker
     isEqual,
     isSubtype,
     fitsScheme,
+    isMismatchMissingDelay,
     Env (..),
     Notes (..),
     Resolution (..),
@@ -32,6 +33,7 @@ import Data.Text qualified as Text
 import Data.Tuple qualified as Tuple
 import Unison.ABT qualified as ABT
 import Unison.Blank qualified as B
+import Unison.Builtin.Decls qualified as BuiltinDecls
 import Unison.Codebase.BuiltinAnnotation (BuiltinAnnotation)
 import Unison.Name qualified as Name
 import Unison.Prelude
@@ -42,6 +44,7 @@ import Unison.Syntax.Name qualified as Name (unsafeParseText, unsafeParseVar)
 import Unison.Term (Term)
 import Unison.Term qualified as Term
 import Unison.Type (Type)
+import Unison.Type qualified as Type
 import Unison.Typechecker.Context qualified as Context
 import Unison.Typechecker.TypeLookup qualified as TL
 import Unison.Typechecker.TypeVar qualified as TypeVar
@@ -408,3 +411,13 @@ wellTyped ppe env term = go <$> runResultT (synthesize ppe Context.PatternMatchC
 -- `forall a b . a -> b -> a` to be different types
 -- equals :: Var v => Type v -> Type v -> Bool
 -- equals t1 t2 = isSubtype t1 t2 && isSubtype t2 t1
+
+-- | Checks if the mismatch between two types is due to a missing delay, if so returns a tag for which type is
+-- missing the delay
+isMismatchMissingDelay :: (Var v) => Type v loc -> Type v loc -> Maybe (Either (Type v loc) (Type v loc))
+isMismatchMissingDelay typeA typeB
+  | isSubtype (Type.arrow () (Type.ref () BuiltinDecls.unitRef) (typeA $> ())) (typeB $> ()) =
+      Just (Left typeA)
+  | isSubtype (ABT.tm (ABT.tm (Type.Ref BuiltinDecls.unitRef) `Type.Arrow` (typeB $> ()))) (typeA $> ()) =
+      Just (Right typeB)
+  | otherwise = Nothing
