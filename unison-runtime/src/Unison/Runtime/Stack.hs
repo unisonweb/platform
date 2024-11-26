@@ -198,7 +198,7 @@ type DebugCallStack = (() :: Constraint)
 #endif
 {- ORMOLU_ENABLE -}
 
-newtype Callback = Hook (Stack -> IO ())
+newtype Callback = Hook (XStack -> IO ())
 
 instance Eq Callback where _ == _ = True
 

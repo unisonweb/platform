@@ -1,6 +1,8 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE UnboxedTuples #-}
 
 module Unison.Runtime.Machine
   ( ActiveThreads,
@@ -37,6 +39,7 @@ import Data.Set qualified as Set
 import Data.Text qualified as DTx
 import Data.Text.IO qualified as Tx
 import Data.Traversable
+import GHC.Base (IO (..))
 import GHC.Conc as STM (unsafeIOToSTM)
 import Unison.Builtin.Decls (exceptionRef, ioFailureRef)
 import Unison.Builtin.Decls qualified as Rf
@@ -253,7 +256,7 @@ apply0 !callback !env !threadTracker !i = do
     -- if it's cached, we can just finish
     CachedVal _ val -> bump stk >>= \stk -> poke stk val
   where
-    k0 = maybe KE (CB . Hook) callback
+    k0 = fromMaybe KE (callback <&> \cb -> CB . Hook $ \stk -> cb $ packXStack stk)
 
 -- Apply helper currently used for forking. Creates the new stacks
 -- necessary to evaluate a closure with the provided information.
@@ -267,7 +270,7 @@ apply1 callback env threadTracker clo = do
   stk <- alloc
   apply env mempty threadTracker stk k0 True ZArgs $ clo
   where
-    k0 = CB $ Hook callback
+    k0 = CB $ Hook (\stk -> callback $ packXStack stk)
 
 unitValue :: Closure
 unitValue = Enum Rf.unitRef TT.unitTag
@@ -550,9 +553,11 @@ exec !_ !denv !_activeThreads !stk !k _ (Seq as) = do
   pokeS stk $ Sq.fromList l
   pure (denv, stk, k)
 exec !env !denv !_activeThreads !stk !k _ (ForeignCall _ w args)
-  | Just (FF arg res ev) <- EC.lookup w (foreignFuncs env) =
-      (denv,,k)
-        <$> (arg stk args >>= ev >>= res stk)
+  | Just (FF arg res ev) <- EC.lookup w (foreignFuncs env) = do
+      let xStack = unpackXStack stk
+      r <- arg (unpackXStack stk) args >>= ev
+      IO $ \s -> case res xStack r s of
+        (# s, xstk #) -> (# s, (denv, packXStack xstk, k) #)
   | otherwise =
       die $ "reference to unknown foreign function: " ++ show w
 exec !env !denv !activeThreads !stk !k _ (Fork i)
@@ -647,16 +652,18 @@ eval !env !denv !activeThreads !stk !k r (DMatch mr i br) = do
     selectBranch (maskTags t) br
 eval !env !denv !activeThreads !stk !k r (NMatch _mr i br) = do
   n <- peekOffN stk i
+
   eval env denv activeThreads stk k r $ selectBranch n br
-eval !env !denv !activeThreads !stk !k r (RMatch i pu br) = do
-  (t, stk) <- dumpDataNoTag Nothing stk =<< peekOff stk i
-  if t == PackedTag 0
-    then eval env denv activeThreads stk k r pu
-    else case ANF.unpackTags t of
-      (ANF.rawTag -> e, ANF.rawTag -> t)
-        | Just ebs <- EC.lookup e br ->
-            eval env denv activeThreads stk k r $ selectBranch t ebs
-        | otherwise -> unhandledErr "eval" env e
+eval !_env !_denv !_activeThreads !_stk !_k _r (RMatch _i _pu _br) = do
+  pure ()
+--   (t, stk) <- dumpDataNoTag Nothing stk =<< peekOff stk i
+--   if t == PackedTag 0
+--     then eval env denv activeThreads stk k r pu
+--     else case ANF.unpackTags t of
+--       (ANF.rawTag -> e, ANF.rawTag -> t)
+--         | Just ebs <- EC.lookup e br ->
+--             eval env denv activeThreads stk k r $ selectBranch t ebs
+--         | otherwise -> unhandledErr "eval" env e
 eval !env !denv !activeThreads !stk !k _ (Yield args)
   | asize stk > 0,
     VArg1 i <- args =
@@ -1799,7 +1806,7 @@ yield !env !denv !activeThreads !stk !k = leap denv k
       stk <- restoreFrame stk fsz asz
       stk <- ensure stk f
       eval env denv activeThreads stk k ref nx
-    leap _ (CB (Hook f)) = f stk
+    leap _ (CB (Hook f)) = f (unpackXStack stk)
     leap _ KE = pure ()
 {-# INLINE yield #-}
 
