@@ -1,5 +1,8 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE UnboxedTuples #-}
 
 module Unison.Runtime.Stack
   ( K (..),
@@ -27,6 +30,16 @@ module Unison.Runtime.Stack
     Augment (..),
     Dump (..),
     Stack (..),
+    XStack,
+    pattern XStack,
+    packXStack,
+    unpackXStack,
+    IOStack,
+    apX,
+    fpX,
+    spX,
+    ustkX,
+    bstkX,
     Off,
     SZ,
     FP,
@@ -127,10 +140,10 @@ where
 
 import Control.Monad.Primitive
 import Data.Char qualified as Char
-import Data.Kind (Constraint)
 import Data.Primitive (sizeOf)
 import Data.Primitive.ByteArray qualified as BA
 import Data.Word
+import GHC.Base
 import GHC.Exts as L (IsList (..))
 import Unison.Prelude
 import Unison.Reference (Reference)
@@ -596,6 +609,26 @@ data Stack = Stack
     ustk :: {-# UNPACK #-} !(MutableByteArray (PrimState IO)),
     bstk :: {-# UNPACK #-} !(MutableArray (PrimState IO) Closure)
   }
+
+-- Unboxed representation of the Stack, used to force GHC optimizations in a few spots.
+type XStack = (# Int#, Int#, Int#, MutableByteArray# (PrimState IO), MutableArray# (PrimState IO) Closure #)
+
+type IOStack = State# RealWorld -> (# State# RealWorld, XStack #)
+
+pattern XStack :: Int# -> Int# -> Int# -> MutableByteArray# RealWorld -> MutableArray# RealWorld Closure -> Stack
+pattern XStack {apX, fpX, spX, ustkX, bstkX} = Stack (I# apX) (I# fpX) (I# spX) (MutableByteArray ustkX) (MutableArray bstkX)
+
+{-# COMPLETE XStack #-}
+
+{-# INLINE XStack #-}
+
+packXStack :: XStack -> Stack
+packXStack (# ap, fp, sp, ustk, bstk #) = Stack {ap = I# ap, fp = I# fp, sp = I# sp, ustk = MutableByteArray ustk, bstk = MutableArray bstk}
+{-# INLINE packXStack #-}
+
+unpackXStack :: Stack -> XStack
+unpackXStack (Stack (I# ap) (I# fp) (I# sp) (MutableByteArray ustk) (MutableArray bstk)) = (# ap, fp, sp, ustk, bstk #)
+{-# INLINE unpackXStack #-}
 
 instance Show Stack where
   show (Stack ap fp sp _ _) =
