@@ -2,7 +2,26 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 
-module Unison.Runtime.Machine where
+module Unison.Runtime.Machine
+  ( ActiveThreads,
+    CCache (..),
+    Combs,
+    Tracer (..),
+    apply0,
+    baseCCache,
+    cacheAdd,
+    cacheAdd0,
+    eval0,
+    expandSandbox,
+    preEvalTopLevelConstants,
+    refLookup,
+    refNumTm,
+    refNumsTm,
+    refNumsTy,
+    reifyValue,
+    resolveSection,
+  )
+where
 
 import Control.Concurrent (ThreadId)
 import Control.Concurrent.STM as STM
@@ -136,15 +155,6 @@ refNumTm cc r =
     (M.lookup r -> Just w) -> pure w
     _ -> die $ "refNumTm: unknown reference: " ++ show r
 
-refNumTy :: CCache -> Reference -> IO Word64
-refNumTy cc r =
-  refNumsTy cc >>= \case
-    (M.lookup r -> Just w) -> pure w
-    _ -> die $ "refNumTy: unknown reference: " ++ show r
-
-refNumTy' :: CCache -> Reference -> IO (Maybe Word64)
-refNumTy' cc r = M.lookup r <$> refNumsTy cc
-
 baseCCache :: Bool -> IO CCache
 baseCCache sandboxed = do
   CCache ffuncs sandboxed noTrace
@@ -184,13 +194,6 @@ info ctx x = infos ctx (show x)
 
 infos :: String -> String -> IO ()
 infos ctx s = putStrLn $ ctx ++ ": " ++ s
-
-stk'info :: Stack -> IO ()
-stk'info s@(Stack _ _ sp _ _) = do
-  let prn i
-        | i < 0 = return ()
-        | otherwise = bpeekOff s i >>= print >> prn (i - 1)
-  prn sp
 
 -- Entry point for evaluating a section
 eval0 :: CCache -> ActiveThreads -> MSection -> IO ()
@@ -266,32 +269,8 @@ apply1 callback env threadTracker clo = do
   where
     k0 = CB $ Hook callback
 
--- Entry point for evaluating a saved continuation.
---
--- The continuation must be from an evaluation context expecting a
--- unit value.
-jump0 ::
-  (Stack -> IO ()) ->
-  CCache ->
-  ActiveThreads ->
-  Closure ->
-  IO ()
-jump0 !callback !env !activeThreads !clo = do
-  stk <- alloc
-  cmbs <- readTVarIO $ combs env
-  (denv, kf) <-
-    topDEnv cmbs <$> readTVarIO (refTy env) <*> readTVarIO (refTm env)
-  stk <- bump stk
-  bpoke stk (Enum Rf.unitRef TT.unitTag)
-  jump env denv activeThreads stk (kf k0) (VArg1 0) clo
-  where
-    k0 = CB (Hook callback)
-
 unitValue :: Closure
 unitValue = Enum Rf.unitRef TT.unitTag
-
-lookupDenv :: Word64 -> DEnv -> Val
-lookupDenv p denv = fromMaybe (BoxedVal BlackHole) $ EC.lookup p denv
 
 litToVal :: MLit -> Val
 litToVal = \case
@@ -639,14 +618,6 @@ encodeExn stk exc = do
           | Just (ie :: AsyncException) <- fromException exn =
               (Rf.threadKilledFailureRef, disp ie, boxedVal unitValue)
           | otherwise = (Rf.miscFailureRef, disp exn, boxedVal unitValue)
-
-numValue :: Maybe Reference -> Val -> IO Word64
-numValue _ (UnboxedVal v _) = pure (fromIntegral @Int @Word64 v)
-numValue mr clo =
-  die $
-    "numValue: bad closure: "
-      ++ show clo
-      ++ maybe "" (\r -> "\nexpected type: " ++ show r) mr
 
 -- | Evaluate a section
 eval ::
@@ -1033,13 +1004,6 @@ closeArgs mode !stk !seg args = augSeg mode stk seg as
             | l > 0 = Just $ ArgR 0 l
             | otherwise = Nothing
           l = fsize stk - i
-
-peekForeign :: Stack -> Int -> IO a
-peekForeign stk i =
-  bpeekOff stk i >>= \case
-    Foreign x -> pure $ unwrapForeign x
-    _ -> die "bad foreign argument"
-{-# INLINE peekForeign #-}
 
 uprim1 :: Stack -> UPrim1 -> Int -> IO Stack
 uprim1 !stk DECI !i = do
@@ -1903,17 +1867,6 @@ splitCont !denv !stk !k !p =
       return (BoxedVal $ Captured ck asz seg, denv, stk, k)
 {-# INLINE splitCont #-}
 
-discardCont ::
-  DEnv ->
-  Stack ->
-  K ->
-  Word64 ->
-  IO (DEnv, Stack, K)
-discardCont denv stk k p =
-  splitCont denv stk k p
-    <&> \(_, denv, stk, k) -> (denv, stk, k)
-{-# INLINE discardCont #-}
-
 resolve :: CCache -> DEnv -> Stack -> MRef -> IO Val
 resolve _ _ _ (Env cix mcomb) = pure $ mCombVal cix mcomb
 resolve _ _ stk (Stk i) = peekOff stk i
@@ -1944,9 +1897,6 @@ resolveSection cc section = do
 
 dummyRef :: Reference
 dummyRef = Builtin (DTx.pack "dummy")
-
-reserveIds :: Word64 -> TVar Word64 -> IO Word64
-reserveIds n free = atomically . stateTVar free $ \i -> (i, i + n)
 
 updateMap :: (Semigroup s) => s -> TVar s -> STM s
 updateMap new0 r = do
