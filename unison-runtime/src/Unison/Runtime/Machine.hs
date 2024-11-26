@@ -81,6 +81,7 @@ import Unison.Util.Bytes qualified as By
 import Unison.Util.EnumContainers as EC
 import Unison.Util.Monoid qualified as Monoid
 import Unison.Util.Pretty (toPlainUnbroken)
+import Unison.Util.Pretty qualified as P
 import Unison.Util.Text qualified as Util.Text
 import UnliftIO (IORef)
 import UnliftIO qualified
@@ -652,7 +653,6 @@ eval !env !denv !activeThreads !stk !k r (DMatch mr i br) = do
     selectBranch (maskTags t) br
 eval !env !denv !activeThreads !stk !k r (NMatch _mr i br) = do
   n <- peekOffN stk i
-
   eval env denv activeThreads stk k r $ selectBranch n br
 eval !env !denv !activeThreads !stk !k r (RMatch i pu br) = do
   (t, stk) <- dumpDataNoTag Nothing stk =<< peekOff stk i
@@ -662,7 +662,8 @@ eval !env !denv !activeThreads !stk !k r (RMatch i pu br) = do
       (ANF.rawTag -> e, ANF.rawTag -> t)
         | Just ebs <- EC.lookup e br ->
             eval env denv activeThreads stk k r $ selectBranch t ebs
-        | otherwise -> unhandledErr "eval" env e
+        | otherwise ->
+            error . show . PE undefined . P.lit . fromString $ "eval: unhandled ability request"
 eval !env !denv !activeThreads !stk !k _ (Yield args)
   | asize stk > 0,
     VArg1 i <- args =
