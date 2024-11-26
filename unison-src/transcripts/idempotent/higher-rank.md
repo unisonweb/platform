@@ -2,7 +2,9 @@ This transcript does some testing of higher-rank types. Regression tests related
 
 ``` ucm :hide
 scratch/main> alias.type ##Nat Nat
+
 scratch/main> alias.type ##Text Text
+
 scratch/main> alias.type ##IO IO
 ```
 
@@ -16,7 +18,6 @@ f id = (id 1, id "hi")
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -45,7 +46,6 @@ f id _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -73,7 +73,6 @@ Functor.blah = cases Functor f ->
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -117,7 +116,6 @@ Loc.transform2 nt = cases Loc f ->
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -151,6 +149,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     structural type HigherRanked
+
 scratch/main> view HigherRanked
 
   structural type HigherRanked = HigherRanked (∀ a. a -> a)

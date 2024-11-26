@@ -68,7 +68,6 @@ mkTestCase = do
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -114,6 +113,7 @@ scratch/main> add
     tree1      : Tree Nat
     tree2      : Tree Nat
     tree3      : Tree Text
+
 scratch/main> run mkTestCase
 
   ()

@@ -2,7 +2,9 @@
 
 ``` ucm :hide
 scratch/main> builtins.mergeio
+
 scratch/main> load unison-src/transcripts-using-base/base.u
+
 scratch/main> add
 ```
 
@@ -394,7 +396,6 @@ test> Any.test2 = checks [(not (Any "hi" == Any 42))]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -450,7 +451,6 @@ openFile]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -507,7 +507,6 @@ openFilesIO = do
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -525,6 +524,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     openFilesIO : '{IO} [Result]
+
 scratch/main> io.test openFilesIO
 
     New test results:
@@ -546,7 +546,6 @@ test> Universal.murmurHash.tests = checks [Universal.murmurHash [1,2,3] == Unive
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

@@ -30,7 +30,6 @@ x = 42
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in myfile.u.
 
   I found and typechecked these definitions in myfile.u. If you
@@ -50,6 +49,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     x : Nat
+
 scratch/main> view x
 
   x : Nat
@@ -84,7 +84,6 @@ hmm = "Not, in fact, a number"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found a value  of type:  Text

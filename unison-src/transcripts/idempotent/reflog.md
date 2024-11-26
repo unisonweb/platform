@@ -9,7 +9,6 @@ x = 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -34,7 +33,6 @@ y = 2
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -52,18 +50,22 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     y : Nat
+
 scratch/main> branch /other
 
   Done. I've created the other branch based off of main.
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /other`.
+
 scratch/other> alias.term y z
 
   Done.
+
 newproject/main> builtins.merge lib.builtins
 
   Done.
+
 newproject/main> alias.type lib.builtins.Nat MyNat
 
   Done.

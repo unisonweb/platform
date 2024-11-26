@@ -15,6 +15,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     foo : [Result]
+
 scratch/main> view foo
 
   foo : [Result]

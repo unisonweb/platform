@@ -8,7 +8,6 @@ f x = 42
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

@@ -19,7 +19,6 @@ ex1 tup =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -39,6 +38,7 @@ scratch/main> add
 
     ex0 : Nat -> Nat
     ex1 : (a, b, (Nat, Nat)) -> Nat
+
 scratch/main> view ex0 ex1
 
   ex0 : Nat -> Nat
@@ -62,7 +62,6 @@ ex2 tup = match tup with
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -86,7 +85,6 @@ ex4 =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I couldn't figure out what a refers to here:
@@ -120,7 +118,6 @@ ex5a _ = match (99 + 1, "hi") with
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -140,6 +137,7 @@ scratch/main> add
 
     ex5  : 'Text
     ex5a : 'Text
+
 scratch/main> view ex5 ex5a
 
   ex5 : 'Text
@@ -170,6 +168,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     ex6 : (Nat, Nat) -> Nat
+
 scratch/main> view ex6
 
   ex6 : (Nat, Nat) -> Nat

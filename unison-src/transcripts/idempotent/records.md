@@ -2,6 +2,7 @@ Ensure that Records keep their syntax after being added to the codebase
 
 ``` ucm :hide
 scratch/main> builtins.merge
+
 scratch/main> load unison-src/transcripts-using-base/base.u
 ```
 
@@ -178,7 +179,6 @@ unique type Record5 =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

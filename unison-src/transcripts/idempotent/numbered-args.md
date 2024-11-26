@@ -16,7 +16,6 @@ corge = "corge"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -73,6 +72,7 @@ scratch/main> find
   5. quux : Text
   6. qux : Text
   7. builtin type Text
+
 scratch/main> view 2
 
   baz : Text
@@ -91,6 +91,7 @@ scratch/main> find
   5. quux : Text
   6. qux : Text
   7. builtin type Text
+
 scratch/main> view 2 3 5
 
   baz : Text
@@ -115,6 +116,7 @@ scratch/main> find
   5. quux : Text
   6. qux : Text
   7. builtin type Text
+
 scratch/main> view 2-4
 
   baz : Text
@@ -139,6 +141,7 @@ scratch/main> find
   5. quux : Text
   6. qux : Text
   7. builtin type Text
+
 scratch/main> view 1-3 4 5-6
 
   bar : Text

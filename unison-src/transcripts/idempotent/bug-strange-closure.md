@@ -1,5 +1,6 @@
 ``` ucm :hide
 scratch/main> builtins.mergeio lib.builtins
+
 scratch/main> load unison-src/transcripts-using-base/doc.md.files/syntax.u
 ```
 
@@ -203,6 +204,7 @@ scratch/main> display doc.guide
                             row occupies multiple lines in the
                             rendered table.
     Some text   More text   Zounds!
+
 scratch/main> add
 
   ⍟ I've added these definitions:
@@ -215,6 +217,7 @@ scratch/main> add
     nonUnisonCodeBlocks : Doc2
     otherElements       : Doc2
     sqr                 : Nat -> Nat
+
 scratch/main> display doc.guide
 
   # Unison computable documentation
@@ -421,7 +424,6 @@ rendered = Pretty.get (docFormatConsole doc.guide)
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -631,11 +633,13 @@ scratch/main> display rendered
                             row occupies multiple lines in the
                             rendered table.
     Some text   More text   Zounds!
+
 scratch/main> add
 
   ⍟ I've added these definitions:
 
     rendered : Annotated () (Either SpecialForm ConsoleText)
+
 scratch/main> display rendered
 
   # Unison computable documentation
@@ -833,6 +837,7 @@ scratch/main> display rendered
                             row occupies multiple lines in the
                             rendered table.
     Some text   More text   Zounds!
+
 scratch/main> undo
 
   Here are the changes I undid
@@ -851,7 +856,6 @@ rendered = Pretty.get (docFormatConsole doc.guide)
 ```
 
 ```` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

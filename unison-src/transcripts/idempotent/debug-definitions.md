@@ -26,12 +26,15 @@ scratch/main> add
       (also named builtin.Optional)
     x : Nat
     y : Nat
+
 scratch/main> debug.term.abt Nat.+
 
   Builtin term: ##Nat.+
+
 scratch/main> debug.term.abt y
 
   (let Ref(ReferenceBuiltin "Nat.+") Ref(ReferenceDerived (Id "qpo3o788girkkbb43uf6ggqberfduhtnqbt7096eojlrp27jieco09mdasb7b0b06ej9hj60a00nnbbdo8he0b4e0m7vtopifiuhdig" 0)) 2 in (User "z". Ref(ReferenceBuiltin "Nat.+") (Var User "z") 10)):ReferenceBuiltin "Nat"
+
 scratch/main> debug.term.abt Some
 
   Constructor #0 of the following type:
@@ -61,6 +64,7 @@ scratch/main> debug.term.abt Some
               )
           ]
       }
+
 scratch/main> debug.term.abt ask
 
   Constructor #0 of the following type:
@@ -89,9 +93,11 @@ scratch/main> debug.term.abt ask
               ]
           }
       }
+
 scratch/main> debug.type.abt Nat
 
   Builtin type: ##Nat
+
 scratch/main> debug.type.abt Optional
 
   DataDeclaration
@@ -120,6 +126,7 @@ scratch/main> debug.type.abt Optional
               )
           ]
       }
+
 scratch/main> debug.type.abt Ask
 
   EffectDeclaration

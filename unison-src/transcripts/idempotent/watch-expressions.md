@@ -9,7 +9,6 @@ test> pass = [Ok "Passed"]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -41,7 +40,6 @@ test> pass = [Ok "Passed"]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked the definitions in scratch.u. This
@@ -59,6 +57,7 @@ test> pass = [Ok "Passed"]
 scratch/main> add
 
   ⊡ Ignored previously added definitions: pass
+
 scratch/main> test
 
   Cached test results (`help testcache` to learn more)
@@ -76,7 +75,6 @@ scratch/main> test
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ✅

@@ -8,6 +8,7 @@ scratch/main> help merge
 
   merge
   `merge /branch` merges `branch` into the current branch
+
 scratch/main> help merge.commit
 
   merge.commit (or commit.merge)
@@ -45,6 +46,7 @@ foo = "alices foo"
 
 ``` ucm :hide
 scratch/alice> add
+
 scratch/main> branch bob
 ```
 
@@ -65,6 +67,7 @@ Merge result:
 scratch/alice> merge /bob
 
   I merged scratch/bob into scratch/alice.
+
 scratch/alice> view foo bar
 
   bar : Text
@@ -84,6 +87,7 @@ If Alice and Bob also happen to add the same definition, that's not a conflict.
 
 ``` ucm :hide
 scratch/main> builtins.mergeio lib.builtins
+
 scratch/main> branch alice
 ```
 
@@ -96,6 +100,7 @@ foo = "alice and bobs foo"
 
 ``` ucm :hide
 scratch/alice> add
+
 scratch/main> branch bob
 ```
 
@@ -119,6 +124,7 @@ Merge result:
 scratch/alice> merge /bob
 
   I merged scratch/bob into scratch/alice.
+
 scratch/alice> view foo bar
 
   bar : Text
@@ -149,6 +155,7 @@ foo = "old foo"
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -161,6 +168,7 @@ foo = "new foo"
 
 ``` ucm :hide
 scratch/alice> update
+
 scratch/main> branch bob
 ```
 
@@ -187,6 +195,7 @@ Merge result:
 scratch/alice> merge /bob
 
   I merged scratch/bob into scratch/alice.
+
 scratch/alice> view foo bar
 
   bar : Text
@@ -196,6 +205,7 @@ scratch/alice> view foo bar
 
   foo : Text
   foo = "new foo"
+
 scratch/alice> display bar
 
   "old foo - old foo"
@@ -230,6 +240,7 @@ baz = "old baz"
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -277,6 +288,7 @@ Merge result:
 scratch/alice> merge /bob
 
   I merged scratch/bob into scratch/alice.
+
 scratch/alice> view foo bar baz
 
   bar : Text
@@ -289,6 +301,7 @@ scratch/alice> view foo bar baz
   foo =
     use Text ++
     "foo" ++ " - " ++ bar ++ " - " ++ baz
+
 scratch/alice> display foo
 
   "foo - alices bar - bobs baz"
@@ -377,6 +390,7 @@ Merge result:
 scratch/alice> merge /bob
 
   I merged scratch/bob into scratch/alice.
+
 scratch/alice> view foo bar baz
 
   bar : Text
@@ -391,6 +405,7 @@ scratch/alice> view foo bar baz
   foo =
     use Text ++
     "old foo" ++ " - " ++ bar
+
 scratch/alice> display foo
 
   "old foo - bobs bar - alices baz"
@@ -417,6 +432,7 @@ foo = "old foo"
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -429,6 +445,7 @@ foo = "alices foo"
 
 ``` ucm :hide
 scratch/alice> update
+
 scratch/main> branch bob
 ```
 
@@ -446,6 +463,7 @@ Merge result:
 scratch/alice> merge /bob
 
   I merged scratch/bob into scratch/alice.
+
 scratch/alice> view foo
 
   foo : Text
@@ -485,6 +503,7 @@ lib.bothDifferent.baz = 19
 
 ``` ucm :hide
 scratch/alice> add
+
 scratch/main> branch bob
 ```
 
@@ -511,6 +530,7 @@ Merge result:
 scratch/alice> merge bob
 
   I merged scratch/bob into scratch/alice.
+
 scratch/alice> view foo bar baz
 
   lib.alice.foo : Nat
@@ -548,12 +568,14 @@ scratch/main> branch alice
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /alice`.
+
 scratch/main> branch bob
 
   Done. I've created the bob branch based off of main.
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /bob`.
+
 scratch/alice> merge /bob
 
   😶
@@ -580,6 +602,7 @@ scratch/main> branch alice
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /alice`.
+
 scratch/main> branch bob
 
   Done. I've created the bob branch based off of main.
@@ -601,6 +624,7 @@ scratch/alice> add
   ⍟ I've added these definitions:
 
     foo : Text
+
 scratch/alice> merge /bob
 
   😶
@@ -627,6 +651,7 @@ scratch/main> branch alice
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /alice`.
+
 scratch/main> branch bob
 
   Done. I've created the bob branch based off of main.
@@ -648,6 +673,7 @@ scratch/bob> add
   ⍟ I've added these definitions:
 
     foo : Text
+
 scratch/alice> merge /bob
 
   I fast-forward merged scratch/bob into scratch/alice.
@@ -666,6 +692,7 @@ scratch/main> branch topic
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /topic`.
+
 scratch/main> merge /topic
 
   😶
@@ -698,6 +725,7 @@ foo = "foo"
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -726,6 +754,7 @@ scratch/bob> add
   ⍟ I've added these definitions:
 
     bar : Text
+
 scratch/alice> merge /bob
 
   I couldn't automatically merge scratch/bob into scratch/alice.
@@ -776,6 +805,7 @@ foo = "foo"
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -788,6 +818,7 @@ foo = 100
 
 ``` ucm :hide
 scratch/alice> update
+
 scratch/main> branch bob
 ```
 
@@ -855,6 +886,7 @@ bar = "old bar"
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -873,6 +905,7 @@ qux = "alices qux depends on alices foo" ++ foo
 
 ``` ucm :hide
 scratch/alice> update
+
 scratch/main> branch bob
 ```
 
@@ -959,6 +992,7 @@ unique type Foo = MkFoo Nat
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -970,6 +1004,7 @@ unique type Foo = MkFoo Nat Nat
 
 ``` ucm :hide
 scratch/alice> update
+
 scratch/main> branch bob
 ```
 
@@ -1032,6 +1067,7 @@ unique type Foo = Baz Nat | Qux Text
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -1043,6 +1079,7 @@ unique type Foo = Baz Nat Nat | Qux Text
 
 ``` ucm :hide
 scratch/alice> update
+
 scratch/main> branch bob
 ```
 
@@ -1103,6 +1140,7 @@ unique type Foo = Baz Nat | Qux Text
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -1180,6 +1218,7 @@ my.cool.thing = 17
 
 ``` ucm :hide
 scratch/alice> add
+
 scratch/main> branch bob
 ```
 
@@ -1245,6 +1284,7 @@ Foo.Bar = 17
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -1256,6 +1296,7 @@ unique type Foo = Alice Nat
 
 ``` ucm :hide
 scratch/alice> add
+
 scratch/main> branch bob
 ```
 
@@ -1333,6 +1374,7 @@ Foo.Bar.Hello = 17
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -1340,7 +1382,9 @@ Alice deletes this type entirely, and repurposes its constructor names for other
 
 ``` ucm :hide
 scratch/alice> delete.type Foo
+
 scratch/alice> delete.term Foo.Bar.Baz
+
 scratch/alice> delete.term Foo.Bar.Qux
 ```
 
@@ -1365,8 +1409,11 @@ Bob, meanwhile, first deletes the term, then sort of deletes the type and re-add
 
 ``` ucm :hide
 scratch/main> branch bob
+
 scratch/bob> delete.term Foo.Bar.Hello
+
 scratch/bob> move.type Foo Foo.Bar
+
 scratch/bob> move.term Foo.Bar.Qux Foo.Bar.Hello
 ```
 
@@ -1445,6 +1492,7 @@ alice _ = 18
 
 ``` ucm :hide
 scratch/alice> add
+
 scratch/main> branch bob
 ```
 
@@ -1523,6 +1571,7 @@ foo = "old foo"
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -1535,6 +1584,7 @@ foo = "alices foo"
 
 ``` ucm :hide
 scratch/alice> update
+
 scratch/main> branch bob
 ```
 
@@ -1590,7 +1640,6 @@ foo = "alice and bobs foo"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -1610,14 +1659,17 @@ scratch/merge-bob-into-alice> update
   updated...
 
   Done.
+
 scratch/merge-bob-into-alice> merge.commit
 
   I fast-forward merged scratch/merge-bob-into-alice into
   scratch/alice.
+
 scratch/alice> view foo
 
   foo : Text
   foo = "alice and bobs foo"
+
 scratch/alice> branches
 
        Branch   Remote branch
@@ -1681,6 +1733,7 @@ bar = 100
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch alice
 ```
 
@@ -1696,6 +1749,7 @@ bar = 300
 
 ``` ucm :hide
 scratch/alice> update
+
 scratch/main> branch bob
 ```
 
@@ -1991,6 +2045,7 @@ scratch/alice> add
   ⍟ I've added these definitions:
 
     type Foo
+
 scratch/alice> alias.term Foo.Bar AliasOutsideFooNamespace
 
   Done.
@@ -2048,6 +2103,7 @@ lib.foo = 1
 
 ``` ucm :hide
 scratch/alice> add
+
 scratch/main> branch bob
 ```
 
@@ -2096,7 +2152,6 @@ structural type Foo = Bar Nat | Baz Nat Nat
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2114,6 +2169,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     structural type Foo
+
 scratch/main> delete.term Foo.Baz
 
   Done.
@@ -2128,9 +2184,11 @@ scratch/main> branch alice
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /alice`.
+
 scratch/alice> delete.type Foo
 
   Done.
+
 scratch/alice> delete.term Foo.Bar
 
   Done.
@@ -2142,7 +2200,6 @@ alice = 100
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2171,9 +2228,11 @@ scratch/main> branch bob
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /bob`.
+
 scratch/bob> delete.type Foo
 
   Done.
+
 scratch/bob> delete.term Foo.Bar
 
   Done.
@@ -2185,7 +2244,6 @@ bob = 101
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2231,7 +2289,6 @@ bar = 17
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2251,12 +2308,14 @@ scratch/main> add
 
     bar : Nat
     foo : Nat
+
 scratch/main> branch alice
 
   Done. I've created the alice branch based off of main.
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /alice`.
+
 scratch/alice> delete.term bar
 
   Done.
@@ -2267,7 +2326,6 @@ foo = 18
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2287,6 +2345,7 @@ scratch/alice> update
   updated...
 
   Done.
+
 scratch/main> branch bob
 
   Done. I've created the bob branch based off of main.
@@ -2300,7 +2359,6 @@ bob = 101
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2341,7 +2399,6 @@ type Foo = Bar | Baz
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2359,6 +2416,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     type Foo
+
 scratch/main> branch topic
 
   Done. I've created the topic branch based off of main.
@@ -2372,7 +2430,6 @@ boop = "boop"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2397,7 +2454,6 @@ type Foo = Bar
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2423,6 +2479,7 @@ scratch/main> update
 scratch/main> merge topic
 
   I merged scratch/topic into scratch/main.
+
 scratch/main> view Foo
 
   type Foo = Bar
@@ -2454,7 +2511,6 @@ baz = "lca"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2476,6 +2532,7 @@ scratch/alice> add
     bar : Nat
     baz : Text
     foo : Nat
+
 scratch/alice> branch bob
 
   Done. I've created the bob branch based off of alice.
@@ -2492,7 +2549,6 @@ baz = "bob"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2525,7 +2581,6 @@ baz = "alice"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2612,7 +2667,6 @@ a = 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2637,7 +2691,6 @@ b = 2
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2662,7 +2715,6 @@ b = 2
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked the definitions in scratch.u. This
@@ -2682,7 +2734,6 @@ a = 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2708,7 +2759,6 @@ b = 2
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked the definitions in scratch.u. This
@@ -2722,12 +2772,15 @@ scratch/carol> add
 
     a : ##Nat
     b : ##Nat
+
 scratch/bob> merge /alice
 
   I merged scratch/alice into scratch/bob.
+
 scratch/carol> merge /bob
 
   I merged scratch/bob into scratch/carol.
+
 scratch/carol> history
 
   Note: The most recent namespace hash is immediately below this
@@ -2772,7 +2825,6 @@ bar =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2794,6 +2846,7 @@ scratch/alice> add
     bar    : Nat
     foo    : Nat
     ignore : a -> ()
+
 scratch/alice> branch bob
 
   Done. I've created the bob branch based off of alice.
@@ -2810,7 +2863,6 @@ bar =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2841,7 +2893,6 @@ foo = 19
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2892,7 +2943,6 @@ type Bar = MkBar Foo
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -2912,21 +2962,25 @@ scratch/main> add
 
     type Bar
     type Foo
+
 scratch/main> branch alice
 
   Done. I've created the alice branch based off of main.
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /alice`.
+
 scratch/alice> move.term Foo.Lca Foo.Alice
 
   Done.
+
 scratch/main> branch bob
 
   Done. I've created the bob branch based off of main.
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /bob`.
+
 scratch/bob> move.term Foo.Lca Foo.Bob
 
   Done.
@@ -2978,7 +3032,6 @@ type Bar = MkBar Foo
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked the definitions in scratch.u. This
@@ -2992,11 +3045,13 @@ scratch/merge-bob-into-alice> update
   updated...
 
   Done.
+
 scratch/merge-bob-into-alice> names Bar
 
   Type
   Hash:  #h3af39sae7
   Names: Bar
+
 scratch/alice> names Bar
 
   Type
@@ -3023,7 +3078,6 @@ hello = 17
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -3041,6 +3095,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     hello : Nat
+
 scratch/main> branch alice
 
   Done. I've created the alice branch based off of main.
@@ -3055,7 +3110,6 @@ foo = 100
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -3079,6 +3133,7 @@ scratch/alice> update
   updated...
 
   Done.
+
 scratch/main> branch bob
 
   Done. I've created the bob branch based off of main.
@@ -3093,7 +3148,6 @@ bar = 100
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

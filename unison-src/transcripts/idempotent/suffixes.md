@@ -26,6 +26,7 @@ scratch/main> add
 
     foo.bar.a       : Int
     optional.isNone : Optional a -> Boolean
+
 scratch/main> find take
 
   1. builtin.Bytes.take : Nat -> Bytes -> Bytes
@@ -41,6 +42,7 @@ The `view` and `display` commands also benefit from this:
 scratch/main> view List.drop
 
   builtin builtin.List.drop : builtin.Nat -> [a] -> [a]
+
 scratch/main> display bar.a
 
   +99
@@ -69,7 +71,6 @@ lib.distributed.lib.baz.qux = "indirect dependency"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -100,7 +101,6 @@ scratch/main> add
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I couldn't figure out what abra.cadabra refers to here:
@@ -122,7 +122,6 @@ scratch/main> add
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ✅
@@ -145,6 +144,7 @@ scratch/main> view abra.cadabra
 
   lib.distributed.abra.cadabra : Text
   lib.distributed.abra.cadabra = "direct dependency 1"
+
 scratch/main> view baz.qux
 
   lib.distributed.baz.qux : Text
@@ -158,6 +158,7 @@ scratch/main> view distributed.abra.cadabra
 
   lib.distributed.abra.cadabra : Text
   lib.distributed.abra.cadabra = "direct dependency 1"
+
 scratch/main> names distributed.lib.baz.qux
 
   Term

@@ -8,6 +8,7 @@ project/main> builtins.mergeio lib.builtins
 project/main> alias.type lib.builtins.Nat Foo
 
   Done.
+
 project/main> ls
 
   1. Foo  (builtin type)
@@ -37,6 +38,7 @@ You can use `debug.alias.type.force` for that.
 project/main> debug.alias.type.force lib.builtins.Int Foo
 
   Done.
+
 project/main> ls
 
   1. Foo  (builtin type)

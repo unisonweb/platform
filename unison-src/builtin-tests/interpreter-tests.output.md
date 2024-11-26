@@ -6,7 +6,9 @@ Before merging the PR on Github, we'll merge your branch on Share and restore `r
 
 ``` ucm :hide:error
 scratch/main> this is a hack to trigger an error, in order to swallow any error on the next line.
+
 scratch/main> we delete the project to avoid any merge conflicts or complaints from ucm.
+
 scratch/main> delete.project runtime-tests
 ```
 
@@ -18,6 +20,7 @@ scratch/main> clone @unison/runtime-tests/releases/0.0.1 runtime-tests/selected
 runtime-tests/selected> run tests
 
   ()
+
 runtime-tests/selected> run tests.interpreter.only
 
   ()

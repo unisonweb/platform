@@ -18,6 +18,7 @@ Technically, the definitions all exist, but they have no names. `builtins.merge`
 scratch/main> builtins.merge lib.builtins
 
   Done.
+
 scratch/main> ls lib
 
   1. builtins/ (469 terms, 74 types)
@@ -29,6 +30,7 @@ And for a limited time, you can get even more builtin goodies:
 scratch/main> builtins.mergeio lib.builtinsio
 
   Done.
+
 scratch/main> ls lib
 
   1. builtins/   (469 terms, 74 types)

@@ -9,7 +9,6 @@ thingy = lib.old.foo + 10
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -39,12 +38,14 @@ Test tab completion and fzf options of upgrade command.
 proj/main> debug.tab-complete upgrade ol
 
    old
+
 proj/main> debug.fuzzy-options upgrade _
 
   Select a dependency to upgrade:
     * builtin
     * new
     * old
+
 proj/main> debug.fuzzy-options upgrade old _
 
   Select a dependency to upgrade to:
@@ -57,10 +58,12 @@ proj/main> debug.fuzzy-options upgrade old _
 proj/main> upgrade old new
 
   I upgraded old to new, and removed old.
+
 proj/main> ls lib
 
   1. builtin/ (469 terms, 74 types)
   2. new/     (1 term)
+
 proj/main> view thingy
 
   thingy : Nat

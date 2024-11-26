@@ -2,12 +2,15 @@ This transcript verifies that the pretty-printer produces code that can be succe
 
 ``` ucm :hide
 scratch/main> builtins.mergeio lib.builtins
+
 scratch/a1> builtins.mergeio lib.builtins
+
 scratch/a2> builtins.mergeio lib.builtins
 ```
 
 ``` ucm :hide
 scratch/a1> load unison-src/transcripts-round-trip/reparses-with-same-hash.u
+
 scratch/a1> add
 ```
 
@@ -16,7 +19,6 @@ x = ()
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -833,6 +835,7 @@ scratch/a2> load
 
 ``` ucm :hide
 scratch/a2> add
+
 scratch/a2> delete.namespace.force lib.builtins
 ```
 
@@ -848,7 +851,9 @@ Now check that definitions in 'reparses.u' at least parse on round trip:
 
 ``` ucm :hide
 scratch/a3> builtins.mergeio lib.builtins
+
 scratch/a3> load unison-src/transcripts-round-trip/reparses.u
+
 scratch/a3> add
 ```
 
@@ -897,9 +902,13 @@ sloppyDocEval =
 
 ``` ucm :hide
 scratch/a3_new> builtins.mergeio lib.builtins
+
 scratch/a3_new> load
+
 scratch/a3_new> add
+
 scratch/a3> delete.namespace.force lib.builtins
+
 scratch/a3_new> delete.namespace.force lib.builtins
 ```
 
@@ -925,6 +934,7 @@ Regression test for https://github.com/unisonweb/unison/pull/3548
 scratch/regressions> alias.term ##Nat.+ plus
 
   Done.
+
 scratch/regressions> edit.new plus
 
   ☝️
@@ -933,6 +943,7 @@ scratch/regressions> edit.new plus
 
   You can edit them there, then run `update` to replace the
   definitions currently in this namespace.
+
 scratch/regressions> load
 
   Loading changes detected in scratch.u.

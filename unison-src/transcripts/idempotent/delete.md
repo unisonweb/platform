@@ -33,6 +33,7 @@ scratch/main> add
 
     structural type Foo
     foo : Nat
+
 scratch/main> delete.verbose foo
 
   Removed definitions:
@@ -41,6 +42,7 @@ scratch/main> delete.verbose foo
 
   Tip: You can use `undo` or use a hash from `reflog` to undo
        this change.
+
 scratch/main> delete.verbose Foo
 
   Removed definitions:
@@ -49,6 +51,7 @@ scratch/main> delete.verbose Foo
 
   Tip: You can use `undo` or use a hash from `reflog` to undo
        this change.
+
 scratch/main> delete.verbose Foo.Foo
 
   Removed definitions:
@@ -73,6 +76,7 @@ scratch/main> add
 
     a.bar : Nat
     a.foo : Nat
+
 scratch/main> debug.alias.term.force a.bar a.foo
 
   Done.
@@ -95,6 +99,7 @@ scratch/main> delete.verbose a.foo
 
   Tip: You can use `undo` or use a hash from `reflog` to undo
        this change.
+
 scratch/main> ls a
 
   1. bar (Nat)
@@ -115,9 +120,11 @@ scratch/main> add
     structural type a.Bar
       (also named lib.builtins.Unit)
     structural type a.Foo
+
 scratch/main> debug.alias.type.force a.Bar a.Foo
 
   Done.
+
 scratch/main> delete.verbose a.Foo
 
   Removed definitions:
@@ -133,6 +140,7 @@ scratch/main> delete.verbose a.Foo
 
   Tip: You can use `undo` or use a hash from `reflog` to undo
        this change.
+
 scratch/main> delete.verbose a.Foo.Foo
 
   Removed definitions:
@@ -157,6 +165,7 @@ scratch/main> add
 
     structural type foo
     foo : Nat
+
 scratch/main> delete.verbose foo
 
   Removed definitions:
@@ -184,6 +193,7 @@ scratch/main> add
     a : Text
     b : Text
     c : Text
+
 scratch/main> delete.verbose a b c
 
   Removed definitions:
@@ -214,6 +224,7 @@ scratch/main> add
     a : Text
     b : Text
     c : Text
+
 scratch/main> delete.verbose a b c Foo
 
   Removed definitions:
@@ -225,6 +236,7 @@ scratch/main> delete.verbose a b c Foo
 
   Tip: You can use `undo` or use a hash from `reflog` to undo
        this change.
+
 scratch/main> delete.verbose Foo.Foo
 
   Name changes:
@@ -249,6 +261,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     structural type Foo
+
 scratch/main> delete.verbose Foo Foo.Foo
 
   Removed definitions:
@@ -284,6 +297,7 @@ scratch/main> add
       (also named a.bar)
     c : Nat
     d : Nat
+
 scratch/main> delete.verbose a b c
 
   ⚠️
@@ -315,6 +329,7 @@ scratch/main> add
     f : Nat
     g : Nat
     h : Nat
+
 scratch/main> delete.verbose e f g h
 
   Removed definitions:
@@ -345,6 +360,7 @@ scratch/main> add
 
     structural type Foo
     incrementFoo : Foo -> Nat
+
 scratch/main> delete.verbose Foo Foo.Foo incrementFoo
 
   Removed definitions:
@@ -375,6 +391,7 @@ scratch/main> add
     f : Nat
     g : Nat
     h : Nat
+
 scratch/main> delete.verbose e f gg
 
   ⚠️
@@ -397,6 +414,7 @@ scratch/main> add
 
     ping : 'Nat
     pong : 'Nat
+
 scratch/main> delete.verbose ping
 
   Removed definitions:
@@ -405,6 +423,7 @@ scratch/main> delete.verbose ping
 
   Tip: You can use `undo` or use a hash from `reflog` to undo
        this change.
+
 scratch/main> view pong
 
   pong : 'Nat

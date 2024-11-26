@@ -7,7 +7,6 @@ unique type Foo = Bar Nat
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -25,6 +24,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     type Foo
+
 scratch/main> delete.term Foo.Bar
 
   Done.
@@ -37,7 +37,6 @@ unique type Foo = Bar Nat Nat
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -54,6 +53,7 @@ unique type Foo = Bar Nat Nat
 scratch/main> view Foo
 
   type Foo = #b509v3eg4k#0 Nat
+
 scratch/main> update
 
   Sorry, I wasn't able to perform the update:

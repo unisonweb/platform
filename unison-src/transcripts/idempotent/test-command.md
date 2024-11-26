@@ -15,7 +15,6 @@ foo.test2 = [Ok "test2"]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -74,7 +73,6 @@ lib.dep.testInLib = [Ok "testInLib"]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -101,6 +99,7 @@ scratch/main> test
   ✅ 2 test(s) passing
 
   Tip: Use view 1 to view the source of a test.
+
 scratch/main> test.all
 
     

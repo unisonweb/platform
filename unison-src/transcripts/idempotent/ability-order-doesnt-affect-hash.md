@@ -23,6 +23,7 @@ scratch/main> add
     ability Foo
     term1 : '{Bar, Foo} ()
     term2 : '{Bar, Foo} ()
+
 scratch/main> names term1
 
   Term

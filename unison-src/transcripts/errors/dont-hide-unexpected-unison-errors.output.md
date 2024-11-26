@@ -11,7 +11,6 @@ x + x +
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I got confused here:

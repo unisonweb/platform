@@ -6,7 +6,6 @@ x =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I got confused here:
@@ -27,7 +26,6 @@ namespace.blah = 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I got confused here:
@@ -63,7 +61,6 @@ x = 1 ]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found a closing ']' here without a matching '['.
@@ -76,7 +73,6 @@ x = a.#abc
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I got confused here:
@@ -110,7 +106,6 @@ x = "hi
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I got confused here:
@@ -130,7 +125,6 @@ y : a
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I got confused here:

@@ -14,7 +14,9 @@ http.z = 8
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> branch /app1
+
 scratch/main> branch /app2
 ```
 
@@ -24,18 +26,23 @@ Our `app1` project includes the text library twice and the http library twice as
 scratch/app1> fork text lib.text_v1
 
   Done.
+
 scratch/app1> fork text lib.text_v2
 
   Done.
+
 scratch/app1> delete.namespace text
 
   Done.
+
 scratch/app1> fork http lib.http_v3
 
   Done.
+
 scratch/app1> fork http lib.http_v4
 
   Done.
+
 scratch/app1> delete.namespace http
 
   Done.
@@ -49,6 +56,7 @@ scratch/app1> names a
   Term
   Hash:   #gjmq673r1v
   Names:  lib.text_v1.a lib.text_v2.a
+
 scratch/app1> names x
 
   Term
@@ -63,21 +71,27 @@ It also includes the `text` library twice as indirect dependencies via `webutil`
 scratch/app2> fork http lib.http_v1
 
   Done.
+
 scratch/app2> fork http lib.http_v2
 
   Done.
+
 scratch/app2> fork text lib.webutil.lib.text_v1
 
   Done.
+
 scratch/app2> fork text lib.webutil.lib.text_v2
 
   Done.
+
 scratch/app2> fork http lib.webutil.lib.http
 
   Done.
+
 scratch/app2> delete.namespace http
 
   Done.
+
 scratch/app2> delete.namespace text
 
   Done.
@@ -92,6 +106,7 @@ scratch/app2> names a
   Term
   Hash:   #gjmq673r1v
   Names:  lib.webutil.lib.text_v1.a
+
 scratch/app2> names x
 
   Term

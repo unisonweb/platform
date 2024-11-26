@@ -29,7 +29,6 @@ body k out v =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -91,7 +90,6 @@ tests = '(map spawn nats)
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -115,6 +113,7 @@ scratch/main> add
     nats    : [Nat]
     spawn   : Nat ->{IO} Result
     tests   : '{IO} [Result]
+
 scratch/main> io.test tests
 
     New test results:

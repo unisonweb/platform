@@ -9,7 +9,6 @@ thingy = lib.old.foo + 10
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -67,7 +66,6 @@ thingy = foo + +10
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -87,19 +85,23 @@ proj/upgrade-old-to-new> update
   updated...
 
   Done.
+
 proj/upgrade-old-to-new> upgrade.commit
 
   I fast-forward merged proj/upgrade-old-to-new into proj/main.
+
 proj/main> view thingy
 
   thingy : Int
   thingy =
     use Int +
     foo + +10
+
 proj/main> ls lib
 
   1. builtin/ (469 terms, 74 types)
   2. new/     (1 term)
+
 proj/main> branches
 
        Branch   Remote branch

@@ -12,7 +12,6 @@ x = 2
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ❗️
@@ -30,7 +29,6 @@ x = 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ❗️
@@ -50,7 +48,6 @@ Record.x.modify = 2
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ❗️
@@ -87,7 +84,6 @@ AnAbility.thing = 2
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ❗️

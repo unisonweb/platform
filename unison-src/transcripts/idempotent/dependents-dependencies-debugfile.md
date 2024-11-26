@@ -52,9 +52,11 @@ scratch/main> add
     inside.r  : Boolean
     outside.c : Nat
     outside.d : Boolean
+
 scratch/main> dependents q
 
   q has no dependents.
+
 scratch/main> dependencies q
 
   Dependencies of: q
@@ -71,6 +73,7 @@ scratch/main> dependencies q
 
   Tip: Try `view 4` to see the source of any numbered item in
        the above list.
+
 scratch/main> dependencies B
 
   Dependencies of: type B, B
@@ -82,6 +85,7 @@ scratch/main> dependencies B
 
   Tip: Try `view 2` to see the source of any numbered item in
        the above list.
+
 scratch/main> dependencies d
 
   Dependencies of: d
@@ -100,6 +104,7 @@ scratch/main> dependencies d
 
   Tip: Try `view 6` to see the source of any numbered item in
        the above list.
+
 scratch/main> dependents d
 
   Dependents of: d

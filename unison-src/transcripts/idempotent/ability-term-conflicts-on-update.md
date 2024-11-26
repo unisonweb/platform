@@ -15,7 +15,6 @@ unique ability Channels where
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -51,7 +50,6 @@ thing _ = send 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -80,6 +78,7 @@ scratch/main> update.old patch Channels.send
     term/ctor collision   Channels.send   : a -> ()
 
     Tip: Use `help filestatus` to learn more.
+
 scratch/main> update.old patch thing
 
   ⍟ I've added these definitions:
@@ -106,7 +105,6 @@ thing _ = send 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -137,6 +135,7 @@ scratch/main> update.old.preview patch Channels.send
       new definition:
     
       Channels.send : a ->{Channels} ()
+
 scratch/main> update.old.preview patch thing
 
   I found and typechecked these definitions in scratch.u. If you
@@ -176,7 +175,6 @@ X.x = 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -202,7 +200,6 @@ structural ability X where
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

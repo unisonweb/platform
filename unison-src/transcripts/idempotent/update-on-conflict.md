@@ -12,7 +12,6 @@ temp = 2
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -32,9 +31,11 @@ scratch/main> add
 
     temp : Nat
     x    : Nat
+
 scratch/main> debug.alias.term.force temp x
 
   Done.
+
 scratch/main> delete.term temp
 
   Done.
@@ -45,7 +46,6 @@ x = 3
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

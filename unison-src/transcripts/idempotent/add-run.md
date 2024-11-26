@@ -77,7 +77,6 @@ main _ = y
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -95,6 +94,7 @@ main _ = y
 scratch/main> run main
 
   a b -> a Nat.+ b Nat.+ z 10
+
 scratch/main> add.run result
 
   ⍟ I've added these definitions:
@@ -111,7 +111,6 @@ inc x = x + 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -140,11 +139,13 @@ main _ x = inc x
 scratch/main> run main
 
   inc
+
 scratch/main> add.run natfoo
 
   ⍟ I've added these definitions:
 
     natfoo : Nat -> Nat
+
 scratch/main> view natfoo
 
   natfoo : Nat -> Nat
@@ -160,7 +161,6 @@ main = 'y
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -192,6 +192,7 @@ scratch/main> add.run xres
   ⍟ I've added these definitions:
 
     xres : Nat
+
 scratch/main> view xres
 
   xres : Nat
@@ -208,6 +209,7 @@ main = '5
 scratch/main> run main
 
   5
+
 scratch/main> add.run xres
 
   x These definitions failed:
@@ -228,11 +230,13 @@ main = '5
 scratch/main> run main
 
   5
+
 scratch/main> add.run .an.absolute.name
 
   ⍟ I've added these definitions:
 
     .an.absolute.name : Nat
+
 scratch/main> view .an.absolute.name
 
   .an.absolute.name : Nat

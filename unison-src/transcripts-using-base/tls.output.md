@@ -32,7 +32,6 @@ what_should_work _ = this_should_work ++ this_should_not_work
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -54,6 +53,7 @@ scratch/main> add
     this_should_not_work : [Result]
     this_should_work     : [Result]
     what_should_work     : ∀ _. _ -> [Result]
+
 scratch/main> io.test what_should_work
 
     New test results:
@@ -221,7 +221,6 @@ testCNReject _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -253,6 +252,7 @@ scratch/main> add
                             -> MVar Nat
                             -> '{IO, Exception} Text
     testConnectSelfSigned : '{IO} [Result]
+
 scratch/main> io.test testConnectSelfSigned
 
     New test results:
@@ -262,6 +262,7 @@ scratch/main> io.test testConnectSelfSigned
   ✅ 1 test(s) passing
 
   Tip: Use view 1 to view the source of a test.
+
 scratch/main> io.test testCAReject
 
     New test results:
@@ -271,6 +272,7 @@ scratch/main> io.test testCAReject
   ✅ 1 test(s) passing
 
   Tip: Use view 1 to view the source of a test.
+
 scratch/main> io.test testCNReject
 
     New test results:

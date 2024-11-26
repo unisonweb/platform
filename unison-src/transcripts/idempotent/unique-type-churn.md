@@ -9,7 +9,6 @@ unique type C = C B
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -41,7 +40,6 @@ unique type C = C B
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked the definitions in scratch.u. This
@@ -67,7 +65,6 @@ unique type A = A ()
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -87,6 +84,7 @@ scratch/main> update
   updated...
 
   Done.
+
 scratch/main> names A
 
   Type
@@ -103,7 +101,6 @@ unique type A = A
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -125,6 +122,7 @@ scratch/main> update
   updated...
 
   Done.
+
 scratch/main> names A
 
   Type

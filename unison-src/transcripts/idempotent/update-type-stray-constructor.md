@@ -7,7 +7,6 @@ unique type Foo = Bar Nat
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -25,6 +24,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     type Foo
+
 scratch/main> move.term Foo.Bar Stray.Bar
 
   Done.
@@ -37,7 +37,6 @@ unique type Foo = Bar Nat Nat
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -56,6 +55,7 @@ Note that the constructor name shown here (implied to be called `Foo.Stray.Bar`)
 scratch/main> view Foo
 
   type Foo = Stray.Bar Nat
+
 scratch/main> update
 
   Sorry, I wasn't able to perform the update:

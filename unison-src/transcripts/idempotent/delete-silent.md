@@ -19,12 +19,15 @@ scratch/main> add
 
     structural type Foo
     foo : ##Nat
+
 scratch/main> delete foo
 
   Done.
+
 scratch/main> delete.type Foo
 
   Done.
+
 scratch/main> delete.term Foo.Foo
 
   Done.

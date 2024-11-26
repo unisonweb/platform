@@ -15,7 +15,6 @@ threadEyeDeez _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -35,6 +34,7 @@ scratch/main> add
 
     type A
     threadEyeDeez : ∀ _. _ ->{IO} (Boolean, Boolean)
+
 scratch/main> run threadEyeDeez
 
   (false, true)
@@ -48,7 +48,6 @@ scratch/main> run threadEyeDeez
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ✅

@@ -152,7 +152,6 @@ swapped name link =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -316,7 +315,6 @@ badLoad _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -358,6 +356,7 @@ scratch/main> add
     rotate  : Three Nat Nat Nat -> Three Nat Nat Nat
     tests   : '{IO} [Result]
     zapper  : Three Nat Nat Nat -> Request {Zap} r -> r
+
 scratch/main> io.test tests
 
     New test results:
@@ -379,6 +378,7 @@ scratch/main> io.test tests
   ✅ 13 test(s) passing
 
   Tip: Use view 1 to view the source of a test.
+
 scratch/main> io.test badLoad
 
     New test results:
@@ -427,7 +427,6 @@ codeTests =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -445,6 +444,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     codeTests : '{IO} [Result]
+
 scratch/main> io.test codeTests
 
     New test results:
@@ -512,7 +512,6 @@ vtests _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -532,6 +531,7 @@ scratch/main> add
 
     validateTest : Link.Term ->{IO} Result
     vtests       : '{IO} [Result]
+
 scratch/main> io.test vtests
 
     New test results:

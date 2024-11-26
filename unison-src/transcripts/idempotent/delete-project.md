@@ -16,6 +16,7 @@ scratch/main> project.create-empty foo
     3. In UCM, type `add` to save it to your new project.
 
   🎉 🥳 Happy coding!
+
 scratch/main> project.create-empty bar
 
   🎉 I've created the project bar.
@@ -31,26 +32,39 @@ scratch/main> project.create-empty bar
     3. In UCM, type `add` to save it to your new project.
 
   🎉 🥳 Happy coding!
+
 -- I can delete the project I'm currently on
+
 scratch/main> delete.project scratch
+
 foo/main> projects
 
   1. bar
   2. foo
+
 -- I can delete a different project
+
 foo/main> delete.project bar
+
 foo/main> projects
 
   1. foo
+
 -- I can delete the last project, a new scratch project will be created
+
 foo/main> delete.project foo
+
 project/main> projects
 
   1. project
   2. scratch
+
 -- If the last project is scratch, a scratch2 project will be created.
+
 scratch/main> delete.project project
+
 scratch/main> delete.project scratch
+
 project/main> projects
 
   1. project

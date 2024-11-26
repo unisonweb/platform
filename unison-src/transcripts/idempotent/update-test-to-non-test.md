@@ -9,7 +9,6 @@ test> foo = []
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -35,6 +34,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     foo : [Result]
+
 scratch/main> view foo
 
   foo : [Result]
@@ -46,7 +46,6 @@ foo = 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -68,6 +67,7 @@ scratch/main> update
   updated...
 
   Done.
+
 scratch/main> view foo
 
   foo : Nat

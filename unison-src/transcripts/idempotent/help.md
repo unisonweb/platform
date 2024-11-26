@@ -882,6 +882,7 @@ scratch/main> help
   view.global
   `view.global foo` prints definitions of `foo` within your codebase.
   `view.global` without arguments invokes a search to select definitions to view, which requires that `fzf` can be found within your PATH.
+
 scratch/main> help-topics
 
   🌻
@@ -896,6 +897,7 @@ scratch/main> help-topics
     testcache
 
   Example: use `help-topics filestatus` to learn more about that topic.
+
 scratch/main> help-topic filestatus
 
   📓
@@ -926,6 +928,7 @@ scratch/main> help-topic filestatus
   extra dependency     This definition was added because it was
                        a dependency of a definition explicitly
                        selected.
+
 scratch/main> help-topic messages.disallowedAbsolute
 
   🤖
@@ -937,6 +940,7 @@ scratch/main> help-topic messages.disallowedAbsolute
 
   As a workaround, you can give definitions with a relative name
   temporarily (like `exports.blah.foo`) and then use `move.*`.
+
 scratch/main> help-topic namespaces
 
   🧐
@@ -962,6 +966,7 @@ scratch/main> help-topic namespaces
   elsewhere in your code. For instance:
 
     answerToLifeTheUniverseAndEverything = .foo.bar.x + 1
+
 scratch/main> help-topic projects
 
   A project is a versioned collection of code that can be
@@ -982,6 +987,7 @@ scratch/main> help-topic projects
 
   For full documentation, see
   https://unison-lang.org/learn/projects
+
 scratch/main> help-topic remotes
 
   🤖
@@ -996,6 +1002,7 @@ scratch/main> help-topic remotes
   This association is created automatically on when a project is
   created by `clone`. If the project was created locally then
   the relationship will be established on the first `push`.
+
 scratch/main> help-topic testcache
 
   🎈

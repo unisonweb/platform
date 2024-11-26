@@ -1,6 +1,8 @@
 ``` ucm :hide
 scratch/main> builtins.mergeio
+
 scratch/main> load unison-src/transcripts-using-base/base.u
+
 scratch/main> add
 ```
 
@@ -43,6 +45,7 @@ scratch/main> rewrite rule1
   I found and replaced matches in these definitions: ex1
 
   The rewritten file has been added to the top of scratch.u
+
 scratch/main> rewrite eitherToOptional
 
   ☝️
@@ -115,6 +118,7 @@ rule2 x = @rewrite signature Optional ==> Optional2
 
 ``` ucm :hide
 scratch/main> load
+
 scratch/main> add
 ```
 
@@ -202,6 +206,7 @@ blah2 = 456
 
 ``` ucm :hide
 scratch/main> load
+
 scratch/main> add
 ```
 
@@ -239,7 +244,9 @@ sameFileEx =
 
 ``` ucm :hide
 scratch/main> rewrite rule
+
 scratch/main> load
+
 scratch/main> add
 ```
 
@@ -421,6 +428,7 @@ scratch/main> sfind findEitherEx
     1. eitherEx
 
   Tip: Try `edit 1` to bring this into your scratch file.
+
 scratch/main> sfind findEitherFailure
 
   🔎
@@ -435,6 +443,7 @@ scratch/main> sfind findEitherFailure
 
   Tip: Try `edit 1` or `edit 1-5` to bring these into your
        scratch file.
+
 scratch/main> find 1-5
 
   1. Exception.catch : '{g, Exception} a ->{g} Either Failure a

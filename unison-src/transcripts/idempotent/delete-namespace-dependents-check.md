@@ -15,7 +15,6 @@ dependent = dependency + 99
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -35,12 +34,14 @@ myproject/main> add
 
     dependent      : Nat
     sub.dependency : Nat
+
 myproject/main> branch /new
 
   Done. I've created the new branch based off of main.
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /new`.
+
 myproject/new> delete.namespace sub
 
   ⚠️
@@ -53,6 +54,7 @@ myproject/new> delete.namespace sub
 
   If you want to proceed anyways and leave those definitions
   without names, use delete.namespace.force
+
 myproject/new> view dependent
 
   dependent : Nat

@@ -176,7 +176,6 @@ brokenDoc = {{ hello }} + 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I couldn't figure out what + refers to here:

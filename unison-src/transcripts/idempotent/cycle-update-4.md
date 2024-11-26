@@ -13,7 +13,6 @@ pong _ = !ping + 2
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -44,7 +43,6 @@ clang _ = !pong + 3
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -72,6 +70,7 @@ scratch/main> update.old ping
 
     ping : 'Nat
     pong : 'Nat
+
 scratch/main> view ping pong clang
 
   clang : 'Nat

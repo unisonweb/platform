@@ -2,6 +2,7 @@ The `switch` command switches to an existing project or branch.
 
 ``` ucm :hide
 foo/main> builtins.merge
+
 bar/main> builtins.merge
 ```
 
@@ -12,7 +13,6 @@ someterm = 18
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -30,12 +30,14 @@ foo/main> add
   ⍟ I've added these definitions:
 
     someterm : Nat
+
 foo/main> branch bar
 
   Done. I've created the bar branch based off of main.
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /bar`.
+
 foo/main> branch topic
 
   Done. I've created the topic branch based off of main.
@@ -50,9 +52,13 @@ forward slash (which makes it unambiguous).
 
 ``` ucm
 scratch/main> switch foo
+
 scratch/main> switch foo/topic
+
 foo/main> switch topic
+
 foo/main> switch /topic
+
 foo/main> switch bar/
 ```
 

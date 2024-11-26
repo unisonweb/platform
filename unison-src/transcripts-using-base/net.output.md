@@ -97,7 +97,6 @@ testDefaultPort _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -119,6 +118,7 @@ scratch/main> add
     testDefaultHost  : '{IO} [Result]
     testDefaultPort  : '{IO} [Result]
     testExplicitHost : '{IO} [Result]
+
 scratch/main> io.test testDefaultPort
 
     New test results:
@@ -184,7 +184,6 @@ testTcpConnect = 'let
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -206,6 +205,7 @@ scratch/main> add
     clientThread   : MVar Nat -> MVar Text -> '{IO} ()
     serverThread   : MVar Nat -> Text -> '{IO} ()
     testTcpConnect : '{IO} [Result]
+
 scratch/main> io.test testTcpConnect
 
     New test results:

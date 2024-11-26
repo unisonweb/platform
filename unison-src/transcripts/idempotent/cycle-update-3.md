@@ -13,7 +13,6 @@ pong _ = !ping + 2
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -41,7 +40,6 @@ ping = 3
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -60,6 +58,7 @@ scratch/main> update.old
   ⍟ I've updated these names to your new definition:
 
     ping : Nat
+
 scratch/main> view ping pong
 
   ping : Nat

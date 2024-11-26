@@ -29,7 +29,6 @@ mytest _ = [Ok "Great"]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -46,12 +45,14 @@ mytest _ = [Ok "Great"]
 scratch/main> run main
 
   ()
+
 scratch/main> add
 
   ⍟ I've added these definitions:
 
     main   : '{IO, Exception} ()
     mytest : '{IO, Exception} [Result]
+
 scratch/main> io.test mytest
 
     New test results:
@@ -76,7 +77,6 @@ unique type RuntimeError =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

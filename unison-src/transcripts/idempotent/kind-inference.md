@@ -11,7 +11,6 @@ unique type T a = T a (a Nat)
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Kind mismatch arising from
@@ -29,7 +28,6 @@ unique type T a
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Kind mismatch arising from
@@ -49,7 +47,6 @@ unique type Pong = Pong (Ping Optional)
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -71,7 +68,6 @@ unique type Pong = Pong (Ping Optional)
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Kind mismatch arising from
@@ -90,7 +86,6 @@ unique ability Pong a where
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -112,7 +107,6 @@ unique ability Pong a where
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Kind mismatch arising from
@@ -131,7 +125,6 @@ unique type S = S (T Nat)
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -155,7 +148,6 @@ unique type S = S (T Optional)
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -177,7 +169,6 @@ unique type S = S (T Optional)
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Kind mismatch arising from
@@ -197,7 +188,6 @@ test = 0
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Kind mismatch arising from
@@ -215,7 +205,6 @@ test _ = ()
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Kind mismatch arising from
@@ -235,7 +224,6 @@ test _ = ()
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Kind mismatch arising from
@@ -259,7 +247,6 @@ test _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Kind mismatch arising from
@@ -282,7 +269,6 @@ test _ = ()
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Kind mismatch arising from
@@ -300,7 +286,6 @@ test _ = ()
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Kind mismatch arising from
@@ -318,7 +303,6 @@ unique type T a = T (a a)
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Cannot construct infinite kind
@@ -334,7 +318,6 @@ unique type T a b = T (a b) (b a)
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Cannot construct infinite kind
@@ -351,7 +334,6 @@ unique type Pong a = Pong (a Ping)
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Cannot construct infinite kind

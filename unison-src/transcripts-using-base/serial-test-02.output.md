@@ -30,7 +30,6 @@ mkTestCase = do
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -60,6 +59,7 @@ scratch/main> add
     mkTestCase : '{IO, Exception} ()
     prod       : [Nat] -> Nat
     products   : ([Nat], [Nat], [Nat]) -> Text
+
 scratch/main> run mkTestCase
 
   ()

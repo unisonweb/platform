@@ -20,7 +20,6 @@ test> mytest = checks [x + 1 == 1001]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -66,7 +65,6 @@ test> useY = checks [y + 1 == 43]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

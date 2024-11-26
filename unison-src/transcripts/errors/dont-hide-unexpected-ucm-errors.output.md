@@ -2,6 +2,7 @@ Since this code block is expecting an error, we still hide it. It seems unusual 
 
 ``` ucm :hide:error
 scratch/main> help pull
+
 scratch/main> not.a.command
 ```
 
@@ -32,6 +33,7 @@ scratch/main> help pull
     Project Branch                         `@unison/base/feature`
     Contributor Branch                     `@unison/base/@johnsmith/feature`
     Project Release                        `@unison/base/releases/1.0.0`
+
 scratch/main> not.a.command
 
   ⚠️

@@ -16,7 +16,6 @@ unique type Foo.T = T
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -48,7 +47,6 @@ unique type Foo.T = T1 | T2
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -78,18 +76,21 @@ Should be able to move the term, type, and namespace, including its types, terms
 scratch/main> move Foo Bar
 
   Done.
+
 scratch/main> ls
 
   1. Bar      (Nat)
   2. Bar      (type)
   3. Bar/     (4 terms, 1 type)
   4. builtin/ (469 terms, 74 types)
+
 scratch/main> ls Bar
 
   1. Foo     (Bar)
   2. T       (type)
   3. T/      (2 terms)
   4. termInA (Nat)
+
 scratch/main> history Bar
 
   Note: The most recent namespace hash is immediately below this
@@ -115,7 +116,6 @@ bonk = 5
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -131,14 +131,17 @@ bonk = 5
 z/main> builtins.merge
 
   Done.
+
 z/main> add
 
   ⍟ I've added these definitions:
 
     bonk : Nat
+
 z/main> move bonk zonk
 
   Done.
+
 z/main> ls
 
   1. builtin/ (469 terms, 74 types)
@@ -152,7 +155,6 @@ bonk.zonk = 5
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -169,18 +171,22 @@ bonk.zonk = 5
 a/main> builtins.merge
 
   Done.
+
 a/main> add
 
   ⍟ I've added these definitions:
 
     bonk.zonk : Nat
+
 a/main> move bonk zonk
 
   Done.
+
 a/main> ls
 
   1. builtin/ (469 terms, 74 types)
   2. zonk/    (1 term)
+
 a/main> view zonk.zonk
 
   zonk.zonk : Nat

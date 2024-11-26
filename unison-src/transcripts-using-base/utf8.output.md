@@ -21,7 +21,6 @@ ascii = "ABCDE"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -51,7 +50,6 @@ greek = "ΑΒΓΔΕ"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -86,7 +84,6 @@ test> greekTest = checkRoundTrip greek
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -121,7 +118,6 @@ greek_bytes = Bytes.fromList [206, 145, 206, 146, 206, 147, 206, 148, 206]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

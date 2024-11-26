@@ -176,30 +176,33 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
   let patternMap = Map.fromList $ (\p -> (patternName p, p) : ((,p) <$> aliases p)) =<< validInputs
   let output' :: Bool -> Stanza -> IO ()
       output' inputEcho msg = do
-        hide <- readIORef isHidden
-        unless (hideOutput inputEcho hide) $ modifyIORef' out (<> pure msg)
+        hide <- hideOutput inputEcho
+        unless hide $ modifyIORef' out (<> pure msg)
 
-      hideOutput :: Bool -> Hidden -> Bool
-      hideOutput inputEcho = \case
+      hideOutput' :: Bool -> Hidden -> Bool
+      hideOutput' inputEcho = \case
         Shown -> False
         HideOutput -> not inputEcho
         HideAll -> True
+
+      hideOutput :: Bool -> IO Bool
+      hideOutput inputEcho = hideOutput' inputEcho <$> readIORef isHidden
 
       output, outputEcho :: Stanza -> IO ()
       output = output' False
       outputEcho = output' True
 
       outputUcmLine :: UcmLine -> IO ()
-      outputUcmLine line = modifyIORef' ucmOutput (<> pure line)
+      outputUcmLine line = do
+        prev <- readIORef ucmOutput
+        modifyIORef' ucmOutput (<> ((if not (null prev) then pure (UcmOutputLine "\n") else mempty) <> pure line))
 
       outputUcmResult :: Pretty.Pretty Pretty.ColorText -> IO ()
       outputUcmResult line = do
-        hide <- readIORef isHidden
-        unless (hideOutput False hide) $
+        hide <- hideOutput False
+        unless hide $
           -- We shorten the terminal width, because "Transcript" manages a 2-space indent for output lines.
-          modifyIORef'
-            ucmOutput
-            (<> pure (UcmOutputLine . Text.pack $ Pretty.toPlain (terminalWidth - 2) $ "\n" <> line))
+          outputUcmLine . UcmOutputLine . Text.pack $ Pretty.toPlain (terminalWidth - 2) line
 
       maybeDieWithMsg :: String -> IO ()
       maybeDieWithMsg msg = do
@@ -210,7 +213,7 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
 
       apiRequest :: APIRequest -> IO [APIRequest]
       apiRequest req = do
-        hide <- readIORef isHidden
+        hide <- hideOutput False
         case req of
           -- We just discard this, because the runner will produce new output lines.
           APIResponseLine {} -> pure []
@@ -222,7 +225,7 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
                   (([] <$) . maybeDieWithMsg . (("Error decoding response from " <> Text.unpack path <> ": ") <>))
                   ( \(v :: Aeson.Value) ->
                       pure $
-                        if hide == HideOutput
+                        if hide
                           then [req]
                           else
                             [ req,

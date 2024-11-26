@@ -13,7 +13,6 @@ mything = lib.old.foo + lib.old.foo
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -37,9 +36,11 @@ foo/main> add
     lib.new.other : Nat
     lib.old.foo   : Nat
     mything       : Nat
+
 foo/main> upgrade old new
 
   I upgraded old to new, and removed old.
+
 foo/main> view mything
 
   mything : Nat

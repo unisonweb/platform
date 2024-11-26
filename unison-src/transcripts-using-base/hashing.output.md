@@ -75,7 +75,6 @@ ex5 = crypto.hmac Sha2_256 mysecret f |> hex
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -159,7 +158,6 @@ Note that the universal versions of `hash` and `hmac` are currently unimplemente
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ✅
@@ -382,7 +380,6 @@ test> hmac_sha2_512.tests.ex2 =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -445,7 +442,6 @@ test> md5.tests.ex3 =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

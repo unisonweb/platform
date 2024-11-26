@@ -12,7 +12,6 @@ hangExample =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -30,6 +29,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     hangExample : Boolean
+
 scratch/main> view hangExample
 
   hangExample : Boolean

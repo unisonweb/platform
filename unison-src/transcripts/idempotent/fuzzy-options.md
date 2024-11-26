@@ -4,6 +4,7 @@ If an argument is required but doesn't have a fuzzy resolver, the command should
 
 ``` ucm :error
 -- The second argument of move.term is a 'new-name' and doesn't have a fuzzy resolver
+
 scratch/main> move.term
 
   `move.term foo bar` renames `foo` to `bar`.
@@ -35,6 +36,7 @@ scratch/main> add
 
     nested.optionTwo : ##Nat
     optionOne        : ##Nat
+
 scratch/main> debug.fuzzy-options view _
 
   Select a definition to view:
@@ -49,6 +51,7 @@ scratch/main> add
 
   ⊡ Ignored previously added definitions: nested.optionTwo
     optionOne
+
 scratch/main> debug.fuzzy-options find-in _
 
   Select a namespace:
@@ -64,6 +67,7 @@ myproject/main> branch mybranch
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /mybranch`.
+
 scratch/main> debug.fuzzy-options switch _
 
   Select a project or branch to switch to:

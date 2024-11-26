@@ -10,7 +10,6 @@ structural type a.b.Baz = Boo
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -38,6 +37,7 @@ scratch/main> add
     a.two     : ##Nat
     a.x.four  : ##Nat
     a.x.three : ##Nat
+
 scratch/main> delete.term.verbose a.b.one
 
   Removed definitions:
@@ -46,12 +46,15 @@ scratch/main> delete.term.verbose a.b.one
 
   Tip: You can use `undo` or use a hash from `reflog` to undo
        this change.
+
 scratch/main> alias.term a.two a.newtwo
 
   Done.
+
 scratch/main> move.namespace a.x a.y
 
   Done.
+
 scratch/main> history
 
   Note: The most recent namespace hash is immediately below this
@@ -86,6 +89,7 @@ scratch/main> history
       a.b.one
 
   □ 4. #gss5s88mo3 (start of history)
+
 scratch/main> debug.name-diff 4 1
 
   Kind   Name          Change    Ref

@@ -2,8 +2,11 @@
 
 ``` ucm :hide
 scratch/main> builtins.merge
+
 scratch/main> builtins.mergeio
+
 scratch/main> load unison-src/transcripts-using-base/base.u
+
 scratch/main> add
 ```
 
@@ -59,7 +62,6 @@ testCreateRename _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -77,6 +79,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     testCreateRename : '{IO} [Result]
+
 scratch/main> io.test testCreateRename
 
     New test results:
@@ -142,7 +145,6 @@ testOpenClose _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -160,6 +162,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     testOpenClose : '{IO} [Result]
+
 scratch/main> io.test testOpenClose
 
     New test results:
@@ -233,7 +236,6 @@ testGetSomeBytes _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -251,6 +253,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     testGetSomeBytes : '{IO} [Result]
+
 scratch/main> io.test testGetSomeBytes
 
     New test results:
@@ -341,7 +344,6 @@ testAppend _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -361,6 +363,7 @@ scratch/main> add
 
     testAppend : '{IO} [Result]
     testSeek   : '{IO} [Result]
+
 scratch/main> io.test testSeek
 
     New test results:
@@ -376,6 +379,7 @@ scratch/main> io.test testSeek
   ✅ 7 test(s) passing
 
   Tip: Use view 1 to view the source of a test.
+
 scratch/main> io.test testAppend
 
     New test results:
@@ -400,7 +404,6 @@ testSystemTime _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -418,6 +421,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     testSystemTime : '{IO} [Result]
+
 scratch/main> io.test testSystemTime
 
     New test results:
@@ -447,6 +451,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     testGetTempDirectory : '{IO} [Result]
+
 scratch/main> io.test testGetTempDirectory
 
     New test results:
@@ -477,6 +482,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     testGetCurrentDirectory : '{IO} [Result]
+
 scratch/main> io.test testGetCurrentDirectory
 
     New test results:
@@ -509,6 +515,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     testDirContents : '{IO} [Result]
+
 scratch/main> io.test testDirContents
 
     New test results:
@@ -541,6 +548,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     testGetEnv : '{IO} [Result]
+
 scratch/main> io.test testGetEnv
 
     New test results:
@@ -598,12 +606,15 @@ scratch/main> add
     testGetArgs.runMeWithNoArgs  : '{IO, Exception} ()
     testGetArgs.runMeWithOneArg  : '{IO, Exception} ()
     testGetArgs.runMeWithTwoArgs : '{IO, Exception} ()
+
 scratch/main> run runMeWithNoArgs
 
   ()
+
 scratch/main> run runMeWithOneArg foo
 
   ()
+
 scratch/main> run runMeWithTwoArgs foo bar
 
   ()
@@ -679,6 +690,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     testTimeZone : '{IO} ()
+
 scratch/main> run testTimeZone
 
   ()
@@ -701,6 +713,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     testRandom : '{IO} [Result]
+
 scratch/main> io.test testGetEnv
 
     New test results:

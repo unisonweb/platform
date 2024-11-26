@@ -12,7 +12,6 @@ nested.names.readme = {{ I'm a readme! }}
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

@@ -9,6 +9,7 @@ scratch/main> debug.tab-complete vi
 
    view
    view.global
+
 scratch/main> debug.tab-complete delete.
 
    delete.branch
@@ -34,7 +35,6 @@ unique type subnamespace.AType = A | B
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -56,32 +56,42 @@ scratch/main> add
 
 ``` ucm
 -- Should tab complete namespaces since they may contain terms/types
+
 scratch/main> debug.tab-complete view sub
 
    subnamespace.
    subnamespace2.
+
 -- Should not complete things from child namespaces of the current query if there are other completions at this level
+
 scratch/main> debug.tab-complete view subnamespace
 
    subnamespace.
    subnamespace2.
+
 -- Should complete things from child namespaces of the current query if it's dot-suffixed
+
 scratch/main> debug.tab-complete view subnamespace.
 
   * subnamespace.AType
     subnamespace.AType.
   * subnamespace.someName
   * subnamespace.someOtherName
+
 -- Should complete things from child namespaces of the current query if there are no more completions at this level.
+
 scratch/main> debug.tab-complete view subnamespace2
 
     subnamespace2.
   * subnamespace2.thing
+
 -- Should prefix-filter by query suffix
+
 scratch/main> debug.tab-complete view subnamespace.some
 
   * subnamespace.someName
   * subnamespace.someOtherName
+
 scratch/main> debug.tab-complete view subnamespace.someOther
 
   * subnamespace.someOtherName
@@ -97,7 +107,9 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     absolute.term : ##Text
+
 -- Should tab complete absolute names
+
 scratch/main> debug.tab-complete view .absolute.te
 
   * .absolute.term
@@ -107,25 +119,31 @@ scratch/main> debug.tab-complete view .absolute.te
 
 ``` ucm
 -- Should tab complete namespaces
+
 scratch/main> debug.tab-complete find-in sub
 
    subnamespace
    subnamespace2
+
 scratch/main> debug.tab-complete find-in subnamespace
 
    subnamespace
    subnamespace2
+
 scratch/main> debug.tab-complete find-in subnamespace.
 
    subnamespace.AType
+
 scratch/main> debug.tab-complete io.test sub
 
    subnamespace.
    subnamespace2.
+
 scratch/main> debug.tab-complete io.test subnamespace
 
    subnamespace.
    subnamespace2.
+
 scratch/main> debug.tab-complete io.test subnamespace.
 
     subnamespace.AType.
@@ -142,7 +160,6 @@ add b = b
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -162,10 +179,12 @@ scratch/main> update.old
 
     type Foo
     add : a -> a
+
 scratch/main> debug.tab-complete delete.type Foo
 
   * Foo
     Foo.
+
 scratch/main> debug.tab-complete delete.term add
 
   * add
@@ -180,9 +199,11 @@ myproject/main> branch mybranch
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /mybranch`.
+
 myproject/main> debug.tab-complete branch.delete /mybr
 
    /mybranch
+
 myproject/main> debug.tab-complete project.rename my
 
    myproject
@@ -195,7 +216,6 @@ mybranchsubnamespace.term = 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -213,6 +233,7 @@ myproject/main> add
   ⍟ I've added these definitions:
 
     mybranchsubnamespace.term : ##Nat
+
 myproject/main> debug.tab-complete merge mybr
 
    /mybranch

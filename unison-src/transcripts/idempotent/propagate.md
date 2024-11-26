@@ -14,7 +14,6 @@ fooToInt _ = +42
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -36,6 +35,7 @@ scratch/main> add
 
     type Foo
     fooToInt : Foo -> Int
+
 scratch/main> find.verbose
 
   1. -- #uj8oalgadr2f52qloufah6t8vsvbc76oqijkotek87vooih7aqu44k20hrs34kartusapghp4jmfv6g1409peklv3r6a527qpk52soo
@@ -47,6 +47,7 @@ scratch/main> find.verbose
   3. -- #j6hbm1gc2ak4f46b6705q90ld4bmhoi8etq2q45j081i9jgn95fvk3p6tjg67e7sm0021035i8qikmk4p6k845l5d00u26cos5731to
      fooToInt : Foo -> Int
      
+
 scratch/main> view fooToInt
 
   fooToInt : Foo -> Int
@@ -60,7 +61,6 @@ unique type Foo = Foo | Bar
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -106,7 +106,6 @@ preserve.otherTerm y = someTerm y
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -138,7 +137,6 @@ preserve.someTerm _ = None
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -169,6 +167,7 @@ scratch/main> view preserve.someTerm
 
   preserve.someTerm : Optional x -> Optional x
   preserve.someTerm _ = None
+
 scratch/main> view preserve.otherTerm
 
   preserve.otherTerm : Optional baz -> Optional baz

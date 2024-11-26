@@ -11,7 +11,6 @@ mytest = [Ok "ok"]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -33,6 +32,7 @@ scratch/main> add
     bar    : Nat
     foo    : Nat
     mytest : [Result]
+
 scratch/main> edit.new foo bar
 
   ☝️
@@ -41,6 +41,7 @@ scratch/main> edit.new foo bar
 
   You can edit them there, then run `update` to replace the
   definitions currently in this namespace.
+
 scratch/main> edit.new mytest
 
   ☝️
@@ -99,7 +100,6 @@ baz = 19
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -129,7 +129,6 @@ bar = 18
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked the definitions in scratch.u. This

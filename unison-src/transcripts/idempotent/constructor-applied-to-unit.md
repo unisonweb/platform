@@ -1,5 +1,6 @@
 ``` ucm :hide
 scratch/main> alias.type ##Nat Nat
+
 scratch/main> alias.term ##Any.Any Any
 ```
 
@@ -11,7 +12,6 @@ structural type Zoink a b c = Zoink a b c
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

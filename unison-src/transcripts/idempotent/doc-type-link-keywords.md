@@ -37,12 +37,15 @@ Now we check that each doc links to the object of the correct name:
 scratch/main> display docs.example1
 
   A doc that links to the abilityPatterns term
+
 scratch/main> display docs.example2
 
   A doc that links to the Patterns ability
+
 scratch/main> display docs.example3
 
   A doc that links to the typeLabels term
+
 scratch/main> display docs.example4
 
   A doc that links to the Labels type

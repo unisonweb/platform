@@ -15,6 +15,7 @@ scratch/main> add
 
 ``` ucm
 -- Should suffix-search and find values in sub-namespaces
+
 scratch/main> view thing
 
   a.thing : Text
@@ -22,7 +23,9 @@ scratch/main> view thing
 
   b.thing : Text
   b.thing = "b"
+
 -- Should support absolute paths
+
 scratch/main> view .b.thing
 
   .b.thing : Text

@@ -11,7 +11,6 @@ scratch/main> builtins.merge
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ✅
@@ -38,7 +37,6 @@ scratch/main> builtins.merge
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ✅
@@ -69,7 +67,6 @@ complicatedMathStuff x = todo "Come back and to something with x here"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -92,7 +89,6 @@ test = match true with
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

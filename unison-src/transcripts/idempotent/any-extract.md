@@ -2,7 +2,9 @@
 
 ``` ucm :hide
 scratch/main> builtins.mergeio
+
 scratch/main> load unison-src/transcripts-using-base/base.u
+
 scratch/main> add
 ```
 
@@ -19,7 +21,6 @@ test> Any.unsafeExtract.works =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

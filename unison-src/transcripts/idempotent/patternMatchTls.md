@@ -25,7 +25,6 @@ assertRight = cases
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -45,6 +44,7 @@ scratch/main> add
 
     assertRight : Either a b -> b
     frank       : '{IO} ()
+
 scratch/main> run frank
 
   ()

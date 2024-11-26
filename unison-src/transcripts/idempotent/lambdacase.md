@@ -13,7 +13,6 @@ isEmpty x = match x with
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -38,7 +37,6 @@ isEmpty2 = cases
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -99,7 +97,6 @@ merge2 = cases
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -148,7 +145,6 @@ blorf = cases
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -189,7 +185,6 @@ merge3 = cases
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -207,6 +202,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     merge3 : [a] -> [a] -> [a]
+
 scratch/main> view merge3
 
   merge3 : [a] -> [a] -> [a]
@@ -230,7 +226,6 @@ merge4 a b = match (a,b) with
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

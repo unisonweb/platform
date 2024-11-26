@@ -8,7 +8,6 @@ unique type Baz = Qux Foo
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -35,7 +34,6 @@ unique type Foo = Bar Nat Nat
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -59,12 +57,15 @@ scratch/main> update
   Everything typechecks, so I'm saving the results...
 
   Done.
+
 scratch/main> view Foo
 
   type Foo = Bar Nat Nat
+
 scratch/main> view Baz
 
   type Baz = Qux Foo
+
 scratch/main> find.verbose
 
   1. -- #34msh9satlfog576493eo9pkjn6aj7d8fj6jfheglvgr5s39iptb81649bpkad1lqraheqb8em9ms551k01oternhknc4m7jicgtk08

@@ -33,7 +33,6 @@ test = 'let
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -59,6 +58,7 @@ scratch/main> add
               -> Optional Int
               -> Optional Float
               ->{Stream Result} ()
+
 scratch/main> io.test test
 
     New test results:

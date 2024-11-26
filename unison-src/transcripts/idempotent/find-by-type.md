@@ -25,13 +25,16 @@ scratch/main> add
     bar : Text -> A
     baz : A -> Text
     foo : A
+
 scratch/main> find : Text -> A
 
   1. bar : Text -> A
   2. A.A : Text -> A
+
 scratch/main> find : A -> Text
 
   1. baz : A -> Text
+
 scratch/main> find : A
 
   1. foo : A

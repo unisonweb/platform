@@ -49,6 +49,7 @@ scratch/main> alias.many List.adjacentPairs List.all List.any List.chunk List.ch
 
   Tip: You can use `undo` or use a hash from `reflog` to undo
        this change.
+
 scratch/main> find-in mylib
 
   1.  List.adjacentPairs : [a] -> [(a, a)]

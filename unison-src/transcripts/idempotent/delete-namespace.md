@@ -88,12 +88,15 @@ scratch/main> delete.namespace .
   Are you sure you want to clear away everything?
   You could use `project.create` to switch to a new project
   instead, or delete the current branch with `delete.branch`
+
 scratch/main> delete.namespace .
 
   Okay, I deleted everything except the history. Use `undo` to
   undo, or `builtins.merge` to restore the absolute basics to
   the current path.
+
 -- Should have an empty history
+
 scratch/main> history .
 
   Note: The most recent namespace hash is immediately below this
@@ -112,7 +115,9 @@ scratch/main> delete.namespace.force .
   Okay, I deleted everything except the history. Use `undo` to
   undo, or `builtins.merge` to restore the absolute basics to
   the current path.
+
 -- Should have an empty history
+
 scratch/main> history .
 
   Note: The most recent namespace hash is immediately below this

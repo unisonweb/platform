@@ -8,6 +8,7 @@ project/main> builtins.mergeio lib.builtins
 project/main> alias.term lib.builtins.bug foo
 
   Done.
+
 project/main> ls
 
   1. foo  (a -> b)
@@ -37,6 +38,7 @@ You can use `debug.alias.term.force` for that.
 project/main> debug.alias.term.force lib.builtins.todo foo
 
   Done.
+
 project/main> ls
 
   1. foo  (a -> b)

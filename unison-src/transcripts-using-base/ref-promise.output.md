@@ -19,7 +19,6 @@ casTest = do
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -37,6 +36,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     casTest : '{IO} [Result]
+
 scratch/main> io.test casTest
 
     New test results:
@@ -80,7 +80,6 @@ promiseConcurrentTest = do
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -100,6 +99,7 @@ scratch/main> add
 
     promiseConcurrentTest : '{IO} [Result]
     promiseSequentialTest : '{IO} [Result]
+
 scratch/main> io.test promiseSequentialTest
 
     New test results:
@@ -110,6 +110,7 @@ scratch/main> io.test promiseSequentialTest
   ✅ 2 test(s) passing
 
   Tip: Use view 1 to view the source of a test.
+
 scratch/main> io.test promiseConcurrentTest
 
     New test results:
@@ -132,7 +133,6 @@ atomicUpdate ref f =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -171,7 +171,6 @@ spawnN n fa =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -220,7 +219,6 @@ fullTest = do
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -238,6 +236,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     fullTest : '{IO} [Result]
+
 scratch/main> io.test fullTest
 
     New test results:

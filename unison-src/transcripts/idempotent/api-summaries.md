@@ -25,7 +25,9 @@ structural ability Stream s where
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> alias.type ##Nat Nat
+
 scratch/main> alias.term ##IO.putBytes.impl.v3 putBytesImpl
 ```
 

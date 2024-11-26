@@ -16,7 +16,6 @@ main _ =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -34,6 +33,7 @@ main _ =
 scratch/main> find unsafe.coerceAbilities
 
   1. builtin.unsafe.coerceAbilities : (a ->{e1} b) -> a -> b
+
 scratch/main> add
 
   ⍟ I've added these definitions:
@@ -41,6 +41,7 @@ scratch/main> add
     f    : 'Nat
     fc   : '{IO, Exception} Nat
     main : '{IO, Exception} [Result]
+
 scratch/main> io.test main
 
     New test results:

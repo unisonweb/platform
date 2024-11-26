@@ -21,7 +21,6 @@ two.ambiguousTerm = "term two"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -72,7 +71,6 @@ separateAmbiguousTypeUsage _ = ()
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
 
@@ -106,7 +104,6 @@ useAmbiguousTerm = ambiguousTerm
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I couldn't figure out what ambiguousTerm refers to here:

@@ -6,6 +6,7 @@ This transcript shows how the pretty-printer picks names for a hash when multipl
 
 ``` ucm :hide
 scratch/main> builtins.merge lib.builtins
+
 scratch/biasing> builtins.merge lib.builtins
 ```
 
@@ -25,6 +26,7 @@ scratch/main> add
     a.a                     : Nat
     a.aaa.but.more.segments : Nat
     a.b                     : Nat
+
 scratch/main> view a.a
 
   a.a : Nat
@@ -74,9 +76,11 @@ scratch/main> add
     a3.c                                      : Nat
     a3.d                                      : Nat
     a3.long.name.but.shortest.suffixification : Nat
+
 scratch/main> debug.alias.term.force a2.c a3.c
 
   Done.
+
 scratch/main> debug.alias.term.force a2.d a3.d
 
   Done.
@@ -128,7 +132,6 @@ a = 10
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -150,9 +153,13 @@ scratch/biasing> add
     a                  : Nat
     deeply.nested.num  : Nat
     deeply.nested.term : Nat
+
 -- Despite being saved with name `a`,
+
 -- the pretty printer should prefer the suffixified 'deeply.nested.num name' over the shallow 'a'.
+
 -- It's closer to the term being printed.
+
 scratch/biasing> view deeply.nested.term
 
   deeply.nested.term : Nat
@@ -168,7 +175,6 @@ other.num = 20
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -186,8 +192,11 @@ scratch/biasing> add
   ⍟ I've added these definitions:
 
     other.num : Nat
+
 -- nested.num should be preferred over the shorter name `a` due to biasing
+
 -- because `deeply.nested.num` is nearby to the term being viewed.
+
 scratch/biasing> view deeply.nested.term
 
   deeply.nested.term : Nat

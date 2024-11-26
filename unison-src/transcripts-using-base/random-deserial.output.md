@@ -56,7 +56,6 @@ serialTests = do
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -84,6 +83,7 @@ scratch/main> add
     runTestCase    : Text ->{IO, Exception} (Text, Result)
     serialTests    : '{IO, Exception} [Result]
     shuffle        : Nat -> [a] -> [a]
+
 scratch/main> io.test serialTests
 
     New test results:

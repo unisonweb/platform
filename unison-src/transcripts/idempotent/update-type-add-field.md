@@ -7,7 +7,6 @@ unique type Foo = Bar Nat
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -32,7 +31,6 @@ unique type Foo = Bar Nat Nat
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -52,9 +50,11 @@ scratch/main> update
   updated...
 
   Done.
+
 scratch/main> view Foo
 
   type Foo = Bar Nat Nat
+
 scratch/main> find.verbose
 
   1. -- #8fk6k0j208th1ia4vnjtoc5fomd6le540prec255svg71bcfga9dofrvoq1d7v6010d6b6em4q51p8st5c5juhrev72cnnel8ko3o1g

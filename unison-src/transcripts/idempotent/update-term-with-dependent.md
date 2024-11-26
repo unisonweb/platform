@@ -13,7 +13,6 @@ bar = foo + 10
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -41,7 +40,6 @@ foo = 6
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -65,6 +63,7 @@ scratch/main> update
   Everything typechecks, so I'm saving the results...
 
   Done.
+
 scratch/main> view bar
 
   bar : Nat

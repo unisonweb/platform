@@ -7,7 +7,6 @@ unique type Foo = Bar Nat
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -25,6 +24,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     type Foo
+
 scratch/main> alias.term Foo.Bar Stray.BarAlias
 
   Done.
@@ -35,7 +35,6 @@ unique type Foo = Bar Nat Nat
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

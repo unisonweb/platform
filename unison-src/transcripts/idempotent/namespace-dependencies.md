@@ -20,6 +20,7 @@ scratch/main> add
     const                     : a -> b -> a
     external.mynat            : Nat
     mynamespace.dependsOnText : Nat
+
 scratch/main> namespace.dependencies mynamespace
 
   External dependency   Dependents in scratch/main:.mynamespace

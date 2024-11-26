@@ -19,7 +19,6 @@ baz = 17
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -47,7 +46,6 @@ longer.evil.factorial n = n
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -67,6 +65,7 @@ scratch/main> add
 
     foo.factorial             : Int -> Int
     foo.longer.evil.factorial : Int -> Int
+
 scratch/main> view factorial
 
   foo.factorial : Int -> Int
@@ -92,7 +91,6 @@ type longer.foo.Baz = { qux : Nat }
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -141,7 +139,6 @@ hasTypeLink =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -179,6 +176,7 @@ scratch/main> add
     foo.hasTypeLink    : Doc2
     foo.refersToBar    : foo.Foo -> Nat
     foo.refersToQux    : foo.Baz -> Nat
+
 scratch/main> view RefersToFoo refersToBar refersToQux hasTypeLink
 
   type foo.RefersToFoo = RefersToFoo foo.Foo
@@ -194,6 +192,7 @@ scratch/main> view RefersToFoo refersToBar refersToQux hasTypeLink
     use Nat +
     use foo.Baz qux
     qux baz + qux baz
+
 scratch/main> todo
 
   You have no pending todo items. Good work! ✅

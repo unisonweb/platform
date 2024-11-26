@@ -16,7 +16,6 @@ some.outside = 3
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -44,5 +43,6 @@ test-html-docs/main> add
     some.ns.pretty.deeply.nested.doc : Doc2
     some.outside                     : Nat
     some.outside.doc                 : Doc2
+
 test-html-docs/main> docs.to-html some.ns unison-src/transcripts-manual/docs.to-html
 ```

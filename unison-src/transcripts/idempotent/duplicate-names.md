@@ -15,7 +15,6 @@ Stream.send _ = ()
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ❗️
@@ -37,7 +36,6 @@ X.x _ = ()
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ❗️
@@ -58,7 +56,6 @@ structural ability X where
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found two types called X:
@@ -78,7 +75,6 @@ X.x = ()
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   ❗️
@@ -110,7 +106,6 @@ X = ()
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -132,6 +127,7 @@ scratch/main> add
     structural type X
       (also named builtin.Unit)
     X : ()
+
 scratch/main> view X
 
   structural type X = Z

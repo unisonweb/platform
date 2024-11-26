@@ -15,7 +15,6 @@ x = 1. -- missing some digits after the decimal
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   This number isn't valid syntax: 
@@ -31,7 +30,6 @@ x = 1e -- missing an exponent
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   This number isn't valid syntax: 
@@ -47,7 +45,6 @@ x = 1e- -- missing an exponent
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   This number isn't valid syntax: 
@@ -63,7 +60,6 @@ x = 1E+ -- missing an exponent
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   This number isn't valid syntax: 
@@ -81,7 +77,6 @@ x = 0xoogabooga -- invalid hex chars
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   This number isn't valid syntax: 
@@ -97,7 +92,6 @@ x = 0o987654321 -- 9 and 8 are not valid octal char
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   This number isn't valid syntax: 
@@ -113,7 +107,6 @@ x = 0b3201 -- 3 and 2 are not valid binary chars
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   This number isn't valid syntax: 
@@ -129,7 +122,6 @@ x = 0xsf -- odd number of hex chars in a bytes literal
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   This bytes literal isn't valid syntax: 0xsf
@@ -145,7 +137,6 @@ x = 0xsnotvalidhexchars -- invalid hex chars in a bytes literal
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   This bytes literal isn't valid syntax: 0xsnotvalidhexchars
@@ -163,7 +154,6 @@ foo = else -- not matching if
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found a closing 'else' here without a matching 'then'.
@@ -176,7 +166,6 @@ foo = then -- unclosed
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found a closing 'then' here without a matching 'if'.
@@ -189,7 +178,6 @@ foo = with -- unclosed
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found a closing 'with' here without a matching 'handle' or 'match'.
@@ -205,7 +193,6 @@ foo = match 1 with
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   Pattern match doesn't cover all possible cases:
@@ -222,7 +209,6 @@ foo = match 1 with
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I got confused here:
@@ -245,7 +231,6 @@ foo = cases
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
     😶
@@ -268,7 +253,6 @@ x = match Some a with
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I got confused here:
@@ -295,7 +279,6 @@ x = match Some a with
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I got confused here:
@@ -318,7 +301,6 @@ x = match Some a with
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I got confused here:
@@ -341,7 +323,6 @@ x = match Some a with
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I expected a non-empty watch expression and not just ">"
@@ -356,7 +337,6 @@ use.keyword.in.namespace = 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   The identifier `namespace` used here is a reserved keyword: 
@@ -373,7 +353,6 @@ a ! b = 1
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   This looks like the start of an expression here 

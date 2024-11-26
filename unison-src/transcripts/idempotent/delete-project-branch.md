@@ -8,6 +8,7 @@ foo/main> branch topic
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /topic`.
+
 foo/topic> delete.branch /topic
 ```
 
@@ -20,6 +21,7 @@ foo/main> branch topic
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /topic`.
+
 foo/topic> delete.branch topic
 ```
 
@@ -32,6 +34,7 @@ foo/main> branch topic
 
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /topic`.
+
 scratch/main> delete.branch foo/topic
 ```
 
@@ -45,6 +48,7 @@ You can delete the last branch in the project, a new one will be created.
 
 ``` ucm
 scratch/main> delete.branch scratch/main
+
 scratch/main> branches
 
        Branch   Remote branch
@@ -56,7 +60,9 @@ If the the last branch isn't /main, then /main will be created.
 
 ``` ucm
 scratch/main2> delete.branch /main
+
 scratch/main2> delete.branch /main2
+
 scratch/other> branches
 
        Branch   Remote branch

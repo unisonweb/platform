@@ -2,9 +2,11 @@
 diffs/main> builtins.mergeio lib.builtins
 
   Done.
+
 diffs/main> alias.term lib.builtins.Nat.gt lib.builtins.Nat.>
 
   Done.
+
 diffs/main> alias.term lib.builtins.Nat.drop lib.builtins.Nat.-
 
   Done.
@@ -33,7 +35,6 @@ take n s =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -57,6 +58,7 @@ diffs/main> add
     type Type
     take : Nat -> '{g} t ->{g, Stream a} Optional t
     term : Nat
+
 diffs/main> branch.create new
 
   Done. I've created the new branch based off of main.
@@ -90,7 +92,6 @@ take n s =
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

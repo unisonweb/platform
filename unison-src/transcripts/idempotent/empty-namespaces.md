@@ -6,6 +6,7 @@ mynamespace.x = 1
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> delete.namespace mynamespace
 ```
 
@@ -75,6 +76,7 @@ stuff.thing = 2
 
 ``` ucm :hide
 scratch/main> add
+
 scratch/main> delete.namespace deleted
 ```
 
@@ -99,6 +101,7 @@ scratch/main> history stuff
 
 
   □ 1. #q2dq4tsno1 (start of history)
+
 scratch/main> history deleted
 
   Note: The most recent namespace hash is immediately below this
@@ -127,6 +130,7 @@ The history should be that of the moved namespace.
 scratch/main> delete.namespace moveoverme
 
   Done.
+
 scratch/main> history moveme
 
   Note: The most recent namespace hash is immediately below this
@@ -135,9 +139,11 @@ scratch/main> history moveme
 
 
   □ 1. #c5uisu4kll (start of history)
+
 scratch/main> move.namespace moveme moveoverme
 
   Done.
+
 scratch/main> history moveoverme
 
   Note: The most recent namespace hash is immediately below this

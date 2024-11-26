@@ -7,7 +7,6 @@ def = "first value"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -36,6 +35,7 @@ scratch/main> update
   updated...
 
   Done.
+
 scratch/main> history
 
   Note: The most recent namespace hash is immediately below this
@@ -54,13 +54,16 @@ scratch/main> history
       def
 
   □ 3. #4bigcpnl7t (start of history)
+
 scratch/main> reset 2
 
   Done.
+
 scratch/main> view def
 
   def : Text
   def = "first value"
+
 scratch/main> history
 
   Note: The most recent namespace hash is immediately below this
@@ -93,14 +96,18 @@ scratch/main> reflog
   3.   scratch/main   #ujvq6e87kp   update
   4.   scratch/main   #4bigcpnl7t   builtins.merge
   5.   scratch/main   #sg60bvjo91   Project Created
+
 -- Reset the current branch to the first history element
+
 scratch/main> reset 2
 
   Done.
+
 scratch/main> view def
 
   def : Text
   def = "second value"
+
 scratch/main> history
 
   Note: The most recent namespace hash is immediately below this
@@ -145,13 +152,16 @@ foo/main> update
   updated...
 
   Done.
+
 foo/empty> reset /main:
 
   Done.
+
 foo/empty> view a
 
   a : ##Nat
   a = 5
+
 foo/empty> history
 
   Note: The most recent namespace hash is immediately below this
@@ -175,6 +185,7 @@ foo/main> update
   updated...
 
   Done.
+
 foo/main> history
 
   Note: The most recent namespace hash is immediately below this
@@ -187,6 +198,7 @@ foo/main> history
       main.a
 
   □ 2. #5l94rduvel (start of history)
+
 foo/main> reset 2 main
 
   Done.

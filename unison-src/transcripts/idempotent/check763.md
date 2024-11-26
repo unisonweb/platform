@@ -10,7 +10,6 @@ scratch/main> builtins.merge
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -28,9 +27,11 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     +-+ : Nat -> Nat -> Nat
+
 scratch/main> move.term +-+ boppitybeep
 
   Done.
+
 scratch/main> move.term boppitybeep +-+
 
   Done.

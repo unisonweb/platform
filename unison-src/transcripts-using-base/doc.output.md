@@ -29,7 +29,6 @@ unique type time.DayOfWeek = Sun | Mon | Tue | Wed | Thu | Fri | Sat
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -54,9 +53,11 @@ You can preview what docs will look like when rendered to the console using the 
 scratch/main> display d1
 
   Hello there Alice!
+
 scratch/main> docs ImportantConstant
 
   An important constant, equal to `42`
+
 scratch/main> docs DayOfWeek
 
   The 7 days of the week, defined as:
@@ -131,6 +132,7 @@ scratch/main> view basicFormatting
       
       __Next up:__ {lists}
     }}
+
 scratch/main> display basicFormatting
 
   # Basic formatting
@@ -155,6 +157,7 @@ scratch/main> display basicFormatting
     documents.
 
     *Next up:* lists
+
 scratch/main> view lists
 
   lists : Doc2
@@ -197,6 +200,7 @@ scratch/main> view lists
          2. Take shower.
          3. Get dressed.
     }}
+
 scratch/main> display lists
 
   # Lists
@@ -235,6 +239,7 @@ scratch/main> display lists
          * In this nested list.
       2. Take shower.
       3. Get dressed.
+
 scratch/main> view evaluation
 
   evaluation : Doc2
@@ -269,6 +274,7 @@ scratch/main> view evaluation
       cube x = x * x * x
       ```
     }}
+
 scratch/main> display evaluation
 
   # Evaluation
@@ -296,6 +302,7 @@ scratch/main> display evaluation
         use Nat *
         cube : Nat -> Nat
         cube x = x * x * x
+
 scratch/main> view includingSource
 
   includingSource : Doc2
@@ -336,6 +343,7 @@ scratch/main> view includingSource
            so: ``sqr x``. This is equivalent to
            {{ docExample 1 do x -> sqr x }}.
     }}
+
 scratch/main> display includingSource
 
   # Including Unison source code
@@ -381,6 +389,7 @@ scratch/main> display includingSource
       * If your snippet expression is just a single function
         application, you can put it in double backticks, like
         so: `sqr x`. This is equivalent to `sqr x`.
+
 scratch/main> view nonUnisonCodeBlocks
 
   nonUnisonCodeBlocks : Doc2
@@ -413,6 +422,7 @@ scratch/main> view nonUnisonCodeBlocks
         xs.foldLeft(Nil : List[A])((acc,a) => a +: acc)
       ```
     }}
+
 scratch/main> display nonUnisonCodeBlocks
 
   # Non-Unison code blocks
@@ -441,6 +451,7 @@ scratch/main> display nonUnisonCodeBlocks
     def reverse[A](xs: List[A]) = 
       xs.foldLeft(Nil : List[A])((acc,a) => a +: acc)
     ```
+
 scratch/main> view otherElements
 
   otherElements : Doc2
@@ -497,6 +508,7 @@ scratch/main> view otherElements
       , [{{ Some text }}, {{ More text }}, {{ Zounds! }}]
       ] }}
     }}
+
 scratch/main> display otherElements
 
   There are also asides, callouts, tables, tooltips, and more.
@@ -559,6 +571,7 @@ scratch/main> view doc.guide
       
       {{ otherElements }}
     }}
+
 scratch/main> display doc.guide
 
   # Unison computable documentation

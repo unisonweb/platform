@@ -10,7 +10,6 @@ mything = lib.old.foo + 100
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -32,15 +31,18 @@ myproject/main> update
   updated...
 
   Done.
+
 myproject/main> upgrade old new
 
   I upgraded old to new, and removed old.
+
 myproject/main> view mything
 
   mything : Nat
   mything =
     use Nat +
     foo + 100
+
 myproject/main> view bar
 
   bar : Nat

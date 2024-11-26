@@ -31,7 +31,6 @@ Can link to definitions like @List.drop or @List
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -63,7 +62,6 @@ List.take.ex2 = take 2 [1,2,3,4,5]
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -105,7 +103,6 @@ List.take.doc = [:
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you

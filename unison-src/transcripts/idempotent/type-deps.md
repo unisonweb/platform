@@ -24,7 +24,6 @@ structural type Y = Y Nat
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -54,7 +53,9 @@ scratch/main> add
     blocked      structural type Z
 
     Tip: Use `help filestatus` to learn more.
+
 -- This shouldn't exist, because it should've been blocked.
+
 scratch/main> view Z
 
   ⚠️

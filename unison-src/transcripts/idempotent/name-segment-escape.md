@@ -7,6 +7,7 @@ scratch/main> view `match`
 
   The following names were not found in the codebase. Check your spelling.
     `match`
+
 scratch/main> view `=`
 
   ⚠️
@@ -26,6 +27,7 @@ scratch/main> view `.`
 
   The following names were not found in the codebase. Check your spelling.
     `.`
+
 scratch/main> view `()`
 
   ⚠️

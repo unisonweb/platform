@@ -52,7 +52,6 @@ lib.bar = 3
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -83,6 +82,7 @@ scratch/main> grep hi
     1. bar
 
   Tip: Try `edit 1` to bring this into your scratch file.
+
 scratch/main> view 1
 
   bar : Nat
@@ -90,6 +90,7 @@ scratch/main> view 1
     "ooga"  -> 99
     "booga" -> 23
     _       -> 0
+
 scratch/main> grep "hi"
 
   🔎
@@ -99,6 +100,7 @@ scratch/main> grep "hi"
     1. bar
 
   Tip: Try `edit 1` to bring this into your scratch file.
+
 scratch/main> text.find.all hi
 
   🔎
@@ -110,6 +112,7 @@ scratch/main> text.find.all hi
 
   Tip: Try `edit 1` or `edit 1-2` to bring these into your
        scratch file.
+
 scratch/main> view 1-5
 
   bar : Nat
@@ -120,6 +123,7 @@ scratch/main> view 1-5
 
   lib.foo : [Any]
   lib.foo = [Any 46, Any "hi", Any "zoink"]
+
 scratch/main> grep oog
 
   🔎
@@ -129,6 +133,7 @@ scratch/main> grep oog
     1. bar
 
   Tip: Try `edit 1` to bring this into your scratch file.
+
 scratch/main> view 1
 
   bar : Nat
@@ -148,10 +153,12 @@ scratch/main> grep quaffle
     1. baz
 
   Tip: Try `edit 1` to bring this into your scratch file.
+
 scratch/main> view 1-5
 
   baz : [Text]
   baz = ["an", "quaffle", "tres"]
+
 scratch/main> text.find "interesting const"
 
   🔎
@@ -161,12 +168,14 @@ scratch/main> text.find "interesting const"
     1. foo
 
   Tip: Try `edit 1` to bring this into your scratch file.
+
 scratch/main> view 1-5
 
   foo : Nat
   foo =
     _ = "an interesting constant"
     1
+
 scratch/main> text.find "99" "23"
 
   🔎
@@ -176,6 +185,7 @@ scratch/main> text.find "99" "23"
     1. bar
 
   Tip: Try `edit 1` to bring this into your scratch file.
+
 scratch/main> view 1
 
   bar : Nat

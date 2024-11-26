@@ -14,7 +14,6 @@ type Namespace.Foo = Bar
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -40,7 +39,6 @@ type UsesFoo = UsesFoo Foo
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
 
@@ -63,7 +61,6 @@ type UsesFoo = UsesFoo Namespace.Foo File.Foo
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -96,7 +93,6 @@ type Foo = Bar
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -122,7 +118,6 @@ type UsesFoo = UsesFoo Foo
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -142,6 +137,7 @@ scratch/main> add
 
     type File.Foo
     type UsesFoo
+
 scratch/main> view UsesFoo
 
   type UsesFoo = UsesFoo Foo
@@ -167,7 +163,6 @@ type Namespace.Foo = Bar
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -193,7 +188,6 @@ type UsesFoo = UsesFoo Foo
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -213,6 +207,7 @@ scratch/main> add
 
     type Foo
     type UsesFoo
+
 scratch/main> view UsesFoo
 
   type UsesFoo = UsesFoo Foo
@@ -239,7 +234,6 @@ ns.foo = 42
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -268,7 +262,6 @@ bar = foo ++ "bar"
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -302,7 +295,6 @@ ns.foo = 42
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -331,7 +323,6 @@ bar = foo + 42
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -365,7 +356,6 @@ ns.foo = 42
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -394,7 +384,6 @@ bar = foo + 10
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I couldn't figure out what foo refers to here:
@@ -419,7 +408,6 @@ bar = file.foo + ns.foo
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -439,6 +427,7 @@ scratch/main> add
 
     bar      : Nat
     file.foo : Nat
+
 scratch/main> view bar
 
   bar : Nat

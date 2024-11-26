@@ -2,7 +2,9 @@
 
 ``` ucm :hide
 scratch/main> builtins.mergeio lib.builtins
+
 scratch/main> load ./unison-src/transcripts-using-base/base.u
+
 scratch/main> add
 ```
 
@@ -34,7 +36,6 @@ main = do
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -58,5 +59,6 @@ scratch/main> add
     type MyBool
     main   : '{IO, Exception} ()
     resume : Request {g, Break} x -> x
+
 scratch/main> compile main ./unison-cli-integration/integration-tests/IntegrationTests/main
 ```

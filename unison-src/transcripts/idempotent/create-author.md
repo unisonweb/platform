@@ -14,6 +14,7 @@ scratch/main> create.author alicecoder "Alice McGee"
     3. metadata.authors.alicecoder.guid     : GUID
 
   Tip: Add License values for alicecoder under metadata.
+
 scratch/main> find alicecoder
 
   1. metadata.authors.alicecoder : Author

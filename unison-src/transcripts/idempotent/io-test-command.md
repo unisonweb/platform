@@ -35,6 +35,7 @@ scratch/main> io.test ioAndExceptionTest
   ✅ 1 test(s) passing
 
   Tip: Use view 1 to view the source of a test.
+
 scratch/main> io.test ioTest
 
     New test results:

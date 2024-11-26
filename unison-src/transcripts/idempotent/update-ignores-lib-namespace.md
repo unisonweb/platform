@@ -12,7 +12,6 @@ lib.foo = 100
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -39,7 +38,6 @@ foo = 200
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -60,6 +58,7 @@ scratch/main> update
   updated...
 
   Done.
+
 scratch/main> names foo
 
   Term

@@ -25,7 +25,6 @@ bar = foo + foo
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -45,6 +44,7 @@ scratch/main> add
 
     bar : Nat
     foo : Nat
+
 scratch/main> todo
 
   These terms call `todo`:
@@ -71,7 +71,6 @@ baz = foo.bar + foo.bar
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -91,6 +90,7 @@ scratch/main> add
 
     baz     : Nat
     foo.bar : Nat
+
 scratch/main> delete.namespace.force foo
 
   Done.
@@ -102,6 +102,7 @@ scratch/main> delete.namespace.force foo
 
   Dependency   Referenced In
   bar          1. baz
+
 scratch/main> todo
 
   These terms do not have any names in the current namespace:
@@ -127,7 +128,6 @@ bar = 17
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -147,9 +147,11 @@ scratch/main> add
 
     bar : Nat
     foo : Nat
+
 scratch/main> debug.alias.term.force foo bar
 
   Done.
+
 scratch/main> todo
 
   ❓
@@ -180,7 +182,6 @@ lib.foo = 16
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -198,6 +199,7 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     lib.foo : Nat
+
 scratch/main> todo
 
   There's a type or term at the top level of the `lib`
@@ -222,7 +224,6 @@ type Foo = One
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -240,9 +241,11 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     type Foo
+
 scratch/main> alias.term Foo.One Foo.Two
 
   Done.
+
 scratch/main> todo
 
   The type Foo has a constructor with multiple names.
@@ -270,7 +273,6 @@ type Foo = Bar
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -288,9 +290,11 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     type Foo
+
 scratch/main> delete.term Foo.Bar
 
   Done.
+
 scratch/main> todo
 
   These types have some constructors with missing names.
@@ -320,7 +324,6 @@ structural type Foo.inner.Bar a = Uno a | Dos a a
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -340,6 +343,7 @@ scratch/main> add
 
     structural type Foo a
     structural type Foo.inner.Bar a
+
 scratch/main> todo
 
   These types are aliases, but one is nested under the other.
@@ -366,7 +370,6 @@ type Foo = Bar
 ```
 
 ``` ucm :added-by-ucm
-
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
@@ -384,9 +387,11 @@ scratch/main> add
   ⍟ I've added these definitions:
 
     type Foo
+
 scratch/main> alias.term Foo.Bar Baz
 
   Done.
+
 scratch/main> todo
 
   These constructors are not nested beneath their corresponding
