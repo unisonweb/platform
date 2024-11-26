@@ -654,16 +654,15 @@ eval !env !denv !activeThreads !stk !k r (NMatch _mr i br) = do
   n <- peekOffN stk i
 
   eval env denv activeThreads stk k r $ selectBranch n br
-eval !_env !_denv !_activeThreads !_stk !_k _r (RMatch _i _pu _br) = do
-  pure ()
---   (t, stk) <- dumpDataNoTag Nothing stk =<< peekOff stk i
---   if t == PackedTag 0
---     then eval env denv activeThreads stk k r pu
---     else case ANF.unpackTags t of
---       (ANF.rawTag -> e, ANF.rawTag -> t)
---         | Just ebs <- EC.lookup e br ->
---             eval env denv activeThreads stk k r $ selectBranch t ebs
---         | otherwise -> unhandledErr "eval" env e
+eval !env !denv !activeThreads !stk !k r (RMatch i pu br) = do
+  (t, stk) <- dumpDataNoTag Nothing stk =<< peekOff stk i
+  if t == PackedTag 0
+    then eval env denv activeThreads stk k r pu
+    else case ANF.unpackTags t of
+      (ANF.rawTag -> e, ANF.rawTag -> t)
+        | Just ebs <- EC.lookup e br ->
+            eval env denv activeThreads stk k r $ selectBranch t ebs
+        | otherwise -> unhandledErr "eval" env e
 eval !env !denv !activeThreads !stk !k _ (Yield args)
   | asize stk > 0,
     VArg1 i <- args =
