@@ -707,14 +707,24 @@ data GBranch comb
 
 -- Convenience patterns for matches used in the algorithms below.
 pattern MatchW :: Int -> (GSection comb) -> EnumMap Word64 (GSection comb) -> (GSection comb)
-pattern MatchW i d cs = Match i (TestW d cs)
+pattern MatchW i d cs <- Match i (TestW d cs)
+  where
+    MatchW i d cs = Match i (mkBranch d cs)
 
 pattern MatchT :: Int -> (GSection comb) -> M.Map Text (GSection comb) -> (GSection comb)
 pattern MatchT i d cs = Match i (TestT d cs)
 
 pattern NMatchW ::
   Maybe Reference -> Int -> (GSection comb) -> EnumMap Word64 (GSection comb) -> (GSection comb)
-pattern NMatchW r i d cs = NMatch r i (TestW d cs)
+pattern NMatchW r i d cs <- NMatch r i (TestW d cs)
+  where
+    NMatchW r i d cs = NMatch r i $ mkBranch d cs
+
+mkBranch :: (GSection comb) -> (EnumMap Word64 (GSection comb)) -> GBranch comb
+mkBranch d m = case EC.mapToList m of
+  [(k, v)] -> Test1 k v d
+  [(k1, v1), (k2, v2)] -> Test2 k1 v1 k2 v2 d
+  _ -> TestW d m
 
 -- Representation of the variable context available in the current
 -- frame. This tracks tags that have been dumped to the stack for
@@ -1392,7 +1402,7 @@ emitDataMatching ::
   Maybe (ANormal v) ->
   Emit Branch
 emitDataMatching r rns grpr grpn rec ctx cs df =
-  TestW <$> edf <*> traverse (emitCase rns grpr grpn rec ctx) (coerce cs)
+  mkBranch <$> edf <*> traverse (emitCase rns grpr grpn rec ctx) (coerce cs)
   where
     -- Note: this is not really accurate. A default data case needs
     -- stack space corresponding to the actual data that shows up there.
@@ -1436,7 +1446,7 @@ emitRequestMatching rns grpr grpn rec ctx hs df = (,) <$> pur <*> tops
   where
     pur = emitCase rns grpr grpn rec ctx ([BX], df)
     tops = traverse f (coerce hs)
-    f cs = TestW edf <$> traverse (emitCase rns grpr grpn rec ctx) cs
+    f cs = mkBranch edf <$> traverse (emitCase rns grpr grpn rec ctx) cs
     edf = Die "unhandled ability"
 
 emitLitMatching ::

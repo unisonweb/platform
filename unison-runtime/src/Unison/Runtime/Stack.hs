@@ -160,9 +160,6 @@ import Prelude hiding (words)
 
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
-import Data.Text.IO (hPutStrLn)
-import UnliftIO (stderr, throwIO)
-import GHC.Stack (CallStack, callStack)
 
 type DebugCallStack = (HasCallStack :: Constraint)
 
