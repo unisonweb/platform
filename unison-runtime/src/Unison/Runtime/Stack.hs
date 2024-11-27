@@ -135,6 +135,7 @@ module Unison.Runtime.Stack
     intTypeTag,
     charTypeTag,
     floatTypeTag,
+    hasNoAllocations,
   )
 where
 
@@ -145,6 +146,8 @@ import Data.Primitive.ByteArray qualified as BA
 import Data.Word
 import GHC.Base
 import GHC.Exts as L (IsList (..))
+import Language.Haskell.TH qualified as TH
+import Test.Inspection qualified as TI
 import Unison.Prelude
 import Unison.Reference (Reference)
 import Unison.Runtime.ANF (PackedTag)
@@ -1206,3 +1209,6 @@ contTermRefs f (Mark _ _ m k) =
 contTermRefs f (Push _ _ (CIx r _ _) _ _ k) =
   f r <> contTermRefs f k
 contTermRefs _ _ = mempty
+
+hasNoAllocations :: TH.Name -> TI.Obligation
+hasNoAllocations n = TI.mkObligation n TI.NoAllocation

@@ -2,6 +2,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE MagicHash #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE UnboxedTuples #-}
 
 module Unison.Runtime.Machine
@@ -2536,3 +2537,7 @@ arrayCmp cmpVal l r =
     go i
       | i < 0 = EQ
       | otherwise = cmpVal (PA.indexArray l i) (PA.indexArray r i) <> go (i - 1)
+
+-- TI.inspect $ 'eval `TI.hasNoType` ''Stack
+
+-- TI.inspect $ hasNoAllocations 'eval
