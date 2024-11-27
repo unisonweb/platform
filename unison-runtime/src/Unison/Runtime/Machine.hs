@@ -44,7 +44,6 @@ import Data.Traversable
 import GHC.Base (IO (..))
 import GHC.Conc as STM (unsafeIOToSTM)
 import GHC.Stack
-import Test.Inspection qualified as TI
 import Unison.Builtin.Decls (exceptionRef, ioFailureRef)
 import Unison.Builtin.Decls qualified as Rf
 import Unison.ConstructorReference qualified as CR
@@ -94,6 +93,10 @@ import UnliftIO.Concurrent qualified as UnliftIO
 #ifdef STACK_CHECK
 import Unison.Debug qualified as Debug
 import System.IO.Unsafe (unsafePerformIO)
+#endif
+
+#ifdef OPT_CHECK
+import Test.Inspection qualified as TI
 #endif
 {- ORMOLU_ENABLE -}
 
@@ -2560,6 +2563,8 @@ die s = do
   pure $ error "unreachable"
 {-# INLINE die #-}
 
+{- ORMOLU_DISABLE -}
+#ifdef OPT_CHECK
 -- Assert that we don't allocate any 'Stack' objects in 'eval', since we expect GHC to always
 -- trigger the worker/wrapper optimization and unbox it fully, and if it fails to do so, we want to
 -- know about it.
@@ -2573,6 +2578,7 @@ die s = do
 --
 -- If this test starts failing, here are some things you can check.
 --
+-- 1. Did you manually
 -- 1. Are 'Stack's being passed to dynamic functions? If so, try changing those functions to take an 'XStack' instead,
 --    and manually unpack/pack the 'Stack' where necessary.
 -- 2. Are there calls to 'die' or 'throwIO' or something similar in which a fully polymorphic type variable is being
@@ -2581,3 +2587,5 @@ die s = do
 --
 -- Best of luck!
 TI.inspect $ 'eval0 `TI.hasNoType` ''Stack
+#endif
+{- ORMOLU_ENABLE -}
