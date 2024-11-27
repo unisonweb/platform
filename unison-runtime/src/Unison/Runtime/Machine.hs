@@ -37,11 +37,14 @@ import Data.Ord (comparing)
 import Data.Sequence qualified as Sq
 import Data.Set qualified as S
 import Data.Set qualified as Set
+import Data.Text (Text)
 import Data.Text qualified as DTx
 import Data.Text.IO qualified as Tx
 import Data.Traversable
 import GHC.Base (IO (..))
 import GHC.Conc as STM (unsafeIOToSTM)
+import GHC.Stack
+import Test.Inspection qualified as TI
 import Unison.Builtin.Decls (exceptionRef, ioFailureRef)
 import Unison.Builtin.Decls qualified as Rf
 import Unison.ConstructorReference qualified as CR
@@ -69,7 +72,6 @@ import Unison.Runtime.ANF as ANF
 import Unison.Runtime.ANF qualified as ANF
 import Unison.Runtime.Array as PA
 import Unison.Runtime.Builtin
-import Unison.Runtime.Exception
 import Unison.Runtime.Foreign
 import Unison.Runtime.Foreign.Function
 import Unison.Runtime.MCode
@@ -94,6 +96,13 @@ import Unison.Debug qualified as Debug
 import System.IO.Unsafe (unsafePerformIO)
 #endif
 {- ORMOLU_ENABLE -}
+
+data RuntimeExn
+  = PE CallStack (P.Pretty P.ColorText)
+  | BU [(Reference, Int)] Text Val
+  deriving (Show)
+
+instance Exception RuntimeExn
 
 -- | A ref storing every currently active thread.
 -- This is helpful for cleaning up orphaned threads when the main process
@@ -236,7 +245,7 @@ topDEnv _ _ _ = (mempty, id)
 -- This is the entry point actually used in the interactive
 -- environment currently.
 apply0 ::
-  Maybe (Stack -> IO ()) ->
+  Maybe (XStack -> IO ()) ->
   CCache ->
   ActiveThreads ->
   Word64 ->
@@ -258,7 +267,7 @@ apply0 !callback !env !threadTracker !i = do
     -- if it's cached, we can just finish
     CachedVal _ val -> bump stk >>= \stk -> poke stk val
   where
-    k0 = fromMaybe KE (callback <&> \cb -> CB . Hook $ \stk -> cb $ packXStack stk)
+    k0 = fromMaybe KE (callback <&> \cb -> CB . Hook $ \stk -> cb stk)
 
 -- Apply helper currently used for forking. Creates the new stacks
 -- necessary to evaluate a closure with the provided information.
@@ -508,7 +517,8 @@ exec !_ !denv !_activeThreads !stk !k _ (BPrim2 CMPU i j) = do
 exec !_ !_ !_activeThreads !stk !k r (BPrim2 THRO i j) = do
   name <- peekOffBi @Util.Text.Text stk i
   x <- peekOff stk j
-  throwIO (BU (traceK r k) (Util.Text.toText name) x)
+  () <- throwIO (BU (traceK r k) (Util.Text.toText name) x)
+  error "throwIO should never return"
 exec !env !denv !_activeThreads !stk !k _ (BPrim2 TRCE i j)
   | sandboxed env = die "attempted to use sandboxed operation: trace"
   | otherwise = do
@@ -2105,8 +2115,8 @@ preEvalTopLevelConstants cacheableCombs newCombs cc = do
   activeThreads <- Just <$> UnliftIO.newIORef mempty
   evaluatedCacheableCombsVar <- newTVarIO mempty
   for_ (EC.mapToList cacheableCombs) \(w, _) -> do
-    let hook stk = do
-          val <- peek stk
+    let hook xstk = do
+          val <- peek (packXStack xstk)
           atomically $ do
             modifyTVar evaluatedCacheableCombsVar $ EC.mapInsert w (EC.mapSingleton 0 $ CachedVal w val)
     apply0 (Just hook) cc activeThreads w
@@ -2538,6 +2548,36 @@ arrayCmp cmpVal l r =
       | i < 0 = EQ
       | otherwise = cmpVal (PA.indexArray l i) (PA.indexArray r i) <> go (i - 1)
 
--- TI.inspect $ 'eval `TI.hasNoType` ''Stack
+die :: (HasCallStack) => String -> IO a
+die s = do
+  void . throwIO . PE callStack . P.lit . fromString $ s
+  -- This is unreachable, but we need it to fix some quirks in GHC's
+  -- worker/wrapper optimization, specifically, it seems that when throwIO's polymorphic return
+  -- value is specialized to a type like 'Stack' which we want GHC to unbox, it will sometimes
+  -- fail to unbox it, possibly because it can't unbox it when it's strictly a type application.
+  -- For whatever reason, this seems to fix it while still allowing us to throw exceptions in IO
+  -- like we prefer.
+  pure $ error "unreachable"
+{-# INLINE die #-}
 
--- TI.inspect $ hasNoAllocations 'eval
+-- Assert that we don't allocate any 'Stack' objects in 'eval', since we expect GHC to always
+-- trigger the worker/wrapper optimization and unbox it fully, and if it fails to do so, we want to
+-- know about it.
+--
+-- Note: We _must_ check 'eval0' instead of 'eval' here because if you simply check 'eval', you'll be
+-- testing the 'wrapper' part of the worker/wrapper, which will always mention the 'Stack' object as part of its
+-- unwrapping, and since there's  no way to refer to the generated wrapper directly, we instead refer to 'eval0'
+-- which allocates its own stack to pass in, meaning it's one level above the wrapper, and GHC should always detect that
+-- it can call the worker directly without using the wrapper.
+-- See: https://github.com/nomeata/inspection-testing/issues/50 for more information.
+--
+-- If this test starts failing, here are some things you can check.
+--
+-- 1. Are 'Stack's being passed to dynamic functions? If so, try changing those functions to take an 'XStack' instead,
+--    and manually unpack/pack the 'Stack' where necessary.
+-- 2. Are there calls to 'die' or 'throwIO' or something similar in which a fully polymorphic type variable is being
+--    specialized to 'Stack'? Sometimes this trips up the optimization, you can try using an 'error' instead, or even
+--    following the 'throwIO' with a useless call to @error "unreachable"@, this seems to help for some reason.
+--
+-- Best of luck!
+TI.inspect $ 'eval0 `TI.hasNoType` ''Stack
