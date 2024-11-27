@@ -402,7 +402,6 @@ typeLookupForDependencies codebase s = do
            in depthFirstAccumTypes z (DD.typeDependencies dd)
         Nothing -> pure tl
     goType tl Reference.Builtin {} = pure tl -- codebase isn't consulted for builtins
-
     unseen :: TL.TypeLookup Symbol a -> Reference -> Bool
     unseen tl r =
       isNothing

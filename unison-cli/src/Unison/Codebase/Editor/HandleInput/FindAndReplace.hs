@@ -1,7 +1,7 @@
 module Unison.Codebase.Editor.HandleInput.FindAndReplace
   ( handleStructuredFindReplaceI,
     handleStructuredFindI,
-    handleTextFindI
+    handleTextFindI,
   )
 where
 
@@ -129,7 +129,8 @@ handleTextFindI allowLib tokens = do
         txts (Term.Float' haystack) = ABT.Found [Text.pack (show haystack)]
         txts (Term.Char' haystack) = ABT.Found [Text.pack [haystack]]
         txts (Term.Match' _ cases) = ABT.Found r
-          where r = join $ Pattern.foldMap' txtPattern . Term.matchPattern <$> cases
+          where
+            r = join $ Pattern.foldMap' txtPattern . Term.matchPattern <$> cases
         txts _ = ABT.Continue
         txtPattern (Pattern.Text _ txt) = [txt]
         txtPattern _ = []

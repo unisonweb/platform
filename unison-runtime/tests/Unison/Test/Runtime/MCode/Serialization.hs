@@ -16,7 +16,7 @@ import Unison.Prelude
 import Unison.Runtime.Interface
 import Unison.Runtime.MCode (Args (..), BPrim1, BPrim2, Branch, Comb, CombIx (..), GBranch (..), GComb (..), GCombInfo (..), GInstr (..), GRef (..), GSection (..), Instr, MLit (..), Ref, Section, UPrim1, UPrim2)
 import Unison.Runtime.Machine (Combs)
-import Unison.Runtime.TypeTags (PackedTag(..))
+import Unison.Runtime.TypeTags (PackedTag (..))
 import Unison.Test.Gen
 import Unison.Util.EnumContainers (EnumMap, EnumSet)
 import Unison.Util.EnumContainers qualified as EC

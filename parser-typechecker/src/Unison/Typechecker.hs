@@ -21,7 +21,7 @@ where
 
 import Control.Lens
 import Control.Monad.Fail (fail)
-import Control.Monad.State (StateT, get, modify, execState, State)
+import Control.Monad.State (State, StateT, execState, get, modify)
 import Control.Monad.Writer
 import Data.Foldable
 import Data.Map qualified as Map
@@ -233,7 +233,7 @@ typeDirectedNameResolution ppe oldNotes oldType env = do
     addTypedComponent (Context.TopLevelComponent vtts) =
       for_ vtts \(v, typ, _) ->
         let name = Name.unsafeParseVar (Var.reset v)
-        in #topLevelComponents %= Map.insert name (NamedReference name typ (Context.ReplacementVar v))
+         in #topLevelComponents %= Map.insert name (NamedReference name typ (Context.ReplacementVar v))
     addTypedComponent _ = pure ()
 
     suggest :: [Resolution v loc] -> Result (Notes v loc) ()

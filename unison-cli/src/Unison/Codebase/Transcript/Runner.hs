@@ -202,7 +202,8 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
         hide <- hideOutput False
         unless hide $
           -- We shorten the terminal width, because "Transcript" manages a 2-space indent for output lines.
-          outputUcmLine . UcmOutputLine . Text.pack $ Pretty.toPlain (terminalWidth - 2) line
+          outputUcmLine . UcmOutputLine . Text.pack $
+            Pretty.toPlain (terminalWidth - 2) line
 
       maybeDieWithMsg :: String -> IO ()
       maybeDieWithMsg msg = do

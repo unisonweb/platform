@@ -4,9 +4,10 @@ module Unison.Codebase.Editor.HandleInput.RuntimeUtils
     evalPureUnison,
     displayDecompileErrors,
     selectRuntime,
-    EvalMode (..)
+    EvalMode (..),
   )
 where
+
 import Control.Lens
 import Control.Monad.Reader (ask)
 import Unison.ABT qualified as ABT
@@ -32,11 +33,12 @@ import Unison.WatchKind qualified as WK
 data EvalMode = Sandboxed | Permissive | Native
 
 selectRuntime :: EvalMode -> Cli (Runtime.Runtime Symbol)
-selectRuntime mode = ask <&> \case
-  Cli.Env { runtime, sandboxedRuntime, nativeRuntime }
-    | Permissive <- mode -> runtime
-    | Sandboxed <- mode -> sandboxedRuntime
-    | Native <- mode -> nativeRuntime
+selectRuntime mode =
+  ask <&> \case
+    Cli.Env {runtime, sandboxedRuntime, nativeRuntime}
+      | Permissive <- mode -> runtime
+      | Sandboxed <- mode -> sandboxedRuntime
+      | Native <- mode -> nativeRuntime
 
 displayDecompileErrors :: [Runtime.Error] -> Cli ()
 displayDecompileErrors errs = Cli.respond (PrintMessage msg)
