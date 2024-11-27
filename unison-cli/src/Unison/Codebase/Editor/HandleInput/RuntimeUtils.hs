@@ -34,11 +34,10 @@ data EvalMode = Sandboxed | Permissive | Native
 
 selectRuntime :: EvalMode -> Cli (Runtime.Runtime Symbol)
 selectRuntime mode =
-  ask <&> \case
-    Cli.Env {runtime, sandboxedRuntime, nativeRuntime}
-      | Permissive <- mode -> runtime
-      | Sandboxed <- mode -> sandboxedRuntime
-      | Native <- mode -> nativeRuntime
+  ask <&> \Cli.Env {runtime, sandboxedRuntime, nativeRuntime} -> case mode of
+    Permissive -> runtime
+    Sandboxed -> sandboxedRuntime
+    Native -> nativeRuntime
 
 displayDecompileErrors :: [Runtime.Error] -> Cli ()
 displayDecompileErrors errs = Cli.respond (PrintMessage msg)

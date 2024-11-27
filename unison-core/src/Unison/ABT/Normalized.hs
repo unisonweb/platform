@@ -208,10 +208,7 @@ transform phi (TTm body) = TTm . second (transform phi) $ phi body
 transform phi (TAbs u body) = TAbs u $ transform phi body
 
 visit ::
-  (Applicative g) =>
-  (Bifoldable f) =>
-  (Traversable (f v)) =>
-  (Var v) =>
+  (Applicative g, Bifoldable f, Traversable (f v), Var v) =>
   (Term f v -> Maybe (g (Term f v))) ->
   Term f v ->
   g (Term f v)
@@ -220,9 +217,7 @@ visit h t = flip fromMaybe (h t) $ case out t of
   Tm body -> TTm <$> traverse (visit h) body
 
 visitPure ::
-  (Bifoldable f) =>
-  (Traversable (f v)) =>
-  (Var v) =>
+  (Bifoldable f, Traversable (f v), Var v) =>
   (Term f v -> Maybe (Term f v)) ->
   Term f v ->
   Term f v
