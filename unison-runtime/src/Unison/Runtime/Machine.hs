@@ -37,7 +37,6 @@ import Data.Ord (comparing)
 import Data.Sequence qualified as Sq
 import Data.Set qualified as S
 import Data.Set qualified as Set
-import Data.Text (Text)
 import Data.Text qualified as DTx
 import Data.Text.IO qualified as Tx
 import Data.Traversable
@@ -71,6 +70,7 @@ import Unison.Runtime.ANF as ANF
 import Unison.Runtime.ANF qualified as ANF
 import Unison.Runtime.Array as PA
 import Unison.Runtime.Builtin
+import Unison.Runtime.Exception (RuntimeExn (..))
 import Unison.Runtime.Foreign
 import Unison.Runtime.Foreign.Function
 import Unison.Runtime.MCode
@@ -99,13 +99,6 @@ import System.IO.Unsafe (unsafePerformIO)
 import Test.Inspection qualified as TI
 #endif
 {- ORMOLU_ENABLE -}
-
-data RuntimeExn
-  = PE CallStack (P.Pretty P.ColorText)
-  | BU [(Reference, Int)] Text Val
-  deriving (Show)
-
-instance Exception RuntimeExn
 
 -- | A ref storing every currently active thread.
 -- This is helpful for cleaning up orphaned threads when the main process
@@ -676,8 +669,7 @@ eval !env !denv !activeThreads !stk !k r (RMatch i pu br) = do
       (ANF.rawTag -> e, ANF.rawTag -> t)
         | Just ebs <- EC.lookup e br ->
             eval env denv activeThreads stk k r $ selectBranch t ebs
-        | otherwise ->
-            error . show . PE undefined . P.lit . fromString $ "eval: unhandled ability request"
+        | otherwise -> unhandledAbilityRequest
 eval !env !denv !activeThreads !stk !k _ (Yield args)
   | asize stk > 0,
     VArg1 i <- args =
@@ -709,6 +701,9 @@ eval !env !denv !activeThreads !stk !k r (Ins i nx) = do
 eval !_ !_ !_ !_activeThreads !_ _ Exit = pure ()
 eval !_ !_ !_ !_activeThreads !_ _ (Die s) = die s
 {-# NOINLINE eval #-}
+
+unhandledAbilityRequest :: (HasCallStack) => IO a
+unhandledAbilityRequest = error . show . PE callStack . P.lit . fromString $ "eval: unhandled ability request"
 
 forkEval :: CCache -> ActiveThreads -> Val -> IO ThreadId
 forkEval env activeThreads clo =
@@ -2560,7 +2555,7 @@ die s = do
   -- fail to unbox it, possibly because it can't unbox it when it's strictly a type application.
   -- For whatever reason, this seems to fix it while still allowing us to throw exceptions in IO
   -- like we prefer.
-  pure $ error "unreachable"
+  error "unreachable"
 {-# INLINE die #-}
 
 {- ORMOLU_DISABLE -}
@@ -2568,6 +2563,9 @@ die s = do
 -- Assert that we don't allocate any 'Stack' objects in 'eval', since we expect GHC to always
 -- trigger the worker/wrapper optimization and unbox it fully, and if it fails to do so, we want to
 -- know about it.
+--
+-- Note: this must remain in this module, it can't be moved to a testing module, this is a requirement of the inspection
+-- testing library.
 --
 -- Note: We _must_ check 'eval0' instead of 'eval' here because if you simply check 'eval', you'll be
 -- testing the 'wrapper' part of the worker/wrapper, which will always mention the 'Stack' object as part of its
@@ -2578,12 +2576,12 @@ die s = do
 --
 -- If this test starts failing, here are some things you can check.
 --
--- 1. Did you manually
 -- 1. Are 'Stack's being passed to dynamic functions? If so, try changing those functions to take an 'XStack' instead,
 --    and manually unpack/pack the 'Stack' where necessary.
 -- 2. Are there calls to 'die' or 'throwIO' or something similar in which a fully polymorphic type variable is being
 --    specialized to 'Stack'? Sometimes this trips up the optimization, you can try using an 'error' instead, or even
 --    following the 'throwIO' with a useless call to @error "unreachable"@, this seems to help for some reason.
+--    See this page for more info on precise exceptions: https://gitlab.haskell.org/ghc/ghc/-/wikis/exceptions/precise-exceptions
 --
 -- Best of luck!
 TI.inspect $ 'eval0 `TI.hasNoType` ''Stack

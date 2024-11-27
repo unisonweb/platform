@@ -23,12 +23,12 @@ instance Exception RuntimeExn
 
 die :: (HasCallStack) => String -> IO a
 die = throwIO . PE callStack . P.lit . fromString
-{-# INLINEABLE die #-}
+{-# INLINE die #-}
 
 dieP :: (HasCallStack) => P.Pretty P.ColorText -> IO a
 dieP = throwIO . PE callStack
-{-# INLINEABLE dieP #-}
+{-# INLINE dieP #-}
 
 exn :: (HasCallStack) => String -> a
 exn = throw . PE callStack . P.lit . fromString
-{-# INLINEABLE exn #-}
+{-# INLINE exn #-}
