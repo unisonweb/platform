@@ -522,7 +522,7 @@ dropn :: (Var v) => SuperNormal v
 dropn = binop0 4 $ \[x, y, b, r, tag, n] ->
   TLetD b UN (TPrm LEQN [x, y])
     -- TODO: Can we avoid this work until after the branch?
-  -- Should probably just replace this with an instruction.
+    -- Should probably just replace this with an instruction.
     . TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt NatTag)
     . TLetD r UN (TPrm SUBN [x, y])
     . TLetD n UN (TPrm CAST [r, tag])
@@ -815,8 +815,8 @@ andb = binop0 0 $ \[p, q] ->
 coerceType :: UnboxedTypeTag -> SuperNormal Symbol
 coerceType destType =
   unop0 1 $ \[v, tag] ->
-      TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt destType) $
-        TPrm CAST [v, tag]
+    TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt destType) $
+      TPrm CAST [v, tag]
 
 -- This version of unsafeCoerce is the identity function. It works
 -- only if the two types being coerced between are actually the same,

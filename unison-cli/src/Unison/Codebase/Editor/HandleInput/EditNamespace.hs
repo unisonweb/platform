@@ -21,13 +21,13 @@ import Unison.HashQualified qualified as HQ
 import Unison.Name (Name)
 import Unison.Names qualified as Names
 import Unison.Prelude
+import Unison.PrettyPrintEnv.Names qualified as PPE
 import Unison.PrettyPrintEnvDecl (PrettyPrintEnvDecl (..))
+import Unison.PrettyPrintEnvDecl.Names qualified as PPED
 import Unison.Referent qualified as Referent
 import Unison.Server.Backend qualified as Backend
 import Unison.Syntax.DeclPrinter qualified as DeclPrinter
 import Unison.Util.Monoid (foldMapM)
-import qualified Unison.PrettyPrintEnv.Names as PPE
-import qualified Unison.PrettyPrintEnvDecl.Names as PPED
 
 handleEditNamespace :: OutputLocation -> [Path] -> Cli ()
 handleEditNamespace outputLoc paths0 = do
