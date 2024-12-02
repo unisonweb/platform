@@ -278,6 +278,9 @@ scratch/main> help
   `edit foo` prepends the definition of `foo` to the top of the most recently saved file.
   `edit` without arguments invokes a search to select a definition for editing, which requires that `fzf` can be found within your PATH.
 
+  edit.dependents
+  Like `edit`, but also includes all transitive dependents in the current project.
+
   edit.namespace
   `edit.namespace` will load all terms and types contained within the current namespace into your scratch file. This includes definitions in namespaces, but excludes libraries.
   `edit.namespace ns1 ns2 ...` loads the terms and types contained within the provided namespaces.
