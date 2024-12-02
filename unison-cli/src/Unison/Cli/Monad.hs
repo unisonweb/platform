@@ -431,15 +431,21 @@ respondNumbered output = do
   setNumberedArgs args
 
 -- | Perform a Cli action with access to a console region, which is closed upon completion.
+--
+-- (In transcripts, this just outputs messages as normal).
 withRespondRegion :: ((Output -> Cli ()) -> Cli a) -> Cli a
-withRespondRegion action =
-  with_ Console.Regions.displayConsoleRegions do
-    with (Console.Regions.withConsoleRegion Console.Regions.Linear) \region ->
-      action \output ->
-        liftIO do
-          string <- (OutputMessages.notifyUser "." output)
-          width <- PrettyTerminal.getAvailableWidth
-          Console.Regions.setConsoleRegion region (Pretty.toANSI width (Pretty.border 2 string))
+withRespondRegion action = do
+  env <- ask
+  case env.isTranscriptTest of
+    False ->
+      with_ Console.Regions.displayConsoleRegions do
+        with (Console.Regions.withConsoleRegion Console.Regions.Linear) \region ->
+          action \output ->
+            liftIO do
+              string <- (OutputMessages.notifyUser "." output)
+              width <- PrettyTerminal.getAvailableWidth
+              Console.Regions.setConsoleRegion region (Pretty.toANSI width (Pretty.border 2 string))
+    True -> action respond
 
 -- | Updates the numbered args, but only if the new args are non-empty.
 setNumberedArgs :: NumberedArgs -> Cli ()

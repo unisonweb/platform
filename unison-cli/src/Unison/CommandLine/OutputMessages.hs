@@ -50,7 +50,6 @@ import Unison.Codebase.Editor.Input (BranchIdG (..))
 import Unison.Codebase.Editor.Input qualified as Input
 import Unison.Codebase.Editor.Output
   ( CreatedProjectBranchFrom (..),
-    MergeProgress (..),
     NumberedArgs,
     NumberedOutput (..),
     Output (..),
@@ -2261,12 +2260,7 @@ notifyUser dir = \case
                 <> IP.makeExample' IP.delete
                 <> "it. Then try the update again."
           ]
-  MergeProgress MergeProgress'LoadingBranches -> pure "Loading branches..."
-  MergeProgress MergeProgress'DiffingBranches -> pure "Computing diff between branches..."
-  MergeProgress MergeProgress'LoadingDependents -> pure "Loading dependents of changes..."
-  MergeProgress MergeProgress'LoadingAndMergingLibdeps -> pure "Loading and merging library dependencies..."
-  MergeProgress MergeProgress'RenderingUnisonFile -> pure "Rendering Unison file..."
-  MergeProgress MergeProgress'TypecheckingUnisonFile -> pure "Typechecking Unison file..."
+  Literal message -> pure message
 
 prettyShareError :: ShareError -> Pretty
 prettyShareError =

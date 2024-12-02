@@ -26,7 +26,6 @@ import U.Codebase.Branch.Diff qualified as V2Branch.Diff
 import U.Codebase.Causal qualified as V2Causal
 import U.Codebase.HashTags (CausalHash (..))
 import U.Codebase.Reflog qualified as Reflog
-import U.Codebase.Sqlite.Queries qualified as Queries
 import Unison.ABT qualified as ABT
 import Unison.Builtin qualified as Builtin
 import Unison.Builtin.Terms qualified as Builtin
@@ -34,6 +33,7 @@ import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils (getCurrentProjectBranch)
 import Unison.Cli.MonadUtils qualified as Cli
+import Unison.Cli.NameResolutionUtils (resolveHQToLabeledDependencies)
 import Unison.Cli.NamesUtils qualified as Cli
 import Unison.Cli.ProjectUtils qualified as ProjectUtils
 import Unison.Codebase qualified as Codebase
@@ -58,7 +58,9 @@ import Unison.Codebase.Editor.HandleInput.DebugSynhashTerm (handleDebugSynhashTe
 import Unison.Codebase.Editor.HandleInput.DeleteBranch (handleDeleteBranch)
 import Unison.Codebase.Editor.HandleInput.DeleteNamespace (getEndangeredDependents, handleDeleteNamespace)
 import Unison.Codebase.Editor.HandleInput.DeleteProject (handleDeleteProject)
+import Unison.Codebase.Editor.HandleInput.Dependents (handleDependents)
 import Unison.Codebase.Editor.HandleInput.EditNamespace (handleEditNamespace)
+import Unison.Codebase.Editor.HandleInput.EditDependents (handleEditDependents)
 import Unison.Codebase.Editor.HandleInput.FindAndReplace (handleStructuredFindI, handleStructuredFindReplaceI, handleTextFindI)
 import Unison.Codebase.Editor.HandleInput.FormatFile qualified as Format
 import Unison.Codebase.Editor.HandleInput.Global qualified as Global
@@ -845,6 +847,7 @@ loop e = do
             UpgradeCommitI -> handleCommitUpgrade
             LibInstallI remind libdep -> handleInstallLib remind libdep
             DebugSynhashTermI name -> handleDebugSynhashTerm name
+            EditDependentsI name -> handleEditDependents name
 
 inputDescription :: Input -> Cli Text
 inputDescription input =
@@ -987,6 +990,7 @@ inputDescription input =
     DisplayI {} -> wat
     DocsI {} -> wat
     DocsToHtmlI {} -> wat
+    EditDependentsI {} -> wat
     FindI {} -> wat
     FindShallowI {} -> wat
     HistoryI {} -> wat
@@ -1190,66 +1194,6 @@ handleDependencies hq = do
   let terms = fmap fst . nubOrdOn snd . Name.sortByText (HQ.toText . fst) . join $ snd <$> results
   Cli.setNumberedArgs . map SA.HashQualified $ types <> terms
   Cli.respond $ ListDependencies suffixifiedPPE lds types terms
-
-handleDependents :: HQ.HashQualified Name -> Cli ()
-handleDependents hq = do
-  -- todo: add flag to handle transitive efficiently
-  lds <- resolveHQToLabeledDependencies hq
-  -- Use an unsuffixified PPE here, so we display full names (relative to the current path),
-  -- rather than the shortest possible unambiguous name.
-  names <- Cli.currentNames
-  let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
-  let fqppe = PPE.unsuffixifiedPPE pped
-  let ppe = PPE.suffixifiedPPE pped
-  when (null lds) do
-    Cli.returnEarly (LabeledReferenceNotFound hq)
-
-  results <- for (toList lds) \ld -> do
-    -- The full set of dependent references, any number of which may not have names in the current namespace.
-    dependents <-
-      let tp = Codebase.dependents Queries.ExcludeOwnComponent
-          tm = \case
-            Referent.Ref r -> Codebase.dependents Queries.ExcludeOwnComponent r
-            Referent.Con (ConstructorReference r _cid) _ct ->
-              Codebase.dependents Queries.ExcludeOwnComponent r
-       in Cli.runTransaction (LD.fold tp tm ld)
-    let -- True is term names, False is type names
-        results :: [(Bool, HQ.HashQualified Name, Reference)]
-        results = do
-          r <- Set.toList dependents
-          Just (isTerm, hq) <- [(True,) <$> PPE.terms fqppe (Referent.Ref r), (False,) <$> PPE.types fqppe r]
-          fullName <- [HQ'.toName hq]
-          guard (not (Name.beginsWithSegment fullName NameSegment.libSegment))
-          Just shortName <- pure $ PPE.terms ppe (Referent.Ref r) <|> PPE.types ppe r
-          pure (isTerm, HQ'.toHQ shortName, r)
-    pure results
-  let sort = fmap fst . nubOrdOn snd . Name.sortByText (HQ.toText . fst)
-  let types = sort [(n, r) | (False, n, r) <- join results]
-  let terms = sort [(n, r) | (True, n, r) <- join results]
-  Cli.setNumberedArgs . map SA.HashQualified $ types <> terms
-  Cli.respond (ListDependents ppe lds types terms)
-
--- todo: compare to `getHQTerms` / `getHQTypes`.  Is one universally better?
-resolveHQToLabeledDependencies :: HQ.HashQualified Name -> Cli (Set LabeledDependency)
-resolveHQToLabeledDependencies = \case
-  HQ.NameOnly n -> do
-    names <- Cli.currentNames
-    let terms, types :: Set LabeledDependency
-        terms = Set.map LD.referent . Name.searchBySuffix n $ Names.terms names
-        types = Set.map LD.typeRef . Name.searchBySuffix n $ Names.types names
-    pure $ terms <> types
-  -- rationale: the hash should be unique enough that the name never helps
-  HQ.HashQualified _n sh -> resolveHashOnly sh
-  HQ.HashOnly sh -> resolveHashOnly sh
-  where
-    resolveHashOnly sh = do
-      Cli.Env {codebase} <- ask
-      (terms, types) <-
-        Cli.runTransaction do
-          terms <- Backend.termReferentsByShortHash codebase sh
-          types <- Backend.typeReferencesByShortHash sh
-          pure (terms, types)
-      pure $ Set.map LD.referent terms <> Set.map LD.typeRef types
 
 doDisplay :: OutputLocation -> Names -> Term Symbol () -> Cli ()
 doDisplay outputLoc names tm = do

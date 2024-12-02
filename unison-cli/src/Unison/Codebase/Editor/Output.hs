@@ -16,7 +16,6 @@ module Unison.Codebase.Editor.Output
     UpdateOrUpgrade (..),
     isFailure,
     isNumberedFailure,
-    MergeProgress (..),
   )
 where
 
@@ -441,15 +440,9 @@ data Output
   | ConflictedDefn !Text {- what operation? -} !(Defn (Conflicted Name Referent) (Conflicted Name TypeReference))
   | IncoherentDeclDuringMerge !MergeSourceOrTarget !IncoherentDeclReason
   | IncoherentDeclDuringUpdate !IncoherentDeclReason
-  | MergeProgress !MergeProgress
-
-data MergeProgress
-  = MergeProgress'LoadingBranches
-  | MergeProgress'DiffingBranches
-  | MergeProgress'LoadingDependents
-  | MergeProgress'LoadingAndMergingLibdeps
-  | MergeProgress'RenderingUnisonFile
-  | MergeProgress'TypecheckingUnisonFile
+  | -- | A literal output message. Use this if it's too cumbersome to create a new Output constructor, e.g. for
+    -- ephemeral progress messages that are just simple strings like "Loading branch..."
+    Literal !(P.Pretty P.ColorText)
 
 data MoreEntriesThanShown = MoreEntriesThanShown | AllEntriesShown
   deriving (Eq, Show)
@@ -690,7 +683,7 @@ isFailure o = case o of
   ConflictedDefn {} -> True
   IncoherentDeclDuringMerge {} -> True
   IncoherentDeclDuringUpdate {} -> True
-  MergeProgress _ -> False
+  Literal _ -> False
 
 isNumberedFailure :: NumberedOutput -> Bool
 isNumberedFailure = \case

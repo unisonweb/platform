@@ -468,14 +468,28 @@ termsOfTypeByReference c r =
     . Set.map (fmap Reference.DerivedId)
     <$> termsOfTypeImpl c r
 
-filterTermsByReferentHavingType :: (Var v) => Codebase m v a -> Type v a -> Set Referent.Referent -> Sqlite.Transaction (Set Referent.Referent)
+filterTermsByReferentHavingType ::
+  (Var v) =>
+  Codebase m v a ->
+  Type v a ->
+  Set Referent.Referent ->
+  Sqlite.Transaction (Set Referent.Referent)
 filterTermsByReferentHavingType c ty = filterTermsByReferentHavingTypeByReference c $ Hashing.typeToReference ty
 
-filterTermsByReferenceIdHavingType :: (Var v) => Codebase m v a -> Type v a -> Set TermReferenceId -> Sqlite.Transaction (Set TermReferenceId)
+filterTermsByReferenceIdHavingType ::
+  (Var v) =>
+  Codebase m v a ->
+  Type v a ->
+  Set TermReferenceId ->
+  Sqlite.Transaction (Set TermReferenceId)
 filterTermsByReferenceIdHavingType c ty = filterTermsByReferenceIdHavingTypeImpl c (Hashing.typeToReference ty)
 
 -- | Find the subset of `tms` which match the exact type `r` points to.
-filterTermsByReferentHavingTypeByReference :: Codebase m v a -> TypeReference -> Set Referent.Referent -> Sqlite.Transaction (Set Referent.Referent)
+filterTermsByReferentHavingTypeByReference ::
+  Codebase m v a ->
+  TypeReference ->
+  Set Referent.Referent ->
+  Sqlite.Transaction (Set Referent.Referent)
 filterTermsByReferentHavingTypeByReference c r tms = do
   let (builtins, derived) = partitionEithers . map p $ Set.toList tms
   let builtins' =
