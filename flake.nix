@@ -33,7 +33,7 @@
         vscodeSettings."haskell.toolchain"
         ## There are some things we want to pin that the VS Code Haskell extension doesn’t let us control.
         // {
-        hpack = "0.35.2";
+        hpack = "0.36.1";
         ormolu = "0.7.2.0";
       };
       pkgs = import nixpkgs-haskellNix {
