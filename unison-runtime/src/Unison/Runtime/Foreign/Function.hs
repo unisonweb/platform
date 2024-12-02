@@ -17,7 +17,6 @@ import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM (TVar)
 import Control.Exception (evaluate)
 import Data.Atomics (Ticket)
-import Data.Char qualified as Char
 import Data.Foldable (toList)
 import Data.IORef (IORef)
 import Data.Sequence qualified as Sq
@@ -29,7 +28,7 @@ import Network.UDP (UDPSocket)
 import System.IO (BufferMode (..), Handle, IOMode, SeekMode)
 import Unison.Builtin.Decls qualified as Ty
 import Unison.Reference (Reference)
-import Unison.Runtime.ANF (Code, Value, internalBug)
+import Unison.Runtime.ANF (Code, PackedTag (..), Value, internalBug)
 import Unison.Runtime.Array qualified as PA
 import Unison.Runtime.Exception
 import Unison.Runtime.Foreign
@@ -88,11 +87,11 @@ mkForeign ev = FF readArgs writeForeign ev
             "mkForeign: too many arguments for foreign function"
 
 instance ForeignConvention Int where
-  readForeign (i : args) stk = (args,) <$> upeekOff stk i
+  readForeign (i : args) stk = (args,) <$> peekOffI stk i
   readForeign [] _ = foreignCCError "Int"
   writeForeign stk i = do
     stk <- bump stk
-    stk <$ upoke stk i
+    stk <$ pokeI stk i
 
 instance ForeignConvention Word64 where
   readForeign (i : args) stk = (args,) <$> peekOffN stk i
@@ -100,6 +99,8 @@ instance ForeignConvention Word64 where
   writeForeign stk n = do
     stk <- bump stk
     stk <$ pokeN stk n
+
+-- We don't have a clear mapping from these types to Unison types, most are just mapped to Nats.
 
 instance ForeignConvention Word8 where
   readForeign = readForeignAs (fromIntegral :: Word64 -> Word8)
@@ -114,11 +115,18 @@ instance ForeignConvention Word32 where
   writeForeign = writeForeignAs (fromIntegral :: Word32 -> Word64)
 
 instance ForeignConvention Char where
-  readForeign (i : args) stk = (args,) . Char.chr <$> upeekOff stk i
+  readForeign (i : args) stk = (args,) <$> peekOffC stk i
   readForeign [] _ = foreignCCError "Char"
   writeForeign stk ch = do
     stk <- bump stk
-    stk <$ upoke stk (Char.ord ch)
+    stk <$ pokeC stk ch
+
+instance ForeignConvention Val where
+  readForeign (i : args) stk = (args,) <$> peekOff stk i
+  readForeign [] _ = foreignCCError "Val"
+  writeForeign stk v = do
+    stk <- bump stk
+    stk <$ (poke stk =<< evaluate v)
 
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
@@ -167,18 +175,18 @@ instance (ForeignConvention a) => ForeignConvention (Maybe a) where
 
   writeForeign stk Nothing = do
     stk <- bump stk
-    stk <$ upoke stk 0
+    stk <$ pokeTag stk 0
   writeForeign stk (Just x) = do
     stk <- writeForeign stk x
     stk <- bump stk
-    stk <$ upoke stk 1
+    stk <$ pokeTag stk 1
 
 instance
   (ForeignConvention a, ForeignConvention b) =>
   ForeignConvention (Either a b)
   where
   readForeign (i : args) stk =
-    upeekOff stk i >>= \case
+    peekTagOff stk i >>= \case
       0 -> readForeignAs Left args stk
       1 -> readForeignAs Right args stk
       _ -> foreignCCError "Either"
@@ -187,11 +195,11 @@ instance
   writeForeign stk (Left a) = do
     stk <- writeForeign stk a
     stk <- bump stk
-    stk <$ upoke stk 0
+    stk <$ pokeTag stk 0
   writeForeign stk (Right b) = do
     stk <- writeForeign stk b
     stk <- bump stk
-    stk <$ upoke stk 1
+    stk <$ pokeTag stk 1
 
 ioeDecode :: Int -> IOErrorType
 ioeDecode 0 = AlreadyExists
@@ -394,7 +402,7 @@ instance
     stk <- writeForeign stk b
     writeForeign stk a
 
-no'buf, line'buf, block'buf, sblock'buf :: Int
+no'buf, line'buf, block'buf, sblock'buf :: Word64
 no'buf = fromIntegral Ty.bufferModeNoBufferingId
 line'buf = fromIntegral Ty.bufferModeLineBufferingId
 block'buf = fromIntegral Ty.bufferModeBlockBufferingId
@@ -402,7 +410,7 @@ sblock'buf = fromIntegral Ty.bufferModeSizedBlockBufferingId
 
 instance ForeignConvention BufferMode where
   readForeign (i : args) stk =
-    upeekOff stk i >>= \case
+    peekOffN stk i >>= \case
       t
         | t == no'buf -> pure (args, NoBuffering)
         | t == line'buf -> pure (args, LineBuffering)
@@ -418,45 +426,55 @@ instance ForeignConvention BufferMode where
   writeForeign stk bm =
     bump stk >>= \stk ->
       case bm of
-        NoBuffering -> stk <$ upoke stk no'buf
-        LineBuffering -> stk <$ upoke stk line'buf
-        BlockBuffering Nothing -> stk <$ upoke stk block'buf
+        NoBuffering -> stk <$ pokeN stk no'buf
+        LineBuffering -> stk <$ pokeN stk line'buf
+        BlockBuffering Nothing -> stk <$ pokeN stk block'buf
         BlockBuffering (Just n) -> do
-          upoke stk n
+          pokeI stk n
           stk <- bump stk
-          stk <$ upoke stk sblock'buf
+          stk <$ pokeN stk sblock'buf
 
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
-instance ForeignConvention [Closure] where
+instance {-# OVERLAPPING #-} ForeignConvention [Val] where
   readForeign (i : args) stk =
     (args,) . toList <$> peekOffS stk i
-  readForeign _ _ = foreignCCError "[Closure]"
+  readForeign _ _ = foreignCCError "[Val]"
   writeForeign stk l = do
     stk <- bump stk
     stk <$ pokeS stk (Sq.fromList l)
+
+-- In reality this fixes the type to be 'RClosure', but allows us to defer
+-- the typechecker a bit and avoid a bunch of annoying type annotations.
+instance {-# OVERLAPPING #-} ForeignConvention [Closure] where
+  readForeign (i : args) stk =
+    (args,) . fmap getBoxedVal . toList <$> peekOffS stk i
+  readForeign _ _ = foreignCCError "[Closure]"
+  writeForeign stk l = do
+    stk <- bump stk
+    stk <$ pokeS stk (Sq.fromList . fmap BoxedVal $ l)
 
 instance ForeignConvention [Foreign] where
   readForeign = readForeignAs (fmap marshalToForeign)
   writeForeign = writeForeignAs (fmap Foreign)
 
-instance ForeignConvention (MVar Closure) where
+instance ForeignConvention (MVar Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap mvarRef)
 
-instance ForeignConvention (TVar Closure) where
+instance ForeignConvention (TVar Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap tvarRef)
 
-instance ForeignConvention (IORef Closure) where
+instance ForeignConvention (IORef Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap refRef)
 
-instance ForeignConvention (Ticket Closure) where
+instance ForeignConvention (Ticket Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap ticketRef)
 
-instance ForeignConvention (Promise Closure) where
+instance ForeignConvention (Promise Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap promiseRef)
 
@@ -472,7 +490,7 @@ instance ForeignConvention Foreign where
   readForeign = readForeignAs marshalToForeign
   writeForeign = writeForeignAs Foreign
 
-instance ForeignConvention (PA.MutableArray s Closure) where
+instance ForeignConvention (PA.MutableArray s Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap marrayRef)
 
@@ -480,7 +498,7 @@ instance ForeignConvention (PA.MutableByteArray s) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap mbytearrayRef)
 
-instance ForeignConvention (PA.Array Closure) where
+instance ForeignConvention (PA.Array Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
   writeForeign = writeForeignAs (Foreign . Wrap iarrayRef)
 
@@ -492,8 +510,8 @@ instance {-# OVERLAPPABLE #-} (BuiltinForeign b) => ForeignConvention b where
   readForeign = readForeignBuiltin
   writeForeign = writeForeignBuiltin
 
-fromUnisonPair :: Closure -> (a, b)
-fromUnisonPair (DataC _ _ [Right x, Right (DataC _ _ [Right y, Right _])]) =
+fromUnisonPair :: (BuiltinForeign a, BuiltinForeign b) => Closure -> (a, b)
+fromUnisonPair (DataC _ _ [BoxedVal x, BoxedVal (DataC _ _ [BoxedVal y, BoxedVal _unit])]) =
   (unwrapForeignClosure x, unwrapForeignClosure y)
 fromUnisonPair _ = error "fromUnisonPair: invalid closure"
 
@@ -502,10 +520,10 @@ toUnisonPair ::
 toUnisonPair (x, y) =
   DataC
     Ty.pairRef
-    0
-    [Right $ wr x, Right $ DataC Ty.pairRef 0 [Right $ wr y, Right $ un]]
+    (PackedTag 0)
+    [BoxedVal $ wr x, BoxedVal $ DataC Ty.pairRef (PackedTag 0) [BoxedVal $ wr y, BoxedVal $ un]]
   where
-    un = DataC Ty.unitRef 0 []
+    un = DataC Ty.unitRef (PackedTag 0) []
     wr z = Foreign $ wrapBuiltin z
 
 unwrapForeignClosure :: Closure -> a
@@ -514,25 +532,25 @@ unwrapForeignClosure = unwrapForeign . marshalToForeign
 instance {-# OVERLAPPABLE #-} (BuiltinForeign a, BuiltinForeign b) => ForeignConvention [(a, b)] where
   readForeign (i : args) stk =
     (args,)
-      . fmap fromUnisonPair
+      . fmap (fromUnisonPair . getBoxedVal)
       . toList
       <$> peekOffS stk i
   readForeign _ _ = foreignCCError "[(a,b)]"
 
   writeForeign stk l = do
     stk <- bump stk
-    stk <$ pokeS stk (toUnisonPair <$> Sq.fromList l)
+    stk <$ pokeS stk (boxedVal . toUnisonPair <$> Sq.fromList l)
 
 instance {-# OVERLAPPABLE #-} (BuiltinForeign b) => ForeignConvention [b] where
   readForeign (i : args) stk =
     (args,)
-      . fmap unwrapForeignClosure
+      . fmap (unwrapForeignClosure . getBoxedVal)
       . toList
       <$> peekOffS stk i
   readForeign _ _ = foreignCCError "[b]"
   writeForeign stk l = do
     stk <- bump stk
-    stk <$ pokeS stk (Foreign . wrapBuiltin <$> Sq.fromList l)
+    stk <$ pokeS stk (boxedVal . Foreign . wrapBuiltin <$> Sq.fromList l)
 
 foreignCCError :: String -> IO a
 foreignCCError nm =

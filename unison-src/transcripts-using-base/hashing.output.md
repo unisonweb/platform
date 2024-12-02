@@ -37,8 +37,8 @@ scratch/main> ls builtin.Bytes
   30. toBase64UrlUnpadded   (Bytes -> Bytes)
   31. toList                (Bytes -> [Nat])
   32. zlib/                 (2 terms)
-
 ```
+
 Notice the `fromBase16` and `toBase16` functions. Here's some convenience functions for converting `Bytes` to and from base-16 `Text`.
 
 ## API overview
@@ -74,14 +74,13 @@ ex5 = crypto.hmac Sha2_256 mysecret f |> hex
 > ex5
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       ex1      : Text
@@ -92,31 +91,31 @@ ex5 = crypto.hmac Sha2_256 mysecret f |> hex
       f        : x -> x
         (also named id)
       mysecret : Bytes
-  
+
   Now evaluating any watch expressions (lines starting with
   `>`)... Ctrl+C cancels.
 
     22 | > ex1
            ⧩
            "f3c342040674c50ab45cb1874b6dbc81447af5958201ed4127e03b56725664d7cc44b88b9afadb371898fcaf5d0adeff60837ef93b514f99da43539d79820c99"
-  
+
     23 | > ex2
            ⧩
            "84bb437497f26fc33c51e57e64c37958c3918d50dfe75b91c661a85c2f8f8304"
-  
+
     24 | > ex3
            ⧩
            "c692fc54df921f7fa51aad9178327c5a097784b02212d571fb40facdfff881fd"
-  
+
     25 | > ex4
            ⧩
            "764a6e91271bce6ce8d8f49d551ba0e586a1e20d8bc2df0dff3117fcd9a11d9a"
-  
+
     26 | > ex5
            ⧩
            "abd0e845a5544ced19b1c05df18a05c10b252a355957b18b99b33970d5217de6"
-
 ```
+
 And here's the full API:
 
 ``` ucm
@@ -150,36 +149,34 @@ scratch/main> find-in builtin.crypto
                         -> Bytes
                         -> Bytes
                         -> Either Failure Boolean
-  
-
 ```
+
 Note that the universal versions of `hash` and `hmac` are currently unimplemented and will bomb at runtime:
 
 ``` unison
 > hash Sha3_256 (fromHex "3849238492")
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   ✅
-  
+
   scratch.u changed.
-  
+
   Now evaluating any watch expressions (lines starting with
   `>`)... Ctrl+C cancels.
 
     1 | > hash Sha3_256 (fromHex "3849238492")
           ⧩
           0xs1259de8ec2c8b925dce24f591ed5cc1d1a5dc01cf88cf8f2343fc9728e124af4
-
 ```
+
 ## Hashing tests
 
 Here are some test vectors (taken from [here](https://www.di-mgt.com.au/sha_testvectors.html) and [here](https://en.wikipedia.org/wiki/BLAKE_\(hash_function\))) for the various hashing algorithms:
 
-``` unison
+``` unison :hide
 ex alg input expected = checks [hashBytes alg (ascii input) == fromHex expected]
 
 test> sha3_512.tests.ex1 =
@@ -311,11 +308,15 @@ test> crypto.hash.numTests =
         checks (List.map t (range 0 20))
 ```
 
+``` ucm :hide
+scratch/main> add
+```
+
 ``` ucm
 scratch/main> test
 
   Cached test results (`help testcache` to learn more)
-  
+
     1.  blake2b_512.tests.ex1   ◉ Passed
     2.  blake2b_512.tests.ex2   ◉ Passed
     3.  blake2b_512.tests.ex3   ◉ Passed
@@ -341,12 +342,12 @@ scratch/main> test
     23. sha3_512.tests.ex2      ◉ Passed
     24. sha3_512.tests.ex3      ◉ Passed
     25. sha3_512.tests.ex4      ◉ Passed
-  
-  ✅ 25 test(s) passing
-  
-  Tip: Use view 1 to view the source of a test.
 
+  ✅ 25 test(s) passing
+
+  Tip: Use view 1 to view the source of a test.
 ```
+
 ## HMAC tests
 
 These test vectors are taken from [RFC 4231](https://tools.ietf.org/html/rfc4231#section-4.3).
@@ -378,14 +379,13 @@ test> hmac_sha2_512.tests.ex2 =
     "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737"
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       ex'                     : HashAlgorithm
@@ -397,27 +397,27 @@ test> hmac_sha2_512.tests.ex2 =
       hmac_sha2_256.tests.ex2 : [Result]
       hmac_sha2_512.tests.ex1 : [Result]
       hmac_sha2_512.tests.ex2 : [Result]
-  
+
   Now evaluating any watch expressions (lines starting with
   `>`)... Ctrl+C cancels.
 
     4 |   ex' Sha2_256
     
     ✅ Passed Passed
-  
+
     9 |   ex' Sha2_512
     
     ✅ Passed Passed
-  
+
     15 |   ex' Sha2_256
     
     ✅ Passed Passed
-  
+
     21 |   ex' Sha2_512
     
     ✅ Passed Passed
-
 ```
+
 ## MD5 tests
 
 Test vectors here pulled from [Wikipedia's writeup](https://en.wikipedia.org/wiki/MD5).
@@ -441,14 +441,13 @@ test> md5.tests.ex3 =
     "e4d909c290d0fb1ca068ffaddf22cbd0"
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⊡ Previously added definitions will be ignored: ex
     
     ⍟ These new definitions are ok to `add`:
@@ -456,28 +455,32 @@ test> md5.tests.ex3 =
       md5.tests.ex1 : [Result]
       md5.tests.ex2 : [Result]
       md5.tests.ex3 : [Result]
-  
+
   Now evaluating any watch expressions (lines starting with
   `>`)... Ctrl+C cancels.
 
     4 |   ex Md5
     
     ✅ Passed Passed
-  
+
     9 |   ex Md5
     
     ✅ Passed Passed
-  
+
     14 |   ex Md5
     
     ✅ Passed Passed
-
 ```
+
+``` ucm :hide
+scratch/main> add
+```
+
 ``` ucm
 scratch/main> test
 
   Cached test results (`help testcache` to learn more)
-  
+
     1.  blake2b_512.tests.ex1   ◉ Passed
     2.  blake2b_512.tests.ex2   ◉ Passed
     3.  blake2b_512.tests.ex3   ◉ Passed
@@ -506,9 +509,8 @@ scratch/main> test
     26. sha3_512.tests.ex2      ◉ Passed
     27. sha3_512.tests.ex3      ◉ Passed
     28. sha3_512.tests.ex4      ◉ Passed
-  
-  ✅ 28 test(s) passing
-  
-  Tip: Use view 1 to view the source of a test.
 
+  ✅ 28 test(s) passing
+
+  Tip: Use view 1 to view the source of a test.
 ```

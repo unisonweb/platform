@@ -47,6 +47,8 @@ import Unison.Prelude
 import Unison.PrettyTerminal
 import Unison.Runtime.IOSource qualified as IOSource
 import Unison.Server.CodebaseServer qualified as Server
+import Unison.Share.Codeserver (isCustomCodeserver)
+import Unison.Share.Codeserver qualified as Codeserver
 import Unison.Symbol (Symbol)
 import Unison.Syntax.Parser qualified as Parser
 import Unison.Util.Pretty qualified as P
@@ -75,10 +77,17 @@ getUserInput codebase authHTTPClient pp currentProjectRoot numberedArgs =
       Line.handleInterrupt (pure Nothing) (Line.withInterrupt (Just <$> act)) >>= \case
         Nothing -> haskelineCtrlCHandling act
         Just a -> pure a
+
+    codeserverPrompt :: String
+    codeserverPrompt =
+      if isCustomCodeserver Codeserver.defaultCodeserver
+        then "🌐" <> Codeserver.codeserverRegName Codeserver.defaultCodeserver <> maybe "" (":" <>) (show <$> Codeserver.codeserverPort Codeserver.defaultCodeserver) <> "\n"
+        else ""
+
     go :: Line.InputT IO Input
     go = do
       let promptString = P.prettyProjectPath pp
-      let fullPrompt = P.toANSI 80 (promptString <> fromString prompt)
+      let fullPrompt = P.toANSI 80 (P.red (P.string codeserverPrompt) <> promptString <> fromString prompt)
       line <- Line.getInputLine fullPrompt
       case line of
         Nothing -> pure QuitI

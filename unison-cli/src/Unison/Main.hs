@@ -72,6 +72,7 @@ import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.ProjectPath qualified as PP
 import Unison.Codebase.Runtime qualified as Rt
 import Unison.Codebase.SqliteCodebase qualified as SC
+import Unison.Codebase.Transcript.Parser qualified as Transcript
 import Unison.Codebase.Transcript.Runner qualified as Transcript
 import Unison.Codebase.Verbosity qualified as Verbosity
 import Unison.CommandLine.Helpers (plural')
@@ -435,7 +436,7 @@ runTranscripts' version progName nativeRtp transcriptDir markdownFiles = do
                       Transcript.RunFailure msg ->
                         ( [ P.indentN 2 $ "An error occurred while running the following file: " <> P.string fileName,
                             "",
-                            P.indentN 2 (P.text msg),
+                            P.indentN 2 (P.text . Transcript.formatStanzas $ toList msg),
                             P.string $
                               "Run `"
                                 <> progName
@@ -444,10 +445,10 @@ runTranscripts' version progName nativeRtp transcriptDir markdownFiles = do
                                 <> "` "
                                 <> "to do more work with it."
                           ],
-                          msg
+                          Transcript.formatStanzas $ toList msg
                         )
                   )
-                  pure
+                  (pure . Transcript.formatStanzas . toList)
                   result
               writeUtf8 outputFile output
               putStrLn $ "💾  Wrote " <> outputFile

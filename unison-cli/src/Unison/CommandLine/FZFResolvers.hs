@@ -175,9 +175,9 @@ projectBranchOptions codebase projCtx _searchBranch0 = do
     & foldMap
       ( \(names, projIds) ->
           if projIds.project == projCtx.project.projectId
-            -- If the branch is in the current project, put a shortened version of the branch name first,
+            then -- If the branch is in the current project, put a shortened version of the branch name first,
             -- then the long-form name at the end of the list (in case the user still types the full name)
-            then [(0 :: Int, "/" <> into @Text names.branch), (2, into @Text names)]
+              [(0 :: Int, "/" <> into @Text names.branch), (2, into @Text names)]
             else [(1, into @Text names)]
       )
     -- Put branches in this project first.

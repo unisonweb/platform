@@ -4,28 +4,25 @@ When an error is encountered in a `unison :hide:all` block
 then the transcript parser should print the stanza
 and surface a helpful message.
 
-``` unison
+``` unison :hide:all
 g 3
 ```
-
-
 
 🛑
 
 The transcript failed due to an error in the stanza above. The error is:
 
+``` 
+This looks like the start of an expression here 
 
-  This looks like the start of an expression here 
-  
-      1 | g 3
-  
-  but at the file top-level, I expect one of the following:
-  
-    - A binding, like g = 42 OR
-                      g : Nat
-                      g = 42
-    - A watch expression, like > g + 1
-    - An `ability` declaration, like unique ability Foo where ...
-    - A `type` declaration, like structural type Optional a = None | Some a
-  
+    1 | g 3
 
+but at the file top-level, I expect one of the following:
+
+  - A binding, like g = 42 OR
+                    g : Nat
+                    g = 42
+  - A watch expression, like > g + 1
+  - An `ability` declaration, like unique ability Foo where ...
+  - A `type` declaration, like structural type Optional a = None | Some a
+```

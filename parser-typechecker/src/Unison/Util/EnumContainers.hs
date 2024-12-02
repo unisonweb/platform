@@ -32,6 +32,7 @@ module Unison.Util.EnumContainers
 where
 
 import Data.Bifunctor
+import Data.Functor.Classes (Eq1, Ord1)
 import Data.IntMap.Strict qualified as IM
 import Data.IntSet qualified as IS
 import Data.Word (Word16, Word64)
@@ -60,7 +61,9 @@ newtype EnumMap k a = EM (IM.IntMap a)
     )
   deriving newtype
     ( Monoid,
-      Semigroup
+      Semigroup,
+      Eq1,
+      Ord1
     )
 
 newtype EnumSet k = ES IS.IntSet

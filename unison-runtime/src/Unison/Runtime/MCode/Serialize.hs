@@ -17,10 +17,12 @@ import Data.Bytes.VarInt
 import Data.Void (Void)
 import Data.Word (Word64)
 import GHC.Exts (IsList (..))
+import Unison.Runtime.ANF (PackedTag (..))
 import Unison.Runtime.Array (PrimArray)
 import Unison.Runtime.MCode hiding (MatchT)
 import Unison.Runtime.Serialize
 import Unison.Util.Text qualified as Util.Text
+import Prelude hiding (getChar, putChar)
 
 data CombT = LamT | CachedClosureT
 
@@ -32,12 +34,18 @@ instance Tag CombT where
   word2tag 1 = pure CachedClosureT
   word2tag n = unknownTag "CombT" n
 
+putPackedTag :: (MonadPut m) => PackedTag -> m ()
+putPackedTag (PackedTag w) = pWord w
+
+getPackedTag :: (MonadGet m) => m PackedTag
+getPackedTag = PackedTag <$> gWord
+
 putComb :: (MonadPut m) => (clos -> m ()) -> GComb clos comb -> m ()
 putComb pClos = \case
   (Lam a f body) ->
     putTag LamT *> pInt a *> pInt f *> putSection body
-  (CachedClosure w c) ->
-    putTag CachedClosureT *> putNat w *> pClos c
+  (CachedVal w v) ->
+    putTag CachedClosureT *> putNat w *> pClos v
 
 getComb :: (MonadGet m) => m (GComb Void CombIx)
 getComb =
@@ -152,7 +160,6 @@ data InstrT
   | AtomicallyT
   | SeqT
   | TryForceT
-  | BLitT
 
 instance Tag InstrT where
   tag2word UPrim1T = 0
@@ -172,7 +179,6 @@ instance Tag InstrT where
   tag2word AtomicallyT = 14
   tag2word SeqT = 15
   tag2word TryForceT = 16
-  tag2word BLitT = 17
 
   word2tag 0 = pure UPrim1T
   word2tag 1 = pure UPrim2T
@@ -191,7 +197,6 @@ instance Tag InstrT where
   word2tag 14 = pure AtomicallyT
   word2tag 15 = pure SeqT
   word2tag 16 = pure TryForceT
-  word2tag 17 = pure BLitT
   word2tag n = unknownTag "InstrT" n
 
 putInstr :: (MonadPut m) => GInstr cix -> m ()
@@ -205,9 +210,8 @@ putInstr = \case
   (Capture w) -> putTag CaptureT *> pWord w
   (Name r a) -> putTag NameT *> putRef r *> putArgs a
   (Info s) -> putTag InfoT *> serialize s
-  (Pack r w a) -> putTag PackT *> putReference r *> pWord w *> putArgs a
+  (Pack r w a) -> putTag PackT *> putReference r *> putPackedTag w *> putArgs a
   (Lit l) -> putTag LitT *> putLit l
-  (BLit r tt l) -> putTag BLitT *> putReference r *> putNat tt *> putLit l
   (Print i) -> putTag PrintT *> pInt i
   (Reset s) -> putTag ResetT *> putEnumSet pWord s
   (Fork i) -> putTag ForkT *> pInt i
@@ -227,9 +231,8 @@ getInstr =
     CaptureT -> Capture <$> gWord
     NameT -> Name <$> getRef <*> getArgs
     InfoT -> Info <$> deserialize
-    PackT -> Pack <$> getReference <*> gWord <*> getArgs
+    PackT -> Pack <$> getReference <*> getPackedTag <*> getArgs
     LitT -> Lit <$> getLit
-    BLitT -> BLit <$> getReference <*> getNat <*> getLit
     PrintT -> Print <$> gInt
     ResetT -> Reset <$> getEnumSet gWord
     ForkT -> Fork <$> gInt
@@ -311,24 +314,30 @@ putCombIx (CIx r n i) = putReference r *> pWord n *> pWord i
 getCombIx :: (MonadGet m) => m CombIx
 getCombIx = CIx <$> getReference <*> gWord <*> gWord
 
-data MLitT = MIT | MDT | MTT | MMT | MYT
+data MLitT = MIT | MNT | MCT | MDT | MTT | MMT | MYT
 
 instance Tag MLitT where
   tag2word MIT = 0
-  tag2word MDT = 1
-  tag2word MTT = 2
-  tag2word MMT = 3
-  tag2word MYT = 4
+  tag2word MNT = 1
+  tag2word MCT = 2
+  tag2word MDT = 3
+  tag2word MTT = 4
+  tag2word MMT = 5
+  tag2word MYT = 6
 
   word2tag 0 = pure MIT
-  word2tag 1 = pure MDT
-  word2tag 2 = pure MTT
-  word2tag 3 = pure MMT
-  word2tag 4 = pure MYT
+  word2tag 1 = pure MNT
+  word2tag 2 = pure MCT
+  word2tag 3 = pure MDT
+  word2tag 4 = pure MTT
+  word2tag 5 = pure MMT
+  word2tag 6 = pure MYT
   word2tag n = unknownTag "MLitT" n
 
 putLit :: (MonadPut m) => MLit -> m ()
 putLit (MI i) = putTag MIT *> pInt i
+putLit (MN n) = putTag MNT *> pWord n
+putLit (MC c) = putTag MCT *> putChar c
 putLit (MD d) = putTag MDT *> putFloat d
 putLit (MT t) = putTag MTT *> putText (Util.Text.toText t)
 putLit (MM r) = putTag MMT *> putReferent r
@@ -338,6 +347,8 @@ getLit :: (MonadGet m) => m MLit
 getLit =
   getTag >>= \case
     MIT -> MI <$> gInt
+    MNT -> MN <$> gWord
+    MCT -> MC <$> getChar
     MDT -> MD <$> getFloat
     MTT -> MT . Util.Text.fromText <$> getText
     MMT -> MM <$> getReferent

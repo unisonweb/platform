@@ -6,12 +6,12 @@ module Unison.Names.ResolutionResult
   )
 where
 
+import Unison.HashQualified (HashQualified)
 import Unison.Name (Name)
 import Unison.Names (Names)
 import Unison.Prelude
 import Unison.Reference (TypeReference)
 import Unison.Referent (Referent)
-import Unison.HashQualified (HashQualified)
 
 data ResolutionError ref
   = NotFound
