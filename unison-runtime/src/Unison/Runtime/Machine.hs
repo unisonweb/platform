@@ -1645,7 +1645,7 @@ bprim1 !stk REFN i = do
   -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
   -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
   -- forcing of the values and tickets.
-  !v <- peekOff stk i
+  !v <- evaluate =<< peekOff stk i
   ref <- IORef.newIORef v
   stk <- bump stk
   pokeBi stk ref
