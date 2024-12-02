@@ -842,7 +842,7 @@ add =
     "add"
     []
     I.Visible
-    (Parameters [] . Optional [] $ Just ("definition", noCompletionsArg))
+    (Parameters [] . Optional [] $ Just ("definition", exactDefinitionArg))
     ( "`add` adds to the codebase all the definitions from the most recently "
         <> "typechecked file."
     )
@@ -854,7 +854,7 @@ previewAdd =
     "add.preview"
     []
     I.Visible
-    (Parameters [] . Optional [] $ Just ("definition", noCompletionsArg))
+    (Parameters [] . Optional [] $ Just ("definition", exactDefinitionArg))
     ( "`add.preview` previews additions to the codebase from the most recently "
         <> "typechecked file. This command only displays cached typechecking "
         <> "results. Use `load` to reparse & typecheck the file if the context "
@@ -884,7 +884,7 @@ updateOldNoPatch =
     "update.old.nopatch"
     []
     I.Visible
-    (Parameters [] . Optional [] $ Just ("definition", noCompletionsArg))
+    (Parameters [] . Optional [] $ Just ("definition", exactDefinitionArg))
     ( P.wrap
         ( makeExample' updateOldNoPatch
             <> "works like"
@@ -912,7 +912,7 @@ updateOld =
     "update.old"
     []
     I.Visible
-    (Parameters [] . Optional [("patch", patchArg)] $ Just ("definition", noCompletionsArg))
+    (Parameters [] . Optional [("patch", patchArg)] $ Just ("definition", exactDefinitionArg))
     ( P.wrap
         ( makeExample' updateOld
             <> "works like"
@@ -949,7 +949,7 @@ previewUpdate =
     "update.old.preview"
     []
     I.Visible
-    (Parameters [] . Optional [] $ Just ("definition", noCompletionsArg))
+    (Parameters [] . Optional [] $ Just ("definition", exactDefinitionArg))
     ( "`update.old.preview` previews updates to the codebase from the most "
         <> "recently typechecked file. This command only displays cached "
         <> "typechecking results. Use `load` to reparse & typecheck the file if "
@@ -1032,16 +1032,11 @@ displayTo =
           <> "prints a rendered version of the term `foo` to the given file."
     )
     $ \case
-      file : defs ->
-        maybe
-          (wrongArgsLength "at least two arguments" [file])
-          ( \defs -> do
-              file <- unsupportedStructuredArgument displayTo "a file name" file
-              names <- traverse handleHashQualifiedNameArg defs
-              pure (Input.DisplayI (Input.FileLocation file Input.AboveFold) names)
-          )
-          $ NE.nonEmpty defs
-      [] -> wrongArgsLength "at least two arguments" []
+      file : def : defs -> do
+        file <- unsupportedStructuredArgument displayTo "a file name" file
+        names <- traverse handleHashQualifiedNameArg $ def NE.:| defs
+        pure (Input.DisplayI (Input.FileLocation file Input.AboveFold) names)
+      args -> wrongArgsLength "at least two arguments" args
 
 docs :: InputPattern
 docs =
@@ -1898,7 +1893,7 @@ debugFuzzyOptions =
     "debug.fuzzy-options"
     []
     I.Hidden
-    (Parameters [] $ OnePlus ("command arguments", noCompletionsArg))
+    (Parameters [("command", commandNameArg)] . Optional [] $ Just ("arguments", noCompletionsArg))
     ( P.lines
         [ P.wrap $ "This command can be used to test and debug ucm's fuzzy-options within transcripts.",
           P.wrap $ "Write a command invocation with _ for any args you'd like to see completion options for.",
@@ -1908,7 +1903,7 @@ debugFuzzyOptions =
         ]
     )
     \case
-      (cmd : args) ->
+      cmd : args ->
         Input.DebugFuzzyOptionsI
           <$> unsupportedStructuredArgument debugFuzzyOptions "a command" cmd
           <*> traverse (unsupportedStructuredArgument debugFuzzyOptions "text") args
@@ -2469,7 +2464,8 @@ newBranchNameArg =
   ParameterType
     { typeName = "new-branch",
       suggestions = \_ _ _ _ -> pure [],
-      fzfResolver = Nothing
+      fzfResolver = Nothing,
+      isStructured = False
     }
 
 topicNameArg :: ParameterType
@@ -2478,7 +2474,8 @@ topicNameArg =
    in ParameterType
         { typeName = "topic",
           suggestions = \q _ _ _ -> pure (exactComplete q topics),
-          fzfResolver = Just $ Resolvers.fuzzySelectFromList (Text.pack <$> topics)
+          fzfResolver = Just $ Resolvers.fuzzySelectFromList (Text.pack <$> topics),
+          isStructured = False
         }
 
 helpTopics :: InputPattern
@@ -2489,7 +2486,7 @@ helpTopics =
     I.Visible
     (Parameters [] $ Optional [("topic", topicNameArg)] Nothing)
     ("`help-topics` lists all topics and `help-topics <topic>` shows an explanation of that topic.")
-    ( \case
+    \case
         [] -> Right $ Input.CreateMessage topics
         [topic] -> do
           topic <- unsupportedStructuredArgument helpTopics "a help topic" topic
@@ -2497,7 +2494,6 @@ helpTopics =
             Nothing -> Left $ "I don't know of that topic. Try `help-topics`."
             Just t -> Right $ Input.CreateMessage t
         _ -> Left $ "Use `help-topics <topic>` or `help-topics`."
-    )
   where
     topics =
       P.callout "🌻" $
@@ -3056,7 +3052,7 @@ execute =
           )
         ]
     )
-    $ \case
+    \case
       main : args ->
         Input.ExecuteI
           <$> handleHashQualifiedNameArg main
@@ -3164,7 +3160,7 @@ makeStandalone =
           )
         ]
     )
-    $ \case
+    \case
       [main, file] ->
         Input.MakeStandaloneI
           <$> unsupportedStructuredArgument makeStandalone "a file name" file
@@ -3186,7 +3182,7 @@ runScheme =
           )
         ]
     )
-    $ \case
+    \case
       main : args ->
         Input.ExecuteSchemeI
           <$> handleHashQualifiedNameArg main
@@ -3752,7 +3748,8 @@ commandNameArg =
    in ParameterType
         { typeName = "command",
           suggestions = \q _ _ _ -> pure (exactComplete q options),
-          fzfResolver = Just $ Resolvers.fuzzySelectFromList (Text.pack <$> options)
+          fzfResolver = Just $ Resolvers.fuzzySelectFromList (Text.pack <$> options),
+          isStructured = False
         }
 
 exactDefinitionArg :: ParameterType
@@ -3760,7 +3757,8 @@ exactDefinitionArg =
   ParameterType
     { typeName = "definition",
       suggestions = \q cb _http p -> Codebase.runTransaction cb (prefixCompleteTermOrType q p),
-      fzfResolver = Just Resolvers.definitionResolver
+      fzfResolver = Just Resolvers.definitionResolver,
+      isStructured = True
     }
 
 definitionQueryArg :: ParameterType
@@ -3771,7 +3769,8 @@ exactDefinitionTypeQueryArg =
   ParameterType
     { typeName = "type definition query",
       suggestions = \q cb _http p -> Codebase.runTransaction cb (prefixCompleteType q p),
-      fzfResolver = Just Resolvers.typeDefinitionResolver
+      fzfResolver = Just Resolvers.typeDefinitionResolver,
+      isStructured = True
     }
 
 exactDefinitionTypeOrTermQueryArg :: ParameterType
@@ -3779,7 +3778,8 @@ exactDefinitionTypeOrTermQueryArg =
   ParameterType
     { typeName = "type or term definition query",
       suggestions = \q cb _http p -> Codebase.runTransaction cb (prefixCompleteTermOrType q p),
-      fzfResolver = Just Resolvers.definitionResolver
+      fzfResolver = Just Resolvers.definitionResolver,
+      isStructured = True
     }
 
 exactDefinitionTermQueryArg :: ParameterType
@@ -3787,7 +3787,8 @@ exactDefinitionTermQueryArg =
   ParameterType
     { typeName = "term definition query",
       suggestions = \q cb _http p -> Codebase.runTransaction cb (prefixCompleteTerm q p),
-      fzfResolver = Just Resolvers.termDefinitionResolver
+      fzfResolver = Just Resolvers.termDefinitionResolver,
+      isStructured = True
     }
 
 patchArg :: ParameterType
@@ -3795,7 +3796,8 @@ patchArg =
   ParameterType
     { typeName = "patch",
       suggestions = \q cb _http p -> Codebase.runTransaction cb (prefixCompletePatch q p),
-      fzfResolver = Nothing
+      fzfResolver = Nothing,
+      isStructured = True
     }
 
 namespaceArg :: ParameterType
@@ -3803,7 +3805,8 @@ namespaceArg =
   ParameterType
     { typeName = "namespace",
       suggestions = \q cb _http p -> Codebase.runTransaction cb (prefixCompleteNamespace q p),
-      fzfResolver = Just Resolvers.namespaceResolver
+      fzfResolver = Just Resolvers.namespaceResolver,
+      isStructured = True
     }
 
 -- | Usually you'll want one or the other, but some commands support both right now.
@@ -3817,7 +3820,8 @@ namespaceOrProjectBranchArg config =
               [ projectAndOrBranchSuggestions config,
                 namespaceSuggestions
               ],
-      fzfResolver = Just Resolvers.projectOrBranchResolver
+      fzfResolver = Just Resolvers.projectOrBranchResolver,
+      isStructured = True
     }
 
 namespaceOrDefinitionArg :: ParameterType
@@ -3829,7 +3833,8 @@ namespaceOrDefinitionArg =
         termsTypes <- prefixCompleteTermOrType q p
         pure (List.nubOrd $ namespaces <> termsTypes),
       fzfResolver =
-        Just Resolvers.namespaceOrDefinitionResolver
+        Just Resolvers.namespaceOrDefinitionResolver,
+      isStructured = True
     }
 
 -- | A dependency name. E.g. if your project has `lib.base`, `base` would be a dependency
@@ -3840,7 +3845,8 @@ dependencyArg =
     { typeName = "project dependency",
       suggestions = \q cb _http pp -> Codebase.runTransaction cb do
         prefixCompleteNamespace q (pp & PP.path_ .~ Path.singleton NameSegment.libSegment),
-      fzfResolver = Just Resolvers.projectDependencyResolver
+      fzfResolver = Just Resolvers.projectDependencyResolver,
+      isStructured = True
     }
 
 newNameArg :: ParameterType
@@ -3848,7 +3854,8 @@ newNameArg =
   ParameterType
     { typeName = "new-name",
       suggestions = \q cb _http p -> Codebase.runTransaction cb (prefixCompleteNamespace q p),
-      fzfResolver = Nothing
+      fzfResolver = Nothing,
+      isStructured = True
     }
 
 noCompletionsArg :: ParameterType
@@ -3856,7 +3863,8 @@ noCompletionsArg =
   ParameterType
     { typeName = "word",
       suggestions = noCompletions,
-      fzfResolver = Nothing
+      fzfResolver = Nothing,
+      isStructured = False
     }
 
 filePathArg :: ParameterType
@@ -3864,7 +3872,8 @@ filePathArg =
   ParameterType
     { typeName = "file-path",
       suggestions = noCompletions,
-      fzfResolver = Nothing
+      fzfResolver = Nothing,
+      isStructured = False
     }
 
 -- | Refers to a namespace on some remote code host.
@@ -3873,7 +3882,8 @@ remoteNamespaceArg =
   ParameterType
     { typeName = "remote-namespace",
       suggestions = \input _cb http _p -> sharePathCompletion http input,
-      fzfResolver = Nothing
+      fzfResolver = Nothing,
+      isStructured = True
     }
 
 profileArg :: ParameterType
@@ -3882,7 +3892,8 @@ profileArg =
     { typeName = "profile",
       suggestions = \_input _cb _http _p ->
         pure [Line.simpleCompletion "profile"],
-      fzfResolver = Nothing
+      fzfResolver = Nothing,
+      isStructured = False
     }
 
 data ProjectInclusion = OnlyWithinCurrentProject | OnlyOutsideCurrentProject | AllProjects
@@ -4201,7 +4212,8 @@ projectAndBranchNamesArg config =
   ParameterType
     { typeName = "project-and-branch-names",
       suggestions = projectAndOrBranchSuggestions config,
-      fzfResolver = Just Resolvers.projectAndOrBranchArg
+      fzfResolver = Just Resolvers.projectAndOrBranchArg,
+      isStructured = True
     }
 
 -- | A project branch name.
@@ -4210,7 +4222,8 @@ projectBranchNameArg config =
   ParameterType
     { typeName = "project-branch-name",
       suggestions = projectAndOrBranchSuggestions config,
-      fzfResolver = Just Resolvers.projectBranchResolver
+      fzfResolver = Just Resolvers.projectBranchResolver,
+      isStructured = True
     }
 
 branchRelativePathArg :: ParameterType
@@ -4218,7 +4231,8 @@ branchRelativePathArg =
   ParameterType
     { typeName = "branch-relative-path",
       suggestions = branchRelativePathSuggestions config,
-      fzfResolver = Nothing
+      fzfResolver = Nothing,
+      isStructured = True
     }
   where
     config =
@@ -4234,7 +4248,8 @@ projectNameArg =
   ParameterType
     { typeName = "project-name",
       suggestions = \input codebase _httpClient _path -> projectNameSuggestions NoSlash input codebase,
-      fzfResolver = Just $ Resolvers.multiResolver [Resolvers.projectNameOptions]
+      fzfResolver = Just $ Resolvers.multiResolver [Resolvers.projectNameOptions],
+      isStructured = True
     }
 
 data OptionalSlash

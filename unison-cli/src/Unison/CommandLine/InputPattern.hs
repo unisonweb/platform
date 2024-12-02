@@ -11,8 +11,8 @@ module Unison.CommandLine.InputPattern
     Parameters (..),
     Argument,
     Arguments,
-    foldArgs,
     noParams,
+    foldParamsWithM,
     paramType,
     FZFResolver (..),
     Visibility (..),
@@ -89,7 +89,8 @@ data ParameterType = ParameterType
       m [Line.Completion],
     -- | If a parameter is marked as required, but no argument is provided, the fuzzy finder will be triggered if
     -- available.
-    fzfResolver :: Maybe FZFResolver
+    fzfResolver :: Maybe FZFResolver,
+    isStructured :: Bool
   }
 
 type Parameter = (ParameterDescription, ParameterType)
@@ -109,30 +110,47 @@ data Parameters = Parameters {requiredParams :: [Parameter], trailingParams :: T
 noParams :: Parameters
 noParams = Parameters [] $ Optional [] Nothing
 
--- | Aligns the pattern parameters with a set of concrete arguments.
---
---   If too many arguments are provided, it returns the overflow arguments. In addition to the fold result, it returns
---  `Parameters` representing what can still be provided (e.g., via fuzzy completion). Note that if the result
---  `Parameters` has `OnePlus` or non-`null` `requiredArgs`, the application must fail unless more arguments are
---   provided somehow.
-foldArgs :: (Parameter -> arg -> a -> a) -> a -> Parameters -> [arg] -> Either (NonEmpty arg) (Parameters, a)
-foldArgs fn z Parameters {requiredParams, trailingParams} = foldRequiredArgs requiredParams
+-- | Applies concrete arguments to a set of `Parameters`.
+foldParamsWithM ::
+  (Monad m) =>
+  -- | Each step needs to return a new incremental result, but can also return additional arguments to apply in later
+  --   steps. This allows for the expansion of an argument to multiple arguments, as with numbered arg ranges.
+  (state -> Parameter -> arg -> m (state, [arg])) ->
+  -- | The initial state.
+  state ->
+  Parameters ->
+  [arg] ->
+  -- | If too many arguments are provided, it returns `Left`, with the arguments that couldn’t be assigned to a
+  --   parameter. Otherwise, it returns a tuple of the `Parameters` that could still be applied to additional arguments
+  --   (e.g., via fuzzy completion) and the final result. If the returned `Parameters` has remaining required arguments,
+  --   they must either be provided somehow (e.g., another call to this function or fuzzy completion) or result in a
+  --   “not enough arguments” error.
+  m (Either (NonEmpty arg) (state, Parameters))
+foldParamsWithM fn z Parameters {requiredParams, trailingParams} = foldRequiredArgs z requiredParams
   where
-    foldRequiredArgs = curry \case
-      ([], as) -> foldTrailingArgs as
-      (ps, []) -> pure (Parameters ps trailingParams, z)
-      (p : ps, a : as) -> fmap (fn p a) <$> foldRequiredArgs ps as
-    foldTrailingArgs = case trailingParams of
-      Optional optParams zeroPlus -> foldOptionalArgs zeroPlus optParams
-      OnePlus param -> foldOnePlusArgs param
-    foldOptionalArgs zp = curry \case
-      (ps, []) -> pure (Parameters [] $ Optional ps zp, z)
-      ([], a : as) -> foldZeroPlusArgs zp $ a :| as
-      (p : ps, a : as) -> fmap (fn p a) <$> foldOptionalArgs zp ps as
-    foldZeroPlusArgs = maybe Left (\p -> pure . (Parameters [] . Optional [] $ pure p,) . foldr (fn p) z)
-    foldOnePlusArgs p = \case
-      [] -> pure (Parameters [] $ OnePlus p, z)
-      args -> pure (Parameters [] . Optional [] $ pure p, foldr (fn p) z args)
+    foldRequiredArgs res = curry \case
+      ([], as) -> case trailingParams of
+        Optional optParams zeroPlus -> foldOptionalArgs res zeroPlus optParams as
+        OnePlus param -> case as of
+          [] -> pure $ pure (res, Parameters [] $ OnePlus param)
+          a : args -> foldCatchallArg res param $ a :| args
+      (ps, []) -> pure $ pure (res, Parameters ps trailingParams)
+      (p : ps, a : as) -> do
+        (res', extraArgs) <- fn res p a
+        foldRequiredArgs res' ps $ extraArgs <> as
+    foldOptionalArgs res zp = curry \case
+      (ps, []) -> pure $ pure (res, Parameters [] $ Optional ps zp)
+      ([], a : as) -> maybe (pure . Left) (foldCatchallArg res) zp $ a :| as
+      (p : ps, a : as) -> do
+        (res', extraArgs) <- fn res p a
+        foldOptionalArgs res' zp ps $ extraArgs <> as
+    foldCatchallArg res p =
+      let collectRemainingArgs prevRes = \case
+            [] -> pure $ pure (prevRes, Parameters [] . Optional [] $ pure p)
+            a : args -> do
+              (res', extraArgs) <- fn prevRes p a
+              collectRemainingArgs res' $ extraArgs <> args
+       in collectRemainingArgs res . toList
 
 paramInfo :: Parameters -> Int -> Maybe (ParameterDescription, ParameterType)
 paramInfo Parameters {requiredParams, trailingParams} i =

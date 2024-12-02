@@ -714,31 +714,24 @@ loop e = do
             DebugFuzzyOptionsI command args -> do
               Cli.Env {codebase} <- ask
               currentBranch <- Branch.withoutTransitiveLibs <$> Cli.getCurrentBranch0
-              maybe
-                (Cli.respond $ DebugFuzzyOptionsNoCommand command)
-                ( \IP.InputPattern {params} ->
-                    either (Cli.respond . DebugFuzzyOptionsIncorrectArgs) snd $
-                      IP.foldArgs
-                        ( \(paramName, IP.ParameterType {fzfResolver}) arg ->
-                            ( *>
-                                if arg == "_"
-                                  then
-                                    maybe
-                                      (Cli.respond DebugFuzzyOptionsNoResolver)
-                                      ( \IP.FZFResolver {getOptions} -> do
-                                          pp <- Cli.getCurrentProjectPath
-                                          results <- liftIO $ getOptions codebase pp currentBranch
-                                          Cli.respond (DebugDisplayFuzzyOptions paramName (Text.unpack <$> results))
-                                      )
-                                      fzfResolver
-                                  else pure ()
-                            )
-                        )
-                        (pure ())
-                        params
-                        args
-                )
-                $ Map.lookup command InputPatterns.patternMap
+              case Map.lookup command InputPatterns.patternMap of
+                Just IP.InputPattern {params} ->
+                  either (Cli.respond . DebugFuzzyOptionsIncorrectArgs) (pure . fst)
+                    =<< IP.foldParamsWithM
+                      ( \_ (paramName, IP.ParameterType {fzfResolver}) arg ->
+                          if arg == "_"
+                            then case fzfResolver of
+                              Just IP.FZFResolver {getOptions} -> do
+                                pp <- Cli.getCurrentProjectPath
+                                results <- liftIO $ getOptions codebase pp currentBranch
+                                (,[]) <$> Cli.respond (DebugDisplayFuzzyOptions paramName (Text.unpack <$> results))
+                              Nothing -> (,[]) <$> Cli.respond DebugFuzzyOptionsNoResolver
+                            else pure ((), [])
+                      )
+                      ()
+                      params
+                      args
+                Nothing -> Cli.respond $ DebugFuzzyOptionsNoCommand command
             DebugFormatI -> do
               env <- ask
               void $ runMaybeT do
