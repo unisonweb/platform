@@ -15,7 +15,7 @@ import Control.Lens hiding (aside)
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import Data.List (isPrefixOf, isSuffixOf)
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty ((:|)), nonEmpty)
 import Data.Map qualified as Map
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
@@ -61,6 +61,81 @@ watchFileSystem q dir = do
     atomically . Q.enqueue q $ UnisonFileChanged (Text.pack filePath) text
   pure (cancel >> killThread t)
 
+-- | Expanding numbers is a bit complicated. Each `Parameter` expects either structured or “unstructured” arguments. So
+--   we iterate over the parameters, if it doesn’t want structured, we just preserve the string. If it does want
+--   structured, we have to expand the argument, which may result in /multiple/ structured arguments, we take the first
+--   one for the param and pass the rest along. Now, if the next param wants unstructured, but we’ve already structured
+--   it, then we’ve got an error.
+expandArguments ::
+  NumberedArgs ->
+  InputPattern.Parameters ->
+  [String] ->
+  Either (NonEmpty InputPattern.Argument) (InputPattern.Parameters, InputPattern.Arguments)
+expandArguments numberedArgs params =
+  fmap (fmap $ reverse)
+    . InputPattern.foldArgs'
+      ( \acc (_, param) arg ->
+            if InputPattern.isStructured param
+              then
+                either
+                  ( maybe
+                      (arg : acc, [])
+                      ( maybe
+                          (arg : acc, []) -- FIXME: shouldn’t be empty – error here, or enforce nonempty earlier?
+                          (\(h :| t) -> (h : acc, t))
+                          . nonEmpty
+                          . fmap pure
+                      )
+                      . expandNumber numberedArgs
+                  )
+                  ((,[]) . (: acc) . pure)
+                  arg
+              else
+                ( either
+                    Left
+                    pure -- FIXME: Should error, because we have a structured arg when we didn’t expect one
+                    arg
+                    : acc,
+                  []
+                )
+      )
+      []
+      params
+    . fmap Left
+
+reportTooManyArgs ::
+  InputPattern.Parameters -> NonEmpty InputPattern.Argument -> ExceptT (P.Pretty CT.ColorText) IO a
+reportTooManyArgs params extraArgs = do
+  let showNum n = fromMaybe (tShow n) $ Numeral.us_cardinal defaultInflection n
+  maxCount <-
+    maybe
+      ( throwError . P.text $
+          "Internal error: fuzzy finder complained that there are "
+            <> showNum (length extraArgs)
+            <> " too many arguments provided, but the command apparently allows an unbounded number of arguments."
+      )
+      pure
+      $ InputPattern.maxArgs params
+  let foundCount = showNum $ maxCount + length extraArgs
+  throwError . P.text $
+    "I expected no more than " <> showNum maxCount <> " arguments, but received " <> foundCount <> "."
+
+reportFailure :: String -> InputPattern -> P.Pretty CT.ColorText -> P.Pretty CT.ColorText
+reportFailure command pat msg =
+  P.warnCallout $
+    P.wrap "Sorry, I wasn’t sure how to process your request:"
+      <> P.newline
+      <> P.newline
+      <> P.indentN 2 msg
+      <> P.newline
+      <> P.newline
+      <> P.wrap
+        ( "You can run"
+            <> IPs.makeExample IPs.help [fromString command]
+            <> "for more information on using"
+            <> IPs.makeExampleEOS pat []
+        )
+
 parseInput ::
   Codebase IO Symbol Ann ->
   -- | Current location
@@ -85,42 +160,17 @@ parseInput codebase projPath currentProjectRoot numberedArgs patterns segments =
     [] -> throwE ""
     command : args -> case Map.lookup command patterns of
       Just pat@(InputPattern {params, help, parse}) -> do
-        let expandedNumbers :: InputPattern.Arguments
-            expandedNumbers =
-              foldMap (\arg -> maybe [Left arg] (fmap pure) $ expandNumber numberedArgs arg) args
-        lift (fzfResolve codebase projPath getCurrentBranch0 params expandedNumbers)
+        (remainingParams, expandedNumbers) <- either (reportTooManyArgs params) pure $ expandArguments numberedArgs params args
+        lift (fzfResolve codebase projPath getCurrentBranch0 remainingParams expandedNumbers)
           >>= either
             ( \case
                 NoFZFResolverForArgumentType _argDesc -> throwError help
                 NoFZFOptions argDesc -> throwError (noCompletionsMessage argDesc)
                 FZFCancelled -> pure Nothing
-                FZFOversaturated extraArgs -> do
-                  let showNum n = fromMaybe (tShow n) $ Numeral.us_cardinal defaultInflection n
-                  maxCount <- maybe (throwError . P.text $ "Internal error: fuzzy finder complained that there are " <> showNum (length extraArgs) <> " too many arguments provided, but the command apparently allows an unbounded number of arguments.") pure $ InputPattern.maxArgs params
-                  let foundCount = showNum $ maxCount + length extraArgs
-                  throwError . P.text $
-                    "I expected no more than " <> showNum maxCount <> " arguments, but received " <> foundCount <> "."
+                FZFOversaturated extraArgs -> reportTooManyArgs params extraArgs
             )
             ( \resolvedArgs -> do
-                parsedInput <-
-                  except
-                    . first
-                      ( \msg ->
-                          P.warnCallout $
-                            P.wrap "Sorry, I wasn’t sure how to process your request:"
-                              <> P.newline
-                              <> P.newline
-                              <> P.indentN 2 msg
-                              <> P.newline
-                              <> P.newline
-                              <> P.wrap
-                                ( "You can run"
-                                    <> IPs.makeExample IPs.help [fromString command]
-                                    <> "for more information on using"
-                                    <> IPs.makeExampleEOS pat []
-                                )
-                      )
-                    $ parse resolvedArgs
+                parsedInput <- except . first (reportFailure command pat) $ parse resolvedArgs
                 pure $ Just (Left command : resolvedArgs, parsedInput)
             )
       Nothing ->
@@ -157,9 +207,8 @@ expandNumber numberedArgs s =
         Nothing ->
           -- check for a range
           case (junk, moreJunk, ns) of
-            ("", "", [from, to]) ->
-              (\x y -> [x .. y]) <$> readMay from <*> readMay to
-            _ -> Nothing
+            ("", "", [from, to]) -> enumFromTo <$> readMay from <*> readMay to
+            (_, _, _) -> Nothing
 
 data FZFResolveFailure
   = NoFZFResolverForArgumentType InputPattern.ParameterDescription
@@ -179,22 +228,17 @@ fzfResolve ::
   InputPattern.Parameters ->
   InputPattern.Arguments ->
   IO (Either FZFResolveFailure InputPattern.Arguments)
-fzfResolve codebase ppCtx getCurrentBranch params args = runExceptT do
+fzfResolve codebase ppCtx getCurrentBranch InputPattern.Parameters {requiredParams, trailingParams} args = runExceptT do
   -- We resolve args in two steps, first we check that all arguments that will require a fzf
   -- resolver have one, and only if so do we prompt the user to actually do a fuzzy search.
   -- Otherwise, we might ask the user to perform a search only to realize we don't have a resolver
   -- for a later arg.
   let argumentResolvers :: [ExceptT FZFResolveFailure IO InputPattern.Arguments] =
-        either
-          (pure . throwError . FZFOversaturated)
-          ( \(InputPattern.Parameters {requiredParams, trailingParams}, args) ->
-              args
-                <> map (meh False) requiredParams
-                <> case trailingParams of
-                  InputPattern.Optional _ _ -> mempty
-                  InputPattern.OnePlus p -> pure $ meh True p
-          )
-          $ InputPattern.foldArgs (\(_, _) arg acc -> pure [arg] : acc) mempty params args
+        fmap (pure . pure) args
+          <> map (meh False) requiredParams
+          <> case trailingParams of
+            InputPattern.Optional _ _ -> mempty
+            InputPattern.OnePlus p -> pure $ meh True p
   argumentResolvers & foldMapM id
   where
     meh :: Bool -> InputPattern.Parameter -> ExceptT FZFResolveFailure IO InputPattern.Arguments

@@ -12,6 +12,7 @@ module Unison.CommandLine.InputPattern
     Argument,
     Arguments,
     foldArgs,
+    foldArgs',
     noParams,
     paramType,
     FZFResolver (..),
@@ -70,6 +71,9 @@ data InputPattern = InputPattern
     --          message, and shouldn’t plan for the context it is being output to (e.g., don’t `P.indentN` the entire
     --          message).
     parse ::
+      -- | This list is always a valid length for the pattern. It may be necessary to have a catch-all case for
+      --   coverage, but the implementation can assume that, say, a `OnePlus` parameter will always be provided at least
+      --   one argument.
       Arguments ->
       Either (P.Pretty CT.ColorText) Input
   }
@@ -87,7 +91,8 @@ data ParameterType = ParameterType
       m [Line.Completion],
     -- | If an argument is marked as required, but not provided, the fuzzy finder will be triggered if
     -- available.
-    fzfResolver :: Maybe FZFResolver
+    fzfResolver :: Maybe FZFResolver,
+    isStructured :: Bool
   }
 
 type Parameter = (ParameterDescription, ParameterType)
@@ -127,6 +132,47 @@ foldArgs fn z Parameters {requiredParams, trailingParams} = foldRequiredArgs req
     foldOnePlusArgs p = \case
       [] -> pure (Parameters [] $ OnePlus p, z)
       args -> pure (Parameters [] . Optional [] $ pure p, foldr (fn p) z args)
+
+foldArgs' ::
+  forall a arg.
+  (a -> Parameter -> arg -> (a, [arg])) ->
+  a ->
+  Parameters ->
+  [arg] ->
+  Either (NonEmpty arg) (Parameters, a)
+foldArgs' fn z Parameters {requiredParams, trailingParams} = foldRequiredArgs z requiredParams
+  where
+    foldRequiredArgs :: a -> [Parameter] -> [arg] -> Either (NonEmpty arg) (Parameters, a)
+    foldRequiredArgs res = curry \case
+      ([], as) -> foldTrailingArgs res as
+      (ps, []) -> pure (Parameters ps trailingParams, res)
+      (p : ps, a : as) ->
+        let (res', extraArgs) = fn res p a
+         in foldRequiredArgs res' ps $ extraArgs <> as
+    foldTrailingArgs :: a -> [arg] -> Either (NonEmpty arg) (Parameters, a)
+    foldTrailingArgs res = case trailingParams of
+      Optional optParams zeroPlus -> foldOptionalArgs res zeroPlus optParams
+      OnePlus param -> foldOnePlusArgs res param
+    foldOptionalArgs :: a -> Maybe Parameter -> [Parameter] -> [arg] -> Either (NonEmpty arg) (Parameters, a)
+    foldOptionalArgs res zp = curry \case
+      (ps, []) -> pure (Parameters [] $ Optional ps zp, res)
+      ([], a : as) -> foldZeroPlusArgs res zp $ a :| as
+      (p : ps, a : as) ->
+        let (res', extraArgs) = fn res p a
+         in foldOptionalArgs res' zp ps $ extraArgs <> as
+    foldZeroPlusArgs :: a -> Maybe Parameter -> NonEmpty arg -> Either (NonEmpty arg) (Parameters, a)
+    foldZeroPlusArgs res = maybe Left $ foldCatchallArg res
+    foldOnePlusArgs :: a -> Parameter -> [arg] -> Either (NonEmpty arg) (Parameters, a)
+    foldOnePlusArgs res p = \case
+      [] -> pure (Parameters [] $ OnePlus p, res)
+      a : args -> foldCatchallArg res p $ a :| args
+    foldCatchallArg :: a -> Parameter -> NonEmpty arg -> Either (NonEmpty arg) (Parameters, a)
+    foldCatchallArg res p =
+      let meh prevRes (a : args) =
+            let (res', extraArgs) = fn prevRes p a
+             in meh res' $ extraArgs <> args
+          meh prevRes [] = pure (Parameters [] . Optional [] $ pure p, prevRes)
+       in meh res . toList
 
 noParams :: Parameters
 noParams = Parameters [] $ Optional [] Nothing
