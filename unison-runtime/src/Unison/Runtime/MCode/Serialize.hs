@@ -160,6 +160,7 @@ data InstrT
   | AtomicallyT
   | SeqT
   | TryForceT
+  | RefCAST
 
 instance Tag InstrT where
   tag2word UPrim1T = 0
@@ -179,6 +180,7 @@ instance Tag InstrT where
   tag2word AtomicallyT = 14
   tag2word SeqT = 15
   tag2word TryForceT = 16
+  tag2word RefCAST = 17
 
   word2tag 0 = pure UPrim1T
   word2tag 1 = pure UPrim2T
@@ -197,6 +199,7 @@ instance Tag InstrT where
   word2tag 14 = pure AtomicallyT
   word2tag 15 = pure SeqT
   word2tag 16 = pure TryForceT
+  word2tag 17 = pure RefCAST
   word2tag n = unknownTag "InstrT" n
 
 putInstr :: (MonadPut m) => GInstr cix -> m ()
@@ -205,6 +208,7 @@ putInstr = \case
   (UPrim2 up i j) -> putTag UPrim2T *> putTag up *> pInt i *> pInt j
   (BPrim1 bp i) -> putTag BPrim1T *> putTag bp *> pInt i
   (BPrim2 bp i j) -> putTag BPrim2T *> putTag bp *> pInt i *> pInt j
+  (RefCAS i j k) -> putTag RefCAST *> pInt i *> pInt j *> pInt k
   (ForeignCall b w a) -> putTag ForeignCallT *> serialize b *> pWord w *> putArgs a
   (SetDyn w i) -> putTag SetDynT *> pWord w *> pInt i
   (Capture w) -> putTag CaptureT *> pWord w
@@ -226,6 +230,7 @@ getInstr =
     UPrim2T -> UPrim2 <$> getTag <*> gInt <*> gInt
     BPrim1T -> BPrim1 <$> getTag <*> gInt
     BPrim2T -> BPrim2 <$> getTag <*> gInt <*> gInt
+    RefCAST -> RefCAS <$> gInt <*> gInt <*> gInt
     ForeignCallT -> ForeignCall <$> deserialize <*> gWord <*> getArgs
     SetDynT -> SetDyn <$> gWord <*> gInt
     CaptureT -> Capture <$> gWord

@@ -49,12 +49,6 @@ import Data.ByteString (hGet, hGetSome, hPut)
 import Data.ByteString.Lazy qualified as L
 import Data.Default (def)
 import Data.Digest.Murmur64 (asWord64, hash64)
-import Data.IORef as SYS
-  ( IORef,
-    newIORef,
-    readIORef,
-    writeIORef,
-  )
 import Data.IP (IP)
 import Data.Map qualified as Map
 import Data.PEM (PEM, pemContent, pemParseLBS)
@@ -182,11 +176,7 @@ import Unison.Util.Bytes qualified as Bytes
 import Unison.Util.EnumContainers as EC
 import Unison.Util.RefPromise
   ( Promise,
-    Ticket,
-    casIORef,
     newPromise,
-    peekTicket,
-    readForCAS,
     readPromise,
     tryReadPromise,
     writePromise,
@@ -373,7 +363,7 @@ shli = binop SHLI
 shri = binop SHRI
 powi = binop POWI
 
-addn, subn, muln, divn, modn, shln, shrn, pown :: (Var v) => SuperNormal v
+addn, subn, muln, divn, modn, shln, shrn, pown, dropn :: (Var v) => SuperNormal v
 addn = binop ADDN
 subn = binop SUBN
 muln = binop MULN
@@ -382,6 +372,7 @@ modn = binop MODN
 shln = binop SHLN
 shrn = binop SHRN
 pown = binop POWN
+dropn = binop DRPN
 
 eqi, eqn, lti, ltn, lei, len :: (Var v) => SuperNormal v
 eqi = cmpop EQLI
@@ -490,17 +481,7 @@ i2f = unop ITOF
 n2f = unop NTOF
 
 trni :: (Var v) => SuperNormal v
-trni = unop0 4 $ \[x, z, b, tag, n] ->
-  -- TODO: Do we need to do all calculations _before_ the branch?
-  -- Should probably just replace this with an instruction.
-  TLetD z UN (TLit $ N 0)
-    . TLetD b UN (TPrm LEQI [x, z])
-    . TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt NatTag)
-    . TLetD n UN (TPrm CAST [x, tag])
-    . TMatch b
-    $ MatchIntegral
-      (mapSingleton 1 $ TVar z)
-      (Just $ TVar n)
+trni = unop TRNC
 
 modular :: (Var v) => POp -> (Bool -> ANormal v) -> SuperNormal v
 modular pop ret =
@@ -517,20 +498,6 @@ evni = modular MODI (\b -> if b then fls else tru)
 oddi = modular MODI (\b -> if b then tru else fls)
 evnn = modular MODN (\b -> if b then fls else tru)
 oddn = modular MODN (\b -> if b then tru else fls)
-
-dropn :: (Var v) => SuperNormal v
-dropn = binop0 4 $ \[x, y, b, r, tag, n] ->
-  TLetD b UN (TPrm LEQN [x, y])
-    -- TODO: Can we avoid this work until after the branch?
-    -- Should probably just replace this with an instruction.
-    . TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt NatTag)
-    . TLetD r UN (TPrm SUBN [x, y])
-    . TLetD n UN (TPrm CAST [r, tag])
-    $ ( TMatch b $
-          MatchIntegral
-            (mapSingleton 1 $ TLit $ N 0)
-            (Just $ TVar n)
-      )
 
 appendt, taket, dropt, indext, indexb, sizet, unconst, unsnoct :: (Var v) => SuperNormal v
 appendt = binop0 0 $ \[x, y] -> TPrm CATT [x, y]
@@ -1018,6 +985,54 @@ any'extract =
     \[v, v1] ->
       TMatch v $
         MatchData Ty.anyRef (mapSingleton 0 $ ([BX], TAbs v1 (TVar v1))) Nothing
+
+-- Refs
+
+ -- The docs for IORef state that IORef operations can be observed
+  -- out of order ([1]) but actually GHC does emit the appropriate
+  -- load and store barriers nowadays ([2], [3]).
+  --
+  -- [1] https://hackage.haskell.org/package/base-4.17.0.0/docs/Data-IORef.html#g:2
+  -- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
+  -- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
+ref'read :: SuperNormal Symbol
+ref'read =
+  unop0 0 $ \[ref] -> (TPrm REFR [ref])
+
+ref'write :: SuperNormal Symbol
+ref'write =
+  binop0 0 $ \[ref, val] -> (TPrm REFW [ref, val])
+
+-- In GHC, CAS returns both a Boolean and the current value of the
+-- IORef, which can be used to retry a failed CAS.
+-- This strategy is more efficient than returning a Boolean only
+-- because it uses a single call to cmpxchg in assembly (see [1]) to
+-- avoid an extra read per CAS iteration, however it's not supported
+-- in Scheme.
+-- Therefore, we adopt the more common signature that only returns a
+-- Boolean, which doesn't even suffer from spurious failures because
+-- GHC issues loads of mutable variables with memory_order_acquire
+-- (see [2])
+--
+-- [1]: https://github.com/ghc/ghc/blob/master/rts/PrimOps.cmm#L697
+-- [2]: https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L285
+ref'cas :: SuperNormal Symbol
+ref'cas =
+  Lambda [BX, BX, BX]
+    . TAbss [x, y, z]
+    . TLetD b UN (TPrm RCAS [x, y, z])
+    $ boolift b
+  where
+    (x, y, z, b) = fresh
+
+ref'ticket'read :: SuperNormal Symbol
+ref'ticket'read = unop0 0 $ TPrm TIKR
+
+ref'readForCas :: SuperNormal Symbol
+ref'readForCas = unop0 0 $ TPrm RRFC
+
+ref'new :: SuperNormal Symbol
+ref'new = unop0 0 $ TPrm REFN
 
 seek'handle :: ForeignOp
 seek'handle instr =
@@ -1895,7 +1910,14 @@ builtinLookup =
         ("validateSandboxed", (Untracked, check'sandbox)),
         ("Value.validateSandboxed", (Tracked, value'sandbox)),
         ("sandboxLinks", (Tracked, sandbox'links)),
-        ("IO.tryEval", (Tracked, try'eval))
+        ("IO.tryEval", (Tracked, try'eval)),
+        ("Ref.read", (Tracked, ref'read)),
+        ("Ref.write", (Tracked, ref'write)),
+        ("Ref.cas", (Tracked, ref'cas)),
+        ("Ref.Ticket.read", (Tracked, ref'ticket'read)),
+        ("Ref.readForCas", (Tracked, ref'readForCas)),
+        ("Scope.ref", (Untracked, ref'new)),
+        ("IO.ref", (Tracked, ref'new))
       ]
       ++ foreignWrappers
 
@@ -2393,53 +2415,6 @@ declareForeigns = do
 
   declareForeign Tracked "STM.retry" unitDirect . mkForeign $
     \() -> unsafeSTMToIO STM.retry :: IO Val
-
-  -- Scope and Ref stuff
-  declareForeign Untracked "Scope.ref" (argNDirect 1)
-    . mkForeign
-    $ \(c :: Val) -> newIORef c
-
-  declareForeign Tracked "IO.ref" (argNDirect 1)
-    . mkForeign
-    $ \(c :: Val) -> evaluate c >>= newIORef
-
-  -- The docs for IORef state that IORef operations can be observed
-  -- out of order ([1]) but actually GHC does emit the appropriate
-  -- load and store barriers nowadays ([2], [3]).
-  --
-  -- [1] https://hackage.haskell.org/package/base-4.17.0.0/docs/Data-IORef.html#g:2
-  -- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
-  -- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
-  declareForeign Untracked "Ref.read" (argNDirect 1) . mkForeign $
-    \(r :: IORef Val) -> readIORef r
-
-  declareForeign Untracked "Ref.write" arg2To0 . mkForeign $
-    \(r :: IORef Val, c :: Val) -> evaluate c >>= writeIORef r
-
-  declareForeign Tracked "Ref.readForCas" (argNDirect 1) . mkForeign $
-    \(r :: IORef Val) -> readForCAS r
-
-  declareForeign Tracked "Ref.Ticket.read" (argNDirect 1) . mkForeign $
-    \(t :: Ticket Val) -> pure $ peekTicket t
-
-  -- In GHC, CAS returns both a Boolean and the current value of the
-  -- IORef, which can be used to retry a failed CAS.
-  -- This strategy is more efficient than returning a Boolean only
-  -- because it uses a single call to cmpxchg in assembly (see [1]) to
-  -- avoid an extra read per CAS iteration, however it's not supported
-  -- in Scheme.
-  -- Therefore, we adopt the more common signature that only returns a
-  -- Boolean, which doesn't even suffer from spurious failures because
-  -- GHC issues loads of mutable variables with memory_order_acquire
-  -- (see [2])
-  --
-  -- [1]: https://github.com/ghc/ghc/blob/master/rts/PrimOps.cmm#L697
-  -- [2]: https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L285
-  declareForeign Tracked "Ref.cas" (argNToBool 3) . mkForeign $
-    \(r :: IORef Val, t :: Ticket Val, v :: Val) -> fmap fst $
-      do
-        t <- evaluate t
-        casIORef r t v
 
   declareForeign Tracked "Promise.new" unitDirect . mkForeign $
     \() -> newPromise @Val
