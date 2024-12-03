@@ -200,9 +200,9 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
       outputUcmResult :: Pretty.Pretty Pretty.ColorText -> IO ()
       outputUcmResult line = do
         hide <- hideOutput False
-        unless hide $
+        unless hide . outputUcmLine . UcmOutputLine . Text.pack $
           -- We shorten the terminal width, because "Transcript" manages a 2-space indent for output lines.
-          outputUcmLine . UcmOutputLine . Text.pack $ Pretty.toPlain (terminalWidth - 2) line
+          Pretty.toPlain (terminalWidth - 2) line
 
       maybeDieWithMsg :: String -> IO ()
       maybeDieWithMsg msg = do

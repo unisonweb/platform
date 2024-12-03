@@ -190,7 +190,7 @@ doMerge info = do
         done (Output.MergeSuccessFastForward mergeSourceAndTarget)
 
       Cli.withRespondRegion \respondRegion -> do
-        respondRegion (Output.MergeProgress Output.MergeProgress'LoadingBranches)
+        respondRegion (Output.Literal "Loading branches...")
 
         -- Load Alice/Bob/LCA causals
         causals <-
@@ -270,7 +270,7 @@ doMerge info = do
                  in bimap f g <$> blob0.defns
               )
 
-        respondRegion (Output.MergeProgress Output.MergeProgress'DiffingBranches)
+        respondRegion (Output.Literal "Computing diff between branches...")
 
         blob1 <-
           Merge.makeMergeblob1 blob0 names3 hydratedDefns & onLeft \case
@@ -292,14 +292,14 @@ doMerge info = do
 
         liftIO (debugFunctions.debugPartitionedDiff blob2.conflicts blob2.unconflicts)
 
-        respondRegion (Output.MergeProgress Output.MergeProgress'LoadingDependents)
+        respondRegion (Output.Literal "Loading dependents of changes...")
 
         dependents0 <-
           Cli.runTransaction $
             for ((,) <$> ThreeWay.forgetLca blob2.defns <*> blob2.coreDependencies) \(defns, deps) ->
               getNamespaceDependentsOf3 defns deps
 
-        respondRegion (Output.MergeProgress Output.MergeProgress'LoadingAndMergingLibdeps)
+        respondRegion (Output.Literal "Loading and merging library dependencies...")
 
         -- Load libdeps
         (mergedLibdeps, lcaLibdeps) <- do
@@ -320,7 +320,7 @@ doMerge info = do
         let hasConflicts =
               blob2.hasConflicts
 
-        respondRegion (Output.MergeProgress Output.MergeProgress'RenderingUnisonFile)
+        respondRegion (Output.Literal "Rendering Unison file...")
 
         let blob3 =
               Merge.makeMergeblob3
@@ -348,7 +348,7 @@ doMerge info = do
             else case Merge.makeMergeblob4 blob3 of
               Left _parseErr -> pure Nothing
               Right blob4 -> do
-                respondRegion (Output.MergeProgress Output.MergeProgress'TypecheckingUnisonFile)
+                respondRegion (Output.Literal "Typechecking Unison file...")
                 typeLookup <- Cli.runTransaction (Codebase.typeLookupForDependencies env.codebase blob4.dependencies)
                 pure case Merge.makeMergeblob5 blob4 typeLookup of
                   Left _typecheckErr -> Nothing

@@ -127,9 +127,10 @@ data Input
   | PullI !PullSourceTarget !PullMode
   | PushRemoteBranchI PushRemoteBranchInput
   | ResetI (BranchId2 {- namespace to reset it to -}) (Maybe UnresolvedProjectBranch {- ProjectBranch to reset -})
-  | -- todo: Q: Does it make sense to publish to not-the-root of a Github repo?
+  | -- | used in Welcome module to give directions to user
+    --
+    -- todo: Q: Does it make sense to publish to not-the-root of a Github repo?
     --          Does it make sense to fork from not-the-root of a Github repo?
-    -- used in Welcome module to give directions to user
     CreateMessage (P.Pretty P.ColorText)
   | -- Change directory.
     SwitchBranchI Path'
@@ -244,6 +245,7 @@ data Input
   | UpgradeCommitI
   | MergeCommitI
   | DebugSynhashTermI !Name
+  | EditDependentsI !(HQ.HashQualified Name)
   deriving (Eq, Show)
 
 -- | The source of a `branch` command: what to make the new branch from.
