@@ -6,7 +6,7 @@ change state atomically without locks.
 ``` unison
 casTest: '{io2.IO} [Result]
 casTest = do
-  test = do
+  testPrim = do
     ref = IO.ref 0
     ticket = Ref.readForCas ref
     v1 = Ref.cas ref ticket 5
@@ -14,8 +14,16 @@ casTest = do
     Ref.write ref 10
     v2 = Ref.cas ref ticket 15
     check "CAS fails when there was an intervening write" (not v2)
+  testBoxed = do
+    ref = IO.ref ("a", "b")
+    ticket = Ref.readForCas ref
+    v1 = Ref.cas ref ticket ("c", "d")
+    check "CAS is successful is there were no conflicting writes" v1
+    Ref.write ref ("e", "f")
+    v2 = Ref.cas ref ticket ("g", "h")
+    check "CAS fails when there was an intervening write" (not v2)
 
-  runTest test
+  runTest testPrim ++ runTest testBoxed
 ```
 
 ``` ucm :added-by-ucm
@@ -43,8 +51,10 @@ scratch/main> io.test casTest
 
     1. casTest   ◉ CAS is successful is there were no conflicting writes
                  ◉ CAS fails when there was an intervening write
+                 ◉ CAS is successful is there were no conflicting writes
+                 ◉ CAS fails when there was an intervening write
 
-  ✅ 2 test(s) passing
+  ✅ 4 test(s) passing
 
   Tip: Use view 1 to view the source of a test.
 ```

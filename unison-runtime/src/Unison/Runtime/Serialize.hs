@@ -328,6 +328,7 @@ instance Tag UPrim1 where
   tag2word FLOR = 30
   tag2word TRNF = 31
   tag2word RNDF = 32
+  tag2word TRNC = 33
 
   word2tag 0 = pure DECI
   word2tag 1 = pure DECN
@@ -362,6 +363,7 @@ instance Tag UPrim1 where
   word2tag 30 = pure FLOR
   word2tag 31 = pure TRNF
   word2tag 32 = pure RNDF
+  word2tag 33 = pure TRNC
   word2tag n = unknownTag "UPrim1" n
 
 instance Tag UPrim2 where
@@ -403,6 +405,7 @@ instance Tag UPrim2 where
   tag2word MAXF = 35
   tag2word MINF = 36
   tag2word CAST = 37
+  tag2word DRPN = 38
 
   word2tag 0 = pure ADDI
   word2tag 1 = pure ADDN
@@ -442,6 +445,7 @@ instance Tag UPrim2 where
   word2tag 35 = pure MAXF
   word2tag 36 = pure MINF
   word2tag 37 = pure CAST
+  word2tag 38 = pure DRPN
   word2tag n = unknownTag "UPrim2" n
 
 instance Tag BPrim1 where
@@ -472,6 +476,10 @@ instance Tag BPrim1 where
   tag2word TLTT = 24
   tag2word DBTX = 25
   tag2word SDBL = 26
+  tag2word REFN = 27
+  tag2word REFR = 28
+  tag2word RRFC = 29
+  tag2word TIKR = 30
 
   word2tag 0 = pure SIZT
   word2tag 1 = pure USNC
@@ -500,6 +508,10 @@ instance Tag BPrim1 where
   word2tag 24 = pure TLTT
   word2tag 25 = pure DBTX
   word2tag 26 = pure SDBL
+  word2tag 27 = pure REFN
+  word2tag 28 = pure REFR
+  word2tag 29 = pure RRFC
+  word2tag 30 = pure TIKR
   word2tag n = unknownTag "BPrim1" n
 
 instance Tag BPrim2 where
@@ -529,6 +541,7 @@ instance Tag BPrim2 where
   tag2word IXOT = 23
   tag2word IXOB = 24
   tag2word SDBV = 25
+  tag2word REFW = 26
 
   word2tag 0 = pure EQLU
   word2tag 1 = pure CMPU
@@ -556,4 +569,5 @@ instance Tag BPrim2 where
   word2tag 23 = pure IXOT
   word2tag 24 = pure IXOB
   word2tag 25 = pure SDBV
+  word2tag 26 = pure REFW
   word2tag n = unknownTag "BPrim2" n

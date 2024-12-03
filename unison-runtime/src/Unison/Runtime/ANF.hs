@@ -1291,9 +1291,11 @@ data POp
   | DECI -- dec
   | LEQI -- <=
   | EQLI -- ==
+  | TRNC -- truncate0
   -- Nat
   | ADDN -- +
   | SUBN -- -
+  | DRPN -- drop
   | MULN
   | DIVN -- /
   | MODN -- mod
@@ -1414,6 +1416,13 @@ data POp
   | TFRC -- try force
   | SDBL -- sandbox link list
   | SDBV -- sandbox check for Values
+  -- Refs
+  | REFN -- Ref.new
+  | REFR -- Ref.read
+  | REFW -- Ref.write
+  | RCAS -- Ref.cas
+  | RRFC -- Ref.readForCas
+  | TIKR -- Ref.Ticket.read
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 type ANormal = ABTN.Term ANormalF

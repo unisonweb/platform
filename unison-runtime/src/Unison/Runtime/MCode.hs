@@ -323,6 +323,7 @@ data UPrim1
   | FLOR -- floor
   | TRNF -- truncate
   | RNDF -- round
+  | TRNC -- truncate
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data UPrim2
@@ -366,6 +367,7 @@ data UPrim2
   | MAXF -- max
   | MINF -- min
   | CAST -- unboxed runtime type cast (int to nat, etc.)
+  | DRPN -- dropn
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data BPrim1
@@ -400,6 +402,11 @@ data BPrim1
   -- debug
   | DBTX -- debug text
   | SDBL -- sandbox link list
+  | -- Refs
+    REFN -- Ref.new
+  | REFR -- Ref.read
+  | RRFC
+  | TIKR
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data BPrim2
@@ -435,6 +442,8 @@ data BPrim2
   -- code
   | SDBX -- sandbox
   | SDBV -- sandbox Value
+  -- Refs
+  | REFW -- Ref.write
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data MLit
@@ -472,6 +481,9 @@ data GInstr comb
       !BPrim2
       !Int
       !Int
+  | -- Use a check-and-set ticket to update a reference
+    -- (ref stack index, ticket stack index, new value stack index)
+    RefCAS !Int !Int !Int
   | -- Call out to a Haskell function. This is considerably slower
     -- for very simple operations, hence the primops.
     ForeignCall
@@ -1196,6 +1208,7 @@ emitPOp ANF.ADDI = emitP2 ADDI
 emitPOp ANF.ADDN = emitP2 ADDN
 emitPOp ANF.SUBI = emitP2 SUBI
 emitPOp ANF.SUBN = emitP2 SUBN
+emitPOp ANF.DRPN = emitP2 DRPN
 emitPOp ANF.MULI = emitP2 MULI
 emitPOp ANF.MULN = emitP2 MULN
 emitPOp ANF.DIVI = emitP2 DIVI
@@ -1218,6 +1231,7 @@ emitPOp ANF.INCI = emitP1 INCI
 emitPOp ANF.INCN = emitP1 INCN
 emitPOp ANF.DECI = emitP1 DECI
 emitPOp ANF.DECN = emitP1 DECN
+emitPOp ANF.TRNC = emitP1 TRNC
 emitPOp ANF.TZRO = emitP1 TZRO
 emitPOp ANF.LZRO = emitP1 LZRO
 emitPOp ANF.POPC = emitP1 POPC
@@ -1323,6 +1337,13 @@ emitPOp ANF.SDBV = emitBP2 SDBV
 emitPOp ANF.EROR = emitBP2 THRO
 emitPOp ANF.TRCE = emitBP2 TRCE
 emitPOp ANF.DBTX = emitBP1 DBTX
+-- Refs
+emitPOp ANF.REFN = emitBP1 REFN
+emitPOp ANF.REFR = emitBP1 REFR
+emitPOp ANF.REFW = emitBP2 REFW
+emitPOp ANF.RCAS = refCAS
+emitPOp ANF.RRFC = emitBP1 RRFC
+emitPOp ANF.TIKR = emitBP1 TIKR
 -- non-prim translations
 emitPOp ANF.BLDS = Seq
 emitPOp ANF.FORK = \case
@@ -1379,6 +1400,13 @@ emitBP2 p a =
   internalBug $
     "wrong number of args for binary boxed primop: "
       ++ show (p, a)
+
+refCAS :: Args -> Instr
+refCAS (VArgN (primArrayToList -> [i, j, k])) = RefCAS i j k
+refCAS a =
+  internalBug $
+    "wrong number of args for refCAS: "
+      ++ show a
 
 emitDataMatching ::
   (Var v) =>
