@@ -49,12 +49,6 @@ import Data.ByteString (hGet, hGetSome, hPut)
 import Data.ByteString.Lazy qualified as L
 import Data.Default (def)
 import Data.Digest.Murmur64 (asWord64, hash64)
-import Data.IORef as SYS
-  ( IORef,
-    newIORef,
-    readIORef,
-    writeIORef,
-  )
 import Data.IP (IP)
 import Data.Map qualified as Map
 import Data.PEM (PEM, pemContent, pemParseLBS)
@@ -182,11 +176,7 @@ import Unison.Util.Bytes qualified as Bytes
 import Unison.Util.EnumContainers as EC
 import Unison.Util.RefPromise
   ( Promise,
-    Ticket,
-    casIORef,
     newPromise,
-    peekTicket,
-    readForCAS,
     readPromise,
     tryReadPromise,
     writePromise,
@@ -292,14 +282,6 @@ seqViewEmpty = TCon Ty.seqViewRef (fromIntegral Ty.seqViewEmpty) []
 seqViewElem :: (Var v) => v -> v -> ANormal v
 seqViewElem l r = TCon Ty.seqViewRef (fromIntegral Ty.seqViewElem) [l, r]
 
-boolift :: (Var v) => v -> ANormal v
-boolift v =
-  TMatch v $ MatchIntegral (mapFromList [(0, fls), (1, tru)]) Nothing
-
-notlift :: (Var v) => v -> ANormal v
-notlift v =
-  TMatch v $ MatchIntegral (mapFromList [(1, fls), (0, tru)]) Nothing
-
 unenum :: (Var v) => Int -> v -> Reference -> v -> ANormal v -> ANormal v
 unenum n v0 r v nx =
   TMatch v0 $ MatchData r cases Nothing
@@ -335,33 +317,10 @@ binop ::
 binop pop =
   binop0 0 $ \[x, y] -> TPrm pop [x, y]
 
--- | Lift a comparison op.
-cmpop :: (Var v) => POp -> SuperNormal v
-cmpop pop =
-  binop0 1 $ \[x, y, b] ->
-    TLetD b UN (TPrm pop [x, y]) $
-      boolift b
-
--- | Like `cmpop`, but swaps the arguments.
-cmpopb :: (Var v) => POp -> SuperNormal v
-cmpopb pop =
-  binop0 1 $ \[x, y, b] ->
-    TLetD b UN (TPrm pop [y, x]) $
-      boolift b
-
--- | Like `cmpop`, but negates the result.
-cmpopn :: (Var v) => POp -> SuperNormal v
-cmpopn pop =
-  binop0 1 $ \[x, y, b] ->
-    TLetD b UN (TPrm pop [x, y]) $
-      notlift b
-
--- | Like `cmpop`, but swaps arguments then negates the result.
-cmpopbn :: (Var v) => POp -> SuperNormal v
-cmpopbn pop =
-  binop0 1 $ \[x, y, b] ->
-    TLetD b UN (TPrm pop [y, x]) $
-      notlift b
+-- | Like `binop`, but swaps the arguments.
+binopSwap :: (Var v) => POp -> SuperNormal v
+binopSwap pop =
+  binop0 0 $ \[x, y] -> TPrm pop [y, x]
 
 addi, subi, muli, divi, modi, shli, shri, powi :: (Var v) => SuperNormal v
 addi = binop ADDI
@@ -373,7 +332,7 @@ shli = binop SHLI
 shri = binop SHRI
 powi = binop POWI
 
-addn, subn, muln, divn, modn, shln, shrn, pown :: (Var v) => SuperNormal v
+addn, subn, muln, divn, modn, shln, shrn, pown, dropn :: (Var v) => SuperNormal v
 addn = binop ADDN
 subn = binop SUBN
 muln = binop MULN
@@ -382,20 +341,21 @@ modn = binop MODN
 shln = binop SHLN
 shrn = binop SHRN
 pown = binop POWN
+dropn = binop DRPN
 
 eqi, eqn, lti, ltn, lei, len :: (Var v) => SuperNormal v
-eqi = cmpop EQLI
-lti = cmpopbn LEQI
-lei = cmpop LEQI
-eqn = cmpop EQLN
-ltn = cmpopbn LEQN
-len = cmpop LEQN
+eqi = binop EQLI
+lti = binop LESI
+lei = binop LEQI
+eqn = binop EQLN
+ltn = binop LESN
+len = binop LEQN
 
 gti, gtn, gei, gen :: (Var v) => SuperNormal v
-gti = cmpopn LEQI
-gei = cmpopb LEQI
-gtn = cmpopn LEQN
-gen = cmpopb LEQN
+gti = binopSwap LESI
+gei = binopSwap LEQI
+gtn = binopSwap LESN
+gen = binopSwap LEQN
 
 inci, incn :: (Var v) => SuperNormal v
 inci = unop INCI
@@ -470,12 +430,12 @@ atanhf = unop ATNH
 atan2f = binop ATN2
 
 ltf, gtf, lef, gef, eqf, neqf :: (Var v) => SuperNormal v
-ltf = cmpopbn LEQF
-gtf = cmpopn LEQF
-lef = cmpop LEQF
-gef = cmpopb LEQF
-eqf = cmpop EQLF
-neqf = cmpopn EQLF
+ltf = binop LESF
+gtf = binopSwap LESF
+lef = binop LEQF
+gef = binopSwap LEQF
+eqf = binop EQLF
+neqf = binop NEQF
 
 minf, maxf :: (Var v) => SuperNormal v
 minf = binop MINF
@@ -490,17 +450,7 @@ i2f = unop ITOF
 n2f = unop NTOF
 
 trni :: (Var v) => SuperNormal v
-trni = unop0 4 $ \[x, z, b, tag, n] ->
-  -- TODO: Do we need to do all calculations _before_ the branch?
-  -- Should probably just replace this with an instruction.
-  TLetD z UN (TLit $ N 0)
-    . TLetD b UN (TPrm LEQI [x, z])
-    . TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt NatTag)
-    . TLetD n UN (TPrm CAST [x, tag])
-    . TMatch b
-    $ MatchIntegral
-      (mapSingleton 1 $ TVar z)
-      (Just $ TVar n)
+trni = unop TRNC
 
 modular :: (Var v) => POp -> (Bool -> ANormal v) -> SuperNormal v
 modular pop ret =
@@ -517,20 +467,6 @@ evni = modular MODI (\b -> if b then fls else tru)
 oddi = modular MODI (\b -> if b then tru else fls)
 evnn = modular MODN (\b -> if b then fls else tru)
 oddn = modular MODN (\b -> if b then tru else fls)
-
-dropn :: (Var v) => SuperNormal v
-dropn = binop0 4 $ \[x, y, b, r, tag, n] ->
-  TLetD b UN (TPrm LEQN [x, y])
-    -- TODO: Can we avoid this work until after the branch?
-    -- Should probably just replace this with an instruction.
-    . TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt NatTag)
-    . TLetD r UN (TPrm SUBN [x, y])
-    . TLetD n UN (TPrm CAST [r, tag])
-    $ ( TMatch b $
-          MatchIntegral
-            (mapSingleton 1 $ TLit $ N 0)
-            (Just $ TVar n)
-      )
 
 appendt, taket, dropt, indext, indexb, sizet, unconst, unsnoct :: (Var v) => SuperNormal v
 appendt = binop0 0 $ \[x, y] -> TPrm CATT [x, y]
@@ -670,24 +606,18 @@ splitrs = binop0 3 $ \[n, s, t, l, r] ->
       ]
 
 eqt, neqt, leqt, geqt, lesst, great :: SuperNormal Symbol
-eqt = binop0 1 $ \[x, y, b] ->
-  TLetD b UN (TPrm EQLT [x, y]) $
-    boolift b
+eqt = binop EQLT
 neqt = binop0 1 $ \[x, y, b] ->
   TLetD b UN (TPrm EQLT [x, y]) $
-    notlift b
-leqt = binop0 1 $ \[x, y, b] ->
-  TLetD b UN (TPrm LEQT [x, y]) $
-    boolift b
-geqt = binop0 1 $ \[x, y, b] ->
-  TLetD b UN (TPrm LEQT [y, x]) $
-    boolift b
+    TPrm NOTB [b]
+leqt = binop LEQT
+geqt = binopSwap LEQT
 lesst = binop0 1 $ \[x, y, b] ->
   TLetD b UN (TPrm LEQT [y, x]) $
-    notlift b
+    TPrm NOTB [b]
 great = binop0 1 $ \[x, y, b] ->
   TLetD b UN (TPrm LEQT [x, y]) $
-    notlift b
+    TPrm NOTB [b]
 
 packt, unpackt :: SuperNormal Symbol
 packt = unop0 0 $ \[s] -> TPrm PAKT [s]
@@ -754,61 +684,31 @@ t2f = unop0 2 $ \[x, t, f] ->
       ]
 
 equ :: SuperNormal Symbol
-equ = binop0 1 $ \[x, y, b] ->
-  TLetD b UN (TPrm EQLU [x, y]) $
-    boolift b
+equ = binop EQLU
 
 cmpu :: SuperNormal Symbol
-cmpu = binop0 1 $ \[x, y, c] ->
-  TLetD c UN (TPrm CMPU [x, y]) $
-    (TPrm DECI [c])
+cmpu = binop CMPU
 
 ltu :: SuperNormal Symbol
-ltu = binop0 1 $ \[x, y, c] ->
-  TLetD c UN (TPrm CMPU [x, y])
-    . TMatch c
-    $ MatchIntegral
-      (mapFromList [(0, TCon Ty.booleanRef 1 [])])
-      (Just $ TCon Ty.booleanRef 0 [])
+ltu = binop LESU
 
 gtu :: SuperNormal Symbol
-gtu = binop0 1 $ \[x, y, c] ->
-  TLetD c UN (TPrm CMPU [x, y])
-    . TMatch c
-    $ MatchIntegral
-      (mapFromList [(2, TCon Ty.booleanRef 1 [])])
-      (Just $ TCon Ty.booleanRef 0 [])
+gtu = binopSwap LESU
 
 geu :: SuperNormal Symbol
-geu = binop0 1 $ \[x, y, c] ->
-  TLetD c UN (TPrm CMPU [x, y])
-    . TMatch c
-    $ MatchIntegral
-      (mapFromList [(0, TCon Ty.booleanRef 0 [])])
-      (Just $ TCon Ty.booleanRef 1 [])
+geu = binopSwap LEQU
 
 leu :: SuperNormal Symbol
-leu = binop0 1 $ \[x, y, c] ->
-  TLetD c UN (TPrm CMPU [x, y])
-    . TMatch c
-    $ MatchIntegral
-      (mapFromList [(2, TCon Ty.booleanRef 0 [])])
-      (Just $ TCon Ty.booleanRef 1 [])
+leu = binop LEQU
 
 notb :: SuperNormal Symbol
-notb = unop0 0 $ \[b] ->
-  TMatch b . flip (MatchData Ty.booleanRef) Nothing $
-    mapFromList [(0, ([], tru)), (1, ([], fls))]
+notb = unop NOTB
 
 orb :: SuperNormal Symbol
-orb = binop0 0 $ \[p, q] ->
-  TMatch p . flip (MatchData Ty.booleanRef) Nothing $
-    mapFromList [(1, ([], tru)), (0, ([], TVar q))]
+orb = binop IORB
 
 andb :: SuperNormal Symbol
-andb = binop0 0 $ \[p, q] ->
-  TMatch p . flip (MatchData Ty.booleanRef) Nothing $
-    mapFromList [(0, ([], fls)), (1, ([], TVar q))]
+andb = binop ANDB
 
 -- A runtime type-cast. Used to unsafely coerce between unboxed
 -- types at runtime without changing their representation.
@@ -907,10 +807,7 @@ debug'text =
         ]
 
 code'missing :: SuperNormal Symbol
-code'missing =
-  unop0 1 $ \[link, b] ->
-    TLetD b UN (TPrm MISS [link]) $
-      boolift b
+code'missing = unop MISS
 
 code'cache :: SuperNormal Symbol
 code'cache = unop0 0 $ \[new] -> TPrm CACH [new]
@@ -965,13 +862,7 @@ value'create :: SuperNormal Symbol
 value'create = unop0 0 $ \[x] -> TPrm VALU [x]
 
 check'sandbox :: SuperNormal Symbol
-check'sandbox =
-  Lambda [BX, BX]
-    . TAbss [refs, val]
-    . TLetD b UN (TPrm SDBX [refs, val])
-    $ boolift b
-  where
-    (refs, val, b) = fresh
+check'sandbox = binop SDBX
 
 sandbox'links :: SuperNormal Symbol
 sandbox'links = Lambda [BX] . TAbs ln $ TPrm SDBL [ln]
@@ -1018,6 +909,53 @@ any'extract =
     \[v, v1] ->
       TMatch v $
         MatchData Ty.anyRef (mapSingleton 0 $ ([BX], TAbs v1 (TVar v1))) Nothing
+
+-- Refs
+
+-- The docs for IORef state that IORef operations can be observed
+-- out of order ([1]) but actually GHC does emit the appropriate
+-- load and store barriers nowadays ([2], [3]).
+--
+-- [1] https://hackage.haskell.org/package/base-4.17.0.0/docs/Data-IORef.html#g:2
+-- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
+-- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
+ref'read :: SuperNormal Symbol
+ref'read =
+  unop0 0 $ \[ref] -> (TPrm REFR [ref])
+
+ref'write :: SuperNormal Symbol
+ref'write =
+  binop0 0 $ \[ref, val] -> (TPrm REFW [ref, val])
+
+-- In GHC, CAS returns both a Boolean and the current value of the
+-- IORef, which can be used to retry a failed CAS.
+-- This strategy is more efficient than returning a Boolean only
+-- because it uses a single call to cmpxchg in assembly (see [1]) to
+-- avoid an extra read per CAS iteration, however it's not supported
+-- in Scheme.
+-- Therefore, we adopt the more common signature that only returns a
+-- Boolean, which doesn't even suffer from spurious failures because
+-- GHC issues loads of mutable variables with memory_order_acquire
+-- (see [2])
+--
+-- [1]: https://github.com/ghc/ghc/blob/master/rts/PrimOps.cmm#L697
+-- [2]: https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L285
+ref'cas :: SuperNormal Symbol
+ref'cas =
+  Lambda [BX, BX, BX]
+    . TAbss [x, y, z]
+    $ TPrm RCAS [x, y, z]
+  where
+    (x, y, z) = fresh
+
+ref'ticket'read :: SuperNormal Symbol
+ref'ticket'read = unop0 0 $ TPrm TIKR
+
+ref'readForCas :: SuperNormal Symbol
+ref'readForCas = unop0 0 $ TPrm RRFC
+
+ref'new :: SuperNormal Symbol
+ref'new = unop0 0 $ TPrm REFN
 
 seek'handle :: ForeignOp
 seek'handle instr =
@@ -1385,8 +1323,7 @@ outIoFailBool stack1 stack2 stack3 extra fail result =
         ( 1,
           ([UN],)
             . TAbs stack3
-            . TLet (Indirect 1) extra BX (boolift stack3)
-            $ right extra
+            $ right stack3
         )
       ]
 
@@ -1476,15 +1413,6 @@ arg2To0 instr =
     $ TCon Ty.unitRef 0 []
   where
     (arg1, arg2) = fresh
-
--- ... -> Bool
-argNToBool :: Int -> ForeignOp
-argNToBool n instr =
-  (replicate n BX,)
-    . TAbss args
-    $ TLetD result UN (TFOp instr args) (boolift result)
-  where
-    (result : args) = freshes (n + 1)
 
 argNDirect :: Int -> ForeignOp
 argNDirect n instr =
@@ -1895,7 +1823,14 @@ builtinLookup =
         ("validateSandboxed", (Untracked, check'sandbox)),
         ("Value.validateSandboxed", (Tracked, value'sandbox)),
         ("sandboxLinks", (Tracked, sandbox'links)),
-        ("IO.tryEval", (Tracked, try'eval))
+        ("IO.tryEval", (Tracked, try'eval)),
+        ("Ref.read", (Tracked, ref'read)),
+        ("Ref.write", (Tracked, ref'write)),
+        ("Ref.cas", (Tracked, ref'cas)),
+        ("Ref.Ticket.read", (Tracked, ref'ticket'read)),
+        ("Ref.readForCas", (Tracked, ref'readForCas)),
+        ("Scope.ref", (Untracked, ref'new)),
+        ("IO.ref", (Tracked, ref'new))
       ]
       ++ foreignWrappers
 
@@ -2309,7 +2244,7 @@ declareForeigns = do
     . mkForeignIOF
     $ \(mv :: MVar Val, x) -> swapMVar mv x
 
-  declareForeign Tracked "MVar.isEmpty" (argNToBool 1)
+  declareForeign Tracked "MVar.isEmpty" (argNDirect 1)
     . mkForeign
     $ \(mv :: MVar Val) -> isEmptyMVar mv
 
@@ -2394,53 +2329,6 @@ declareForeigns = do
   declareForeign Tracked "STM.retry" unitDirect . mkForeign $
     \() -> unsafeSTMToIO STM.retry :: IO Val
 
-  -- Scope and Ref stuff
-  declareForeign Untracked "Scope.ref" (argNDirect 1)
-    . mkForeign
-    $ \(c :: Val) -> newIORef c
-
-  declareForeign Tracked "IO.ref" (argNDirect 1)
-    . mkForeign
-    $ \(c :: Val) -> evaluate c >>= newIORef
-
-  -- The docs for IORef state that IORef operations can be observed
-  -- out of order ([1]) but actually GHC does emit the appropriate
-  -- load and store barriers nowadays ([2], [3]).
-  --
-  -- [1] https://hackage.haskell.org/package/base-4.17.0.0/docs/Data-IORef.html#g:2
-  -- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
-  -- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
-  declareForeign Untracked "Ref.read" (argNDirect 1) . mkForeign $
-    \(r :: IORef Val) -> readIORef r
-
-  declareForeign Untracked "Ref.write" arg2To0 . mkForeign $
-    \(r :: IORef Val, c :: Val) -> evaluate c >>= writeIORef r
-
-  declareForeign Tracked "Ref.readForCas" (argNDirect 1) . mkForeign $
-    \(r :: IORef Val) -> readForCAS r
-
-  declareForeign Tracked "Ref.Ticket.read" (argNDirect 1) . mkForeign $
-    \(t :: Ticket Val) -> pure $ peekTicket t
-
-  -- In GHC, CAS returns both a Boolean and the current value of the
-  -- IORef, which can be used to retry a failed CAS.
-  -- This strategy is more efficient than returning a Boolean only
-  -- because it uses a single call to cmpxchg in assembly (see [1]) to
-  -- avoid an extra read per CAS iteration, however it's not supported
-  -- in Scheme.
-  -- Therefore, we adopt the more common signature that only returns a
-  -- Boolean, which doesn't even suffer from spurious failures because
-  -- GHC issues loads of mutable variables with memory_order_acquire
-  -- (see [2])
-  --
-  -- [1]: https://github.com/ghc/ghc/blob/master/rts/PrimOps.cmm#L697
-  -- [2]: https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L285
-  declareForeign Tracked "Ref.cas" (argNToBool 3) . mkForeign $
-    \(r :: IORef Val, t :: Ticket Val, v :: Val) -> fmap fst $
-      do
-        t <- evaluate t
-        casIORef r t v
-
   declareForeign Tracked "Promise.new" unitDirect . mkForeign $
     \() -> newPromise @Val
 
@@ -2451,7 +2339,7 @@ declareForeigns = do
   declareForeign Tracked "Promise.tryRead" argToMaybe . mkForeign $
     \(p :: Promise Val) -> tryReadPromise p
 
-  declareForeign Tracked "Promise.write" (argNToBool 2) . mkForeign $
+  declareForeign Tracked "Promise.write" (argNDirect 2) . mkForeign $
     \(p :: Promise Val, a :: Val) -> writePromise p a
 
   declareForeign Tracked "Tls.newClient.impl.v3" arg2ToEF . mkForeignTls $
@@ -2887,7 +2775,7 @@ declareForeigns = do
   declareForeign Untracked "Pattern.run" arg2ToMaybeTup . mkForeign $
     \(TPat.CP _ matcher, input :: Text) -> pure $ matcher input
 
-  declareForeign Untracked "Pattern.isMatch" (argNToBool 2) . mkForeign $
+  declareForeign Untracked "Pattern.isMatch" (argNDirect 2) . mkForeign $
     \(TPat.CP _ matcher, input :: Text) -> pure . isJust $ matcher input
 
   declareForeign Untracked "Char.Class.any" direct . mkForeign $ \() -> pure TPat.Any
@@ -2912,7 +2800,7 @@ declareForeigns = do
   declareForeign Untracked "Char.Class.symbol" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Symbol)
   declareForeign Untracked "Char.Class.separator" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Separator)
   declareForeign Untracked "Char.Class.letter" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Letter)
-  declareForeign Untracked "Char.Class.is" (argNToBool 2) . mkForeign $ \(cl, c) -> evaluate $ TPat.charPatternPred cl c
+  declareForeign Untracked "Char.Class.is" (argNDirect 2) . mkForeign $ \(cl, c) -> evaluate $ TPat.charPatternPred cl c
   declareForeign Untracked "Text.patterns.char" (argNDirect 1) . mkForeign $ \c ->
     let v = TPat.cpattern (TPat.Char c) in pure v
 

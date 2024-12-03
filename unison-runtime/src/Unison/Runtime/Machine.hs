@@ -8,8 +8,11 @@ import Control.Concurrent (ThreadId)
 import Control.Concurrent.STM as STM
 import Control.Exception
 import Control.Lens
+import Data.Atomics qualified as Atomic
 import Data.Bits
 import Data.Functor.Classes (Eq1 (..), Ord1 (..))
+import Data.IORef (IORef)
+import Data.IORef qualified as IORef
 import Data.Map.Strict qualified as M
 import Data.Ord (comparing)
 import Data.Sequence qualified as Sq
@@ -60,7 +63,6 @@ import Unison.Util.EnumContainers as EC
 import Unison.Util.Monoid qualified as Monoid
 import Unison.Util.Pretty (toPlainUnbroken)
 import Unison.Util.Text qualified as Util.Text
-import UnliftIO (IORef)
 import UnliftIO qualified
 import UnliftIO.Concurrent qualified as UnliftIO
 
@@ -372,7 +374,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 MISS i)
             _ -> error "exec:BPrim1:MISS: Expected Ref"
       m <- readTVarIO (intermed env)
       stk <- bump stk
-      pokeTag stk $ if (link `M.member` m) then 1 else 0
+      pokeBool stk $ (link `M.member` m)
       pure (denv, stk, k)
 exec !env !denv !_activeThreads !stk !k _ (BPrim1 CACH i)
   | sandboxed env = die "attempted to use sandboxed operation: cache"
@@ -515,11 +517,23 @@ exec !_ !denv !_activeThreads !stk !k _ (BPrim2 EQLU i j) = do
   stk <- bump stk
   pokeBool stk $ universalEq (==) x y
   pure (denv, stk, k)
+exec !_ !denv !_activeThreads !stk !k _ (BPrim2 LEQU i j) = do
+  x <- peekOff stk i
+  y <- peekOff stk j
+  stk <- bump stk
+  pokeBool stk $ (universalCompare compare x y) /= GT
+  pure (denv, stk, k)
+exec !_ !denv !_activeThreads !stk !k _ (BPrim2 LESU i j) = do
+  x <- peekOff stk i
+  y <- peekOff stk j
+  stk <- bump stk
+  pokeBool stk $ (universalCompare compare x y) == LT
+  pure (denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (BPrim2 CMPU i j) = do
   x <- peekOff stk i
   y <- peekOff stk j
   stk <- bump stk
-  pokeI stk . fromEnum $ universalCompare compare x y
+  pokeI stk . pred . fromEnum $ universalCompare compare x y
   pure (denv, stk, k)
 exec !_ !_ !_activeThreads !stk !k r (BPrim2 THRO i j) = do
   name <- peekOffBi @Util.Text.Text stk i
@@ -546,6 +560,17 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim2 TRCE i j)
       pure (denv, stk, k)
 exec !_ !denv !_trackThreads !stk !k _ (BPrim2 op i j) = do
   stk <- bprim2 stk op i j
+  pure (denv, stk, k)
+exec !_ !denv !_activeThreads !stk !k _ (RefCAS refI ticketI valI) = do
+  (ref :: IORef Val) <- peekOffBi stk refI
+  -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
+  -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
+  -- forcing of the values and tickets.
+  !(ticket :: Atomic.Ticket Val) <- peekOffBi stk ticketI
+  v <- peekOff stk valI
+  (r, _) <- Atomic.casIORef ref ticket v
+  stk <- bump stk
+  pokeBool stk r
   pure (denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (Pack r t args) = do
   clo <- buildData stk r t args
@@ -1062,6 +1087,11 @@ uprim1 !stk INCN !i = do
   stk <- bump stk
   pokeN stk (m + 1)
   pure stk
+uprim1 !stk TRNC !i = do
+  v <- peekOffI stk i
+  stk <- bump stk
+  unsafePokeIasN stk (max 0 v)
+  pure stk
 uprim1 !stk NEGI !i = do
   m <- upeekOff stk i
   stk <- bump stk
@@ -1207,6 +1237,11 @@ uprim1 !stk COMI !i = do
   stk <- bump stk
   pokeI stk (complement n)
   pure stk
+uprim1 !stk NOTB !i = do
+  b <- peekOffBool stk i
+  stk <- bump stk
+  pokeBool stk (not b)
+  pure stk
 {-# INLINE uprim1 #-}
 
 uprim2 :: Stack -> UPrim2 -> Int -> Int -> IO Stack
@@ -1227,6 +1262,13 @@ uprim2 !stk SUBI !i !j = do
   n <- upeekOff stk j
   stk <- bump stk
   pokeI stk (m - n)
+  pure stk
+uprim2 !stk DRPN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  let r = if n >= m then 0 else m - n
+  pokeN stk r
   pure stk
 uprim2 !stk SUBN !i !j = do
   m <- peekOffI stk i
@@ -1300,11 +1342,23 @@ uprim2 !stk EQLI !i !j = do
   stk <- bump stk
   pokeBool stk $ m == n
   pure stk
+uprim2 !stk NEQI !i !j = do
+  m <- upeekOff stk i
+  n <- upeekOff stk j
+  stk <- bump stk
+  pokeBool stk $ m /= n
+  pure stk
 uprim2 !stk EQLN !i !j = do
   m <- peekOffN stk i
   n <- peekOffN stk j
   stk <- bump stk
   pokeBool stk $ m == n
+  pure stk
+uprim2 !stk NEQN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  pokeBool stk $ m /= n
   pure stk
 uprim2 !stk LEQI !i !j = do
   m <- upeekOff stk i
@@ -1317,6 +1371,18 @@ uprim2 !stk LEQN !i !j = do
   n <- peekOffN stk j
   stk <- bump stk
   pokeBool stk $ m <= n
+  pure stk
+uprim2 !stk LESI !i !j = do
+  m <- upeekOff stk i
+  n <- upeekOff stk j
+  stk <- bump stk
+  pokeBool stk $ m < n
+  pure stk
+uprim2 !stk LESN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  pokeBool stk $ m < n
   pure stk
 uprim2 !stk DIVN !i !j = do
   m <- peekOffN stk i
@@ -1384,11 +1450,23 @@ uprim2 !stk EQLF !i !j = do
   stk <- bump stk
   pokeBool stk $ x == y
   pure stk
+uprim2 !stk NEQF !i !j = do
+  x <- peekOffD stk i
+  y <- peekOffD stk j
+  stk <- bump stk
+  pokeBool stk $ x /= y
+  pure stk
 uprim2 !stk LEQF !i !j = do
   x <- peekOffD stk i
   y <- peekOffD stk j
   stk <- bump stk
   pokeBool stk $ x <= y
+  pure stk
+uprim2 !stk LESF !i !j = do
+  x <- peekOffD stk i
+  y <- peekOffD stk j
+  stk <- bump stk
+  pokeBool stk $ x < y
   pure stk
 uprim2 !stk ATN2 !i !j = do
   x <- peekOffD stk i
@@ -1437,6 +1515,18 @@ uprim2 !stk CAST !vi !ti = do
   v <- upeekOff stk vi
   stk <- bump stk
   poke stk $ UnboxedVal v (unboxedTypeTagFromInt newTypeTag)
+  pure stk
+uprim2 !stk ANDB !i !j = do
+  x <- peekOffBool stk i
+  y <- peekOffBool stk j
+  stk <- bump stk
+  pokeBool stk (x && y)
+  pure stk
+uprim2 !stk IORB !i !j = do
+  x <- peekOffBool stk i
+  y <- peekOffBool stk j
+  stk <- bump stk
+  pokeBool stk (x || y)
   pure stk
 {-# INLINE uprim2 #-}
 
@@ -1602,6 +1692,42 @@ bprim1 !stk FLTB i = do
   stk <- bump stk
   pokeBi stk $ By.flatten b
   pure stk
+
+-- The docs for IORef state that IORef operations can be observed
+-- out of order ([1]) but actually GHC does emit the appropriate
+-- load and store barriers nowadays ([2], [3]).
+--
+-- [1] https://hackage.haskell.org/package/base-4.17.0.0/docs/Data-IORef.html#g:2
+-- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
+-- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
+bprim1 !stk REFR i = do
+  (ref :: IORef Val) <- peekOffBi stk i
+  v <- IORef.readIORef ref
+  stk <- bump stk
+  poke stk v
+  pure stk
+bprim1 !stk REFN i = do
+  -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
+  -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
+  -- forcing of the values and tickets.
+  !v <- evaluate =<< peekOff stk i
+  ref <- IORef.newIORef v
+  stk <- bump stk
+  pokeBi stk ref
+  pure stk
+bprim1 !stk RRFC i = do
+  (ref :: IORef Val) <- peekOffBi stk i
+  ticket <- Atomic.readForCAS ref
+  stk <- bump stk
+  pokeBi stk ticket
+  pure stk
+bprim1 !stk TIKR i = do
+  (t :: Atomic.Ticket Val) <- peekOffBi stk i
+  stk <- bump stk
+  let v = Atomic.peekTicket t
+  poke stk v
+  pure stk
+
 -- impossible
 bprim1 !stk MISS _ = pure stk
 bprim1 !stk CACH _ = pure stk
@@ -1806,9 +1932,18 @@ bprim2 !stk CATB i j = do
   stk <- bump stk
   pokeBi stk (l <> r :: By.Bytes)
   pure stk
+bprim2 !stk REFW i j = do
+  (ref :: IORef Val) <- peekOffBi stk i
+  v <- peekOff stk j
+  IORef.writeIORef ref v
+  stk <- bump stk
+  bpoke stk unitValue
+  pure stk
 bprim2 !stk THRO _ _ = pure stk -- impossible
 bprim2 !stk TRCE _ _ = pure stk -- impossible
 bprim2 !stk EQLU _ _ = pure stk -- impossible
+bprim2 !stk LEQU _ _ = pure stk -- impossible
+bprim2 !stk LESU _ _ = pure stk -- impossible
 bprim2 !stk CMPU _ _ = pure stk -- impossible
 bprim2 !stk SDBX _ _ = pure stk -- impossible
 bprim2 !stk SDBV _ _ = pure stk -- impossible

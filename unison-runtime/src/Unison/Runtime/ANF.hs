@@ -15,6 +15,8 @@ module Unison.Runtime.ANF
     pattern TApv,
     pattern TCom,
     pattern TCon,
+    pattern UFalse,
+    pattern UTrue,
     pattern TKon,
     pattern TReq,
     pattern TPrm,
@@ -1290,10 +1292,14 @@ data POp
   | INCI -- inc
   | DECI -- dec
   | LEQI -- <=
+  | LESI -- <
   | EQLI -- ==
+  | NEQI -- !=
+  | TRNC -- truncate0
   -- Nat
   | ADDN -- +
   | SUBN -- -
+  | DRPN -- drop
   | MULN
   | DIVN -- /
   | MODN -- mod
@@ -1310,7 +1316,9 @@ data POp
   | INCN -- inc
   | DECN -- dec
   | LEQN -- <=
+  | LESN -- <
   | EQLN -- ==
+  | NEQN -- !=
   -- Float
   | ADDF -- +
   | SUBF -- -
@@ -1319,7 +1327,9 @@ data POp
   | MINF -- min
   | MAXF -- max
   | LEQF -- <=
+  | LESF -- <
   | EQLF -- ==
+  | NEQF -- !=
   | POWF -- pow
   | EXPF -- exp
   | SQRT -- sqrt
@@ -1394,6 +1404,8 @@ data POp
   | -- Universal operations
     EQLU -- ==
   | CMPU -- compare
+  | LEQU -- <=
+  | LESU -- <
   | EROR -- error
   | -- Code
     MISS -- isMissing
@@ -1414,6 +1426,17 @@ data POp
   | TFRC -- try force
   | SDBL -- sandbox link list
   | SDBV -- sandbox check for Values
+  -- Refs
+  | REFN -- Ref.new
+  | REFR -- Ref.read
+  | REFW -- Ref.write
+  | RCAS -- Ref.cas
+  | RRFC -- Ref.readForCas
+  | TIKR -- Ref.Ticket.read
+  -- Bools
+  | NOTB -- not
+  | ANDB -- and
+  | IORB -- or
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 type ANormal = ABTN.Term ANormalF
@@ -1733,9 +1756,13 @@ anfHandled body =
         cc = case l of T {} -> BX; LM {} -> BX; LY {} -> BX; _ -> UN
     p -> pure p
 
-fls, tru :: (Var v) => ANormal v
-fls = TCon Ty.booleanRef 0 []
-tru = TCon Ty.booleanRef 1 []
+pattern UFalse <- TCon ((== Ty.booleanRef) -> True) 0 []
+  where
+    UFalse = TCon Ty.booleanRef 0 []
+
+pattern UTrue <- TCon ((== Ty.booleanRef) -> True) 1 []
+  where
+    UTrue = TCon Ty.booleanRef 1 []
 
 -- Helper function for renaming a variable arising from a
 --   let v = u
@@ -1873,7 +1900,7 @@ anfBlock (And' l r) = do
   let tree =
         TMatch vl . MatchDataCover Ty.booleanRef $
           mapFromList
-            [ (0, ([], fls)),
+            [ (0, ([], UFalse)),
               (1, ([], tmr))
             ]
   pure (lctx, (Indirect () <> d, tree))
@@ -1883,7 +1910,7 @@ anfBlock (Or' l r) = do
   let tree =
         TMatch vl . MatchDataCover Ty.booleanRef $
           mapFromList
-            [ (1, ([], tru)),
+            [ (1, ([], UTrue)),
               (0, ([], tmr))
             ]
   pure (lctx, (Indirect () <> d, tree))
