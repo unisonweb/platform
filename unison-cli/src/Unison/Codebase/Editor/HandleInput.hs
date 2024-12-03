@@ -714,18 +714,31 @@ loop e = do
             DebugFuzzyOptionsI command args -> do
               Cli.Env {codebase} <- ask
               currentBranch <- Branch.withoutTransitiveLibs <$> Cli.getCurrentBranch0
-              case Map.lookup command InputPatterns.patternMap of
-                Just (IP.InputPattern {args = argTypes}) -> do
-                  zip argTypes args & Monoid.foldMapM \case
-                    ((argName, _, IP.ArgumentType {fzfResolver = Just IP.FZFResolver {getOptions}}), "_") -> do
-                      pp <- Cli.getCurrentProjectPath
-                      results <- liftIO $ getOptions codebase pp currentBranch
-                      Cli.respond (DebugDisplayFuzzyOptions argName (Text.unpack <$> results))
-                    ((_, _, IP.ArgumentType {fzfResolver = Nothing}), "_") -> do
-                      Cli.respond DebugFuzzyOptionsNoResolver
-                    _ -> pure ()
-                Nothing -> do
-                  Cli.respond DebugFuzzyOptionsNoResolver
+              maybe
+                (Cli.respond $ DebugFuzzyOptionsNoCommand command)
+                ( \IP.InputPattern {params} ->
+                    either (Cli.respond . DebugFuzzyOptionsIncorrectArgs) snd $
+                      IP.foldArgs
+                        ( \(paramName, IP.ParameterType {fzfResolver}) arg ->
+                            ( *>
+                                if arg == "_"
+                                  then
+                                    maybe
+                                      (Cli.respond DebugFuzzyOptionsNoResolver)
+                                      ( \IP.FZFResolver {getOptions} -> do
+                                          pp <- Cli.getCurrentProjectPath
+                                          results <- liftIO $ getOptions codebase pp currentBranch
+                                          Cli.respond (DebugDisplayFuzzyOptions paramName (Text.unpack <$> results))
+                                      )
+                                      fzfResolver
+                                  else pure ()
+                            )
+                        )
+                        (pure ())
+                        params
+                        args
+                )
+                $ Map.lookup command InputPatterns.patternMap
             DebugFormatI -> do
               env <- ask
               void $ runMaybeT do
