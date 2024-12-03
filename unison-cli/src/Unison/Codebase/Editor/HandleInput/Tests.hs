@@ -20,9 +20,9 @@ import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
 import Unison.Cli.NamesUtils qualified as Cli
-import Unison.Cli.PrettyPrintUtils qualified as Cli
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Branch qualified as Branch
+import Unison.Codebase.Editor.HandleInput.RuntimeUtils (EvalMode (..))
 import Unison.Codebase.Editor.HandleInput.RuntimeUtils qualified as RuntimeUtils
 import Unison.Codebase.Editor.Input (TestInput (..))
 import Unison.Codebase.Editor.Output
@@ -38,7 +38,9 @@ import Unison.NamesWithHistory qualified as Names
 import Unison.Parser.Ann (Ann)
 import Unison.Prelude
 import Unison.PrettyPrintEnv qualified as PPE
+import Unison.PrettyPrintEnv.Names qualified as PPE
 import Unison.PrettyPrintEnvDecl qualified as PPED
+import Unison.PrettyPrintEnvDecl.Names qualified as PPED
 import Unison.Reference (TermReferenceId)
 import Unison.Reference qualified as Reference
 import Unison.Referent qualified as Referent
@@ -58,8 +60,8 @@ import Unison.WatchKind qualified as WK
 
 -- | Handle a @test@ command.
 -- Run pure tests in the current subnamespace.
-handleTest :: TestInput -> Cli ()
-handleTest TestInput {includeLibNamespace, path, showFailures, showSuccesses} = do
+handleTest :: Bool -> TestInput -> Cli ()
+handleTest native TestInput {includeLibNamespace, path, showFailures, showSuccesses} = do
   Cli.Env {codebase} <- ask
 
   testRefs <- findTermsOfTypes codebase includeLibNamespace path (NESet.singleton (DD.testResultListType mempty))
@@ -91,7 +93,7 @@ handleTest TestInput {includeLibNamespace, path, showFailures, showSuccesses} = 
             _ -> Nothing
   let stats = Output.CachedTests (Set.size testRefs) (Map.size cachedTests)
   names <- Cli.currentNames
-  pped <- Cli.prettyPrintEnvDeclFromNames names
+  let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let fqnPPE = PPED.unsuffixifiedPPE pped
   Cli.respondNumbered $
     TestResults
@@ -113,7 +115,7 @@ handleTest TestInput {includeLibNamespace, path, showFailures, showSuccesses} = 
         Just tm -> do
           Cli.respond $ TestIncrementalOutputStart fqnPPE (n, total) r
           --                        v don't cache; test cache populated below
-          tm' <- RuntimeUtils.evalPureUnison fqnPPE False tm
+          tm' <- RuntimeUtils.evalPureUnison native fqnPPE False tm
           case tm' of
             Left e -> do
               Cli.respond (EvaluationFailure e)
@@ -128,11 +130,12 @@ handleTest TestInput {includeLibNamespace, path, showFailures, showSuccesses} = 
         (mFails, mOks) = passFails m
     Cli.respondNumbered $ TestResults Output.NewlyComputed fqnPPE showSuccesses showFailures mOks mFails
 
-handleIOTest :: HQ.HashQualified Name -> Cli ()
-handleIOTest main = do
-  Cli.Env {runtime} <- ask
+handleIOTest :: Bool -> HQ.HashQualified Name -> Cli ()
+handleIOTest native main = do
+  let mode = if native then Native else Permissive
+  runtime <- RuntimeUtils.selectRuntime mode
   names <- Cli.currentNames
-  pped <- Cli.prettyPrintEnvDeclFromNames names
+  let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   let isIOTest typ = Foldable.any (Typechecker.isSubtype typ) $ Runtime.ioTestTypes runtime
   refs <- resolveHQNames names (Set.singleton main)
@@ -161,11 +164,13 @@ findTermsOfTypes codebase includeLib path filterTypes = do
     filterTypes & foldMapM \matchTyp -> do
       Codebase.filterTermsByReferenceIdHavingType codebase matchTyp possibleTests
 
-handleAllIOTests :: Cli ()
-handleAllIOTests = do
-  Cli.Env {codebase, runtime} <- ask
+handleAllIOTests :: Bool -> Cli ()
+handleAllIOTests native = do
+  Cli.Env {codebase} <- ask
+  let mode = if native then Native else Permissive
+  runtime <- RuntimeUtils.selectRuntime mode
   names <- Cli.currentNames
-  pped <- Cli.prettyPrintEnvDeclFromNames names
+  let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   ioTestRefs <- findTermsOfTypes codebase False Path.empty (Runtime.ioTestTypes runtime)
   case NESet.nonEmptySet ioTestRefs of
@@ -213,7 +218,7 @@ runIOTest ppe ref = do
   let a = ABT.annotation tm
       tm = DD.forceTerm a a (Term.refId a ref)
   -- Don't cache IO tests
-  tm' <- RuntimeUtils.evalUnisonTerm False ppe False tm
+  tm' <- RuntimeUtils.evalUnisonTerm Permissive ppe False tm
   pure $ partitionTestResults tm'
 
 partitionTestResults :: Term Symbol Ann -> ([Text {- fails -}], [Text {- oks -}])

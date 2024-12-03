@@ -48,7 +48,7 @@ syn match   uSpecialCharError	contained "\\&\|'''\+"
 syn region  uString		start=+"+  skip=+\\\\\|\\"+  end=+"+  contains=uSpecialChar
 syn match   uCharacter		"[^a-zA-Z0-9_']'\([^\\]\|\\[^']\+\|\\'\)'"lc=1 contains=uSpecialChar,uSpecialCharError
 syn match   uCharacter		"^'\([^\\]\|\\[^']\+\|\\'\)'" contains=uSpecialChar,uSpecialCharError
-syn match   uNumber		"\<[0-9]\+\>\|\<0[xX][0-9a-fA-F]\+\>\|\<0[oO][0-7]\+\>"
+syn match   uNumber		"\<[0-9]\+\>\|\<0[xX][0-9a-fA-F]\+\>\|\<0[oO][0-7]\+\>\|\<0[bB][01]\+\>"
 syn match   uFloat		"\<[0-9]\+\.[0-9]\+\([eE][-+]\=[0-9]\+\)\=\>"
 
 " Keyword definitions. These must be patterns instead of keywords
@@ -83,7 +83,7 @@ syn region  uDocDirective     contained matchgroup=unisonDocDirective start="\(@
 
 syn match uDebug "\<\(todo\|bug\|Debug.trace\)\>"
 
-" things like 
+" things like
 "    > my_func 1 3
 "    test> Function.tap.tests.t1 = check let
 "      use Nat == +
@@ -101,7 +101,7 @@ if version >= 508 || !exists("did_u_syntax_inits")
   else
     command -nargs=+ HiLink hi def link <args>
   endif
-   
+
    HiLink       uWatch                           Debug
    HiLink       uDocMono                         Delimiter
    HiLink       unisonDocDirective               Import

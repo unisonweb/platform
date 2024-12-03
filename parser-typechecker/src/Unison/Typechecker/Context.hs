@@ -1526,10 +1526,8 @@ ensurePatternCoverage theMatch _theMatchType _scrutinee scrutineeType cases = do
           }
   (redundant, _inaccessible, uncovered) <- flip evalStateT pmcState do
     checkMatch scrutineeType cases
-  let checkUncovered = case Nel.nonEmpty uncovered of
-        Nothing -> pure ()
-        Just xs -> failWith (UncoveredPatterns matchLoc xs)
-      checkRedundant = foldr (\a b -> failWith (RedundantPattern a) *> b) (pure ()) redundant
+  let checkUncovered = maybe (pure ()) (failWith . UncoveredPatterns matchLoc) $ Nel.nonEmpty uncovered
+      checkRedundant = foldr ((*>) . failWith . RedundantPattern) (pure ()) redundant
   checkUncovered *> checkRedundant
 
 checkCases ::

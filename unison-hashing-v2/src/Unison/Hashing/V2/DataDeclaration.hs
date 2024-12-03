@@ -76,7 +76,7 @@ hashDecls ::
   (Eq v, Var v, Show v) =>
   (v -> Name.Name) ->
   Map v (DataDeclaration v a) ->
-  Names.ResolutionResult v a [(v, ReferenceId, DataDeclaration v a)]
+  Names.ResolutionResult a [(v, ReferenceId, DataDeclaration v a)]
 hashDecls unsafeVarToName decls = do
   -- todo: make sure all other external references are resolved before calling this
   let varToRef = hashDecls0 (void <$> decls)
@@ -96,7 +96,7 @@ bindReferences ::
   Set v ->
   Map Name.Name Reference ->
   DataDeclaration v a ->
-  Names.ResolutionResult v a (DataDeclaration v a)
+  Names.ResolutionResult a (DataDeclaration v a)
 bindReferences unsafeVarToName keepFree names (DataDeclaration m a bound constructors) = do
   constructors <- for constructors $ \(a, v, ty) ->
     (a,v,) <$> Type.bindReferences unsafeVarToName keepFree names ty

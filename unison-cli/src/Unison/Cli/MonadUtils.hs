@@ -1,10 +1,7 @@
 -- | This module contains miscellaneous helper utils for rote actions in the Cli monad, like resolving a relative path
 -- to an absolute path, per the current path.
 module Unison.Cli.MonadUtils
-  ( -- * @.unisonConfig@ things
-    getConfig,
-
-    -- * Paths
+  ( -- * Paths
     getCurrentPath,
     getCurrentProjectName,
     getCurrentProjectBranchName,
@@ -88,8 +85,6 @@ where
 import Control.Lens
 import Control.Monad.Reader (ask)
 import Control.Monad.State
-import Data.Configurator qualified as Configurator
-import Data.Configurator.Types qualified as Configurator
 import Data.Foldable
 import Data.Set qualified as Set
 import U.Codebase.Branch qualified as V2 (Branch)
@@ -137,15 +132,6 @@ import Unison.UnisonFile qualified as UF
 import Unison.UnisonFile.Names qualified as UFN
 import Unison.Util.Set qualified as Set
 import Unison.Var qualified as Var
-
-------------------------------------------------------------------------------------------------------------------------
--- .unisonConfig things
-
--- | Lookup a config value by key.
-getConfig :: (Configurator.Configured a) => Text -> Cli (Maybe a)
-getConfig key = do
-  Cli.Env {config} <- ask
-  liftIO (Configurator.lookup config key)
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Getting paths, path resolution, etc.
@@ -570,5 +556,7 @@ makeParsingEnv path names = do
     ParsingEnv
       { uniqueNames = uniqueName,
         uniqueTypeGuid = loadUniqueTypeGuid path,
-        names
+        names,
+        maybeNamespace = Nothing,
+        localNamespacePrefixedTypesAndConstructors = mempty
       }

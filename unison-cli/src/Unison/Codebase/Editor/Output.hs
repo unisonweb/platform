@@ -16,6 +16,7 @@ module Unison.Codebase.Editor.Output
     UpdateOrUpgrade (..),
     isFailure,
     isNumberedFailure,
+    MergeProgress (..),
   )
 where
 
@@ -26,6 +27,7 @@ import Data.Time (UTCTime)
 import Network.URI (URI)
 import Servant.Client qualified as Servant (ClientError)
 import System.Console.Haskeline qualified as Completion
+import System.Exit (ExitCode)
 import U.Codebase.Branch.Diff (NameChanges)
 import U.Codebase.HashTags (CausalHash)
 import U.Codebase.Sqlite.Project qualified as Sqlite
@@ -218,7 +220,7 @@ data Output
   | NoExactTypeMatches
   | TypeAlreadyExists Path.Split' (Set Reference)
   | TypeParseError String (Parser.Err Symbol)
-  | ParseResolutionFailures String [Names.ResolutionFailure Symbol Ann]
+  | ParseResolutionFailures String [Names.ResolutionFailure Ann]
   | TypeHasFreeVars (Type Symbol Ann)
   | TermAlreadyExists Path.Split' (Set Referent)
   | LabeledReferenceAmbiguous Int (HQ.HashQualified Name) (Set LabeledDependency)
@@ -275,6 +277,7 @@ data Output
   | ListOfDefinitions FindScope PPE.PrettyPrintEnv ListDetailed [SearchResult' Symbol Ann]
   | ListShallow (IO PPE.PrettyPrintEnv) [ShallowListEntry Symbol Ann]
   | ListStructuredFind [HQ.HashQualified Name]
+  | ListTextFind Bool [HQ.HashQualified Name] -- whether lib was included in the search
   | GlobalFindBranchResults (ProjectAndBranch ProjectName ProjectBranchName) PPE.PrettyPrintEnv ListDetailed [SearchResult' Symbol Ann]
   | -- ListStructuredFind patternMatchingUsages termBodyUsages
     -- show the result of add/update
@@ -423,6 +426,7 @@ data Output
   | UpgradeFailure !ProjectBranchName !ProjectBranchName !FilePath !NameSegment !NameSegment
   | UpgradeSuccess !NameSegment !NameSegment
   | MergeFailure !FilePath !MergeSourceAndTarget !ProjectBranchName
+  | MergeFailureWithMergetool !MergeSourceAndTarget !ProjectBranchName !Text !ExitCode
   | MergeSuccess !MergeSourceAndTarget
   | MergeSuccessFastForward !MergeSourceAndTarget
   | MergeConflictedAliases !MergeSourceOrTarget !(Defn (Name, Name) (Name, Name))
@@ -437,6 +441,15 @@ data Output
   | ConflictedDefn !Text {- what operation? -} !(Defn (Conflicted Name Referent) (Conflicted Name TypeReference))
   | IncoherentDeclDuringMerge !MergeSourceOrTarget !IncoherentDeclReason
   | IncoherentDeclDuringUpdate !IncoherentDeclReason
+  | MergeProgress !MergeProgress
+
+data MergeProgress
+  = MergeProgress'LoadingBranches
+  | MergeProgress'DiffingBranches
+  | MergeProgress'LoadingDependents
+  | MergeProgress'LoadingAndMergingLibdeps
+  | MergeProgress'RenderingUnisonFile
+  | MergeProgress'TypecheckingUnisonFile
 
 data MoreEntriesThanShown = MoreEntriesThanShown | AllEntriesShown
   deriving (Eq, Show)
@@ -552,6 +565,7 @@ isFailure o = case o of
   ListOfDefinitions _ _ _ ds -> null ds
   GlobalFindBranchResults _ _ _ _ -> False
   ListStructuredFind tms -> null tms
+  ListTextFind _ tms -> null tms
   SlurpOutput _ _ sr -> not $ SR.isOk sr
   ParseErrors {} -> True
   TypeErrors {} -> True
@@ -661,6 +675,7 @@ isFailure o = case o of
   UpgradeFailure {} -> True
   UpgradeSuccess {} -> False
   MergeFailure {} -> True
+  MergeFailureWithMergetool {} -> True
   MergeSuccess {} -> False
   MergeSuccessFastForward {} -> False
   MergeConflictedAliases {} -> True
@@ -675,6 +690,7 @@ isFailure o = case o of
   ConflictedDefn {} -> True
   IncoherentDeclDuringMerge {} -> True
   IncoherentDeclDuringUpdate {} -> True
+  MergeProgress _ -> False
 
 isNumberedFailure :: NumberedOutput -> Bool
 isNumberedFailure = \case

@@ -39,6 +39,7 @@ module Unison.Cli.Monad
     -- * Communicating output to the user
     respond,
     respondNumbered,
+    withRespondRegion,
     setNumberedArgs,
 
     -- * Debug-timing actions
@@ -62,7 +63,6 @@ import Control.Lens
 import Control.Monad.Reader (MonadReader (..))
 import Control.Monad.State.Strict (MonadState)
 import Control.Monad.State.Strict qualified as State
-import Data.Configurator.Types qualified as Configurator
 import Data.List.NonEmpty qualified as List (NonEmpty)
 import Data.List.NonEmpty qualified as List.NonEmpty
 import Data.List.NonEmpty qualified as NonEmpty
@@ -71,6 +71,7 @@ import Data.Time.Clock.System (getSystemTime, systemToTAITime)
 import Data.Time.Clock.TAI (diffAbsoluteTime)
 import Data.Unique (Unique, newUnique)
 import System.CPUTime (getCPUTime)
+import System.Console.Regions qualified as Console.Regions
 import Text.Printf (printf)
 import U.Codebase.Sqlite.DbId (ProjectBranchId, ProjectId)
 import U.Codebase.Sqlite.Queries qualified as Q
@@ -84,10 +85,12 @@ import Unison.Codebase.Editor.UCMVersion (UCMVersion)
 import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.ProjectPath qualified as PP
 import Unison.Codebase.Runtime (Runtime)
+import Unison.CommandLine.OutputMessages qualified as OutputMessages
 import Unison.Core.Project (ProjectAndBranch (..))
 import Unison.Debug qualified as Debug
 import Unison.Parser.Ann (Ann)
 import Unison.Prelude
+import Unison.PrettyTerminal qualified as PrettyTerminal
 import Unison.Server.CodebaseServer qualified as Server
 import Unison.Sqlite qualified as Sqlite
 import Unison.Symbol (Symbol)
@@ -95,6 +98,7 @@ import Unison.Syntax.Parser qualified as Parser
 import Unison.Term (Term)
 import Unison.Type (Type)
 import Unison.UnisonFile qualified as UF
+import Unison.Util.Pretty qualified as Pretty
 import Unsafe.Coerce (unsafeCoerce)
 
 -- | The main command-line app monad.
@@ -160,14 +164,13 @@ type SourceName = Text
 data Env = Env
   { authHTTPClient :: AuthenticatedHttpClient,
     codebase :: Codebase IO Symbol Ann,
-    config :: Configurator.Config,
     credentialManager :: CredentialManager,
     -- | Generate a unique name.
     generateUniqueName :: IO Parser.UniqueName,
     -- | How to load source code.
     loadSource :: SourceName -> IO LoadSourceResult,
-    -- | How to write source code.
-    writeSource :: SourceName -> Text -> IO (),
+    -- | How to write source code. Bool = make new fold?
+    writeSource :: SourceName -> Text -> Bool -> IO (),
     -- | What to do with output for the user.
     notify :: Output -> IO (),
     -- | What to do with numbered output for the user.
@@ -426,6 +429,17 @@ respondNumbered output = do
   Env {notifyNumbered} <- ask
   args <- liftIO (notifyNumbered output)
   setNumberedArgs args
+
+-- | Perform a Cli action with access to a console region, which is closed upon completion.
+withRespondRegion :: ((Output -> Cli ()) -> Cli a) -> Cli a
+withRespondRegion action =
+  with_ Console.Regions.displayConsoleRegions do
+    with (Console.Regions.withConsoleRegion Console.Regions.Linear) \region ->
+      action \output ->
+        liftIO do
+          string <- (OutputMessages.notifyUser "." output)
+          width <- PrettyTerminal.getAvailableWidth
+          Console.Regions.setConsoleRegion region (Pretty.toANSI width (Pretty.border 2 string))
 
 -- | Updates the numbered args, but only if the new args are non-empty.
 setNumberedArgs :: NumberedArgs -> Cli ()

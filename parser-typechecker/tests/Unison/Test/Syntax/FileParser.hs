@@ -60,9 +60,7 @@ test =
       emptyWatchTest,
       signatureNeedsAccompanyingBodyTest,
       emptyBlockTest,
-      expectedBlockOpenTest,
-      unknownDataConstructorTest,
-      unknownAbilityConstructorTest
+      expectedBlockOpenTest
     ]
 
 expectFileParseFailure :: String -> (P.Error Symbol -> Test ()) -> Test ()
@@ -116,26 +114,6 @@ expectedBlockOpenTest =
     expectation e = case e of
       P.ExpectedBlockOpen _ _ -> ok
       _ -> crash "Error wasn't ExpectedBlockOpen"
-
-unknownDataConstructorTest :: Test ()
-unknownDataConstructorTest =
-  scope "unknownDataConstructorTest" $
-    expectFileParseFailure "m a = match a with A -> 1" expectation
-  where
-    expectation :: (Var e) => P.Error e -> Test ()
-    expectation e = case e of
-      P.UnknownDataConstructor _ _ -> ok
-      _ -> crash "Error wasn't UnknownDataConstructor"
-
-unknownAbilityConstructorTest :: Test ()
-unknownAbilityConstructorTest =
-  scope "unknownAbilityConstructorTest" $
-    expectFileParseFailure "f e = match e with {E t -> u} -> 1" expectation
-  where
-    expectation :: (Var e) => P.Error e -> Test ()
-    expectation e = case e of
-      P.UnknownAbilityConstructor _ _ -> ok
-      _ -> crash "Error wasn't UnknownAbilityConstructor"
 
 parses :: String -> Test ()
 parses s = scope s $ do

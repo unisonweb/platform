@@ -1,4 +1,4 @@
-```unison
+``` unison
 structural ability DC r where
   shift : ((a -> r) -> r) -> a
 
@@ -43,7 +43,7 @@ mkTestCase = do
   saveTestCase "case-03" "v4" finish trip
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> run mkTestCase
 ```

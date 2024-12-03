@@ -1,6 +1,6 @@
 Lets just make sure we can start a thread
 
-```unison
+``` unison
 otherThread : '{io2.IO}()
 otherThread = 'let
   watch "I'm the other Thread" ()
@@ -18,12 +18,12 @@ testBasicFork = 'let
 
 See if we can get another thread to stuff a value into a MVar
 
-```ucm:hide
+``` ucm :hide
 scratch/main> add
 scratch/main> io.test testBasicFork
 ```
 
-```unison
+``` unison
 thread1 : Nat -> MVar Nat -> '{io2.IO}()
 thread1 x mv = 'let
   go = 'let
@@ -47,12 +47,12 @@ testBasicMultiThreadMVar = 'let
 
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> io.test testBasicMultiThreadMVar
 ```
 
-```unison
+``` unison
 sendingThread: Nat -> MVar Nat -> '{io2.IO}()
 sendingThread toSend mv = 'let
   go = 'let
@@ -90,7 +90,7 @@ testTwoThreads = 'let
 
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> io.test testTwoThreads
 ```

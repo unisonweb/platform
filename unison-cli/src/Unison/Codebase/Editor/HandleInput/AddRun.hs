@@ -12,7 +12,6 @@ import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
 import Unison.Cli.NamesUtils qualified as Cli
-import Unison.Cli.PrettyPrintUtils qualified as Cli
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Editor.HandleInput.Update (doSlurpAdds)
 import Unison.Codebase.Editor.Input (Input)
@@ -24,7 +23,9 @@ import Unison.CommandLine.InputPatterns qualified as InputPatterns
 import Unison.Name (Name)
 import Unison.Parser.Ann (Ann (External))
 import Unison.Prelude
+import Unison.PrettyPrintEnv.Names qualified as PPE
 import Unison.PrettyPrintEnvDecl qualified as PPE
+import Unison.PrettyPrintEnvDecl.Names qualified as PPED
 import Unison.Symbol (Symbol)
 import Unison.Syntax.Name qualified as Name
 import Unison.UnisonFile (TypecheckedUnisonFile)
@@ -44,7 +45,7 @@ handleAddRun input resultName = do
   pp <- Cli.getCurrentProjectPath
   Cli.stepAt description (pp, doSlurpAdds adds uf)
   let namesWithDefinitionsFromFile = UF.addNamesFromTypeCheckedUnisonFile uf currentNames
-  pped <- Cli.prettyPrintEnvDeclFromNames namesWithDefinitionsFromFile
+  let pped = PPED.makePPED (PPE.hqNamer 10 namesWithDefinitionsFromFile) (PPE.suffixifyByHash namesWithDefinitionsFromFile)
   let suffixifiedPPE = PPE.suffixifiedPPE pped
   Cli.respond $ SlurpOutput input suffixifiedPPE sr
 

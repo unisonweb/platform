@@ -8,15 +8,18 @@ import Unison.DataDeclaration qualified as DataDeclaration
 import Unison.Prelude
 import Unison.Reference qualified as Reference
 import Unison.Term qualified as Term
+import Unison.Type qualified as Type
 import Unison.UnisonFile qualified as UF
 import Unison.UnisonFile.Type (TypecheckedUnisonFile)
 import Unison.Var (Var)
 
 fromTypecheckedUnisonFile :: forall m v a. (Var v, Monad m) => TypecheckedUnisonFile v a -> CodeLookup v m a
-fromTypecheckedUnisonFile tuf = CodeLookup tm ty
+fromTypecheckedUnisonFile tuf = CodeLookup tm tmTyp ty
   where
     tm :: Reference.Id -> m (Maybe (Term.Term v a))
-    tm id = pure $ Map.lookup id termMap
+    tm id = pure . fmap fst $ Map.lookup id termMap
+    tmTyp :: Reference.Id -> m (Maybe (Type.Type v a))
+    tmTyp id = pure . fmap snd $ Map.lookup id termMap
     ty :: Reference.Id -> m (Maybe (DataDeclaration.Decl v a))
     ty id = pure $ Map.lookup id dataDeclMap <|> Map.lookup id effectDeclMap
     dataDeclMap =
@@ -31,5 +34,5 @@ fromTypecheckedUnisonFile tuf = CodeLookup tm ty
           | (_, (Reference.DerivedId id, ad)) <-
               Map.toList (UF.effectDeclarations' tuf)
         ]
-    termMap :: Map Reference.Id (Term.Term v a)
-    termMap = Map.fromList [(id, tm) | (_a, id, _wk, tm, _tp) <- toList $ UF.hashTermsId tuf]
+    termMap :: Map Reference.Id (Term.Term v a, Type.Type v a)
+    termMap = Map.fromList [(id, (tm, typ)) | (_a, id, _wk, tm, typ) <- toList $ UF.hashTermsId tuf]

@@ -80,9 +80,9 @@ testSplitName =
 testSuffixes :: [Test ()]
 testSuffixes =
   [ scope "one namespace" $ expectEqual (suffixes (Name.unsafeParseText "bar")) [Name.unsafeParseText "bar"],
-    scope "two namespaces" $ expectEqual (suffixes (Name.unsafeParseText "foo.bar")) [Name.unsafeParseText "foo.bar", Name.unsafeParseText "bar"],
-    scope "multiple namespaces" $ expectEqual (suffixes (Name.unsafeParseText "foo.bar.baz")) [Name.unsafeParseText "foo.bar.baz", Name.unsafeParseText "bar.baz", Name.unsafeParseText "baz"],
-    scope "terms named `.`" $ expectEqual (suffixes (Name.unsafeParseText "base.`.`")) [Name.unsafeParseText "base.`.`", Name.unsafeParseText "`.`"]
+    scope "two namespaces" $ expectEqual (suffixes (Name.unsafeParseText "foo.bar")) [Name.unsafeParseText "bar", Name.unsafeParseText "foo.bar"],
+    scope "multiple namespaces" $ expectEqual (suffixes (Name.unsafeParseText "foo.bar.baz")) [Name.unsafeParseText "baz", Name.unsafeParseText "bar.baz", Name.unsafeParseText "foo.bar.baz"],
+    scope "terms named `.`" $ expectEqual (suffixes (Name.unsafeParseText "base.`.`")) [Name.unsafeParseText "`.`", Name.unsafeParseText "base.`.`"]
   ]
 
 testSuffixSearch :: [Test ()]

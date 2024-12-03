@@ -12,6 +12,7 @@ import U.Core.ABT qualified as ABT
 import U.Core.ABT.Var qualified as ABT
 import Unison.Hash (Hash)
 import Unison.Prelude
+import Unison.Util.Recursion
 
 type ConstructorId = Word64
 
@@ -107,7 +108,7 @@ unhashComponent componentHash refToVar m =
         { declType,
           modifier,
           bound,
-          constructorTypes = ABT.cata alg <$> constructorTypes
+          constructorTypes = cata alg <$> constructorTypes
         }
       where
         rewriteTypeReference :: Reference.Id' (Maybe Hash) -> Either v Reference.Reference
@@ -126,8 +127,8 @@ unhashComponent componentHash refToVar m =
               case Map.lookup (fromMaybe componentHash <$> rid) withGeneratedVars of
                 Nothing -> error "unhashComponent: self-reference not found in component map"
                 Just (v, _, _) -> Left v
-        alg :: () -> ABT.ABT (Type.F' TypeRef) v (HashableType v) -> HashableType v
-        alg () = \case
+        alg :: ABT.Term' (Type.F' TypeRef) v () (HashableType v) -> HashableType v
+        alg (ABT.Term' _ () abt) = case abt of
           ABT.Var v -> ABT.var () v
           ABT.Cycle body -> ABT.cycle () body
           ABT.Abs v body -> ABT.abs () v body

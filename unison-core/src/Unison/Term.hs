@@ -10,9 +10,9 @@ import Control.Monad.Writer.Strict qualified as Writer
 import Data.Generics.Sum (_Ctor)
 import Data.List qualified as List
 import Data.Map qualified as Map
+import Data.Sequence qualified as Seq
 import Data.Sequence qualified as Sequence
 import Data.Set qualified as Set
-import Data.Set.NonEmpty qualified as NES
 import Data.Text qualified as Text
 import Text.Show
 import Unison.ABT qualified as ABT
@@ -28,6 +28,7 @@ import Unison.Name qualified as Name
 import Unison.Names (Names)
 import Unison.Names qualified as Names
 import Unison.Names.ResolutionResult qualified as Names
+import Unison.Names.ResolvesTo (ResolvesTo (..), partitionResolutions)
 import Unison.NamesWithHistory qualified as Names
 import Unison.Pattern (Pattern)
 import Unison.Pattern qualified as Pattern
@@ -150,69 +151,56 @@ bindNames ::
   forall v a.
   (Var v) =>
   (v -> Name.Name) ->
+  (Name.Name -> v) ->
   Set v ->
   Names ->
   Term v a ->
-  Names.ResolutionResult v a (Term v a)
-bindNames unsafeVarToName keepFreeTerms ns e = do
-  let freeTmVars = [(v, a) | (v, a) <- ABT.freeVarOccurrences keepFreeTerms e]
-      -- !_ = trace "bindNames.free term vars: " ()
-      -- !_ = traceShow $ fst <$> freeTmVars
-      freeTyVars =
-        [ (v, a) | (v, as) <- Map.toList (freeTypeVarAnnotations e), a <- as
-        ]
-      -- !_ = trace "bindNames.free type vars: " ()
-      -- !_ = traceShow $ fst <$> freeTyVars
-      okTm :: (v, a) -> Names.ResolutionResult v a (v, Term v a)
-      okTm (v, a) = case Names.lookupHQTerm Names.IncludeSuffixes (HQ.NameOnly $ unsafeVarToName v) ns of
-        rs
-          | Set.size rs == 1 ->
-              pure (v, fromReferent a $ Set.findMin rs)
-          | otherwise -> case NES.nonEmptySet rs of
-              Nothing -> Left (pure (Names.TermResolutionFailure v a Names.NotFound))
-              Just refs -> Left (pure (Names.TermResolutionFailure v a (Names.Ambiguous ns refs)))
-      okTy (v, a) = case Names.lookupHQType Names.IncludeSuffixes (HQ.NameOnly $ unsafeVarToName v) ns of
-        rs
-          | Set.size rs == 1 -> pure (v, Type.ref a $ Set.findMin rs)
-          | otherwise -> case NES.nonEmptySet rs of
-              Nothing -> Left (pure (Names.TypeResolutionFailure v a Names.NotFound))
-              Just refs -> Left (pure (Names.TypeResolutionFailure v a (Names.Ambiguous ns refs)))
-  termSubsts <- validate okTm freeTmVars
-  typeSubsts <- validate okTy freeTyVars
-  pure . substTypeVars typeSubsts . ABT.substsInheritAnnotation termSubsts $ e
+  Names.ResolutionResult a (Term v a)
+bindNames unsafeVarToName nameToVar localVars namespace =
+  -- term is bound here because the where-clause binds a data structure that we only want to compute once, then share
+  -- across all calls to `bindNames` with different terms
+  \term -> do
+    let freeTmVars = ABT.freeVarOccurrences localVars term
+        freeTyVars =
+          [ (v, a) | (v, as) <- Map.toList (freeTypeVarAnnotations term), a <- as
+          ]
 
--- This function replaces free term and type variables with
--- hashes found in the provided `Names`, using suffix-based
--- lookup. Any terms not found in the `Names` are kept free.
-bindSomeNames ::
-  forall v a.
-  (Var v) =>
-  (v -> Name.Name) ->
-  Set v ->
-  Names ->
-  Term v a ->
-  Names.ResolutionResult v a (Term v a)
--- bindSomeNames ns e | trace "Term.bindSome" False
---                   || trace "Names =" False
---                   || traceShow ns False
---                   || trace "Free type vars:" False
---                   || traceShow (freeTypeVars e) False
---                   || trace "Free term vars:" False
---                   || traceShow (freeVars e) False
---                   || traceShow e False
---                   = undefined
-bindSomeNames unsafeVarToName avoid ns e = bindNames unsafeVarToName (avoid <> varsToTDNR) ns e
+        okTm :: (v, a) -> Maybe (v, ResolvesTo Referent)
+        okTm (v, _) =
+          case Set.size matches of
+            1 -> Just (v, Set.findMin matches)
+            0 -> Nothing -- not found: leave free for telling user about expected type
+            _ -> Nothing -- ambiguous: leave free for TDNR
+          where
+            matches :: Set (ResolvesTo Referent)
+            matches =
+              resolveTermName (unsafeVarToName v)
+
+        okTy :: (v, a) -> Names.ResolutionResult a (v, Type v a)
+        okTy (v, a) =
+          case Names.lookupHQType Names.IncludeSuffixes hqName namespace of
+            rs
+              | Set.size rs == 1 -> pure (v, Type.ref a $ Set.findMin rs)
+              | Set.size rs == 0 -> Left (Seq.singleton (Names.TypeResolutionFailure hqName a Names.NotFound))
+              | otherwise -> Left (Seq.singleton (Names.TypeResolutionFailure hqName a (Names.Ambiguous namespace rs Set.empty)))
+          where
+            hqName = HQ.NameOnly (unsafeVarToName v)
+
+    let (namespaceTermResolutions, localTermResolutions) =
+          partitionResolutions (mapMaybe okTm freeTmVars)
+
+        termSubsts =
+          [(v, fromReferent () ref) | (v, ref) <- namespaceTermResolutions]
+            ++ [(v, var () (nameToVar name)) | (v, name) <- localTermResolutions]
+    typeSubsts <- validate okTy freeTyVars
+    pure $
+      term
+        & ABT.substsInheritAnnotation termSubsts
+        & substTypeVars typeSubsts
   where
-    -- `Term.bindNames` takes a set of variables that are not substituted.
-    -- These should be the variables that will be subject to TDNR, which
-    -- we compute as the set of variables whose names cannot be found in `ns`.
-    --
-    -- This allows TDNR to disambiguate those names (if multiple definitions
-    -- share the same suffix) or to report the type expected for that name
-    -- (if a free variable is being used as a typed hole).
-    varsToTDNR = Set.filter notFound (freeVars e)
-    notFound var =
-      Set.size (Name.searchByRankedSuffix (unsafeVarToName var) (Names.terms ns)) /= 1
+    resolveTermName :: Name.Name -> Set (ResolvesTo Referent)
+    resolveTermName =
+      Names.resolveName (Names.terms namespace) (Set.map unsafeVarToName localVars)
 
 -- Prepare a term for type-directed name resolution by replacing
 -- any remaining free variables with blanks to be resolved by TDNR
@@ -601,6 +589,13 @@ pattern BinaryAppsPred' ::
   Term2 vt at ap v a ->
   (Term2 vt at ap v a, Term2 vt at ap v a -> Bool)
 pattern BinaryAppsPred' apps lastArg <- (unBinaryAppsPred -> Just (apps, lastArg))
+
+pattern BinaryAppPred' ::
+  Term2 vt at ap v a ->
+  Term2 vt at ap v a ->
+  Term2 vt at ap v a ->
+  (Term2 vt at ap v a, Term2 vt at ap v a -> Bool)
+pattern BinaryAppPred' f arg1 arg2 <- (unBinaryAppPred -> Just (f, arg1, arg2))
 
 pattern OverappliedBinaryAppPred' ::
   Term2 vt at ap v a ->
@@ -1168,10 +1163,21 @@ unBinaryAppsPred ::
       ],
       Term2 vt at ap v a
     )
-unBinaryAppsPred (t, pred) = case unBinaryApp t of
-  Just (f, x, y) | pred f -> case unBinaryAppsPred (x, pred) of
+unBinaryAppsPred (t, pred) = case unBinaryAppPred (t, pred) of
+  Just (f, x, y) -> case unBinaryAppsPred (x, pred) of
     Just (as, xLast) -> Just ((xLast, f) : as, y)
     Nothing -> Just ([(x, f)], y)
+  _ -> Nothing
+
+unBinaryAppPred ::
+  (Term2 vt at ap v a, Term2 vt at ap v a -> Bool) ->
+  Maybe
+    ( Term2 vt at ap v a,
+      Term2 vt at ap v a,
+      Term2 vt at ap v a
+    )
+unBinaryAppPred (t, pred) = case unBinaryApp t of
+  Just (f, x, y) | pred f -> Just (f, x, y)
   _ -> Nothing
 
 unLams' ::

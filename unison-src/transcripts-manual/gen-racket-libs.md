@@ -1,17 +1,16 @@
-
 When we start out, `./scheme-libs/racket` contains a bunch of library files that we'll need. They define the Unison builtins for Racket.
 
 Next, we'll download the jit project and generate a few Racket files from it.
 
-```ucm
-jit-setup/main> lib.install @unison/internal/releases/0.0.18
+``` ucm
+jit-setup/main> lib.install @unison/internal/releases/0.0.25
 ```
 
-```unison
+``` unison
 go = generateSchemeBoot "scheme-libs/racket"
 ```
 
-```ucm
+``` ucm
 jit-setup/main> run go
 ```
 

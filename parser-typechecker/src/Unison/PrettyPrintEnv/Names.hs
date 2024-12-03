@@ -8,7 +8,9 @@ module Unison.PrettyPrintEnv.Names
     Suffixifier,
     dontSuffixify,
     suffixifyByHash,
+    suffixifyByHashName,
     suffixifyByName,
+    suffixifyByHashWithUnhashedTermsInScope,
 
     -- * Pretty-print env
     makePPE,
@@ -23,11 +25,14 @@ import Unison.Name (Name)
 import Unison.Name qualified as Name
 import Unison.Names (Names)
 import Unison.Names qualified as Names
+import Unison.Names.ResolvesTo (ResolvesTo (..))
 import Unison.NamesWithHistory qualified as Names
 import Unison.Prelude
 import Unison.PrettyPrintEnv (PrettyPrintEnv (PrettyPrintEnv))
 import Unison.Reference (TypeReference)
 import Unison.Referent (Referent)
+import Unison.Util.Relation (Relation)
+import Unison.Util.Relation qualified as Relation
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Namer
@@ -83,6 +88,27 @@ suffixifyByHash names =
     { suffixifyTerm = \name -> Name.suffixifyByHash name (Names.terms names),
       suffixifyType = \name -> Name.suffixifyByHash name (Names.types names)
     }
+
+suffixifyByHashName :: Names -> Suffixifier
+suffixifyByHashName names =
+  Suffixifier
+    { suffixifyTerm = \name -> Name.suffixifyByHashName name (Names.terms names),
+      suffixifyType = \name -> Name.suffixifyByHashName name (Names.types names)
+    }
+
+suffixifyByHashWithUnhashedTermsInScope :: Set Name -> Names -> Suffixifier
+suffixifyByHashWithUnhashedTermsInScope localTermNames namespaceNames =
+  Suffixifier
+    { suffixifyTerm = \name -> Name.suffixifyByHash name terms,
+      suffixifyType = \name -> Name.suffixifyByHash name (Names.types namespaceNames)
+    }
+  where
+    terms :: Relation Name (ResolvesTo Referent)
+    terms =
+      Names.terms namespaceNames
+        & Relation.subtractDom localTermNames
+        & Relation.mapRan ResolvesToNamespace
+        & Relation.union (Relation.fromList (map (\name -> (name, ResolvesToLocal name)) (Set.toList localTermNames)))
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Pretty-print env

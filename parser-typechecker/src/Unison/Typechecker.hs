@@ -21,13 +21,7 @@ where
 
 import Control.Lens
 import Control.Monad.Fail (fail)
-import Control.Monad.State
-  ( State,
-    StateT,
-    execState,
-    get,
-    modify,
-  )
+import Control.Monad.State (StateT, get, modify, execState, State)
 import Control.Monad.Writer
 import Data.Foldable
 import Data.Map qualified as Map
@@ -92,7 +86,12 @@ data Env v loc = Env
     --
     -- This mapping is populated before typechecking with as few entries
     -- as are needed to help resolve variables needing TDNR in the file.
-    termsByShortname :: Map Name.Name [NamedReference v loc]
+    --
+    -- - Left means a term in the file (for which we don't have a type before typechecking)
+    -- - Right means a term/constructor in the namespace, or a constructor in the file (for which we do have a type
+    --   before typechecking)
+    termsByShortname :: Map Name.Name [Either Name.Name (NamedReference v loc)],
+    topLevelComponents :: Map Name.Name (NamedReference v loc)
   }
   deriving stock (Generic)
 
@@ -234,8 +233,7 @@ typeDirectedNameResolution ppe oldNotes oldType env = do
     addTypedComponent (Context.TopLevelComponent vtts) =
       for_ vtts \(v, typ, _) ->
         let name = Name.unsafeParseVar (Var.reset v)
-         in for_ (Name.suffixes name) \suffix ->
-              #termsByShortname %= Map.insertWith (<>) suffix [NamedReference name typ (Context.ReplacementVar v)]
+        in #topLevelComponents %= Map.insert name (NamedReference name typ (Context.ReplacementVar v))
     addTypedComponent _ = pure ()
 
     suggest :: [Resolution v loc] -> Result (Notes v loc) ()
@@ -305,7 +303,12 @@ typeDirectedNameResolution ppe oldNotes oldType env = do
     resolveNote env = \case
       Context.SolvedBlank (B.Resolve loc str) v it -> do
         let shortname = Name.unsafeParseText (Text.pack str)
-            matches = Map.findWithDefault [] shortname env.termsByShortname
+            matches =
+              env.termsByShortname
+                & Map.findWithDefault [] shortname
+                & mapMaybe \case
+                  Left longname -> Map.lookup longname env.topLevelComponents
+                  Right namedRef -> Just namedRef
         suggestions <- wither (resolve it) matches
         pure $
           Just

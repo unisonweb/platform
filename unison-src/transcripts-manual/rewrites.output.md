@@ -1,8 +1,16 @@
+``` ucm :hide
+scratch/main> builtins.mergeio
+
+scratch/main> load unison-src/transcripts-using-base/base.u
+
+scratch/main> add
+```
+
 ## Structural find and replace
 
 Here's a scratch file with some rewrite rules:
 
-``` unison
+``` unison :hide
 ex1 = List.map (x -> x + 1) [1,2,3,4,5,6,7]
 
 eitherToOptional e a =
@@ -33,22 +41,22 @@ Let's rewrite these:
 scratch/main> rewrite rule1
 
   ☝️
-  
+
   I found and replaced matches in these definitions: ex1
-  
+
   The rewritten file has been added to the top of scratch.u
 
 scratch/main> rewrite eitherToOptional
 
   ☝️
-  
+
   I found and replaced matches in these definitions:
   Either.mapRight
-  
-  The rewritten file has been added to the top of scratch.u
 
+  The rewritten file has been added to the top of scratch.u
 ```
-``` unison:added-by-ucm scratch.u
+
+``` unison :added-by-ucm scratch.u
 -- | Rewrote using: 
 -- | Modified definition(s): ex1
 
@@ -78,7 +86,7 @@ type Optional2 a = Some2 a | None2
 rule2 x = @rewrite signature Optional ==> Optional2
 ```
 
-``` unison:added-by-ucm scratch.u
+``` unison :added-by-ucm scratch.u
 -- | Rewrote using: 
 -- | Modified definition(s): Either.mapRight
 
@@ -108,6 +116,12 @@ type Optional2 a = Some2 a | None2
 rule2 x = @rewrite signature Optional ==> Optional2
 ```
 
+``` ucm :hide
+scratch/main> load
+
+scratch/main> add
+```
+
 After adding to the codebase, here's the rewritten source:
 
 ``` ucm
@@ -117,10 +131,10 @@ scratch/main> view ex1 Either.mapRight rule1
   Either.mapRight f = cases
     None   -> None
     Some a -> Some (f a)
-  
+
   ex1 : [Nat]
   ex1 = List.map Nat.increment [1, 2, 3, 4, 5, 6, 7]
-  
+
   rule1 :
     (i ->{g} o)
     -> Nat
@@ -132,11 +146,11 @@ scratch/main> view ex1 Either.mapRight rule1
     @rewrite
       term x + 1 ==> Nat.increment x
       term a -> f a ==> f
-
 ```
+
 Another example, showing that we can rewrite to definitions that only exist in the file:
 
-``` unison
+``` unison :hide
 unique ability Woot1 where woot1 : () -> Nat
 unique ability Woot2 where woot2 : () -> Nat
 
@@ -160,13 +174,13 @@ Let's apply the rewrite `woot1to2`:
 scratch/main> rewrite woot1to2
 
   ☝️
-  
-  I found and replaced matches in these definitions: wootEx
-  
-  The rewritten file has been added to the top of scratch.u
 
+  I found and replaced matches in these definitions: wootEx
+
+  The rewritten file has been added to the top of scratch.u
 ```
-``` unison:added-by-ucm scratch.u
+
+``` unison :added-by-ucm scratch.u
 -- | Rewrote using: 
 -- | Modified definition(s): wootEx
 
@@ -190,6 +204,12 @@ blah = 123
 blah2 = 456
 ```
 
+``` ucm :hide
+scratch/main> load
+
+scratch/main> add
+```
+
 After adding the rewritten form to the codebase, here's the rewritten `Woot1` to `Woot2`:
 
 ``` ucm
@@ -199,11 +219,11 @@ scratch/main> view wootEx
   wootEx a =
     _ = woot2()
     blah2
-
 ```
+
 This example shows that rewrite rules can to refer to term definitions that only exist in the file:
 
-``` unison
+``` unison :hide
 foo1 =
   b = "b"
   123
@@ -222,6 +242,14 @@ sameFileEx =
   foo1
 ```
 
+``` ucm :hide
+scratch/main> rewrite rule
+
+scratch/main> load
+
+scratch/main> add
+```
+
 After adding the rewritten form to the codebase, here's the rewritten definitions:
 
 ``` ucm
@@ -231,21 +259,21 @@ scratch/main> view foo1 foo2 sameFileEx
   foo1 =
     b = "b"
     123
-  
+
   foo2 : Nat
   foo2 =
     a = "a"
     233
-  
+
   sameFileEx : Nat
   sameFileEx =
     _ = "ex"
     foo2
-
 ```
+
 ## Capture avoidance
 
-``` unison
+``` unison :hide
 bar1 =
   b = "bar"
   123
@@ -269,13 +297,13 @@ In the above example, `bar2` is locally bound by the rule, so when applied, it s
 scratch/main> rewrite rule
 
   ☝️
-  
-  I found and replaced matches in these definitions: sameFileEx
-  
-  The rewritten file has been added to the top of scratch.u
 
+  I found and replaced matches in these definitions: sameFileEx
+
+  The rewritten file has been added to the top of scratch.u
 ```
-``` unison:added-by-ucm scratch.u
+
+``` unison :added-by-ucm scratch.u
 -- | Rewrote using: 
 -- | Modified definition(s): sameFileEx
 
@@ -299,28 +327,28 @@ sameFileEx =
 
 Instead, it should be an unbound free variable, which doesn't typecheck:
 
-``` ucm
+``` ucm :error
 scratch/main> load
 
   Loading changes detected in scratch.u.
 
   I couldn't figure out what bar21 refers to here:
-  
+
      19 |   bar21
-  
+
   I also don't know what type it should be.
-  
+
   Some common causes of this error include:
     * Your current namespace is too deep to contain the
       definition in its subtree
     * The definition is part of a library which hasn't been
       added to this project
     * You have a typo in the name
-
 ```
+
 In this example, the `a` is locally bound by the rule, so it shouldn't capture the `a = 39494` binding which is in scope at the point of the replacement:
 
-``` unison
+``` unison :hide
 bar2 =
   a = 39494
   233
@@ -334,13 +362,13 @@ rule a = @rewrite
 scratch/main> rewrite rule
 
   ☝️
-  
-  I found and replaced matches in these definitions: bar2
-  
-  The rewritten file has been added to the top of scratch.u
 
+  I found and replaced matches in these definitions: bar2
+
+  The rewritten file has been added to the top of scratch.u
 ```
-``` unison:added-by-ucm scratch.u
+
+``` unison :added-by-ucm scratch.u
 -- | Rewrote using: 
 -- | Modified definition(s): bar2
 
@@ -356,32 +384,36 @@ rule a =
 
 The `a` introduced will be freshened to not capture the `a` in scope, so it remains as an unbound variable and is a type error:
 
-``` ucm
+``` ucm :error
 scratch/main> load
 
   Loading changes detected in scratch.u.
 
   I couldn't figure out what a1 refers to here:
-  
+
       6 |   a1
-  
+
   I also don't know what type it should be.
-  
+
   Some common causes of this error include:
     * Your current namespace is too deep to contain the
       definition in its subtree
     * The definition is part of a library which hasn't been
       added to this project
     * You have a typo in the name
-
 ```
+
 ## Structural find
 
-``` unison
+``` unison :hide
 eitherEx = Left ("hello", "there")
 ```
 
-``` unison
+``` ucm :hide
+scratch/main> add
+```
+
+``` unison :hide
 findEitherEx x = @rewrite term Left ("hello", x) ==> Left ("hello" Text.++ x)
 findEitherFailure = @rewrite signature a . Either Failure a ==> ()
 ```
@@ -390,25 +422,25 @@ findEitherFailure = @rewrite signature a . Either Failure a ==> ()
 scratch/main> sfind findEitherEx
 
   🔎
-  
+
   These definitions from the current namespace (excluding `lib`) have matches:
-  
+
     1. eitherEx
-  
+
   Tip: Try `edit 1` to bring this into your scratch file.
 
 scratch/main> sfind findEitherFailure
 
   🔎
-  
+
   These definitions from the current namespace (excluding `lib`) have matches:
-  
+
     1. catch
     2. printText
     3. reraise
     4. toEither
     5. toEither.handler
-  
+
   Tip: Try `edit 1` or `edit 1-5` to bring these into your
        scratch file.
 
@@ -421,6 +453,4 @@ scratch/main> find 1-5
   4. Exception.toEither.handler : Request {Exception} a
                                   -> Either Failure a
   5. printText : Text ->{IO} Either Failure ()
-  
-
 ```

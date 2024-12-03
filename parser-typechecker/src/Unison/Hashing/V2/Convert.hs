@@ -227,7 +227,7 @@ h2mReferent getCT = \case
 hashDataDecls ::
   (Var v) =>
   Map v (Memory.DD.DataDeclaration v a) ->
-  ResolutionResult v a [(v, Memory.Reference.Id, Memory.DD.DataDeclaration v a)]
+  ResolutionResult a [(v, Memory.Reference.Id, Memory.DD.DataDeclaration v a)]
 hashDataDecls memDecls = do
   let hashingDecls = fmap m2hDecl memDecls
   hashingResult <- Hashing.hashDecls Name.unsafeParseVar hashingDecls
@@ -239,7 +239,7 @@ hashDataDecls memDecls = do
 hashDecls ::
   (Var v) =>
   Map v (Memory.DD.Decl v a) ->
-  ResolutionResult v a [(v, Memory.Reference.Id, Memory.DD.Decl v a)]
+  ResolutionResult a [(v, Memory.Reference.Id, Memory.DD.Decl v a)]
 hashDecls memDecls = do
   -- want to unwrap the decl before doing the rehashing, and then wrap it back up the same way
   let howToReassemble =

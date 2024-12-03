@@ -10,7 +10,6 @@ import Unison.Builtin qualified as Builtin
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.NamesUtils qualified as Cli
-import Unison.Cli.PrettyPrintUtils qualified as Cli
 import Unison.Codebase (Codebase)
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Branch (Branch0)
@@ -21,7 +20,9 @@ import Unison.DataDeclaration qualified as DD
 import Unison.Parser.Ann (Ann (..))
 import Unison.Prelude
 import Unison.PrettyPrintEnv qualified as PPE
+import Unison.PrettyPrintEnv.Names qualified as PPE
 import Unison.PrettyPrintEnvDecl qualified as PPED
+import Unison.PrettyPrintEnvDecl.Names qualified as PPED
 import Unison.Reference (Reference)
 import Unison.Reference qualified as Reference
 import Unison.Sqlite qualified as Sqlite
@@ -37,7 +38,8 @@ diffHelper before after =
     hqLength <- Cli.runTransaction Codebase.hashLength
     diff <- liftIO (BranchDiff.diff0 before after)
     names <- Cli.currentNames <&> \currentNames -> currentNames <> Branch.toNames before <> Branch.toNames after
-    pped <- Cli.prettyPrintEnvDeclFromNames names
+    let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
+
     let suffixifiedPPE = PPED.suffixifiedPPE pped
     fmap (suffixifiedPPE,) do
       OBranchDiff.toOutput

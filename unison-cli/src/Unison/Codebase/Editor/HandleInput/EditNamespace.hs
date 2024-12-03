@@ -9,7 +9,6 @@ import U.Codebase.Reference (Reference' (..))
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
-import Unison.Cli.PrettyPrintUtils qualified as NamesUtils
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Branch qualified as Branch
 import Unison.Codebase.Branch.Names qualified as Branch
@@ -27,12 +26,15 @@ import Unison.Referent qualified as Referent
 import Unison.Server.Backend qualified as Backend
 import Unison.Syntax.DeclPrinter qualified as DeclPrinter
 import Unison.Util.Monoid (foldMapM)
+import qualified Unison.PrettyPrintEnv.Names as PPE
+import qualified Unison.PrettyPrintEnvDecl.Names as PPED
 
 handleEditNamespace :: OutputLocation -> [Path] -> Cli ()
 handleEditNamespace outputLoc paths0 = do
   Cli.Env {codebase} <- ask
   currentBranch <- Cli.getCurrentBranch0
-  ppe <- NamesUtils.currentPrettyPrintEnvDecl
+  let currentNames = Branch.toNames currentBranch
+  let ppe = PPED.makePPED (PPE.hqNamer 10 currentNames) (PPE.suffixifyByHashName currentNames)
 
   -- Adjust the requested list of paths slightly: if it's missing (i.e. `edit.namespace` without arguments), then behave
   -- as if the empty path (which there is no syntax for, heh) was supplied.
@@ -47,9 +49,7 @@ handleEditNamespace outputLoc paths0 = do
         List.nubOrd paths & foldMap \path ->
           let branch = (if path == Path.empty then Branch.withoutLib else id) (Branch.getAt0 path currentBranch)
               names = Branch.toNames branch
-           in -- PPED.makePPED (PPE.hqNamer hashLen ns) (PPE.suffixifyByHash ns)
-
-              case Path.toName path of
+           in case Path.toName path of
                 Nothing -> names
                 Just pathPrefix -> Names.prefix0 pathPrefix names
 

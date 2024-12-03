@@ -8,8 +8,10 @@ import Data.Generics.Sum (_Ctor)
 import Data.List.Extra (nubOrd)
 import Data.Map qualified as Map
 import Data.Monoid (Any (..))
+import Data.Sequence qualified as Seq
 import Data.Set qualified as Set
 import Unison.ABT qualified as ABT
+import Unison.HashQualified qualified as HQ
 import Unison.Kind qualified as K
 import Unison.LabeledDependency qualified as LD
 import Unison.Name qualified as Name
@@ -55,6 +57,9 @@ _Ref = _Ctor @"Ref"
 -- | Types are represented as ABTs over the base functor F, with variables in `v`
 type Type v a = ABT.Term F v a
 
+-- | For use with recursion schemes.
+type TypeF v a r = ABT.Term' F v a r
+
 wrapV :: (Ord v) => Type v a -> Type (ABT.V v) a
 wrapV = ABT.vmap ABT.Bound
 
@@ -71,12 +76,14 @@ bindReferences ::
   Set v ->
   Map Name.Name TypeReference ->
   Type v a ->
-  Names.ResolutionResult v a (Type v a)
+  Names.ResolutionResult a (Type v a)
 bindReferences unsafeVarToName keepFree ns t =
   let fvs = ABT.freeVarOccurrences keepFree t
       rs = [(v, a, Map.lookup (unsafeVarToName v) ns) | (v, a) <- fvs]
       ok (v, _a, Just r) = pure (v, r)
-      ok (v, a, Nothing) = Left (pure (Names.TypeResolutionFailure v a Names.NotFound))
+      ok (v, a, Nothing) =
+        Left $
+          Seq.singleton (Names.TypeResolutionFailure (HQ.NameOnly (unsafeVarToName v)) a Names.NotFound)
    in List.validate ok rs <&> \es -> bindExternal es t
 
 newtype Monotype v a = Monotype {getPolytype :: Type v a} deriving (Eq)

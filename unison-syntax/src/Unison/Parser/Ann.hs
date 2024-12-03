@@ -29,6 +29,7 @@ startingLine _ = Nothing
 instance Monoid Ann where
   mempty = External
 
+-- | This instance is commutative.
 instance Semigroup Ann where
   Ann s1 e1 <> Ann s2 e2 = Ann (min s1 s2) (max e1 e2)
   -- If we have a concrete location from a file, use it

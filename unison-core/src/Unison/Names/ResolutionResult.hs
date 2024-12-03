@@ -1,32 +1,39 @@
-module Unison.Names.ResolutionResult where
+module Unison.Names.ResolutionResult
+  ( ResolutionError (..),
+    ResolutionFailure (..),
+    ResolutionResult,
+    getAnnotation,
+  )
+where
 
-import Data.Set.NonEmpty
+import Unison.Name (Name)
 import Unison.Names (Names)
 import Unison.Prelude
-import Unison.Reference as Reference (Reference)
-import Unison.Referent as Referent (Referent)
+import Unison.Reference (TypeReference)
+import Unison.Referent (Referent)
+import Unison.HashQualified (HashQualified)
 
 data ResolutionError ref
   = NotFound
-  | -- Contains the names which were in scope and which refs were possible options
-    -- The NonEmpty set of refs must contain 2 or more refs (otherwise what is ambiguous?).
-    Ambiguous Names (NESet ref)
+  | -- Contains:
+    --
+    --   1. The namespace names
+    --   2. The refs among those that we could be referring to
+    --   3. The local names that we could be referring to
+    --
+    -- The size of set (2.) + the size of set (3.) is at least 2 (otherwise there wouldn't be any ambiguity).
+    Ambiguous Names (Set ref) (Set Name)
   deriving (Eq, Ord, Show)
 
--- | ResolutionFailure represents the failure to resolve a given variable.
-data ResolutionFailure var annotation
-  = TypeResolutionFailure var annotation (ResolutionError Reference)
-  | TermResolutionFailure var annotation (ResolutionError Referent)
+-- | ResolutionFailure represents the failure to resolve a given name.
+data ResolutionFailure annotation
+  = TypeResolutionFailure (HashQualified Name) annotation (ResolutionError TypeReference)
+  | TermResolutionFailure (HashQualified Name) annotation (ResolutionError Referent)
   deriving (Eq, Ord, Show, Functor, Foldable, Traversable)
 
-getAnnotation :: ResolutionFailure v a -> a
+getAnnotation :: ResolutionFailure a -> a
 getAnnotation = \case
   TypeResolutionFailure _ a _ -> a
   TermResolutionFailure _ a _ -> a
 
-getVar :: ResolutionFailure v a -> v
-getVar = \case
-  TypeResolutionFailure v _ _ -> v
-  TermResolutionFailure v _ _ -> v
-
-type ResolutionResult v a r = Either (Seq (ResolutionFailure v a)) r
+type ResolutionResult a r = Either (Seq (ResolutionFailure a)) r

@@ -1,5 +1,9 @@
 # Hello\!
 
+``` ucm :hide
+scratch/main> builtins.merge
+```
+
 This markdown file is also a Unison transcript file. Transcript files are an easy way to create self-documenting Unison programs, libraries, and tutorials.
 
 The format is just a regular markdown file with some fenced code blocks that are typechecked and elaborated by `ucm`. For example, you can call this transcript via:
@@ -21,78 +25,74 @@ Take a look at [the elaborated output](hello.output.md) to see what this file lo
 
 In the `unison` fenced block, you can give an (optional) file name (defaults to `scratch.u`), like so:
 
-``` unison
----
-title: myfile.u
----
+``` unison  myfile.u
 x = 42
-
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in myfile.u.
 
   I found and typechecked these definitions in myfile.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       x : Nat
-
 ```
+
 Let's go ahead and add that to the codebase, then make sure it's there:
 
 ``` ucm
 scratch/main> add
 
   ⍟ I've added these definitions:
-  
+
     x : Nat
 
 scratch/main> view x
 
   x : Nat
   x = 42
-
 ```
+
 If `view` returned no results, the transcript would fail at this point.
 
 ## Hiding output
 
 You may not always want to view the output of typechecking and evaluation every time, in which case, you can add `:hide` to the block. For instance:
 
-``` unison
+``` unison :hide
 y = 99
 ```
 
 This works for `ucm` blocks as well.
 
-Doing `unison:hide:all` hides the block altogether, both input and output - this is useful for doing behind-the-scenes control of `ucm`'s state.
+``` ucm :hide
+scratch/main> rename.term x answerToUltimateQuestionOfLife
+```
+
+Doing `unison :hide:all` hides the block altogether, both input and output - this is useful for doing behind-the-scenes control of `ucm`'s state.
 
 ## Expecting failures
 
 Sometimes, you have a block which you are *expecting* to fail, perhaps because you're illustrating how something would be a type error. Adding `:error` to the block will check for this. For instance, this program has a type error:
 
-``` unison
+``` unison :error
 hmm : .builtin.Nat
 hmm = "Not, in fact, a number"
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found a value  of type:  Text
   where I expected to find:  Nat
-  
+
       1 | hmm : .builtin.Nat
       2 | hmm = "Not, in fact, a number"
-  
-    from right here:
-  
-      2 | hmm = "Not, in fact, a number"
-  
 
+    from right here:
+
+      2 | hmm = "Not, in fact, a number"
 ```

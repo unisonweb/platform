@@ -9,7 +9,7 @@ import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
-import Unison.Cli.PrettyPrintUtils qualified as Cli
+import Unison.Cli.NamesUtils qualified as Cli
 import Unison.Codebase (Codebase)
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Branch (Branch0)
@@ -22,7 +22,9 @@ import Unison.LabeledDependency qualified as LD
 import Unison.Name (Name)
 import Unison.NameSegment qualified as NameSegment
 import Unison.Prelude
+import Unison.PrettyPrintEnv.Names qualified as PPE
 import Unison.PrettyPrintEnvDecl qualified as PPED
+import Unison.PrettyPrintEnvDecl.Names qualified as PPED
 import Unison.Reference qualified as Reference
 import Unison.Referent qualified as Referent
 import Unison.Sqlite qualified as Sqlite
@@ -40,7 +42,9 @@ handleNamespaceDependencies namespacePath' = do
       Cli.returnEarly (Output.BranchEmpty (Output.WhichBranchEmptyPath pp))
   externalDependencies <-
     Cli.runTransaction (namespaceDependencies codebase branch)
-  pped <- Cli.projectBranchPPED pb
+  names <- Cli.projectBranchNames pb
+
+  let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let ppe = PPED.unsuffixifiedPPE pped
   Cli.respondNumbered $ Output.ListNamespaceDependencies ppe pp externalDependencies
 

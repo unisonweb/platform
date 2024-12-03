@@ -10,12 +10,10 @@ module Unison.PatternMatchCoverage.GrdTree
   )
 where
 
-import Data.List.NonEmpty (NonEmpty (..))
-import Data.List.NonEmpty qualified as NEL
 import Data.ListLike (ListLike)
-import Unison.PatternMatchCoverage.Fix
 import Unison.Prelude
 import Unison.Util.Pretty
+import Unison.Util.Recursion
 
 -- | A @GrdTree@ is the simple language to desugar matches into. All
 -- pattern matching constructs (/e.g./ structural pattern matching,
@@ -55,7 +53,7 @@ data GrdTreeF n l a
   | -- | A constraint of some kind (structural pattern match, boolan guard, etc)
     GrdF n a
   | -- | A list of alternative matches, tried in order
-    ForkF (NonEmpty a)
+    ForkF [a]
   deriving stock (Functor, Show)
 
 prettyGrdTree :: forall n l s. (ListLike s Char, IsString s) => (n -> Pretty s) -> (l -> Pretty s) -> GrdTree n l -> Pretty s
@@ -64,7 +62,7 @@ prettyGrdTree prettyNode prettyLeaf = cata phi
     phi = \case
       LeafF l -> prettyLeaf l
       GrdF n rest -> sep " " [prettyNode n, "──", rest]
-      ForkF xs -> "──" <> group (sep "\n" (makeTree $ NEL.toList xs))
+      ForkF xs -> "──" <> group (sep "\n" $ makeTree xs)
     makeTree :: [Pretty s] -> [Pretty s]
     makeTree = \case
       [] -> []
@@ -82,7 +80,7 @@ pattern Leaf x = Fix (LeafF x)
 pattern Grd :: n -> GrdTree n l -> GrdTree n l
 pattern Grd x rest = Fix (GrdF x rest)
 
-pattern Fork :: NonEmpty (GrdTree n l) -> GrdTree n l
+pattern Fork :: [GrdTree n l] -> GrdTree n l
 pattern Fork alts = Fix (ForkF alts)
 
 {-# COMPLETE Leaf, Grd, Fork #-}

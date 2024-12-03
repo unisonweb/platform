@@ -16,21 +16,26 @@ testBasicFork = 'let
 
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       otherThread   : '{IO} ()
       testBasicFork : '{IO} [Result]
-
 ```
+
 See if we can get another thread to stuff a value into a MVar
+
+``` ucm :hide
+scratch/main> add
+
+scratch/main> io.test testBasicFork
+```
 
 ``` unison
 thread1 : Nat -> MVar Nat -> '{io2.IO}()
@@ -56,39 +61,38 @@ testBasicMultiThreadMVar = 'let
 
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       testBasicMultiThreadMVar : '{IO} [Result]
       thread1                  : Nat -> MVar Nat -> '{IO} ()
-
 ```
+
 ``` ucm
 scratch/main> add
 
   ⍟ I've added these definitions:
-  
+
     testBasicMultiThreadMVar : '{IO} [Result]
     thread1                  : Nat -> MVar Nat -> '{IO} ()
 
 scratch/main> io.test testBasicMultiThreadMVar
 
     New test results:
-  
-    1. testBasicMultiThreadMVar   ◉ other thread should have incremented
-  
-  ✅ 1 test(s) passing
-  
-  Tip: Use view 1 to view the source of a test.
 
+    1. testBasicMultiThreadMVar   ◉ other thread should have incremented
+
+  ✅ 1 test(s) passing
+
+  Tip: Use view 1 to view the source of a test.
 ```
+
 ``` unison
 sendingThread: Nat -> MVar Nat -> '{io2.IO}()
 sendingThread toSend mv = 'let
@@ -127,27 +131,26 @@ testTwoThreads = 'let
 
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       receivingThread : MVar Nat -> MVar Text -> '{IO} ()
       sendingThread   : Nat -> MVar Nat -> '{IO} ()
         (also named thread1)
       testTwoThreads  : '{IO} [Result]
-
 ```
+
 ``` ucm
 scratch/main> add
 
   ⍟ I've added these definitions:
-  
+
     receivingThread : MVar Nat -> MVar Text -> '{IO} ()
     sendingThread   : Nat -> MVar Nat -> '{IO} ()
       (also named thread1)
@@ -156,11 +159,10 @@ scratch/main> add
 scratch/main> io.test testTwoThreads
 
     New test results:
-  
-    1. testTwoThreads   ◉ 
-  
-  ✅ 1 test(s) passing
-  
-  Tip: Use view 1 to view the source of a test.
 
+    1. testTwoThreads   ◉ 
+
+  ✅ 1 test(s) passing
+
+  Tip: Use view 1 to view the source of a test.
 ```

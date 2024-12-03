@@ -12,7 +12,6 @@ import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
 import Unison.Cli.Pretty (prettyBase32Hex, prettyHash)
-import Unison.Cli.PrettyPrintUtils qualified as Cli
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Branch.Names qualified as Branch
 import Unison.Codebase.Editor.Output (Output (..))
@@ -22,7 +21,9 @@ import Unison.Merge.Synhash (hashBuiltinTermTokens, hashDerivedTermTokens)
 import Unison.Name (Name)
 import Unison.Names qualified as Names
 import Unison.Prelude
+import Unison.PrettyPrintEnv.Names qualified as PPE
 import Unison.PrettyPrintEnvDecl (PrettyPrintEnvDecl (..))
+import Unison.PrettyPrintEnvDecl.Names qualified as PPED
 import Unison.Reference qualified as Reference
 import Unison.Syntax.Name qualified as Name
 import Unison.Util.Pretty (ColorText, Pretty)
@@ -32,7 +33,7 @@ handleDebugSynhashTerm :: Name -> Cli ()
 handleDebugSynhashTerm name = do
   namespace <- Cli.getCurrentBranch0
   let names = Branch.toNames namespace
-  pped <- Cli.prettyPrintEnvDeclFromNames names
+  let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
 
   for_ (Names.refTermsNamed names name) \ref -> do
     maybeTokens <-

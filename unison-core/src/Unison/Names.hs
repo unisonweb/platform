@@ -1,3 +1,4 @@
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Unison.Names
@@ -38,9 +39,9 @@ module Unison.Names
     typeReferences,
     termsNamed,
     typesNamed,
-    unionLeft,
-    unionLeftName,
-    unionLeftRef,
+    shadowing,
+    shadowing1,
+    preferring,
     namesForReference,
     namesForReferent,
     shadowTerms,
@@ -52,9 +53,13 @@ module Unison.Names
     hashQualifyTermsRelation,
     fromTermsAndTypes,
     lenientToNametree,
+    resolveName,
+    resolveNameIncludingNames,
   )
 where
 
+import Control.Lens (_2)
+import Data.List qualified as List
 import Data.Map qualified as Map
 import Data.Semialign (alignWith)
 import Data.Set qualified as Set
@@ -70,6 +75,7 @@ import Unison.LabeledDependency qualified as LD
 import Unison.Name (Name)
 import Unison.Name qualified as Name
 import Unison.NameSegment (NameSegment)
+import Unison.Names.ResolvesTo (ResolvesTo (..))
 import Unison.Prelude
 import Unison.Reference (Reference, TermReference, TermReferenceId, TypeReference, TypeReferenceId)
 import Unison.Reference qualified as Reference
@@ -93,7 +99,7 @@ data Names = Names
   { terms :: Relation Name Referent,
     types :: Relation Name TypeReference
   }
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show, Generic)
 
 instance Semigroup (Names) where
   Names e1 t1 <> Names e2 t2 =
@@ -205,79 +211,31 @@ restrictReferences refs Names {..} = Names terms' types'
     terms' = R.filterRan ((`Set.member` refs) . Referent.toReference) terms
     types' = R.filterRan (`Set.member` refs) types
 
--- | Guide to unionLeft*
--- Is it ok to create new aliases for parsing?
---    Sure.
+-- | Construct names from a left-biased map union of the domains of the input names. That is, for each distinct name,
+-- if it refers to *any* references in the left argument, use those (ignoring the right).
 --
--- Is it ok to create name conflicts for parsing?
---    It's okay but not great. The user will have to hash-qualify to disambiguate.
+-- This is appropriate for shadowing names in the codebase with names in a Unison file, for instance:
 --
--- Is it ok to create new aliases for pretty-printing?
---    Not helpful, we need to choose a name to show.
---    We'll just have to choose one at random if there are aliases.
--- Is it ok to create name conflicts for pretty-printing?
---    Still okay but not great.  The pretty-printer will have to hash-qualify
---    to disambiguate.
---
--- Thus, for parsing:
---       unionLeftName is good if the name `n` on the left is the only `n` the
---           user will want to reference.  It allows the rhs to add aliases.
---       unionLeftRef allows new conflicts but no new aliases.  Lame?
---       (<>) is ok for parsing if we expect to add some conflicted names,
---           e.g. from history
---
--- For pretty-printing:
---       Probably don't want to add new aliases, unless we don't know which
---       `Names` is higher priority.  So if we do have a preferred `Names`,
---       don't use `unionLeftName` or (<>).
---       You don't want to create new conflicts either if you have a preferred
---       `Names`.  So in this case, don't use `unionLeftRef` either.
---       I guess that leaves `unionLeft`.
---
--- Not sure if the above is helpful or correct!
+-- @shadowing scratchFileNames codebaseNames@
+shadowing :: Names -> Names -> Names
+shadowing a b =
+  Names (shadowing1 a.terms b.terms) (shadowing1 a.types b.types)
 
--- unionLeft two Names, including new aliases, but excluding new name conflicts.
--- e.g. unionLeftName [foo -> #a, bar -> #a, cat -> #c]
---                    [foo -> #b, baz -> #c]
---                  = [foo -> #a, bar -> #a, baz -> #c, cat -> #c)]
--- Btw, it's ok to create name conflicts for parsing environments, if you don't
--- mind disambiguating.
-unionLeftName :: Names -> Names -> Names
-unionLeftName = unionLeft' $ const . R.memberDom
+shadowing1 :: (Ord a, Ord b) => Relation a b -> Relation a b -> Relation a b
+shadowing1 =
+  Relation.unionDomainWith (\_ x _ -> x)
 
--- unionLeft two Names, including new name conflicts, but excluding new aliases.
--- e.g. unionLeftRef [foo -> #a, bar -> #a, cat -> #c]
---                   [foo -> #b, baz -> #c]
---                 = [foo -> #a, bar -> #a, foo -> #b, cat -> #c]
-unionLeftRef :: Names -> Names -> Names
-unionLeftRef (Names priorityTerms priorityTypes) (Names fallbackTerms fallbackTypes) =
-  Names (restricter priorityTerms fallbackTerms) (restricter priorityTypes fallbackTypes)
+-- | Construct names from a left-biased map union of the ranges of the input names. That is, for each distinct
+-- reference, if it is referred to by *any* names in the left argument, use those (ignoring the right).
+--
+-- This is appropriate for biasing a PPE towards picking names in the left argument.
+preferring :: Names -> Names -> Names
+preferring xs ys =
+  Names (preferring1 xs.terms ys.terms) (preferring1 xs.types ys.types)
   where
-    restricter priorityRel fallbackRel =
-      let refsExclusiveToFallback = (Relation.ran fallbackRel) `Set.difference` (Relation.ran priorityRel)
-       in priorityRel <> Relation.restrictRan fallbackRel refsExclusiveToFallback
-
--- unionLeft two Names, but don't create new aliases or new name conflicts.
--- e.g. unionLeft [foo -> #a, bar -> #a, cat -> #c]
---                [foo -> #b, baz -> #c]
---              = [foo -> #a, bar -> #a, cat -> #c]
-unionLeft :: Names -> Names -> Names
-unionLeft = unionLeft' go
-  where
-    go n r acc = R.memberDom n acc || R.memberRan r acc
-
--- implementation detail of the above
-unionLeft' ::
-  (forall a b. (Ord a, Ord b) => a -> b -> Relation a b -> Bool) ->
-  Names ->
-  Names ->
-  Names
-unionLeft' shouldOmit a b = Names terms' types'
-  where
-    terms' = foldl' go a.terms (R.toList b.terms)
-    types' = foldl' go a.types (R.toList b.types)
-    go :: (Ord a, Ord b) => Relation a b -> (a, b) -> Relation a b
-    go acc (n, r) = if shouldOmit n r acc then acc else R.insert n r acc
+    preferring1 :: (Ord a, Ord b) => Relation a b -> Relation a b -> Relation a b
+    preferring1 =
+      Relation.unionRangeWith (\_ x _ -> x)
 
 -- | TODO: get this from database. For now it's a constant.
 numHashChars :: Int
@@ -563,3 +521,67 @@ lenientToNametree names =
       -- The partial `Set.findMin` is fine here because Relation.domain only has non-empty Set values. A NESet would be
       -- better.
       unflattenNametree . Map.map Set.findMin . Relation.domain
+
+-- Given a namespace and locally-bound names that shadow it (i.e. from a Unison file that hasn't been typechecked yet),
+-- determine what the name resolves to, per the usual suffix-matching rules (where local defnintions and direct
+-- dependencies are preferred to indirect dependencies).
+resolveName :: forall ref. (Ord ref, Show ref) => Relation Name ref -> Set Name -> Name -> Set (ResolvesTo ref)
+resolveName namespace locals =
+  \name ->
+    let exactNamespaceMatches :: Set ref
+        exactNamespaceMatches =
+          Relation.lookupDom name namespace
+        localsPlusNamespaceSuffixMatches :: Set (ResolvesTo ref)
+        localsPlusNamespaceSuffixMatches =
+          Name.searchByRankedSuffix name localsPlusNamespace
+     in if
+          | Set.member name locals -> Set.singleton (ResolvesToLocal name)
+          | Set.size exactNamespaceMatches == 1 -> Set.mapMonotonic ResolvesToNamespace exactNamespaceMatches
+          | otherwise -> localsPlusNamespaceSuffixMatches
+  where
+    localsPlusNamespace :: Relation Name (ResolvesTo ref)
+    localsPlusNamespace =
+      shadowing1
+        ( List.foldl'
+            (\acc name -> Relation.insert name (ResolvesToLocal name) acc)
+            Relation.empty
+            (Set.toList locals)
+        )
+        ( Relation.map
+            (over _2 ResolvesToNamespace)
+            namespace
+        )
+
+-- | Like 'resolveName', but include the names in the output.
+resolveNameIncludingNames ::
+  forall ref.
+  (Ord ref, Show ref) =>
+  Relation Name ref ->
+  Set Name ->
+  Name ->
+  Relation Name (ResolvesTo ref)
+resolveNameIncludingNames namespace locals =
+  \name ->
+    let exactNamespaceMatches :: Set ref
+        exactNamespaceMatches =
+          Relation.lookupDom name namespace
+        localsPlusNamespaceSuffixMatches :: Relation Name (ResolvesTo ref)
+        localsPlusNamespaceSuffixMatches =
+          Name.filterByRankedSuffix name localsPlusNamespace
+     in if
+          | Set.member name locals -> Relation.singleton name (ResolvesToLocal name)
+          | Set.size exactNamespaceMatches == 1 -> Relation.singleton name (ResolvesToNamespace (Set.findMin exactNamespaceMatches))
+          | otherwise -> localsPlusNamespaceSuffixMatches
+  where
+    localsPlusNamespace :: Relation Name (ResolvesTo ref)
+    localsPlusNamespace =
+      shadowing1
+        ( List.foldl'
+            (\acc name -> Relation.insert name (ResolvesToLocal name) acc)
+            Relation.empty
+            (Set.toList locals)
+        )
+        ( Relation.map
+            (over _2 ResolvesToNamespace)
+            namespace
+        )

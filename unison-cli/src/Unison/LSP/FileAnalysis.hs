@@ -92,7 +92,9 @@ checkFile doc = runMaybeT do
         Parser.ParsingEnv
           { uniqueNames = uniqueName,
             uniqueTypeGuid = Cli.loadUniqueTypeGuid pp,
-            names = parseNames
+            names = parseNames,
+            maybeNamespace = Nothing,
+            localNamespacePrefixedTypesAndConstructors = mempty
           }
   (notes, parsedFile, typecheckedFile) <- do
     liftIO do

@@ -15,6 +15,7 @@ module Unison.Syntax.Parser
     bytesToken,
     chainl1,
     chainr1,
+    chainl1Accum,
     character,
     closeBlock,
     optionalCloseBlock,
@@ -75,12 +76,13 @@ import Text.Megaparsec qualified as P
 import U.Codebase.Reference (ReferenceType (..))
 import U.Util.Base32Hex qualified as Base32Hex
 import Unison.ABT qualified as ABT
-import Unison.ConstructorReference (ConstructorReference)
 import Unison.Hash qualified as Hash
 import Unison.HashQualified qualified as HQ
 import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.Hashable qualified as Hashable
 import Unison.Name as Name
+import Unison.NameSegment (NameSegment)
+import Unison.NameSegment qualified as NameSegment
 import Unison.Names (Names)
 import Unison.Names.ResolutionResult qualified as Names
 import Unison.Parser.Ann (Ann (..), Annotated (..))
@@ -90,7 +92,7 @@ import Unison.Prelude
 import Unison.Reference (Reference)
 import Unison.Referent (Referent)
 import Unison.Syntax.Lexer.Unison qualified as L
-import Unison.Syntax.Name qualified as Name (toVar, unsafeParseText)
+import Unison.Syntax.Name qualified as Name (toVar)
 import Unison.Syntax.Parser.Doc qualified as Doc
 import Unison.Syntax.Parser.Doc.Data qualified as Doc
 import Unison.Term (MatchCase (..))
@@ -115,7 +117,33 @@ data ParsingEnv (m :: Type -> Type) = ParsingEnv
     -- The name (e.g. `Foo` in `unique type Foo`) is passed in, and if the function returns a Just, that GUID is used;
     -- otherwise, a random one is generated from `uniqueNames`.
     uniqueTypeGuid :: Name -> m (Maybe Text),
-    names :: Names
+    names :: Names,
+    -- The namespace block we are currently parsing under, and the file-bound namespace-prefixed type and constructor
+    -- names in scope (we've already parsed all type declarations by the time we need this, in the term parser).
+    --
+    -- Ideally these ought to have no affect on parsing: "applying" a namespace should be a pre-processing pass. All
+    -- bindings are prefixed with the namespace (easy), and all free variables that match a binding are prefixed (also
+    -- easy).
+    --
+    -- ... but our "parser" is also doing parse-time name resolution for hash-qualified names, type references,
+    -- constructors in patterns, and term/type links.
+    --
+    -- For constructors in patterns, when parsing a pattern `Foo.Bar` in a namespace `baz`, if `baz.Foo.Bar` is among
+    -- the file-bound namespace-prefixed constructor names in scope, then resolve to that constructor. Otherwise,
+    -- proceed as normal to look for `Foo.Bar` in the names environment.
+    --
+    -- For type links, similar deal: we (only because we parse and hash all types before terms) could conceivably
+    -- properly handle code like
+    --
+    --   namespace foo
+    --   type Bar = ...
+    --   baz = ... typeLink Bar ...
+    --
+    -- And for term links we are certainly out of luck: we can't look up a resolved file-bound term by hash *during
+    -- parsing*. That's an issue with term links in general, unrelated to namespaces, but perhaps complicated by
+    -- namespaces nonetheless.
+    maybeNamespace :: Maybe Name,
+    localNamespacePrefixedTypesAndConstructors :: Names
   }
 
 newtype UniqueName = UniqueName (L.Pos -> Int -> Maybe Text)
@@ -156,14 +184,10 @@ data Error v
   = SignatureNeedsAccompanyingBody (L.Token v)
   | DisallowedAbsoluteName (L.Token Name)
   | EmptyBlock (L.Token String)
-  | UnknownAbilityConstructor (L.Token (HQ.HashQualified Name)) (Set ConstructorReference)
-  | UnknownDataConstructor (L.Token (HQ.HashQualified Name)) (Set ConstructorReference)
   | UnknownTerm (L.Token (HQ.HashQualified Name)) (Set Referent)
   | UnknownType (L.Token (HQ.HashQualified Name)) (Set Reference)
   | UnknownId (L.Token (HQ.HashQualified Name)) (Set Referent) (Set Reference)
   | ExpectedBlockOpen String (L.Token L.Lexeme)
-  | -- | Indicates a cases or match/with which doesn't have any patterns
-    EmptyMatch (L.Token ())
   | EmptyWatch Ann
   | UseInvalidPrefixSuffix (Either (L.Token Name) (L.Token Name)) (Maybe [L.Token Name])
   | UseEmpty (L.Token String) -- an empty `use` statement
@@ -173,7 +197,7 @@ data Error v
     MissingTypeModifier (L.Token String) (L.Token v)
   | -- | A type was found in a position that requires a term
     TypeNotAllowed (L.Token (HQ.HashQualified Name))
-  | ResolutionFailures [Names.ResolutionFailure v Ann]
+  | ResolutionFailures [Names.ResolutionFailure Ann]
   | DuplicateTypeNames [(v, [Ann])]
   | DuplicateTermNames [(v, [Ann])]
   | -- | PatternArityMismatch expectedArity actualArity location
@@ -279,9 +303,19 @@ closeBlock = void <$> matchToken L.Close
 optionalCloseBlock :: (Ord v) => P v m (L.Token ())
 optionalCloseBlock = closeBlock <|> (\() -> L.Token () mempty mempty) <$> P.eof
 
+-- | A `Name` is blank when it is unqualified and begins with a `_` (also implying that it is wordy)
+isBlank :: Name -> Bool
+isBlank n = isUnqualified n && Text.isPrefixOf "_" (NameSegment.toUnescapedText $ lastSegment n)
+
+-- | A HQ Name is blank when its Name is blank and it has no hash.
+isBlank' :: HQ'.HashQualified Name -> Bool
+isBlank' = \case
+  HQ'.NameOnly n -> isBlank n
+  HQ'.HashQualified _ _ -> False
+
 wordyPatternName :: (Var v) => P v m (L.Token v)
 wordyPatternName = queryToken \case
-  L.WordyId (HQ'.NameOnly n) -> Just $ Name.toVar n
+  L.WordyId (HQ'.NameOnly n) -> if isBlank n then Nothing else Just $ Name.toVar n
   _ -> Nothing
 
 -- | Parse a prefix identifier e.g. Foo or (+), discarding any hash
@@ -296,7 +330,6 @@ prefixTermName = wordyTermName <|> parenthesize symbolyTermName
   where
     wordyTermName = queryToken \case
       L.WordyId (HQ'.NameOnly n) -> Just $ Name.toVar n
-      L.Blank s -> Just $ Var.nameds ("_" <> s)
       _ -> Nothing
     symbolyTermName = queryToken \case
       L.SymbolyId (HQ'.NameOnly n) -> Just $ Name.toVar n
@@ -304,16 +337,14 @@ prefixTermName = wordyTermName <|> parenthesize symbolyTermName
 
 -- | Parse a wordy identifier e.g. Foo, discarding any hash
 wordyDefinitionName :: (Var v) => P v m (L.Token v)
-wordyDefinitionName = queryToken $ \case
+wordyDefinitionName = queryToken \case
   L.WordyId n -> Just $ Name.toVar (HQ'.toName n)
-  L.Blank s -> Just $ Var.nameds ("_" <> s)
   _ -> Nothing
 
 -- | Parse a wordyId as a Name, rejecting any hash
 importWordyId :: (Ord v) => P v m (L.Token Name)
 importWordyId = queryToken \case
   L.WordyId (HQ'.NameOnly n) -> Just n
-  L.Blank s | not (null s) -> Just $ Name.unsafeParseText (Text.pack ("_" <> s))
   _ -> Nothing
 
 -- | The `+` in: use Foo.bar + as a Name
@@ -348,7 +379,6 @@ hqWordyId_ :: (Ord v) => P v m (L.Token (HQ.HashQualified Name))
 hqWordyId_ = queryToken \case
   L.WordyId n -> Just $ HQ'.toHQ n
   L.Hash h -> Just $ HQ.HashOnly h
-  L.Blank s | not (null s) -> Just $ HQ.NameOnly (Name.unsafeParseText (Text.pack ("_" <> s)))
   _ -> Nothing
 
 -- | Parse a hash-qualified symboly ID like >>=#foo or &&
@@ -365,10 +395,10 @@ reserved w = label w $ queryToken getReserved
     getReserved _ = Nothing
 
 -- | Parse a placeholder or typed hole
-blank :: (Ord v) => P v m (L.Token String)
+blank :: (Ord v) => P v m (L.Token NameSegment)
 blank = label "blank" $ queryToken getBlank
   where
-    getBlank (L.Blank s) = Just ('_' : s)
+    getBlank (L.WordyId n) = if isBlank' n then Just (Name.lastSegment $ HQ'.toName n) else Nothing
     getBlank _ = Nothing
 
 numeric :: (Ord v) => P v m (L.Token String)
@@ -405,7 +435,8 @@ string = queryToken getString
     getString _ = Nothing
 
 doc ::
-  (Ord v) => P v m (L.Token (Doc.UntitledSection (Doc.Tree (ReferenceType, HQ'.HashQualified Name) [L.Token L.Lexeme])))
+  (Ord v) =>
+  P v m (L.Token (Doc.UntitledSection (Doc.Tree (L.Token (ReferenceType, HQ'.HashQualified Name)) [L.Token L.Lexeme])))
 doc = queryToken \case
   L.Doc d -> pure d
   _ -> Nothing
@@ -443,6 +474,27 @@ chainr1 p op = go1
 -- | Parse `p` 1+ times, combining with `op`
 chainl1 :: (Ord v) => P v m a -> P v m (a -> a -> a) -> P v m a
 chainl1 p op = foldl (flip ($)) <$> p <*> P.many (flip <$> op <*> p)
+
+-- chainl1Accum is like chainl1, but it accumulates intermediate results
+-- instead of applying them immediately. It's used to implement infix
+-- operators that may or may not have precedence rules.
+chainl1Accum ::
+  (P.Stream u, Ord s) =>
+  P.ParsecT s u m a ->
+  P.ParsecT s u m (a -> a -> a) ->
+  P.ParsecT s u m (a, [a -> a])
+chainl1Accum p op = do
+  x <- p
+  fs <- rest []
+  pure (x, fs)
+  where
+    rest fs =
+      ( do
+          f <- op
+          y <- p
+          rest (fs ++ [flip f y])
+      )
+        <|> return fs
 
 -- | If `p` would succeed, this fails uncommitted.
 --   Otherwise, `failIfOk` used to produce the output

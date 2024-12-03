@@ -108,7 +108,7 @@ data DataDeclaration v a = DataDeclaration
     bound :: [v],
     constructors' :: [(a, v, Type v a)]
   }
-  deriving (Eq, Ord, Show, Functor)
+  deriving (Eq, Ord, Show, Functor, Generic)
 
 constructorCount :: DataDeclaration v a -> Int
 constructorCount DataDeclaration {constructors'} = length constructors'
@@ -211,7 +211,7 @@ bindReferences ::
   Set v ->
   Map Name.Name Reference ->
   DataDeclaration v a ->
-  Names.ResolutionResult v a (DataDeclaration v a)
+  Names.ResolutionResult a (DataDeclaration v a)
 bindReferences unsafeVarToName keepFree names (DataDeclaration m a bound constructors) = do
   constructors <- for constructors $ \(a, v, ty) ->
     (a,v,) <$> Type.bindReferences unsafeVarToName keepFree names ty

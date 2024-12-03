@@ -92,10 +92,6 @@ module Unison.Codebase
 
     -- * Sync
 
-    -- ** Local sync
-    syncFromDirectory,
-    syncToDirectory,
-
     -- * Codebase path
     getCodebaseDir,
     CodebasePath,
@@ -110,7 +106,6 @@ module Unison.Codebase
     addDefsToCodebase,
     componentReferencesForReference,
     installUcmDependencies,
-    toCodeLookup,
     typeLookupForDependencies,
     unsafeGetComponentLength,
     SqliteCodebase.Operations.emptyCausalHash,
@@ -132,7 +127,6 @@ import Unison.Builtin.Terms qualified as Builtin
 import Unison.Codebase.Branch (Branch)
 import Unison.Codebase.Branch qualified as Branch
 import Unison.Codebase.BuiltinAnnotation (BuiltinAnnotation (builtinAnnotation))
-import Unison.Codebase.CodeLookup qualified as CL
 import Unison.Codebase.Path
 import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.ProjectPath qualified as PP
@@ -153,7 +147,6 @@ import Unison.Project (ProjectAndBranch (ProjectAndBranch), ProjectBranchName, P
 import Unison.Reference (Reference, TermReference, TermReferenceId, TypeReference)
 import Unison.Reference qualified as Reference
 import Unison.Referent qualified as Referent
-import Unison.Runtime.IOSource qualified as IOSource
 import Unison.Sqlite qualified as Sqlite
 import Unison.Symbol (Symbol)
 import Unison.Term (Term)
@@ -417,12 +410,6 @@ typeLookupForDependencies codebase s = do
             <|> Map.lookup r (TL.typeOfTerms tl) $> ()
             <|> Map.lookup r (TL.effectDecls tl) $> ()
         )
-
-toCodeLookup :: (MonadIO m) => Codebase m Symbol Parser.Ann -> CL.CodeLookup Symbol m Parser.Ann
-toCodeLookup c =
-  CL.CodeLookup (runTransaction c . getTerm c) (runTransaction c . getTypeDeclaration c)
-    <> Builtin.codeLookup
-    <> IOSource.codeLookupM
 
 -- | Get the type of a term.
 --

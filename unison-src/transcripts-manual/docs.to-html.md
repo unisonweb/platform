@@ -1,8 +1,8 @@
-```ucm
+``` ucm
 test-html-docs/main> builtins.mergeio lib.builtins
 ```
 
-```unison
+``` unison
 {{A doc directly in the namespace.}}
 some.ns.direct = 1
 
@@ -13,7 +13,7 @@ some.ns.pretty.deeply.nested = 2
 some.outside = 3
 ```
 
-```ucm
+``` ucm
 test-html-docs/main> add
 test-html-docs/main> docs.to-html some.ns unison-src/transcripts-manual/docs.to-html
 ```

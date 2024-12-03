@@ -23,6 +23,7 @@ where
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Unison.ABT qualified as ABT
+import Unison.HashQualified qualified as HQ
 import Unison.Hashing.V2.ABT qualified as ABT
 import Unison.Hashing.V2.Kind qualified as K
 import Unison.Hashing.V2.Reference (Reference (..), pattern ReferenceDerived)
@@ -64,12 +65,12 @@ bindReferences ::
   Set v ->
   Map Name.Name Reference ->
   Type v a ->
-  Names.ResolutionResult v a (Type v a)
+  Names.ResolutionResult a (Type v a)
 bindReferences unsafeVarToName keepFree ns t =
   let fvs = ABT.freeVarOccurrences keepFree t
       rs = [(v, a, Map.lookup (unsafeVarToName v) ns) | (v, a) <- fvs]
       ok (v, _a, Just r) = pure (v, r)
-      ok (v, a, Nothing) = Left (pure (Names.TypeResolutionFailure v a Names.NotFound))
+      ok (v, a, Nothing) = Left (pure (Names.TypeResolutionFailure (HQ.NameOnly (unsafeVarToName v)) a Names.NotFound))
    in List.validate ok rs <&> \es -> bindExternal es t
 
 -- some smart patterns

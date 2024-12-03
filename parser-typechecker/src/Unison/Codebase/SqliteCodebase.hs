@@ -12,19 +12,10 @@ module Unison.Codebase.SqliteCodebase
   )
 where
 
-import Control.Monad.Except qualified as Except
-import Control.Monad.Extra qualified as Monad
 import Data.Either.Extra ()
-import Data.IORef
 import Data.Map qualified as Map
-import Data.Set qualified as Set
-import System.Console.ANSI qualified as ANSI
 import System.FileLock (SharedExclusive (Exclusive), withTryFileLock)
-import U.Codebase.HashTags (CausalHash, PatchHash (..))
-import U.Codebase.Sqlite.Queries qualified as Q
-import U.Codebase.Sqlite.Sync22 qualified as Sync22
-import U.Codebase.Sqlite.V2.HashHandle (v2HashHandle)
-import U.Codebase.Sync qualified as Sync
+import U.Codebase.HashTags (CausalHash)
 import Unison.Codebase (Codebase, CodebasePath)
 import Unison.Codebase qualified as Codebase1
 import Unison.Codebase.Branch (Branch (..))
@@ -35,11 +26,9 @@ import Unison.Codebase.Init.CreateCodebaseError qualified as Codebase1
 import Unison.Codebase.Init.OpenCodebaseError (OpenCodebaseError (..))
 import Unison.Codebase.Init.OpenCodebaseError qualified as Codebase1
 import Unison.Codebase.SqliteCodebase.Branch.Cache (newBranchCache)
-import Unison.Codebase.SqliteCodebase.Branch.Dependencies qualified as BD
 import Unison.Codebase.SqliteCodebase.Migrations qualified as Migrations
 import Unison.Codebase.SqliteCodebase.Operations qualified as CodebaseOps
 import Unison.Codebase.SqliteCodebase.Paths
-import Unison.Codebase.SqliteCodebase.SyncEphemeral qualified as SyncEphemeral
 import Unison.Codebase.Type (LocalOrRemote (..))
 import Unison.Codebase.Type qualified as C
 import Unison.DataDeclaration (Decl)
@@ -55,17 +44,15 @@ import Unison.Symbol (Symbol)
 import Unison.Term (Term)
 import Unison.Type (Type)
 import Unison.Util.Cache qualified as Cache
-import Unison.Util.Timing (time)
 import Unison.WatchKind qualified as UF
-import UnliftIO (UnliftIO (..), finally)
+import UnliftIO (finally)
+import UnliftIO.Directory (createDirectoryIfMissing, doesFileExist)
 import UnliftIO qualified as UnliftIO
 import UnliftIO.Concurrent qualified as UnliftIO
-import UnliftIO.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import UnliftIO.STM
 
-debug, debugProcessBranches :: Bool
+debug :: Bool
 debug = False
-debugProcessBranches = False
 
 init ::
   (HasCallStack, MonadUnliftIO m) =>
@@ -126,14 +113,6 @@ withCodebaseOrError debugName dir lockOption migrationStrategy action = do
   doesFileExist (makeCodebasePath dir) >>= \case
     False -> pure (Left Codebase1.OpenCodebaseDoesntExist)
     True -> sqliteCodebase debugName dir Local lockOption migrationStrategy action
-
-initSchemaIfNotExist :: (MonadIO m) => FilePath -> m ()
-initSchemaIfNotExist path = liftIO do
-  unlessM (doesDirectoryExist $ makeCodebaseDirPath path) $
-    createDirectoryIfMissing True (makeCodebaseDirPath path)
-  unlessM (doesFileExist $ makeCodebasePath path) $
-    withConnection "initSchemaIfNotExist" path \conn ->
-      Sqlite.runTransaction conn CodebaseOps.createSchema
 
 -- 1) buffer up the component
 -- 2) in the event that the component is complete, then what?
@@ -267,25 +246,6 @@ sqliteCodebase debugName root localOrRemote lockOption migrationStrategy action 
                     UnliftIO.evaluate b
                     pure ()
 
-            syncFromDirectory :: Codebase1.CodebasePath -> Branch m -> m ()
-            syncFromDirectory srcRoot b =
-              withConnection (debugName ++ ".sync.src") srcRoot \srcConn ->
-                withConn \destConn -> do
-                  progressStateRef <- liftIO (newIORef emptySyncProgressState)
-                  Sqlite.runReadOnlyTransaction srcConn \runSrc ->
-                    Sqlite.runWriteTransaction destConn \runDest -> do
-                      syncInternal (syncProgress progressStateRef) runSrc runDest b
-
-            syncToDirectory :: Codebase1.CodebasePath -> Branch m -> m ()
-            syncToDirectory destRoot b =
-              withConn \srcConn ->
-                withConnection (debugName ++ ".sync.dest") destRoot \destConn -> do
-                  progressStateRef <- liftIO (newIORef emptySyncProgressState)
-                  initSchemaIfNotExist destRoot
-                  Sqlite.runReadOnlyTransaction srcConn \runSrc ->
-                    Sqlite.runWriteTransaction destConn \runDest -> do
-                      syncInternal (syncProgress progressStateRef) runSrc runDest b
-
             getWatch :: UF.WatchKind -> Reference.Id -> Sqlite.Transaction (Maybe (Term Symbol Ann))
             getWatch =
               CodebaseOps.getWatch getDeclType
@@ -323,8 +283,6 @@ sqliteCodebase debugName root localOrRemote lockOption migrationStrategy action 
                   getTermComponentWithTypes,
                   getBranchForHash,
                   putBranch,
-                  syncFromDirectory,
-                  syncToDirectory,
                   getWatch,
                   termsOfTypeImpl,
                   termsMentioningTypeImpl,
@@ -352,79 +310,6 @@ sqliteCodebase debugName root localOrRemote lockOption migrationStrategy action 
           Nothing -> Left OpenCodebaseFileLockFailed
           Just x -> x
 
-syncInternal ::
-  forall m.
-  (MonadUnliftIO m) =>
-  Sync.Progress m Sync22.Entity ->
-  (forall a. Sqlite.Transaction a -> m a) ->
-  (forall a. Sqlite.Transaction a -> m a) ->
-  Branch m ->
-  m ()
-syncInternal progress runSrc runDest b = time "syncInternal" do
-  UnliftIO runInIO <- askUnliftIO
-
-  let syncEnv = Sync22.Env runSrc runDest (16 * 1024 * 1024)
-  -- we want to use sync22 wherever possible
-  -- so for each source branch, we'll check if it exists in the destination codebase
-  -- or if it exists in the source codebase, then we can sync22 it
-  -- if it doesn't exist in the dest or source branch,
-  -- then just use putBranch to the dest
-  sync <- liftIO (Sync22.sync22 v2HashHandle (Sync22.hoistEnv lift syncEnv))
-  let doSync :: [Sync22.Entity] -> m ()
-      doSync =
-        throwExceptT
-          . Except.withExceptT SyncEphemeral.Sync22Error
-          . Sync.sync' sync (Sync.transformProgress lift progress)
-  let processBranches :: [Entity m] -> m ()
-      processBranches = \case
-        [] -> pure ()
-        b0@(B h mb) : rest -> do
-          when debugProcessBranches do
-            traceM $ "processBranches " ++ show b0
-            traceM $ " queue: " ++ show rest
-          ifM
-            (runDest (CodebaseOps.branchExists h))
-            do
-              when debugProcessBranches $ traceM $ "  " ++ show b0 ++ " already exists in dest db"
-              processBranches rest
-            do
-              when debugProcessBranches $ traceM $ "  " ++ show b0 ++ " doesn't exist in dest db"
-              runSrc (Q.loadCausalHashIdByCausalHash h) >>= \case
-                Just chId -> do
-                  when debugProcessBranches $ traceM $ "  " ++ show b0 ++ " exists in source db, so delegating to direct sync"
-                  doSync [Sync22.C chId]
-                  processBranches rest
-                Nothing ->
-                  mb >>= \b -> do
-                    when debugProcessBranches $ traceM $ "  " ++ show b0 ++ " doesn't exist in either db, so delegating to Codebase.putBranch"
-                    let (branchDeps, BD.to' -> BD.Dependencies' es ts ds) = BD.fromBranch b
-                    when debugProcessBranches do
-                      traceM $ "  branchDeps: " ++ show (fst <$> branchDeps)
-                      traceM $ "  terms: " ++ show ts
-                      traceM $ "  decls: " ++ show ds
-                      traceM $ "  edits: " ++ show es
-                    (cs, es, ts, ds) <- runDest do
-                      cs <- filterM (fmap not . CodebaseOps.branchExists . fst) branchDeps
-                      es <- filterM (fmap not . CodebaseOps.patchExists) es
-                      ts <- filterM (fmap not . CodebaseOps.termExists) ts
-                      ds <- filterM (fmap not . CodebaseOps.declExists) ds
-                      pure (cs, es, ts, ds)
-                    if null cs && null es && null ts && null ds
-                      then do
-                        runDest (CodebaseOps.putBranch (Branch.transform (Sqlite.unsafeIO . runInIO) b))
-                        processBranches rest
-                      else do
-                        let bs = map (uncurry B) cs
-                            os = map O (coerce @[PatchHash] @[Hash] es <> ts <> ds)
-                        processBranches (os ++ bs ++ b0 : rest)
-        O h : rest -> do
-          when debugProcessBranches $ traceM $ "processBranches O " ++ take 10 (show h)
-          oId <- runSrc (Q.expectHashIdByHash h >>= Q.expectObjectIdForAnyHashId)
-          doSync [Sync22.O oId]
-          processBranches rest
-  let bHash = Branch.headHash b
-  time "SyncInternal.processBranches" $ processBranches [B bHash (pure b)]
-
 data Entity m
   = B CausalHash (m (Branch m))
   | O Hash
@@ -432,89 +317,6 @@ data Entity m
 instance Show (Entity m) where
   show (B h _) = "B " ++ take 10 (show h)
   show (O h) = "O " ++ take 10 (show h)
-
-data SyncProgressState = SyncProgressState
-  { _needEntities :: Maybe (Set Sync22.Entity),
-    _doneEntities :: Either Int (Set Sync22.Entity),
-    _warnEntities :: Either Int (Set Sync22.Entity)
-  }
-
-emptySyncProgressState :: SyncProgressState
-emptySyncProgressState = SyncProgressState (Just mempty) (Right mempty) (Right mempty)
-
-syncProgress :: forall m. (MonadIO m) => IORef SyncProgressState -> Sync.Progress m Sync22.Entity
-syncProgress progressStateRef = Sync.Progress (liftIO . need) (liftIO . done) (liftIO . warn) (liftIO allDone)
-  where
-    quiet = False
-    maxTrackedHashCount = 1024 * 1024
-    size :: SyncProgressState -> Int
-    size = \case
-      SyncProgressState Nothing (Left i) (Left j) -> i + j
-      SyncProgressState (Just need) (Right done) (Right warn) -> Set.size need + Set.size done + Set.size warn
-      SyncProgressState _ _ _ -> undefined
-
-    need, done, warn :: Sync22.Entity -> IO ()
-    need h = do
-      unless quiet $ Monad.whenM (readIORef progressStateRef <&> (== 0) . size) $ putStr "\n"
-      readIORef progressStateRef >>= \case
-        SyncProgressState Nothing Left {} Left {} -> pure ()
-        SyncProgressState (Just need) (Right done) (Right warn) ->
-          if Set.size need + Set.size done + Set.size warn > maxTrackedHashCount
-            then writeIORef progressStateRef $ SyncProgressState Nothing (Left $ Set.size done) (Left $ Set.size warn)
-            else
-              if Set.member h done || Set.member h warn
-                then pure ()
-                else writeIORef progressStateRef $ SyncProgressState (Just $ Set.insert h need) (Right done) (Right warn)
-        SyncProgressState _ _ _ -> undefined
-      unless quiet printSynced
-
-    done h = do
-      unless quiet $ Monad.whenM (readIORef progressStateRef <&> (== 0) . size) $ putStr "\n"
-      readIORef progressStateRef >>= \case
-        SyncProgressState Nothing (Left done) warn ->
-          writeIORef progressStateRef $ SyncProgressState Nothing (Left (done + 1)) warn
-        SyncProgressState (Just need) (Right done) warn ->
-          writeIORef progressStateRef $ SyncProgressState (Just $ Set.delete h need) (Right $ Set.insert h done) warn
-        SyncProgressState _ _ _ -> undefined
-      unless quiet printSynced
-
-    warn h = do
-      unless quiet $ Monad.whenM (readIORef progressStateRef <&> (== 0) . size) $ putStr "\n"
-      readIORef progressStateRef >>= \case
-        SyncProgressState Nothing done (Left warn) ->
-          writeIORef progressStateRef $ SyncProgressState Nothing done (Left $ warn + 1)
-        SyncProgressState (Just need) done (Right warn) ->
-          writeIORef progressStateRef $ SyncProgressState (Just $ Set.delete h need) done (Right $ Set.insert h warn)
-        SyncProgressState _ _ _ -> undefined
-      unless quiet printSynced
-
-    allDone = do
-      readIORef progressStateRef >>= putStrLn . renderState ("  " ++ "Done syncing ")
-
-    printSynced :: IO ()
-    printSynced =
-      readIORef progressStateRef >>= \s ->
-        finally
-          do ANSI.hideCursor; putStr . renderState ("  " ++ "Synced ") $ s
-          ANSI.showCursor
-
-    renderState :: String -> SyncProgressState -> String
-    renderState prefix = \case
-      SyncProgressState Nothing (Left done) (Left warn) ->
-        "\r" ++ prefix ++ show done ++ " entities" ++ if warn > 0 then " with " ++ show warn ++ " warnings." else "."
-      SyncProgressState (Just _need) (Right done) (Right warn) ->
-        "\r"
-          ++ prefix
-          ++ show (Set.size done + Set.size warn)
-          ++ " entities"
-          ++ if Set.size warn > 0
-            then " with " ++ show (Set.size warn) ++ " warnings."
-            else "."
-      SyncProgressState need done warn ->
-        "invalid SyncProgressState "
-          ++ show (fmap v need, bimap id v done, bimap id v warn)
-      where
-        v = const ()
 
 -- | Given two codebase roots (e.g. "./mycodebase"), safely copy the codebase
 -- at the source to the destination.

@@ -1,5 +1,6 @@
 module Unison.Syntax.Var
   ( namespaced,
+    namespaced2,
   )
 where
 
@@ -13,3 +14,8 @@ import Unison.Var (Var)
 namespaced :: (Var v) => List.NonEmpty v -> v
 namespaced (v :| vs) =
   Name.toVar (foldl' Name.joinDot (Name.unsafeParseVar v) (map Name.unsafeParseVar vs))
+
+-- | Like 'namespaced', but for the common case that you have two vars to join.
+namespaced2 :: (Var v) => v -> v -> v
+namespaced2 v1 v2 =
+  namespaced (v1 :| [v2])

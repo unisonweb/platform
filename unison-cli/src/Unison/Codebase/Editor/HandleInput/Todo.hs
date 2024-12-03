@@ -12,7 +12,6 @@ import Unison.Builtin qualified as Builtin
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
-import Unison.Cli.PrettyPrintUtils qualified as Cli
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Branch qualified as Branch
 import Unison.Codebase.Branch.Names qualified as Branch
@@ -23,6 +22,8 @@ import Unison.Hash (HashFor (..))
 import Unison.Merge.DeclCoherencyCheck (IncoherentDeclReasons (..), checkAllDeclCoherency)
 import Unison.Names qualified as Names
 import Unison.Prelude
+import Unison.PrettyPrintEnv.Names qualified as PPE
+import Unison.PrettyPrintEnvDecl.Names qualified as PPED
 import Unison.Reference (TermReference)
 import Unison.Syntax.Name qualified as Name
 import Unison.Util.Defns (Defns (..))
@@ -76,7 +77,8 @@ handleTodo = do
 
       pure (defnsInLib, dependentsOfTodo.terms, directDependencies, hashLen, incoherentDeclReasons)
 
-  ppe <- Cli.currentPrettyPrintEnvDecl
+  let currentNames = Branch.toNames currentNamespace
+  let ppe = PPED.makePPED (PPE.hqNamer 10 currentNames) (PPE.suffixifyByHash currentNames)
 
   Cli.respondNumbered $
     Output'Todo

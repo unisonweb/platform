@@ -22,10 +22,10 @@ test = scope "clearWatchCache" $
       Ucm.runTranscript
         c
         [i|
-      ```ucm
+      ``` ucm
       scratch/main> alias.term ##Nat.+ +
       ```
-      ```unison
+      ``` unison
       > 1 + 1
       ```
     |]
@@ -37,7 +37,7 @@ test = scope "clearWatchCache" $
       Ucm.runTranscript
         c
         [i|
-      ```ucm
+      ``` ucm
       scratch/main> debug.clear-cache
       ```
     |]

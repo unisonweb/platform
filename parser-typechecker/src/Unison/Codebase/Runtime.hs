@@ -29,6 +29,13 @@ type Error = P.Pretty P.ColorText
 
 type Term v = Term.Term v ()
 
+data CompileOpts = COpts
+  { profile :: Bool
+  }
+
+defaultCompileOpts :: CompileOpts
+defaultCompileOpts = COpts {profile = False}
+
 data Runtime v = Runtime
   { terminate :: IO (),
     evaluate ::
@@ -37,6 +44,7 @@ data Runtime v = Runtime
       Term v ->
       IO (Either Error ([Error], Term v)),
     compileTo ::
+      CompileOpts ->
       CL.CodeLookup v IO () ->
       PPE.PrettyPrintEnv ->
       Reference ->

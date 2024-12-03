@@ -25,7 +25,8 @@ makeMergeblob5 blob typeLookup =
         Typechecker.Env
           { ambientAbilities = [],
             termsByShortname = Map.empty,
-            typeLookup
+            typeLookup,
+            topLevelComponents = Map.empty
           }
    in case runIdentity (Result.runResultT (FileParsers.synthesizeFile typecheckingEnv blob.file)) of
         (Nothing, notes) -> Left notes

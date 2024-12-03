@@ -27,7 +27,6 @@ import Compat (defaultInterruptHandler, withInterruptHandler)
 import Control.Concurrent (newEmptyMVar, runInUnboundThread, takeMVar)
 import Control.Exception (displayException, evaluate)
 import Data.ByteString.Lazy qualified as BL
-import Data.Configurator.Types (Config)
 import Data.Either.Validation (Validation (..))
 import Data.List.NonEmpty (NonEmpty)
 import Data.Text qualified as Text
@@ -57,7 +56,6 @@ import System.FilePath
   )
 import System.IO (stderr)
 import System.IO.CodePage (withCP65001)
-import System.IO.Error (catchIOError)
 import System.IO.Temp qualified as Temp
 import System.Path qualified as Path
 import Text.Megaparsec qualified as MP
@@ -74,9 +72,9 @@ import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.ProjectPath qualified as PP
 import Unison.Codebase.Runtime qualified as Rt
 import Unison.Codebase.SqliteCodebase qualified as SC
+import Unison.Codebase.Transcript.Parser qualified as Transcript
 import Unison.Codebase.Transcript.Runner qualified as Transcript
 import Unison.Codebase.Verbosity qualified as Verbosity
-import Unison.CommandLine (watchConfig)
 import Unison.CommandLine.Helpers (plural')
 import Unison.CommandLine.Main qualified as CommandLine
 import Unison.CommandLine.Types qualified as CommandLine
@@ -96,7 +94,6 @@ import Unison.Symbol (Symbol)
 import Unison.Util.Pretty qualified as P
 import Unison.Version (Version)
 import Unison.Version qualified as Version
-import UnliftIO qualified
 import UnliftIO.Directory (getHomeDirectory)
 
 type Runtimes =
@@ -143,220 +140,216 @@ main version = do
       (renderUsageInfo, globalOptions, command) <- parseCLIArgs progName (Text.unpack (Version.gitDescribeWithDate version))
       nrtp <- fixNativeRuntimePath (nativeRuntimePath globalOptions)
       let GlobalOptions {codebasePathOption = mCodePathOption, exitOption, lspFormattingConfig} = globalOptions
-      withConfig mCodePathOption \config -> do
-        currentDir <- getCurrentDirectory
-        case command of
-          PrintVersion ->
-            Text.putStrLn $ Text.pack progName <> " version: " <> Version.gitDescribeWithDate version
-          Init -> do
-            exitError
-              ( P.lines
-                  [ "The Init command has been removed",
-                    P.newline,
-                    P.wrap "Use --codebase-create to create a codebase at a specified location and open it:",
-                    P.indentN 2 (P.hiBlue "$ ucm --codebase-create myNewCodebase"),
-                    "Running UCM without the --codebase-create flag: ",
-                    P.indentN 2 (P.hiBlue "$ ucm"),
-                    P.wrap ("will " <> P.bold "always" <> " create a codebase in your home directory if one does not already exist.")
+      currentDir <- getCurrentDirectory
+      case command of
+        PrintVersion ->
+          Text.putStrLn $ Text.pack progName <> " version: " <> Version.gitDescribeWithDate version
+        Init -> do
+          exitError
+            ( P.lines
+                [ "The Init command has been removed",
+                  P.newline,
+                  P.wrap "Use --codebase-create to create a codebase at a specified location and open it:",
+                  P.indentN 2 (P.hiBlue "$ ucm --codebase-create myNewCodebase"),
+                  "Running UCM without the --codebase-create flag: ",
+                  P.indentN 2 (P.hiBlue "$ ucm"),
+                  P.wrap ("will " <> P.bold "always" <> " create a codebase in your home directory if one does not already exist.")
+                ]
+            )
+        Run (RunFromSymbol mainName) args -> do
+          getCodebaseOrExit mCodePathOption (SC.MigrateAutomatically SC.Backup SC.Vacuum) \(_, _, theCodebase) -> do
+            RTI.withRuntime False RTI.OneOff (Version.gitDescribeWithDate version) \runtime -> do
+              withArgs args (execute theCodebase runtime mainName) >>= \case
+                Left err -> exitError err
+                Right () -> pure ()
+        Run (RunFromFile file mainName) args
+          | not (isDotU file) -> exitError "Files must have a .u extension."
+          | otherwise -> do
+              e <- safeReadUtf8 file
+              case e of
+                Left _ -> exitError "I couldn't find that file or it is for some reason unreadable."
+                Right contents -> do
+                  getCodebaseOrExit mCodePathOption (SC.MigrateAutomatically SC.Backup SC.Vacuum) \(initRes, _, theCodebase) -> do
+                    withRuntimes nrtp RTI.OneOff \(rt, sbrt, nrt) -> do
+                      let fileEvent = Input.UnisonFileChanged (Text.pack file) contents
+                      let noOpCheckForChanges _ = pure ()
+                      let serverUrl = Nothing
+                      startProjectPath <- Codebase.runTransaction theCodebase Codebase.expectCurrentProjectPath
+                      launch
+                        version
+                        currentDir
+                        rt
+                        sbrt
+                        nrt
+                        theCodebase
+                        [Left fileEvent, Right $ Input.ExecuteI mainName args, Right Input.QuitI]
+                        serverUrl
+                        (PP.toIds startProjectPath)
+                        initRes
+                        noOpCheckForChanges
+                        CommandLine.ShouldNotWatchFiles
+        Run (RunFromPipe mainName) args -> do
+          e <- safeReadUtf8StdIn
+          case e of
+            Left _ -> exitError "I had trouble reading this input."
+            Right contents -> do
+              getCodebaseOrExit mCodePathOption (SC.MigrateAutomatically SC.Backup SC.Vacuum) \(initRes, _, theCodebase) -> do
+                withRuntimes nrtp RTI.OneOff \(rt, sbrt, nrt) -> do
+                  let fileEvent = Input.UnisonFileChanged (Text.pack "<standard input>") contents
+                  let noOpCheckForChanges _ = pure ()
+                  let serverUrl = Nothing
+                  startProjectPath <- Codebase.runTransaction theCodebase Codebase.expectCurrentProjectPath
+                  launch
+                    version
+                    currentDir
+                    rt
+                    sbrt
+                    nrt
+                    theCodebase
+                    [Left fileEvent, Right $ Input.ExecuteI mainName args, Right Input.QuitI]
+                    serverUrl
+                    (PP.toIds startProjectPath)
+                    initRes
+                    noOpCheckForChanges
+                    CommandLine.ShouldNotWatchFiles
+        Run (RunCompiled file) args ->
+          BL.readFile file >>= \bs ->
+            try (evaluate $ RTI.decodeStandalone bs) >>= \case
+              Left (PE _cs err) -> do
+                exitError . P.lines $
+                  [ P.wrap . P.text $
+                      "I was unable to parse this file as a compiled\
+                      \ program. The parser generated the following error:",
+                    "",
+                    P.indentN 2 $ err
                   ]
-              )
-          Run (RunFromSymbol mainName) args -> do
-            getCodebaseOrExit mCodePathOption (SC.MigrateAutomatically SC.Backup SC.Vacuum) \(_, _, theCodebase) -> do
-              RTI.withRuntime False RTI.OneOff (Version.gitDescribeWithDate version) \runtime -> do
-                withArgs args (execute theCodebase runtime mainName) >>= \case
-                  Left err -> exitError err
-                  Right () -> pure ()
-          Run (RunFromFile file mainName) args
-            | not (isDotU file) -> exitError "Files must have a .u extension."
-            | otherwise -> do
-                e <- safeReadUtf8 file
-                case e of
-                  Left _ -> exitError "I couldn't find that file or it is for some reason unreadable."
-                  Right contents -> do
-                    getCodebaseOrExit mCodePathOption (SC.MigrateAutomatically SC.Backup SC.Vacuum) \(initRes, _, theCodebase) -> do
-                      withRuntimes nrtp RTI.OneOff \(rt, sbrt, nrt) -> do
-                        let fileEvent = Input.UnisonFileChanged (Text.pack file) contents
-                        let noOpCheckForChanges _ = pure ()
-                        let serverUrl = Nothing
-                        startProjectPath <- Codebase.runTransaction theCodebase Codebase.expectCurrentProjectPath
+              Right (Left err) ->
+                exitError . P.lines $
+                  [ P.wrap . P.text $
+                      "I was unable to parse this file as a compiled\
+                      \ program. The parser generated the following error:",
+                    "",
+                    P.indentN 2 . P.wrap $ P.string err
+                  ]
+              Left _ -> do
+                exitError . P.wrap . P.text $
+                  "I was unable to parse this file as a compiled\
+                  \ program. The parser generated an unrecognized error."
+              Right (Right (v, rf, combIx, sto))
+                | not vmatch -> mismatchMsg
+                | otherwise ->
+                    withArgs args (RTI.runStandalone sto combIx) >>= \case
+                      Left err -> exitError err
+                      Right () -> pure ()
+                where
+                  vmatch = v == Version.gitDescribeWithDate version
+                  ws s = P.wrap (P.text s)
+                  ifile
+                    | 'c' : 'u' : '.' : rest <- reverse file = reverse rest
+                    | otherwise = file
+                  mismatchMsg =
+                    PT.putPrettyLn . P.lines $
+                      [ ws
+                          "I can't run this compiled program since \
+                          \it works with a different version of Unison \
+                          \than the one you're running.",
+                        "",
+                        "Compiled file version",
+                        P.indentN 4 $ P.text v,
+                        "",
+                        "Your version",
+                        P.indentN 4 $ P.text $ Version.gitDescribeWithDate version,
+                        "",
+                        P.wrap $
+                          "The program was compiled from hash "
+                            <> (P.text $ "`" <> rf <> "`.")
+                            <> "If you have that hash in your codebase,"
+                            <> "you can do:",
+                        "",
+                        P.indentN 4 $
+                          ".> compile "
+                            <> P.text rf
+                            <> " "
+                            <> P.string ifile,
+                        "",
+                        P.wrap
+                          "to produce a new compiled program \
+                          \that matches your version of Unison."
+                      ]
+        Transcript shouldFork shouldSaveCodebase mrtsStatsFp transcriptFiles -> do
+          let action = runTranscripts version Verbosity.Verbose renderUsageInfo shouldFork shouldSaveCodebase mCodePathOption nrtp transcriptFiles
+          case mrtsStatsFp of
+            Nothing -> action
+            Just fp -> recordRtsStats fp action
+        Launch isHeadless codebaseServerOpts mayStartingProject shouldWatchFiles -> do
+          getCodebaseOrExit mCodePathOption (SC.MigrateAfterPrompt SC.Backup SC.Vacuum) \(initRes, _, theCodebase) -> do
+            withRuntimes nrtp RTI.Persistent \(runtime, sbRuntime, nRuntime) -> do
+              startingProjectPath <- do
+                -- If the user didn't provide a starting path on the command line, put them in the most recent
+                -- path they cd'd to
+                case mayStartingProject of
+                  Just startingProject -> do
+                    Codebase.runTransaction theCodebase (ProjectUtils.getProjectAndBranchByNames startingProject) >>= \case
+                      Nothing -> do
+                        PT.putPrettyLn $
+                          P.callout
+                            "❓"
+                            ( P.lines
+                                [ P.indentN 2 "I couldn't find the project branch: " <> P.text (into @Text startingProject)
+                                ]
+                            )
+                        System.exitFailure
+                      Just pab -> do
+                        pure $ PP.fromProjectAndBranch pab Path.absoluteEmpty
+                  Nothing -> do
+                    Codebase.runTransaction theCodebase Codebase.expectCurrentProjectPath
+              currentPP <- Codebase.runTransaction theCodebase do
+                PP.toIds <$> Codebase.expectCurrentProjectPath
+              changeSignal <- Signal.newSignalIO (Just currentPP)
+              let lspCheckForChanges pp = Signal.writeSignalIO changeSignal pp
+              -- Unfortunately, the windows IO manager on GHC 8.* is prone to just hanging forever
+              -- when waiting for input on handles, so if we listen for LSP connections it will
+              -- prevent UCM from shutting down properly. Hopefully we can re-enable LSP on
+              -- Windows when we move to GHC 9.*
+              -- https://gitlab.haskell.org/ghc/ghc/-/merge_requests/1224
+              void . Ki.fork scope $ LSP.spawnLsp lspFormattingConfig theCodebase runtime changeSignal
+              Server.startServer (Backend.BackendEnv {Backend.useNamesIndex = False}) codebaseServerOpts sbRuntime theCodebase $ \baseUrl -> do
+                case exitOption of
+                  DoNotExit -> do
+                    case isHeadless of
+                      Headless -> do
+                        PT.putPrettyLn $
+                          P.lines
+                            [ "I've started the Codebase API server at",
+                              P.text $ Server.urlFor Server.Api baseUrl,
+                              "and the Codebase UI at",
+                              P.text $ Server.urlFor (Server.ProjectBranchUI (ProjectAndBranch (UnsafeProjectName "scratch") (UnsafeProjectBranchName "main")) Path.absoluteEmpty Nothing) baseUrl
+                            ]
+                        PT.putPrettyLn $
+                          P.string "Running the codebase manager headless with "
+                            <> P.shown GHC.Conc.numCapabilities
+                            <> " "
+                            <> plural' GHC.Conc.numCapabilities "cpu" "cpus"
+                            <> "."
+                        mvar <- newEmptyMVar
+                        takeMVar mvar
+                      WithCLI -> do
+                        PT.putPrettyLn $ P.string "Now starting the Unison Codebase Manager (UCM)..."
+
                         launch
                           version
                           currentDir
-                          config
-                          rt
-                          sbrt
-                          nrt
+                          runtime
+                          sbRuntime
+                          nRuntime
                           theCodebase
-                          [Left fileEvent, Right $ Input.ExecuteI mainName args, Right Input.QuitI]
-                          serverUrl
-                          (PP.toIds startProjectPath)
+                          []
+                          (Just baseUrl)
+                          (PP.toIds startingProjectPath)
                           initRes
-                          noOpCheckForChanges
-                          CommandLine.ShouldNotWatchFiles
-          Run (RunFromPipe mainName) args -> do
-            e <- safeReadUtf8StdIn
-            case e of
-              Left _ -> exitError "I had trouble reading this input."
-              Right contents -> do
-                getCodebaseOrExit mCodePathOption (SC.MigrateAutomatically SC.Backup SC.Vacuum) \(initRes, _, theCodebase) -> do
-                  withRuntimes nrtp RTI.OneOff \(rt, sbrt, nrt) -> do
-                    let fileEvent = Input.UnisonFileChanged (Text.pack "<standard input>") contents
-                    let noOpCheckForChanges _ = pure ()
-                    let serverUrl = Nothing
-                    startProjectPath <- Codebase.runTransaction theCodebase Codebase.expectCurrentProjectPath
-                    launch
-                      version
-                      currentDir
-                      config
-                      rt
-                      sbrt
-                      nrt
-                      theCodebase
-                      [Left fileEvent, Right $ Input.ExecuteI mainName args, Right Input.QuitI]
-                      serverUrl
-                      (PP.toIds startProjectPath)
-                      initRes
-                      noOpCheckForChanges
-                      CommandLine.ShouldNotWatchFiles
-          Run (RunCompiled file) args ->
-            BL.readFile file >>= \bs ->
-              try (evaluate $ RTI.decodeStandalone bs) >>= \case
-                Left (PE _cs err) -> do
-                  exitError . P.lines $
-                    [ P.wrap . P.text $
-                        "I was unable to parse this file as a compiled\
-                        \ program. The parser generated the following error:",
-                      "",
-                      P.indentN 2 $ err
-                    ]
-                Right (Left err) ->
-                  exitError . P.lines $
-                    [ P.wrap . P.text $
-                        "I was unable to parse this file as a compiled\
-                        \ program. The parser generated the following error:",
-                      "",
-                      P.indentN 2 . P.wrap $ P.string err
-                    ]
-                Left _ -> do
-                  exitError . P.wrap . P.text $
-                    "I was unable to parse this file as a compiled\
-                    \ program. The parser generated an unrecognized error."
-                Right (Right (v, rf, w, sto))
-                  | not vmatch -> mismatchMsg
-                  | otherwise ->
-                      withArgs args (RTI.runStandalone sto w) >>= \case
-                        Left err -> exitError err
-                        Right () -> pure ()
-                  where
-                    vmatch = v == Version.gitDescribeWithDate version
-                    ws s = P.wrap (P.text s)
-                    ifile
-                      | 'c' : 'u' : '.' : rest <- reverse file = reverse rest
-                      | otherwise = file
-                    mismatchMsg =
-                      PT.putPrettyLn . P.lines $
-                        [ ws
-                            "I can't run this compiled program since \
-                            \it works with a different version of Unison \
-                            \than the one you're running.",
-                          "",
-                          "Compiled file version",
-                          P.indentN 4 $ P.text v,
-                          "",
-                          "Your version",
-                          P.indentN 4 $ P.text $ Version.gitDescribeWithDate version,
-                          "",
-                          P.wrap $
-                            "The program was compiled from hash "
-                              <> (P.text $ "`" <> rf <> "`.")
-                              <> "If you have that hash in your codebase,"
-                              <> "you can do:",
-                          "",
-                          P.indentN 4 $
-                            ".> compile "
-                              <> P.text rf
-                              <> " "
-                              <> P.string ifile,
-                          "",
-                          P.wrap
-                            "to produce a new compiled program \
-                            \that matches your version of Unison."
-                        ]
-          Transcript shouldFork shouldSaveCodebase mrtsStatsFp transcriptFiles -> do
-            let action = runTranscripts version Verbosity.Verbose renderUsageInfo shouldFork shouldSaveCodebase mCodePathOption nrtp transcriptFiles
-            case mrtsStatsFp of
-              Nothing -> action
-              Just fp -> recordRtsStats fp action
-          Launch isHeadless codebaseServerOpts mayStartingProject shouldWatchFiles -> do
-            getCodebaseOrExit mCodePathOption (SC.MigrateAfterPrompt SC.Backup SC.Vacuum) \(initRes, _, theCodebase) -> do
-              withRuntimes nrtp RTI.Persistent \(runtime, sbRuntime, nRuntime) -> do
-                startingProjectPath <- do
-                  -- If the user didn't provide a starting path on the command line, put them in the most recent
-                  -- path they cd'd to
-                  case mayStartingProject of
-                    Just startingProject -> do
-                      Codebase.runTransaction theCodebase (ProjectUtils.getProjectAndBranchByNames startingProject) >>= \case
-                        Nothing -> do
-                          PT.putPrettyLn $
-                            P.callout
-                              "❓"
-                              ( P.lines
-                                  [ P.indentN 2 "I couldn't find the project branch: " <> P.text (into @Text startingProject)
-                                  ]
-                              )
-                          System.exitFailure
-                        Just pab -> do
-                          pure $ PP.fromProjectAndBranch pab Path.absoluteEmpty
-                    Nothing -> do
-                      Codebase.runTransaction theCodebase Codebase.expectCurrentProjectPath
-                currentPP <- Codebase.runTransaction theCodebase do
-                  PP.toIds <$> Codebase.expectCurrentProjectPath
-                changeSignal <- Signal.newSignalIO (Just currentPP)
-                let lspCheckForChanges pp = Signal.writeSignalIO changeSignal pp
-                -- Unfortunately, the windows IO manager on GHC 8.* is prone to just hanging forever
-                -- when waiting for input on handles, so if we listen for LSP connections it will
-                -- prevent UCM from shutting down properly. Hopefully we can re-enable LSP on
-                -- Windows when we move to GHC 9.*
-                -- https://gitlab.haskell.org/ghc/ghc/-/merge_requests/1224
-                void . Ki.fork scope $ LSP.spawnLsp lspFormattingConfig theCodebase runtime changeSignal
-                Server.startServer (Backend.BackendEnv {Backend.useNamesIndex = False}) codebaseServerOpts sbRuntime theCodebase $ \baseUrl -> do
-                  case exitOption of
-                    DoNotExit -> do
-                      case isHeadless of
-                        Headless -> do
-                          PT.putPrettyLn $
-                            P.lines
-                              [ "I've started the Codebase API server at",
-                                P.text $ Server.urlFor Server.Api baseUrl,
-                                "and the Codebase UI at",
-                                P.text $ Server.urlFor (Server.ProjectBranchUI (ProjectAndBranch (UnsafeProjectName "scratch") (UnsafeProjectBranchName "main")) Path.absoluteEmpty Nothing) baseUrl
-                              ]
-                          PT.putPrettyLn $
-                            P.string "Running the codebase manager headless with "
-                              <> P.shown GHC.Conc.numCapabilities
-                              <> " "
-                              <> plural' GHC.Conc.numCapabilities "cpu" "cpus"
-                              <> "."
-                          mvar <- newEmptyMVar
-                          takeMVar mvar
-                        WithCLI -> do
-                          PT.putPrettyLn $ P.string "Now starting the Unison Codebase Manager (UCM)..."
-
-                          launch
-                            version
-                            currentDir
-                            config
-                            runtime
-                            sbRuntime
-                            nRuntime
-                            theCodebase
-                            []
-                            (Just baseUrl)
-                            (PP.toIds startingProjectPath)
-                            initRes
-                            lspCheckForChanges
-                            shouldWatchFiles
-                    Exit -> do Exit.exitSuccess
+                          lspCheckForChanges
+                          shouldWatchFiles
+                  Exit -> do Exit.exitSuccess
   where
     -- (runtime, sandboxed runtime)
     withRuntimes :: FilePath -> RTI.RuntimeHost -> (Runtimes -> IO a) -> IO a
@@ -366,17 +359,6 @@ main version = do
           action . (runtime,sbRuntime,)
             -- startNativeRuntime saves the path to `unison-runtime`
             =<< RTI.startNativeRuntime (Version.gitDescribeWithDate version) nrtp
-    withConfig :: Maybe CodebasePathOption -> (Config -> IO a) -> IO a
-    withConfig mCodePathOption action = do
-      UnliftIO.bracket
-        ( do
-            let mcodepath = fmap codebasePathOptionToPath mCodePathOption
-            configFilePath <- getConfigFilePath mcodepath
-            catchIOError (watchConfig configFilePath) $ \_ ->
-              exitError "Your .unisonConfig could not be loaded. Check that it's correct!"
-        )
-        (\(_config, cancel) -> cancel)
-        (\(config, _cancel) -> action config)
 
 -- | Set user agent and configure TLS on global http client.
 -- Note that the authorized http client is distinct from the global http client.
@@ -416,14 +398,12 @@ prepareTranscriptDir verbosity shouldFork mCodePathOption shouldSaveCodebase = d
 runTranscripts' ::
   Version ->
   String ->
-  Maybe FilePath ->
   FilePath ->
   FilePath ->
   NonEmpty MarkdownFile ->
   IO Bool
-runTranscripts' version progName mcodepath nativeRtp transcriptDir markdownFiles = do
+runTranscripts' version progName nativeRtp transcriptDir markdownFiles = do
   currentDir <- getCurrentDirectory
-  configFilePath <- getConfigFilePath mcodepath
   -- We don't need to create a codebase through `getCodebaseOrExit` as we've already done so previously.
   and
     <$> getCodebaseOrExit
@@ -436,7 +416,6 @@ runTranscripts' version progName mcodepath nativeRtp transcriptDir markdownFiles
           Verbosity.Verbose
           (Version.gitDescribeWithDate version)
           nativeRtp
-          (Just configFilePath)
           \runTranscript -> do
             for markdownFiles $ \(MarkdownFile fileName) -> do
               transcriptSrc <- readUtf8 fileName
@@ -457,7 +436,7 @@ runTranscripts' version progName mcodepath nativeRtp transcriptDir markdownFiles
                       Transcript.RunFailure msg ->
                         ( [ P.indentN 2 $ "An error occurred while running the following file: " <> P.string fileName,
                             "",
-                            P.indentN 2 (P.text msg),
+                            P.indentN 2 (P.text . Transcript.formatStanzas $ toList msg),
                             P.string $
                               "Run `"
                                 <> progName
@@ -466,10 +445,10 @@ runTranscripts' version progName mcodepath nativeRtp transcriptDir markdownFiles
                                 <> "` "
                                 <> "to do more work with it."
                           ],
-                          msg
+                          Transcript.formatStanzas $ toList msg
                         )
                   )
-                  pure
+                  (pure . Transcript.formatStanzas . toList)
                   result
               writeUtf8 outputFile output
               putStrLn $ "💾  Wrote " <> outputFile
@@ -503,7 +482,7 @@ runTranscripts version verbosity renderUsageInfo shouldFork shouldSaveTempCodeba
   progName <- getProgName
   transcriptDir <- prepareTranscriptDir verbosity shouldFork mCodePathOption shouldSaveTempCodebase
   completed <-
-    runTranscripts' version progName (Just transcriptDir) nativeRtp transcriptDir markdownFiles
+    runTranscripts' version progName nativeRtp transcriptDir markdownFiles
   case shouldSaveTempCodebase of
     DontSaveCodebase -> removeDirectoryRecursive transcriptDir
     SaveCodebase _ ->
@@ -527,7 +506,6 @@ runTranscripts version verbosity renderUsageInfo shouldFork shouldSaveTempCodeba
 launch ::
   Version ->
   FilePath ->
-  Config ->
   Rt.Runtime Symbol ->
   Rt.Runtime Symbol ->
   Rt.Runtime Symbol ->
@@ -539,7 +517,7 @@ launch ::
   (PP.ProjectPathIds -> IO ()) ->
   CommandLine.ShouldWatchFiles ->
   IO ()
-launch version dir config runtime sbRuntime nRuntime codebase inputs serverBaseUrl startingPath initResult lspCheckForChanges shouldWatchFiles = do
+launch version dir runtime sbRuntime nRuntime codebase inputs serverBaseUrl startingPath initResult lspCheckForChanges shouldWatchFiles = do
   showWelcomeHint <- Codebase.runTransaction codebase Queries.doProjectsExist
   let isNewCodebase = case initResult of
         CreatedCodebase -> NewlyCreatedCodebase
@@ -550,7 +528,6 @@ launch version dir config runtime sbRuntime nRuntime codebase inputs serverBaseU
         dir
         welcome
         startingPath
-        config
         inputs
         runtime
         sbRuntime
@@ -571,9 +548,6 @@ markdownFile md = case takeExtension md of
 
 isDotU :: String -> Bool
 isDotU file = takeExtension file == ".u"
-
-getConfigFilePath :: Maybe FilePath -> IO FilePath
-getConfigFilePath mcodepath = (</> ".unisonConfig") <$> Codebase.getCodebaseDir mcodepath
 
 getCodebaseOrExit :: Maybe CodebasePathOption -> SC.MigrationStrategy -> ((InitResult, CodebasePath, Codebase IO Symbol Ann) -> IO r) -> IO r
 getCodebaseOrExit codebasePathOption migrationStrategy action = do

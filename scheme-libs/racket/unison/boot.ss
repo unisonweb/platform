@@ -63,6 +63,7 @@
 
   clamp-integer
   clamp-natural
+  natural-max0
   wrap-natural
   bit64
   bit63
@@ -88,6 +89,9 @@
   exception->string
   raise-unison-exception
 
+  exn:io?
+  exn:arith?
+
   request
   request-case
   sum
@@ -100,6 +104,7 @@
 
   describe-value
   decode-value
+  describe-hash
 
   top-exn-handler
 
@@ -108,6 +113,7 @@
   referent->termlink
   typelink->reference
   termlink->referent
+  termlink->reference
 
   unison-tuple->list
   list->unison-tuple
@@ -117,7 +123,7 @@
 (require
   (for-syntax
     racket/set
-    (only-in racket partition flatten split-at)
+    (only-in racket partition flatten split-at string-trim identity)
     (only-in racket/string string-prefix?)
     (only-in racket/syntax format-id))
   (rename-in
@@ -128,11 +134,12 @@
   ; (for-syntax (only-in unison/core syntax->list))
   (only-in racket/control control0-at)
   racket/performance-hint
+  racket/trace
   unison/core
+  unison/curry
   unison/data
   unison/sandbox
   unison/data-info
-  unison/crypto
   (only-in unison/chunked-seq
            string->chunked-string
            chunked-string->string
@@ -157,15 +164,28 @@
 ; Our definition macro needs to generate multiple entry points for the
 ; defined procedures, so this is a function for making up names for
 ; those based on the original.
-(define-for-syntax (adjust-symbol name post)
+(define-for-syntax (adjust-symbol #:trim trim? name post)
+  (define trimmer
+    (if trim?
+      (lambda (n) (string-trim n #px"-\\d+$"))
+      identity))
+
   (string->symbol
     (string-append
-      (symbol->string name)
+      (trimmer (symbol->string name))
       ":"
       post)))
 
-(define-for-syntax (adjust-name name post)
-  (datum->syntax name (adjust-symbol (syntax->datum name) post) name))
+(define-for-syntax (adjust-name #:trim [trim? #f] name post)
+  (datum->syntax name (adjust-symbol #:trim trim? (syntax->datum name) post) name))
+
+(define-for-syntax (ref-link? name:link:stx)
+  (string-prefix? (symbol->string (syntax->datum name:link:stx)) "ref-"))
+
+(define-for-syntax (build-groupref internal? name:link:stx lo)
+  (if (and internal? (ref-link? name:link:stx))
+    #f
+    #`(termlink->groupref #,name:link:stx #,lo)))
 
 ; Helper function. Turns a list of syntax objects into a
 ; list-syntax object.
@@ -198,12 +218,17 @@
 ; This builds the core definition for a unison definition. It is just
 ; a lambda expression with the original code, but with an additional
 ; keyword argument for threading purity information.
-(define-for-syntax (make-impl name:impl:stx arg:stx body:stx)
+(define-for-syntax (make-impl value? name:impl:stx arg:stx body:stx)
   (with-syntax ([name:impl name:impl:stx]
                 [args arg:stx]
                 [body body:stx])
-    (syntax/loc body:stx
-      (define (name:impl #:pure pure? . args) . body))))
+    (cond
+      [value?
+        (syntax/loc body:stx
+          (define name:impl . body))]
+      [else
+       (syntax/loc body:stx
+         (define (name:impl . args) . body))])))
 
 (define frame-contents (gensym))
 
@@ -217,6 +242,7 @@
 (define-for-syntax
   (make-fast-path
     #:force-pure force-pure?
+    #:value value?
     loc ; original location
     name:fast:stx name:impl:stx
     arg:stx)
@@ -224,118 +250,45 @@
   (with-syntax ([name:impl name:impl:stx]
                 [name:fast name:fast:stx]
                 [args arg:stx])
-    (if force-pure?
-      (syntax/loc loc
-        (define name:fast name:impl))
-
-      (syntax/loc loc
-        (define (name:fast #:pure pure? . args)
-          (if pure?
-            (name:impl #:pure pure? . args)
-            (with-continuation-mark
-              frame-contents
-              (vector . args)
-              (name:impl #:pure pure? . args))))))))
-
-; Slow path -- unnecessary
-; (define-for-syntax (make-slow-path loc name argstx)
-;   (with-syntax ([name:slow (adjust-symbol name "slow")]
-;                 [n (length (syntax->list argstx))])
-;     (syntax/loc loc
-;       (define (name:slow #:pure pure? . as)
-;         (define k (length as))
-;         (cond
-;           [(< k n) (unison-closure n name:slow as)]
-;           [(= k n) (apply name:fast #:pure pure? as)]
-;           [(> k n)
-;            (define-values (h t) (split-at as n))
-;            (apply
-;              (apply name:fast #:pure pure? h)
-;              #:pure pure?
-;              t)])))))
-
-; This definition builds a macro that defines the behavior of actual
-; occurences of the definition names. It has the following behavior:
-;
-; 1. Exactly saturated occurences directly call the fast path
-; 2. Undersaturated or unapplied occurrences become closure
-;    construction
-; 3. Oversaturated occurrences become an appropriate nested
-;    application
-;
-; Because of point 2, all function values end up represented as
-; unison-closure objects, so a slow path procedure is no longer
-; necessary; it is handled by the prop:procedure of the closure
-; structure. This should also make various universal operations easier
-; to handle, because we can just test for unison-closures, instead of
-; having to deal with raw procedures.
-(define-for-syntax
-  (make-callsite-macro
-    #:internal internal?
-    loc ; original location
-    name:stx name:fast:stx
-    arity:val)
-  (with-syntax ([name name:stx]
-                [name:fast name:fast:stx]
-                [arity arity:val])
     (cond
-      [internal?
-        (syntax/loc loc
-          (define-syntax (name stx)
-            (syntax-case stx ()
-              [(_ #:by-name _ . bs)
-               (syntax/loc stx
-                 (unison-closure arity name:fast (list . bs)))]
-              [(_ . bs)
-               (let ([k (length (syntax->list #'bs))])
-                 (cond
-                   [(= arity k) ; saturated
-                    (syntax/loc stx
-                      (name:fast #:pure #t . bs))]
-                   [(> arity k) ; undersaturated
-                    (syntax/loc stx
-                      (unison-closure arity name:fast (list . bs)))]
-                   [(< arity k) ; oversaturated
-                    (define-values (h t)
-                      (split-at (syntax->list #'bs) arity))
+      [value?
+       (syntax/loc loc
+         (define (name:fast) name:impl))]
 
-                    (quasisyntax/loc stx
-                      ((name:fast #:pure #t #,@h) #,@t))]))]
-              [_ (syntax/loc stx
-                   (unison-closure arity name:fast (list)))])))]
+      [force-pure?
+       (syntax/loc loc
+         ; note: for some reason this performs better than
+         ; (define name:fast name:impl)
+         (define (name:fast . args) (name:impl . args)))]
+
       [else
-        (syntax/loc loc
-          (define-syntax (name stx)
-            (syntax-case stx ()
-              [(_ #:by-name _ . bs)
-               (syntax/loc stx
-                 (unison-closure arity name:fast (list . bs)))]
-              [(_ . bs)
-               (let ([k (length (syntax->list #'bs))])
+       (syntax/loc loc
+         (define (name:fast #:pure pure? . args)
+           (if pure?
+             (name:impl #:pure pure? . args)
+             (with-continuation-mark
+               frame-contents
+               (vector . args)
+               (name:impl #:pure pure? . args)))))])))
 
-                 ; todo: purity
-
-                 ; capture local pure?
-                 (with-syntax ([pure? (format-id stx "pure?")])
-                   (cond
-                     [(= arity k) ; saturated
-                      (syntax/loc stx
-                        (name:fast #:pure pure? . bs))]
-                     [(> arity k)
-                      (syntax/loc stx
-                        (unison-closure n name:fast (list . bs)))]
-                     [(< arity k) ; oversaturated
-                      (define-values (h t)
-                        (split-at (syntax->list #'bs) arity))
-
-                      ; TODO: pending argument frame
-                      (quasisyntax/loc stx
-                        ((name:fast #:pure pure? #,@h)
-                         #:pure pure?
-                         #,@t))])))]
-              ; non-applied occurrence; partial ap immediately
-              [_ (syntax/loc stx
-                   (unison-closure arity name:fast (list)))])))])))
+(define-for-syntax
+  (make-main loc value? inline? name:stx ref:stx name:impl:stx n)
+  (with-syntax ([name name:stx]
+                [name:impl name:impl:stx]
+                [gr ref:stx]
+                [n (datum->syntax loc n)])
+    (cond
+      [value?
+       (syntax/loc loc
+         (define (name) name:impl))]
+      [inline?
+       (syntax/loc loc
+         (define name
+           (unison-curry #:inline n gr name:impl)))]
+      [else
+       (syntax/loc loc
+         (define name
+           (unison-curry n gr name:impl)))])))
 
 (define-for-syntax
   (link-decl no-link-decl? loc name:stx name:fast:stx name:impl:stx)
@@ -350,17 +303,33 @@
           ((declare-function-link name:fast name:link)
            (declare-function-link name:impl name:link)))))))
 
+(define-for-syntax
+  (trace-decls trace? loc name:impl:stx)
+  (if trace?
+    (with-syntax ([name:impl name:impl:stx])
+      (syntax/loc loc
+        ((trace name:impl))))
+    #'()))
+
 (define-for-syntax (process-hints hs)
   (for/fold ([internal? #f]
              [force-pure? #t]
              [gen-link? #f]
-             [no-link-decl? #f])
+             [no-link-decl? #f]
+             [trace? #f]
+             [inline? #f]
+             [recursive? #f]
+             [value? #f])
             ([h hs])
     (values
       (or internal? (eq? h 'internal))
       (or force-pure? (eq? h 'force-pure) (eq? h 'internal))
       (or gen-link? (eq? h 'gen-link))
-      (or no-link-decl? (eq? h 'no-link-decl)))))
+      (or no-link-decl? (eq? h 'no-link-decl))
+      (or trace? (eq? h 'trace))
+      (or inline? (eq? h 'inline))
+      (or recursive? (eq? h 'recursive))
+      (or value? (eq? h 'value)))))
 
 (define-for-syntax
   (make-link-def gen-link? loc name:stx name:link:stx)
@@ -386,29 +355,44 @@
 (define-for-syntax
   (expand-define-unison
     #:hints hints
+    #:local [lo 0]
     loc name:stx arg:stx expr:stx)
 
-  (define-values
-    (internal? force-pure? gen-link? no-link-decl?)
+  (define-values (internal?
+                  force-pure?
+                  gen-link?
+                  no-link-decl?
+                  trace?
+                  inline?
+                  recursive?
+                  value?)
     (process-hints hints))
 
-  (let ([name:fast:stx (adjust-name name:stx "fast")]
-        [name:impl:stx (adjust-name name:stx "impl")]
-        [name:link:stx (adjust-name name:stx "termlink")]
-        [arity (length (syntax->list arg:stx))])
+
+  (let* ([name:fast:stx (adjust-name name:stx "fast")]
+         [name:impl:stx (adjust-name name:stx "impl")]
+         [name:link:stx (adjust-name name:stx "termlink" #:trim #t)]
+         [ref:stx (build-groupref internal? name:link:stx lo)]
+         [arity (length (syntax->list arg:stx))])
     (with-syntax
       ([(link ...) (make-link-def gen-link? loc name:stx name:link:stx)]
        [fast (make-fast-path
-               #:force-pure force-pure?
+               #:force-pure #t ; force-pure?
+               #:value value?
                loc name:fast:stx name:impl:stx arg:stx)]
-       [impl (make-impl name:impl:stx arg:stx expr:stx)]
-       [call (make-callsite-macro
-               #:internal internal?
-               loc name:stx name:fast:stx arity)]
-       [(decls ...)
-        (link-decl no-link-decl? loc name:stx name:fast:stx name:impl:stx)])
-      (syntax/loc loc
-        (begin link ... impl fast call decls ...)))))
+       [impl (make-impl value? name:impl:stx arg:stx expr:stx)]
+       [main (make-main loc value? inline? name:stx ref:stx name:impl:stx arity)]
+       ; [(decls ...)
+       ;  (link-decl no-link-decl? loc name:stx name:fast:stx name:impl:stx)]
+       [(traces ...)
+        (trace-decls trace? loc name:impl:stx)])
+      (quasisyntax/loc loc
+        (begin
+          link ...
+          #,(if (or recursive? inline?) #'(begin-encourage-inline impl) #'impl)
+          traces ...
+          #,(if (or recursive? inline?) #'(begin-encourage-inline fast) #'fast)
+          #,(if inline? #'(begin-encourage-inline main) #'main))))))
 
 ; Function definition supporting various unison features, like
 ; partial application and continuation serialization. See above for
@@ -422,9 +406,24 @@
 ; `pure?` indicator is not being threaded).
 (define-syntax (define-unison stx)
   (syntax-case stx ()
+    [(define-unsion #:hints hs #:local n (name . args) . exprs)
+     (expand-define-unison
+       #:local (syntax->datum #'n)
+       #:hints (syntax->datum #'hs)
+       stx #'name #'args #'exprs)]
+    [(define-unsion #:local n #:hints hs (name . args) . exprs)
+     (expand-define-unison
+       #:local (syntax->datum #'n)
+       #:hints (syntax->datum #'hs)
+       stx #'name #'args #'exprs)]
     [(define-unison #:hints hs (name . args) . exprs)
      (expand-define-unison
        #:hints (syntax->datum #'hs)
+       stx #'name #'args #'exprs)]
+    [(define-unison #:local n (name . args) . exprs)
+     (expand-define-unison
+       #:local (syntax->datum #'n)
+       #:hints '[]
        stx #'name #'args #'exprs)]
     [(define-unison (name . args) . exprs)
      (expand-define-unison
@@ -433,32 +432,42 @@
 
 (define-syntax (define-unison-builtin stx)
   (syntax-case stx ()
+    [(define-unison-builtin #:local n #:hints [h ...] . rest)
+     (syntax/loc stx
+       (define-unison #:local n #:hints [inline internal gen-link h ...] . rest))]
+    [(define-unison-builtin #:local n . rest)
+     (syntax/loc stx
+       (define-unison #:local n #:hints [inline internal gen-link] . rest))]
+    [(define-unison-builtin #:hints [h ...] . rest)
+     (syntax/loc stx
+       (define-unison #:hints [inline internal gen-link h ...] . rest))]
     [(define-unison-builtin . rest)
      (syntax/loc stx
-       (define-unison #:hints [internal gen-link] . rest))]))
+       (define-unison #:hints [inline internal gen-link] . rest))]))
 
 ; call-by-name bindings
 (define-syntax (name stx)
   (syntax-case stx ()
     [(name ([v (f . args)] ...) body ...)
      (syntax/loc stx
-       (let ([v (f #:by-name #t . args)] ...) body ...))]))
+       (let ([v (build-closure f . args)] ...) body ...))]))
 
 ; Wrapper that more closely matches `handle` constructs
 (define-syntax handle
   (syntax-rules ()
     [(handle [r ...] h e ...)
-     (call-with-handler (list r ...) h (lambda () e ...))]))
+     (call-with-handler '(r ...) h (lambda () e ...))]))
 
 ; wrapper that more closely matches ability requests
 (define-syntax request
   (syntax-rules ()
     [(request r t . args)
-     (let ([rq (make-request r t (list . args))])
-       (let ([current-mark (ref-mark r)])
-          (if (equal? #f current-mark)
-            (error "Unhandled top-level effect! " (list r t . args))
-            ((cdr current-mark) rq))))]))
+     (let* ([key (quote r)]
+            [rq (make-request key t (list . args))]
+            [current-mark (ref-mark key)])
+       (if (pair? current-mark)
+         ((cdr current-mark) rq)
+         (error "unhandled ability request: " (list key t . args))))]))
 
 ; See the explanation of `handle` for a more thorough understanding
 ; of why this is doing two control operations.
@@ -471,7 +480,7 @@
 (define-syntax control
   (syntax-rules ()
     [(control r k e ...)
-     (let ([p (car (ref-mark r))])
+     (let ([p (car (ref-mark (quote r)))])
        (control0-at p k (control0-at p _k e ...)))]))
 
 ; forces something that is expected to be a thunk, defined with
@@ -666,7 +675,7 @@
         (syntax-case stx ()
           [(a sc ...)
            #`((unison-request b t vs)
-              #:when (equal? a b)
+              #:when (eq? (quote a) b)
               (match* (t vs)
                 #,@(map mk-req (syntax->list #'(sc ...)))))])))
 
@@ -697,7 +706,12 @@
      (match id
        [(unison-data _ t (list rf i))
         #:when (= t ref-id-id:tag)
-        (unison-termlink-derived rf i)])]))
+        (unison-termlink-derived rf i)])]
+    [else
+     (raise-argument-error
+       'reference->termlink
+       "unison-reference?"
+       rf)]))
 
 (define (referent->termlink rn)
   (match rn
@@ -739,6 +753,16 @@
     [(unison-termlink-con tyl i)
      (ref-referent-con (typelink->reference tyl) i)]))
 
+(define (termlink->reference rn)
+  (match rn
+    [(unison-termlink-builtin name)
+     (ref-reference-builtin
+       (string->chunked-string name))]
+    [(unison-termlink-derived bs i)
+     (ref-reference-derived (ref-id-id bs i))]
+    [else (raise "termlink->reference: con case")]))
+
+
 (define (unison-seq . l)
   (vector->chunked-list (list->vector l)))
 
@@ -755,9 +779,9 @@
          (display "")]
         [else
           (display (describe-value x))])]
-    [ref-exception:typelink
+    [ref-exception
       [0 (f)
-       (control ref-exception:typelink k
+       (control ref-exception k
          (let ([disp (describe-value f)])
            (raise
              (make-exn:bug
@@ -785,6 +809,15 @@
     (if (fixnum? n) n
       (modulo n bit64)))
 
+  ; For natural arithmetic operations that can yield negatives, this
+  ; ensures that they are clamped back to 0.
+  ;
+  ; Note: (max 0 n) is apparently around 2-3x slower than this, hence
+  ; the custom operation. I've factored it out here in case something
+  ; even better is found, but this seems to match the performance of
+  ; the underlying operation.
+  (define (natural-max0 n) (if (>= n 0) n 0))
+
   ; module arithmetic appropriate for when a Nat operation my either
   ; have too large or a negative result.
   (define (wrap-natural n)
@@ -793,7 +826,7 @@
 
 (define (raise-unison-exception ty msg val)
   (request
-    ref-exception:typelink
+    ref-exception
     0
     (ref-failure-failure ty msg (unison-any-any val))))
 
@@ -802,3 +835,13 @@
     ref-runtimefailure:typelink
     (string->chunked-string (exn:bug-msg b))
     (exn:bug-val b)))
+
+(define (exn:io? e)
+  (or (exn:fail:read? e)
+      (exn:fail:filesystem? e)
+      (exn:fail:network? e)))
+
+(define (exn:arith? e)
+  (or (exn:fail:contract:divide-by-zero? e)
+      (exn:fail:contract:non-fixnum-result? e)))
+

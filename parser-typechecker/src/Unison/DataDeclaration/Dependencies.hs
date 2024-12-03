@@ -121,5 +121,6 @@ hashFieldAccessors ppe declName vars declRef dd = do
                 dataDecls = Map.singleton declRef (void dd),
                 effectDecls = mempty
               },
-          termsByShortname = mempty
+          termsByShortname = mempty,
+          topLevelComponents = Map.empty
         }

@@ -18,7 +18,7 @@ type ResultT notes f = MaybeT (WriterT notes f)
 
 data Note v loc
   = Parsing (Parser.Err v)
-  | NameResolutionFailures [Names.ResolutionFailure v loc]
+  | NameResolutionFailures [Names.ResolutionFailure loc]
   | UnknownSymbol v loc
   | TypeError (Context.ErrorNote v loc)
   | TypeInfo (Context.InfoNote v loc)

@@ -14,6 +14,9 @@ module Unison.Syntax.Lexer.Unison
     showEscapeChar,
     touches,
 
+    -- * Lexers
+    typeOrTerm,
+
     -- * Character classifiers
     wordyIdChar,
     wordyIdStartChar,
@@ -29,6 +32,7 @@ import Control.Lens qualified as Lens
 import Control.Monad.State qualified as S
 import Data.Char (isAlphaNum, isDigit, isSpace, ord, toLower)
 import Data.Foldable qualified as Foldable
+import Data.Functor.Classes (Show1 (..), showsPrec1)
 import Data.List qualified as List
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.List.NonEmpty qualified as Nel
@@ -46,9 +50,7 @@ import U.Codebase.Reference (ReferenceType (..))
 import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.Name (Name)
 import Unison.Name qualified as Name
-import Unison.NameSegment (NameSegment)
 import Unison.NameSegment qualified as NameSegment (docSegment)
-import Unison.NameSegment.Internal qualified as NameSegment
 import Unison.Prelude
 import Unison.ShortHash (ShortHash)
 import Unison.ShortHash qualified as SH
@@ -56,7 +58,7 @@ import Unison.Syntax.HashQualifiedPrime qualified as HQ' (toText)
 import Unison.Syntax.Lexer
 import Unison.Syntax.Lexer.Token (posP, tokenP)
 import Unison.Syntax.Name qualified as Name (isSymboly, nameP, toText, unsafeParseText)
-import Unison.Syntax.NameSegment qualified as NameSegment (ParseErr (..), wordyP)
+import Unison.Syntax.NameSegment qualified as NameSegment (ParseErr (..))
 import Unison.Syntax.Parser.Doc qualified as Doc
 import Unison.Syntax.Parser.Doc.Data qualified as Doc
 import Unison.Syntax.ReservedWords (delimiters, typeModifiers, typeOrAbility)
@@ -78,6 +80,9 @@ data ParsingEnv = ParsingEnv
   }
   deriving (Show)
 
+initialEnv :: BlockName -> ParsingEnv
+initialEnv scope = ParsingEnv [] (Just scope) True
+
 type P = P.ParsecT (Token Err) String (S.State ParsingEnv)
 
 data Err
@@ -88,6 +93,7 @@ data Err
   | InvalidBytesLiteral String
   | InvalidHexLiteral
   | InvalidOctalLiteral
+  | InvalidBinaryLiteral
   | Both Err Err
   | MissingFractional String -- ex `1.` rather than `1.04`
   | MissingExponent String -- ex `1e` rather than `1e3`
@@ -105,20 +111,30 @@ data Err
 --   further knowledge of spacing or indentation levels
 --   any knowledge of comments
 data Lexeme
-  = Open String -- start of a block
-  | Semi IsVirtual -- separator between elements of a block
-  | Close -- end of a block
-  | Reserved String -- reserved tokens such as `{`, `(`, `type`, `of`, etc
-  | Textual String -- text literals, `"foo bar"`
-  | Character Char -- character literals, `?X`
-  | WordyId (HQ'.HashQualified Name) -- a (non-infix) identifier. invariant: last segment is wordy
-  | SymbolyId (HQ'.HashQualified Name) -- an infix identifier. invariant: last segment is symboly
-  | Blank String -- a typed hole or placeholder
-  | Numeric String -- numeric literals, left unparsed
-  | Bytes Bytes.Bytes -- bytes literals
-  | Hash ShortHash -- hash literals
+  = -- | start of a block
+    Open String
+  | -- | separator between elements of a block
+    Semi IsVirtual
+  | -- | end of a block
+    Close
+  | -- | reserved tokens such as `{`, `(`, `type`, `of`, etc
+    Reserved String
+  | -- | text literals, `"foo bar"`
+    Textual String
+  | -- | character literals, `?X`
+    Character Char
+  | -- | a (non-infix) identifier. invariant: last segment is wordy
+    WordyId (HQ'.HashQualified Name)
+  | -- | an infix identifier. invariant: last segment is symboly
+    SymbolyId (HQ'.HashQualified Name)
+  | -- | numeric literals, left unparsed
+    Numeric String
+  | -- | bytes literals
+    Bytes Bytes.Bytes
+  | -- | hash literals
+    Hash ShortHash
   | Err Err
-  | Doc (Doc.UntitledSection (Doc.Tree (ReferenceType, HQ'.HashQualified Name) [Token Lexeme]))
+  | Doc (Doc.UntitledSection (Doc.Tree (Token (ReferenceType, HQ'.HashQualified Name)) [Token Lexeme]))
   deriving stock (Eq, Show, Ord)
 
 type IsVirtual = Bool -- is it a virtual semi or an actual semi?
@@ -186,7 +202,7 @@ token'' tok p = do
     pops p = do
       env <- S.get
       let l = layout env
-      if top l == column p && topContainsVirtualSemis l
+      if column p == top l && topContainsVirtualSemis l
         then pure [Token (Semi True) p p]
         else
           if column p > top l || topHasClosePair l
@@ -194,7 +210,9 @@ token'' tok p = do
             else
               if column p < top l
                 then S.put (env {layout = pop l}) >> ((Token Close p p :) <$> pops p)
-                else error "impossible"
+                else -- we hit this branch exactly when `token''` is given the state
+                -- `{layout = [], opening = Nothing, inLayout = True}`
+                  fail "internal error: token''"
 
     -- don't emit virtual semis in (, {, or [ blocks
     topContainsVirtualSemis :: Layout -> Bool
@@ -277,7 +295,7 @@ lexer scope rem =
       (P.EndOfInput) -> "end of input"
     customErrs es = [Err <$> e | P.ErrorCustom e <- toList es]
     toPos (P.SourcePos _ line col) = Pos (P.unPos line) (P.unPos col)
-    env0 = ParsingEnv [] (Just scope) True
+    env0 = initialEnv scope
 
 -- | hacky postprocessing pass to do some cleanup of stuff that's annoying to
 -- fix without adding more state to the lexer:
@@ -330,7 +348,6 @@ displayLexeme = \case
   Character c -> "?" <> [c]
   WordyId hq -> Text.unpack (HQ'.toTextWith Name.toText hq)
   SymbolyId hq -> Text.unpack (HQ'.toTextWith Name.toText hq)
-  Blank b -> b
   Numeric n -> n
   Bytes _b -> "bytes literal"
   Hash h -> Text.unpack (SH.toText h)
@@ -355,7 +372,7 @@ doc2 = do
   (docTok, closeTok) <- local
     (\env -> env {inLayout = False})
     do
-      body <- Doc.doc typeOrTerm lexemes' . P.lookAhead $ lit "}}"
+      body <- Doc.doc (tokenP typeOrTerm) lexemes' . P.lookAhead $ lit "}}"
       closeStart <- posP
       lit "}}"
       closeEnd <- posP
@@ -383,12 +400,6 @@ doc2 = do
           isTopLevel = length (layout env0) + maybe 0 (const 1) (opening env0) == 1
       _ -> docTok : endToks
   where
-    wordyKw kw = separated wordySep (lit kw)
-    typeOrAbility' = typeOrAbilityAlt (wordyKw . Text.unpack)
-    typeOrTerm = do
-      mtype <- P.optional $ typeOrAbility' <* CP.space
-      ident <- identifierP <* CP.space
-      pure (maybe RtTerm (const RtType) mtype, ident)
     subsequentTypeName = P.lookAhead . P.optional $ do
       let lit' s = lit s <* sp
       let modifier = typeModifiersAlt (lit' . Text.unpack)
@@ -409,17 +420,28 @@ doc2 = do
       where
         ok s = length [() | '\n' <- s] < 2
 
+typeOrTerm :: (Monad m) => P.ParsecT (Token Err) String m (ReferenceType, HQ'.HashQualified Name)
+typeOrTerm = do
+  mtype <- P.optional $ typeOrAbility' <* CP.space
+  ident <- identifierP <* CP.space
+  pure (maybe RtTerm (const RtType) mtype, ident)
+
+typeOrAbility' :: (Monad m) => P.ParsecT (Token Err) String m String
+typeOrAbility' = typeOrAbilityAlt (wordyKw . Text.unpack)
+  where
+    wordyKw kw = separated wordySep (lit kw)
+
 lexemes' :: P () -> P [Token Lexeme]
 lexemes' eof =
-  -- NB: `postLex` requires the token stream to start with an `Open`, otherwise it can’t create a `T`, so this adds one,
-  --     runs `postLex`, then removes it.
+  -- NB: `postLex` requires the token stream to start with an `Open`, otherwise it can’t create a `BlockTree`, so this
+  --     adds one, runs `postLex`, then removes it.
   fmap (tail . postLex . (Token (Open "fake") mempty mempty :)) $
-    local (\env -> env {inLayout = True, opening = Just "DUMMY"}) do
+    local (const $ initialEnv "DUMMY") do
       p <- lexemes $ [] <$ eof
       -- deals with a final "unclosed" block at the end of `p`)
       unclosed <- takeWhile (("DUMMY" /=) . fst) . layout <$> S.get
-      let pos = end $ last p
-      pure $ p <> replicate (length unclosed) (Token Close pos pos)
+      finalPos <- posP
+      pure $ p <> replicate (length unclosed) (Token Close finalPos finalPos)
 
 -- | Consumes an entire Unison “module”.
 lexemes :: P [Token Lexeme] -> P [Token Lexeme]
@@ -436,7 +458,6 @@ lexemes eof =
         <|> token numeric
         <|> token character
         <|> reserved
-        <|> token blank
         <|> token identifierLexemeP
         <|> (asum . map token) [semi, textual, hash]
 
@@ -468,12 +489,6 @@ lexemes eof =
               _ <- lit "]" *> CP.space
               t <- tok identifierLexemeP
               pure $ (fmap Reserved <$> typ) <> t
-
-    blank =
-      separated wordySep do
-        _ <- char '_'
-        seg <- P.optional wordyIdSegP
-        pure (Blank (maybe "" (Text.unpack . NameSegment.toUnescapedText) seg))
 
     semi = char ';' $> Semi False
     textual = Textual <$> quoted
@@ -532,7 +547,7 @@ lexemes eof =
           case Bytes.fromBase16 $ Bytes.fromWord8s (fromIntegral . ord <$> s) of
             Left _ -> err start (InvalidBytesLiteral $ "0xs" <> s)
             Right bs -> pure (Bytes bs)
-        otherbase = octal <|> hex
+        otherbase = octal <|> hex <|> binary
         octal = do
           start <- posP
           commitAfter2 sign (lit "0o") $ \sign _ ->
@@ -541,6 +556,10 @@ lexemes eof =
           start <- posP
           commitAfter2 sign (lit "0x") $ \sign _ ->
             fmap (num sign) LP.hexadecimal <|> err start InvalidHexLiteral
+        binary = do
+          start <- posP
+          commitAfter2 sign (lit "0b") $ \sign _ ->
+            fmap (num sign) LP.binary <|> err start InvalidBinaryLiteral
 
         num :: Maybe String -> Integer -> Lexeme
         num sign n = Numeric (fromMaybe "" sign <> show n)
@@ -573,6 +592,7 @@ lexemes eof =
             <|> symbolyKw "&&"
             <|> wordyKw "true"
             <|> wordyKw "false"
+            <|> wordyKw "namespace"
             <|> wordyKw "use"
             <|> wordyKw "forall"
             <|> wordyKw "∀"
@@ -757,10 +777,6 @@ identifierLexeme name =
     then SymbolyId name
     else WordyId name
 
-wordyIdSegP :: P.ParsecT (Token Err) String m NameSegment
-wordyIdSegP =
-  PI.withParsecT (fmap (ReservedWordyId . Text.unpack)) NameSegment.wordyP
-
 shortHashP :: P.ParsecT (Token Err) String m ShortHash
 shortHashP =
   PI.withParsecT (fmap (InvalidShortHash . Text.unpack)) ShortHash.shortHashP
@@ -837,17 +853,36 @@ headToken (Block a _ _) = a
 headToken (Leaf a) = a
 
 instance (Show a) => Show (BlockTree a) where
-  show (Leaf a) = show a
-  show (Block open mid close) =
-    show open
-      ++ "\n"
-      ++ indent "  " (intercalateMap "\n" (intercalateMap " " show) mid)
-      ++ "\n"
-      ++ maybe "" show close
+  showsPrec = showsPrec1
+
+-- | This instance should be compatible with `Read`, but inserts newlines and indentation to make it more
+--  /human/-readable.
+instance Show1 BlockTree where
+  liftShowsPrec spa sla = shows ""
     where
-      indent by s = by ++ (s >>= go by)
-      go by '\n' = '\n' : by
-      go _ c = [c]
+      shows by prec =
+        showParen (prec > appPrec) . \case
+          Leaf a -> showString "Leaf " . showsNext spa "" a
+          Block open mid close ->
+            showString "Block "
+              . showsNext spa "" open
+              . showString "\n"
+              . showIndentedList (showIndentedList (\b -> showsIndented (shows b 0) b)) ("  " <> by) mid
+              . showString "\n"
+              . showsNext (liftShowsPrec spa sla) ("  " <> by) close
+      appPrec = 10
+      showsNext :: (Int -> x -> ShowS) -> String -> x -> ShowS
+      showsNext fn = showsIndented (fn $ appPrec + 1)
+      showsIndented :: (x -> ShowS) -> String -> x -> ShowS
+      showsIndented fn by x = showString by . fn x
+      showIndentedList :: (String -> x -> ShowS) -> String -> [x] -> ShowS
+      showIndentedList fn by xs =
+        showString by
+          . showString "["
+          . foldr (\x acc -> showString "\n" . fn ("  " <> by) x . showString "," . acc) id xs
+          . showString "\n"
+          . showString by
+          . showString "]"
 
 reorderTree :: ([[BlockTree a]] -> [[BlockTree a]]) -> BlockTree a -> BlockTree a
 reorderTree f (Block open mid close) = Block open (f (fmap (reorderTree f) <$> mid)) close
@@ -878,17 +913,19 @@ stanzas =
       )
       ([] :| [])
 
--- Moves type and ability declarations to the front of the token stream
--- and move `use` statements to the front of each block
+-- Moves type and ability declarations to the front of the token stream (but not before the leading optional namespace
+-- directive) and move `use` statements to the front of each block
 reorder :: [[BlockTree (Token Lexeme)]] -> [[BlockTree (Token Lexeme)]]
 reorder = foldr fixup [] . sortWith f
   where
-    f [] = 3 :: Int
+    f [] = 4 :: Int
     f (t0 : _) = case payload $ headToken t0 of
-      Open mod | Set.member (Text.pack mod) typeModifiers -> 1
-      Open typOrA | Set.member (Text.pack typOrA) typeOrAbility -> 1
-      Reserved "use" -> 0
-      _ -> 3 :: Int
+      Open mod | Set.member (Text.pack mod) typeModifiers -> 3
+      Open typOrA | Set.member (Text.pack typOrA) typeOrAbility -> 3
+      -- put `namespace` before `use` because the file parser only accepts a namespace directive at the top of the file
+      Reserved "namespace" -> 1
+      Reserved "use" -> 2
+      _ -> 4 :: Int
     -- after reordering can end up with trailing semicolon at the end of
     -- a block, which we remove with this pass
     fixup stanza [] = case Lens.unsnoc stanza of
@@ -990,7 +1027,6 @@ instance P.VisualStream [Token Lexeme] where
           Nothing -> '?' : [c]
       pretty (WordyId n) = Text.unpack (HQ'.toText n)
       pretty (SymbolyId n) = Text.unpack (HQ'.toText n)
-      pretty (Blank s) = "_" ++ s
       pretty (Numeric n) = n
       pretty (Hash sh) = show sh
       pretty (Err e) = show e

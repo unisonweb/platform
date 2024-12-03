@@ -15,7 +15,7 @@ import Unison.ConstructorType qualified as CT
 import Unison.DataDeclaration (Decl)
 import Unison.Hash (Hash)
 import Unison.Prelude
-import Unison.Reference (Reference, TypeReference, TermReferenceId, TypeReferenceId)
+import Unison.Reference (Reference, TermReferenceId, TypeReference, TypeReferenceId)
 import Unison.Reference qualified as Reference
 import Unison.Referent qualified as Referent
 import Unison.ShortHash (ShortHash)
@@ -60,10 +60,6 @@ data Codebase m v a = Codebase
     --
     -- The terms and type declarations that a branch references must already exist in the codebase.
     putBranch :: Branch m -> m (),
-    -- | Copy a branch and all of its dependencies from the given codebase into this one.
-    syncFromDirectory :: CodebasePath -> Branch m -> m (),
-    -- | Copy a branch and all of its dependencies from this codebase into the given codebase.
-    syncToDirectory :: CodebasePath -> Branch m -> m (),
     -- | @getWatch k r@ returns watch result @t@ that was previously put by @putWatch k r t@.
     getWatch :: WK.WatchKind -> TermReferenceId -> Sqlite.Transaction (Maybe (Term v a)),
     -- | Get the set of user-defined terms-or-constructors that have the given type.

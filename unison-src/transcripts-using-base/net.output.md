@@ -1,4 +1,4 @@
-``` unison
+``` unison :hide
 serverSocket = compose2 reraise IO.serverSocket.impl
 socketPort = compose reraise socketPort.impl
 listen = compose reraise listen.impl
@@ -7,6 +7,10 @@ clientSocket = compose2 reraise IO.clientSocket.impl
 socketSend = compose2 reraise socketSend.impl
 socketReceive = compose2 reraise socketReceive.impl
 socketAccept = compose reraise socketAccept.impl
+```
+
+``` ucm :hide
+scratch/main> add
 ```
 
 # Tests for network related builtins
@@ -92,26 +96,25 @@ testDefaultPort _ =
   runTest test
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       testDefaultHost  : '{IO} [Result]
       testDefaultPort  : '{IO} [Result]
       testExplicitHost : '{IO} [Result]
-
 ```
+
 ``` ucm
 scratch/main> add
 
   ⍟ I've added these definitions:
-  
+
     testDefaultHost  : '{IO} [Result]
     testDefaultPort  : '{IO} [Result]
     testExplicitHost : '{IO} [Result]
@@ -119,19 +122,20 @@ scratch/main> add
 scratch/main> io.test testDefaultPort
 
     New test results:
-  
+
     1. testDefaultPort   ◉ successfully created socket
                          ◉ port should be > 1024
                          ◉ port should be < 65536
-  
-  ✅ 3 test(s) passing
-  
-  Tip: Use view 1 to view the source of a test.
 
+  ✅ 3 test(s) passing
+
+  Tip: Use view 1 to view the source of a test.
 ```
+
 This example demonstrates connecting a TCP client socket to a TCP server socket. A thread is started for both client and server. The server socket asks for any availalbe port (by passing "0" as the port number). The server thread then queries for the actual assigned port number, and puts that into an MVar which the client thread can read. The client thread then reads a string from the server and reports it back to the main thread via a different MVar.
 
 ``` unison
+
 serverThread: MVar Nat -> Text -> '{io2.IO}()
 serverThread portVar toSend = 'let
   go : '{io2.IO, Exception}()
@@ -179,26 +183,25 @@ testTcpConnect = 'let
 
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       clientThread   : MVar Nat -> MVar Text -> '{IO} ()
       serverThread   : MVar Nat -> Text -> '{IO} ()
       testTcpConnect : '{IO} [Result]
-
 ```
+
 ``` ucm
 scratch/main> add
 
   ⍟ I've added these definitions:
-  
+
     clientThread   : MVar Nat -> MVar Text -> '{IO} ()
     serverThread   : MVar Nat -> Text -> '{IO} ()
     testTcpConnect : '{IO} [Result]
@@ -206,11 +209,10 @@ scratch/main> add
 scratch/main> io.test testTcpConnect
 
     New test results:
-  
-    1. testTcpConnect   ◉ should have reaped what we've sown
-  
-  ✅ 1 test(s) passing
-  
-  Tip: Use view 1 to view the source of a test.
 
+    1. testTcpConnect   ◉ should have reaped what we've sown
+
+  ✅ 1 test(s) passing
+
+  Tip: Use view 1 to view the source of a test.
 ```

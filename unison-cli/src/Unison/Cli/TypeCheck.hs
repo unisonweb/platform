@@ -49,7 +49,8 @@ typecheckTerm codebase tm = do
         Typechecker.Env
           { ambientAbilities = [],
             typeLookup,
-            termsByShortname = Map.empty
+            termsByShortname = Map.empty,
+            topLevelComponents = Map.empty
           }
   pure $ fmap extract $ FileParsers.synthesizeFile typecheckingEnv file
   where

@@ -30,6 +30,7 @@ import Servant.Client qualified as Servant
 import System.Console.ANSI qualified as ANSI
 import System.Console.Haskeline.Completion qualified as Completion
 import System.Directory (canonicalizePath, getHomeDirectory)
+import System.Exit (ExitCode (..))
 import Text.Pretty.Simple (pShowNoColor, pStringNoColor)
 import U.Codebase.Branch (NamespaceStats (..))
 import U.Codebase.Branch.Diff (NameChanges (..))
@@ -49,6 +50,7 @@ import Unison.Codebase.Editor.Input (BranchIdG (..))
 import Unison.Codebase.Editor.Input qualified as Input
 import Unison.Codebase.Editor.Output
   ( CreatedProjectBranchFrom (..),
+    MergeProgress (..),
     NumberedArgs,
     NumberedOutput (..),
     Output (..),
@@ -97,10 +99,7 @@ import Unison.Prelude
 import Unison.PrettyPrintEnv qualified as PPE
 import Unison.PrettyPrintEnv.Util qualified as PPE
 import Unison.PrettyPrintEnvDecl qualified as PPED
-import Unison.PrettyTerminal
-  ( clearCurrentLine,
-    putPretty',
-  )
+import Unison.PrettyTerminal (clearCurrentLine, putPretty')
 import Unison.PrintError
   ( prettyParseError,
     prettyResolutionFailures,
@@ -118,8 +117,7 @@ import Unison.Result qualified as Result
 import Unison.Server.Backend (ShallowListEntry (..), TypeEntry (..))
 import Unison.Server.Backend qualified as Backend
 import Unison.Server.SearchResultPrime qualified as SR'
-import Unison.Share.Sync qualified as Share
-import Unison.Share.Sync.Types (CodeserverTransportError (..))
+import Unison.Share.Sync.Types qualified as Share (CodeserverTransportError (..), GetCausalHashByPathError (..), PullError (..))
 import Unison.Sync.Types qualified as Share
 import Unison.Syntax.DeclPrinter qualified as DeclPrinter
 import Unison.Syntax.HashQualified qualified as HQ (toText, unsafeFromVar)
@@ -1448,7 +1446,13 @@ notifyUser dir = \case
   ListDependencies ppe lds types terms ->
     pure $ listDependentsOrDependencies ppe "Dependencies" "dependencies" lds types terms
   ListStructuredFind terms ->
-    pure $ listStructuredFind terms
+    pure $ listFind False Nothing terms
+  ListTextFind True terms ->
+    pure $ listFind True Nothing terms
+  ListTextFind False terms ->
+    pure $ listFind False (Just tip) terms
+    where
+      tip = (IP.makeExample (IP.textfind True) [] <> " will search `lib` as well.")
   DumpUnisonFileHashes hqLength datas effects terms ->
     pure . P.syntaxToColor . P.lines $
       ( effects <&> \(n, r) ->
@@ -2025,6 +2029,49 @@ notifyUser dir = \case
             "to delete the temporary branch and switch back to"
               <> P.group (prettyProjectBranchName aliceAndBob.alice.branch <> ".")
         ]
+  MergeFailureWithMergetool aliceAndBob temp mergetool exitCode ->
+    case exitCode of
+      ExitSuccess ->
+        pure $
+          P.lines $
+            [ P.wrap $
+                "I couldn't automatically merge"
+                  <> prettyMergeSource aliceAndBob.bob
+                  <> "into"
+                  <> P.group (prettyProjectAndBranchName aliceAndBob.alice <> ",")
+                  <> "so I'm running your UCM_MERGETOOL environment variable as",
+              "",
+              P.indentN 2 (P.text mergetool),
+              "",
+              P.wrap "When you're done, you can run",
+              "",
+              P.indentN 2 (IP.makeExampleNoBackticks IP.mergeCommitInputPattern []),
+              "",
+              P.wrap $
+                "to merge your changes back into"
+                  <> prettyProjectBranchName aliceAndBob.alice.branch
+                  <> "and delete the temporary branch. Or, if you decide to cancel the merge instead, you can run",
+              "",
+              P.indentN 2 (IP.makeExampleNoBackticks IP.deleteBranch [prettySlashProjectBranchName temp]),
+              "",
+              P.wrap $
+                "to delete the temporary branch and switch back to"
+                  <> P.group (prettyProjectBranchName aliceAndBob.alice.branch <> ".")
+            ]
+      ExitFailure code ->
+        pure $
+          P.lines $
+            [ P.wrap $
+                "I couldn't automatically merge"
+                  <> prettyMergeSource aliceAndBob.bob
+                  <> "into"
+                  <> P.group (prettyProjectAndBranchName aliceAndBob.alice <> ",")
+                  <> "so I tried to run your UCM_MERGETOOL environment variable as",
+              "",
+              P.indentN 2 (P.text mergetool),
+              "",
+              P.wrap ("but it failed with exit code" <> P.group (P.num code <> "."))
+            ]
   MergeSuccess aliceAndBob ->
     pure . P.wrap $
       "I merged"
@@ -2214,6 +2261,12 @@ notifyUser dir = \case
                 <> IP.makeExample' IP.delete
                 <> "it. Then try the update again."
           ]
+  MergeProgress MergeProgress'LoadingBranches -> pure "Loading branches..."
+  MergeProgress MergeProgress'DiffingBranches -> pure "Computing diff between branches..."
+  MergeProgress MergeProgress'LoadingDependents -> pure "Loading dependents of changes..."
+  MergeProgress MergeProgress'LoadingAndMergingLibdeps -> pure "Loading and merging library dependencies..."
+  MergeProgress MergeProgress'RenderingUnisonFile -> pure "Rendering Unison file..."
+  MergeProgress MergeProgress'TypecheckingUnisonFile -> pure "Typechecking Unison file..."
 
 prettyShareError :: ShareError -> Pretty
 prettyShareError =
@@ -2296,28 +2349,28 @@ prettyEntityValidationFailure = \case
       Share.NamespaceDiffType -> "namespace diff"
       Share.CausalType -> "causal"
 
-prettyTransportError :: CodeserverTransportError -> Pretty
+prettyTransportError :: Share.CodeserverTransportError -> Pretty
 prettyTransportError = \case
-  DecodeFailure msg resp ->
+  Share.DecodeFailure msg resp ->
     (P.lines . catMaybes)
       [ Just ("The server sent a response that we couldn't decode: " <> P.text msg),
         responseRequestId resp <&> \responseId -> P.newline <> "Request ID: " <> P.blue (P.text responseId)
       ]
-  Unauthenticated codeServerURL ->
+  Share.Unauthenticated codeServerURL ->
     P.wrap . P.lines $
       [ "Authentication with this code server (" <> P.string (Servant.showBaseUrl codeServerURL) <> ") is missing or expired.",
         "Please run " <> makeExample' IP.authLogin <> "."
       ]
-  PermissionDenied msg -> P.hang "Permission denied:" (P.text msg)
-  UnreachableCodeserver codeServerURL ->
+  Share.PermissionDenied msg -> P.hang "Permission denied:" (P.text msg)
+  Share.UnreachableCodeserver codeServerURL ->
     P.lines $
       [ P.wrap $ "Unable to reach the code server hosted at:" <> P.string (Servant.showBaseUrl codeServerURL),
         "",
         P.wrap "Please check your network, ensure you've provided the correct location, or try again later."
       ]
-  RateLimitExceeded -> "Rate limit exceeded, please try again later."
-  Timeout -> "The code server timed-out when responding to your request. Please try again later or report an issue if the problem persists."
-  UnexpectedResponse resp ->
+  Share.RateLimitExceeded -> "Rate limit exceeded, please try again later."
+  Share.Timeout -> "The code server timed-out when responding to your request. Please try again later or report an issue if the problem persists."
+  Share.UnexpectedResponse resp ->
     (P.lines . catMaybes)
       [ Just
           ( "The server sent a "
@@ -3586,17 +3639,19 @@ endangeredDependentsTable ppeDecl m =
         & fmap (\(n, dep) -> numArg n <> prettyLabeled fqnEnv dep)
         & P.lines
 
-listStructuredFind :: [HQ.HashQualified Name] -> Pretty
-listStructuredFind [] = "😶 I couldn't find any matches."
-listStructuredFind tms =
+listFind :: Bool -> Maybe Pretty -> [HQ.HashQualified Name] -> Pretty
+listFind _ Nothing [] = "😶 I couldn't find any matches."
+listFind _ (Just onMissing) [] = P.lines ["😶 I couldn't find any matches.", "", tip onMissing]
+listFind allowLib _ tms =
   P.callout "🔎" . P.lines $
-    [ "These definitions from the current namespace (excluding `lib`) have matches:",
+    [ "These definitions from the current namespace " <> parenthetical <> "have matches:",
       "",
       P.indentN 2 $ P.numberedList (pnames tms),
       "",
       tip (msg (length tms))
     ]
   where
+    parenthetical = if allowLib then "" else "(excluding `lib`) "
     pnames hqs = P.syntaxToColor . prettyHashQualified <$> hqs
     msg 1 = "Try " <> IP.makeExample IP.edit ["1"] <> " to bring this into your scratch file."
     msg n =

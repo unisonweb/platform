@@ -1,36 +1,53 @@
 This transcript verifies that the pretty-printer produces code that can be successfully parsed, for a variety of examples. Terms or types that fail to round-trip can be added  to either `reparses-with-same-hash.u` or `reparses.u` as regression tests.
 
+``` ucm :hide
+scratch/main> builtins.mergeio lib.builtins
+
+scratch/a1> builtins.mergeio lib.builtins
+
+scratch/a2> builtins.mergeio lib.builtins
+```
+
+``` ucm :hide
+scratch/a1> load unison-src/transcripts-round-trip/reparses-with-same-hash.u
+
+scratch/a1> add
+```
+
 ``` unison
 x = ()
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       x : ()
-
 ```
+
+``` ucm :hide
+scratch/a1> find
+```
+
 So we can see the pretty-printed output:
 
 ``` ucm
-scratch/a1> edit 1-1000
+scratch/a1> edit.new 1-1000
 
   ☝️
-  
-  I added 110 definitions to the top of scratch.u
-  
+
+  I added 111 definitions to the top of scratch.u
+
   You can edit them there, then run `update` to replace the
   definitions currently in this namespace.
-
 ```
-````` unison:added-by-ucm scratch.u
+
+````` unison :added-by-ucm scratch.u
 structural ability Abort where abort : {Abort} a
 
 structural ability Ask a where ask : {Ask a} a
@@ -121,6 +138,46 @@ ex3a =
   use Nat +
   a = do qux3 + qux3
   ()
+
+fixity : '('())
+fixity =
+  do
+    use Nat * +
+    (===) = (==)
+    f <| x = f x
+    (<<) f g x = f (g x)
+    (>>) f g x = g (f x)
+    id x = x
+    (do
+      (%) = Nat.mod
+      ($) = (+)
+      c = 1 * (2 + 3) * 4
+      plus = 1 + 2 + 3
+      plus2 = 1 + (2 + 3)
+      d = true && (false || true)
+      z = true || false && true
+      e = 1 + 2 >= 3 + 4
+      f = 9 % 2 === 0
+      g = 0 == 9 % 2
+      h = 2 * (10 $ 20)
+      i1 = 1 * 2 $ (3 * 4) $ 5
+      i2 = (1 * 2 $ 3) * 4 $ 5
+      oo = (2 * 10 $ 20) * 30 $ 40
+      ffffffffffffffffffff x = x + 1
+      gg x = x * 2
+      j = 10 |> ffffffffffffffffffff |> gg |> gg |> gg |> gg |> gg
+      k = ffffffffffffffffffff << gg << ffffffffffffffffffff <| 10
+      l = 10 |> (ffffffffffffffffffff >> gg >> ffffffffffffffffffff)
+      zzz = 1 + 2 * 3 < 4 + 5 * 6 && 7 + 8 * 9 > 10 + 11 * 12
+      zz =
+        (1 * 2 + 3 * 3 < 4 + 5 * 6 && 7 + 8 * 9 > 10 + 11 * 12)
+          === (1 + 3 * 3 < 4 + 5 * 6 && 7 + 8 * 9 > 10 + 11 * 12)
+      zzzz =
+        1 * 2 + 3 * 3 < 4 + 5 * 6
+          && 7 + 8 * 9 > 10 + 11 * 12 === 1 + 3 * 3 < 4 + 5 * 6
+          && 7 + 8 * 9 > 10 + 11 * 12
+      ())
+      |> id
 
 fix_1035 : Text
 fix_1035 =
@@ -510,7 +567,7 @@ nested_fences : Doc2
 nested_fences =
   {{
   ```` raw
-  ```unison
+  ``` unison
   r = "boopydoo"
   ```
   ````
@@ -590,8 +647,8 @@ softhang22 = softhang2 [0, 1, 2, 3, 4, 5] cases
 
 softhang23 : 'Nat
 softhang23 = do
-  use Nat +
   catchAll do
+    use Nat +
     x = 1
     y = 2
     x + y
@@ -768,34 +825,60 @@ UUID.randomUUIDBytes = do
 a |> f = f a
 `````
 
+``` ucm :hide
+scratch/a1> delete.namespace.force lib.builtins
+```
+
+``` ucm :hide
+scratch/a2> load
+```
+
+``` ucm :hide
+scratch/a2> add
+
+scratch/a2> delete.namespace.force lib.builtins
+```
+
 This diff should be empty if the two namespaces are equivalent. If it's nonempty, the diff will show us the hashes that differ.
 
-``` ucm
+``` ucm :error
 scratch/main> diff.namespace /a1: /a2:
 
   The namespaces are identical.
-
 ```
+
 Now check that definitions in 'reparses.u' at least parse on round trip:
+
+``` ucm :hide
+scratch/a3> builtins.mergeio lib.builtins
+
+scratch/a3> load unison-src/transcripts-round-trip/reparses.u
+
+scratch/a3> add
+```
 
 This just makes 'roundtrip.u' the latest scratch file.
 
-``` unison
+``` unison :hide
 x = ()
 ```
 
+``` ucm :hide
+scratch/a3> find
+```
+
 ``` ucm
-scratch/a3> edit 1-5000
+scratch/a3> edit.new 1-5000
 
   ☝️
-  
+
   I added 2 definitions to the top of scratch.u
-  
+
   You can edit them there, then run `update` to replace the
   definitions currently in this namespace.
-
 ```
-```` unison:added-by-ucm scratch.u
+
+```` unison :added-by-ucm scratch.u
 explanationOfThisFile : Text
 explanationOfThisFile =
   """
@@ -817,21 +900,33 @@ sloppyDocEval =
   }}
 ````
 
+``` ucm :hide
+scratch/a3_new> builtins.mergeio lib.builtins
+
+scratch/a3_new> load
+
+scratch/a3_new> add
+
+scratch/a3> delete.namespace.force lib.builtins
+
+scratch/a3_new> delete.namespace.force lib.builtins
+```
+
 These are currently all expected to have different hashes on round trip.
 
 ``` ucm
 scratch/main> diff.namespace /a3_new: /a3:
 
   Updates:
-  
+
     1. sloppyDocEval : Doc2
        ↓
     2. sloppyDocEval : Doc2
-
 ```
+
 ## Other regression tests not covered by above
 
-### Builtins should appear commented out in the edit command
+### Builtins should appear commented out in the edit.new command
 
 Regression test for https://github.com/unisonweb/unison/pull/3548
 
@@ -840,12 +935,12 @@ scratch/regressions> alias.term ##Nat.+ plus
 
   Done.
 
-scratch/regressions> edit plus
+scratch/regressions> edit.new plus
 
   ☝️
-  
+
   I added 1 definitions to the top of scratch.u
-  
+
   You can edit them there, then run `update` to replace the
   definitions currently in this namespace.
 
@@ -854,9 +949,8 @@ scratch/regressions> load
   Loading changes detected in scratch.u.
 
   I loaded scratch.u and didn't find anything.
-
 ```
-``` unison:added-by-ucm scratch.u
+
+``` unison :added-by-ucm scratch.u
 -- builtin plus : ##Nat -> ##Nat -> ##Nat
 ```
-

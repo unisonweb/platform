@@ -17,10 +17,10 @@ import Unison.Term (Term)
 import Unison.Term qualified as Term
 import Unison.Util.List qualified as ListUtils
 import Unison.Util.Range qualified as Range
+import Unison.Util.Recursion
 import Unison.Var qualified as Var
 
-data VarUsages
-  = VarUsages
+data VarUsages = VarUsages
   { unusedVars :: Map Symbol (Set Ann),
     usedVars :: Set Symbol,
     -- This is generally a copy of usedVars, except that we _don't_ remove variables when they go out of scope.
@@ -39,7 +39,7 @@ instance Monoid VarUsages where
 
 analyseTerm :: Lsp.Uri -> Term Symbol Ann -> [Diagnostic]
 analyseTerm fileUri tm =
-  let (VarUsages {unusedVars}) = ABT.cata alg tm
+  let (VarUsages {unusedVars}) = cata alg tm
       vars =
         Map.toList unusedVars & mapMaybe \(v, ann) -> do
           (,ann) <$> getRelevantVarName v
@@ -63,10 +63,8 @@ analyseTerm fileUri tm =
         guard (not (Text.isPrefixOf "_" n))
         Just n
       _ -> Nothing
-    alg ::
-      Ann ->
-      (ABT (Term.F Symbol Ann Ann) Symbol VarUsages -> VarUsages)
-    alg ann abt = case abt of
+    alg :: Algebra (ABT.Term' (Term.F Symbol Ann Ann) Symbol Ann) VarUsages
+    alg (ABT.Term' _ ann abt) = case abt of
       Var v -> VarUsages {unusedVars = mempty, usedVars = Set.singleton v, allUsedVars = Set.singleton v}
       Cycle x -> x
       Abs v (VarUsages {unusedVars, usedVars, allUsedVars}) ->

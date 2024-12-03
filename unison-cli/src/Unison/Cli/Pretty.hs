@@ -37,7 +37,9 @@ module Unison.Cli.Pretty
     prettySharePath,
     prettyShareURI,
     prettySlashProjectBranchName,
+    prettyTerm,
     prettyTermName,
+    prettyType,
     prettyTypeName,
     prettyTypeResultHeader',
     prettyTypeResultHeaderFull',
@@ -47,14 +49,11 @@ module Unison.Cli.Pretty
     prettyWriteRemoteNamespace,
     shareOrigin,
     unsafePrettyTermResultSigFull',
-    prettyTermDisplayObjects,
-    prettyTypeDisplayObjects,
   )
 where
 
 import Control.Lens hiding (at)
 import Control.Monad.Writer (Writer, runWriter)
-import Data.List qualified as List
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Time (UTCTime)
@@ -92,7 +91,6 @@ import Unison.HashQualified qualified as HQ
 import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.LabeledDependency as LD
 import Unison.Name (Name)
-import Unison.Name qualified as Name
 import Unison.NameSegment (NameSegment)
 import Unison.NameSegment.Internal qualified as NameSegment
 import Unison.Parser.Ann (Ann)
@@ -102,10 +100,9 @@ import Unison.PrettyPrintEnv.Names qualified as PPE
 import Unison.PrettyPrintEnv.Util qualified as PPE
 import Unison.PrettyPrintEnvDecl qualified as PPED
 import Unison.Project (ProjectAndBranch (..), ProjectName, Semver (..))
-import Unison.Reference (Reference, TermReferenceId)
+import Unison.Reference (Reference)
 import Unison.Reference qualified as Reference
 import Unison.Referent (Referent)
-import Unison.Referent qualified as Referent
 import Unison.Server.SearchResultPrime qualified as SR'
 import Unison.ShortHash (ShortHash)
 import Unison.Symbol (Symbol)
@@ -438,34 +435,6 @@ prettyUnisonFile ppe uf@(UF.UnisonFileId datas effects terms watches) =
     dppe = PPE.makePPE (PPE.namer (UF.toNames uf)) PPE.dontSuffixify
     rd = Reference.DerivedId
     hqv v = HQ.unsafeFromVar v
-
-prettyTypeDisplayObjects ::
-  PPED.PrettyPrintEnvDecl ->
-  (Map Reference (DisplayObject () (DD.Decl Symbol Ann))) ->
-  [P.Pretty SyntaxText]
-prettyTypeDisplayObjects pped types =
-  types
-    & Map.toList
-    & map (\(ref, dt) -> (PPE.typeName unsuffixifiedPPE ref, ref, dt))
-    & List.sortBy (\(n0, _, _) (n1, _, _) -> Name.compareAlphabetical n0 n1)
-    & map (prettyType pped)
-  where
-    unsuffixifiedPPE = PPED.unsuffixifiedPPE pped
-
-prettyTermDisplayObjects ::
-  PPED.PrettyPrintEnvDecl ->
-  Bool ->
-  (TermReferenceId -> Bool) ->
-  (Map Reference.TermReference (DisplayObject (Type Symbol Ann) (Term Symbol Ann))) ->
-  [P.Pretty SyntaxText]
-prettyTermDisplayObjects pped isSourceFile isTest terms =
-  terms
-    & Map.toList
-    & map (\(ref, dt) -> (PPE.termName unsuffixifiedPPE (Referent.Ref ref), ref, dt))
-    & List.sortBy (\(n0, _, _) (n1, _, _) -> Name.compareAlphabetical n0 n1)
-    & map (\t -> prettyTerm pped isSourceFile (fromMaybe False . fmap isTest . Reference.toId $ (t ^. _2)) t)
-  where
-    unsuffixifiedPPE = PPED.unsuffixifiedPPE pped
 
 prettyTerm ::
   PPED.PrettyPrintEnvDecl ->

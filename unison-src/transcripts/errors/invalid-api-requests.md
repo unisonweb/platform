@@ -1,3 +1,3 @@
-``` api:error
+``` api
 DELETE /something/important
 ```

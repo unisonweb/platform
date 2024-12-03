@@ -24,10 +24,11 @@ import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Init qualified as Codebase.Init
 import Unison.Codebase.Init.CreateCodebaseError (CreateCodebaseError (..))
 import Unison.Codebase.SqliteCodebase qualified as SC
+import Unison.Codebase.Transcript.Parser qualified as Transcript
 import Unison.Codebase.Transcript.Runner qualified as Transcript
 import Unison.Codebase.Verbosity qualified as Verbosity
 import Unison.Parser.Ann (Ann)
-import Unison.Prelude (traceM)
+import Unison.Prelude (toList, traceM)
 import Unison.PrettyTerminal qualified as PT
 import Unison.Symbol (Symbol)
 import Unison.Util.Pretty qualified as P
@@ -67,17 +68,18 @@ runTranscript (Codebase codebasePath fmt) transcript = do
   let err e = fail $ "Parse error: \n" <> show e
       cbInit = case fmt of CodebaseFormat2 -> SC.init
       isTest = True
-  Transcript.withRunner isTest Verbosity.Silent "Unison.Test.Ucm.runTranscript Invalid Version String" rtp configFile $
+  Transcript.withRunner isTest Verbosity.Silent "Unison.Test.Ucm.runTranscript Invalid Version String" rtp $
     \runner -> do
       result <- Codebase.Init.withOpenCodebase cbInit "transcript" codebasePath SC.DoLock SC.DontMigrate \codebase -> do
         Codebase.runTransaction codebase (Codebase.installUcmDependencies codebase)
         let transcriptSrc = stripMargin . Text.pack $ unTranscript transcript
-        output <- either err Text.unpack <$> runner "transcript" transcriptSrc (codebasePath, codebase)
+        output <-
+          either err (Text.unpack . Transcript.formatStanzas . toList)
+            <$> runner "transcript" transcriptSrc (codebasePath, codebase)
         when debugTranscriptOutput $ traceM output
         pure output
       either (fail . P.toANSI 80 . P.shown) pure result
   where
-    configFile = Nothing
     -- Note: this needs to be properly configured if these tests ever
     -- need to do native compiles. But I suspect they won't.
     rtp = "native-compiler/bin"

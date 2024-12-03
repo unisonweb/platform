@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveDataTypeable #-}
--- Based on: http://semantic-domain.blogspot.com/2015/03/abstract-binding-trees.html
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveTraversable #-}
@@ -12,10 +11,12 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
+-- | Based on: http://semantic-domain.blogspot.com/2015/03/abstract-binding-trees.html
 module Unison.ABT
   ( -- * Types
     ABT (..),
     Term (..),
+    Term' (..),
     Var (..),
     V (..),
     Subst (..),
@@ -41,8 +42,6 @@ module Unison.ABT
     rebuildUp',
     reannotateUp,
     rewriteDown,
-    cata,
-    para,
     transform,
     transformM,
     foreachSubterm,
@@ -111,12 +110,11 @@ import Data.Set qualified as Set
 import U.Core.ABT
   ( ABT (..),
     Term (..),
+    Term' (..),
     allVars,
-    cata,
     foreachSubterm,
     freshInBoth,
     freshenS,
-    para,
     rename,
     subst',
     substInheritAnnotation,

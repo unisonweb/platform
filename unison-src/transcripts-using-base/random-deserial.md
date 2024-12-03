@@ -1,4 +1,4 @@
-```unison
+``` unison
 directory = "unison-src/transcripts-using-base/serialized-cases/"
 
 availableCases : '{IO,Exception} [Text]
@@ -26,14 +26,14 @@ shuffle =
 runTestCase : Text ->{Exception,IO} (Text, Test.Result)
 runTestCase name =
   sfile = directory ++ name ++ ".v4.ser"
-  lsfile = directory ++ name ++ ".v3.ser"
+  ls3file = directory ++ name ++ ".v3.ser"
   ofile = directory ++ name ++ ".out"
   hfile = directory ++ name ++ ".v4.hash"
 
   p@(f, i) = loadSelfContained sfile
-  pl@(fl, il) =
-    if fileExists lsfile
-    then loadSelfContained lsfile
+  pl3@(fl3, il3) =
+    if fileExists ls3file
+    then loadSelfContained ls3file
     else p
   o = fromUtf8 (readFile ofile)
   h = readFile hfile
@@ -43,8 +43,8 @@ runTestCase name =
     then Fail (name ++ " output mismatch")
     else if not (toBase32 (crypto.hash Sha3_512 p) == h)
     then Fail (name ++ " hash mismatch")
-    else if not (fl il == f i)
-    then Fail (name ++ " legacy mismatch")
+    else if not (fl3 il3 == f i)
+    then Fail (name ++ " legacy v3 mismatch")
     else Ok name
   (name, result)
 
@@ -55,7 +55,7 @@ serialTests = do
   List.map snd (bSort (List.map runTestCase cs))
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> io.test serialTests
 ```

@@ -16,7 +16,6 @@ import Data.Foldable
 import Data.Function
 import Data.Functor
 import Data.Functor.Compose
-import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map qualified as Map
 import Data.Sequence qualified as Seq
 import Data.Set qualified as Set
@@ -29,7 +28,6 @@ import Unison.PatternMatchCoverage.Class
 import Unison.PatternMatchCoverage.Constraint (Constraint)
 import Unison.PatternMatchCoverage.Constraint qualified as C
 import Unison.PatternMatchCoverage.EffectHandler
-import Unison.PatternMatchCoverage.Fix
 import Unison.PatternMatchCoverage.GrdTree
 import Unison.PatternMatchCoverage.IntervalSet (IntervalSet)
 import Unison.PatternMatchCoverage.IntervalSet qualified as IntervalSet
@@ -43,6 +41,7 @@ import Unison.Prelude
 import Unison.Type (Type)
 import Unison.Type qualified as Type
 import Unison.Util.Pretty qualified as P
+import Unison.Util.Recursion
 import Unison.Var (Var)
 
 -- | top-down traversal of the 'GrdTree' that produces:
@@ -74,12 +73,11 @@ uncoverAnnotate z grdtree0 = cata phi grdtree0 z
       LeafF l -> \nc -> do
         nc' <- ensureInhabited' nc
         pure (Set.empty, Leaf (nc', l))
-      ForkF (kinit :| ks) -> \nc0 -> do
+      ForkF ks -> \nc0 -> do
         -- depth-first fold in match-case order to acculate the
         -- constraints for a match failure at every case.
-        (nc1, t1) <- kinit nc0
-        (ncfinal, ts) <- foldlM (\(nc, ts) a -> a nc >>= \(nc', t) -> pure (nc', t : ts)) (nc1, []) ks
-        pure (ncfinal, Fork (t1 :| reverse ts))
+        (ncfinal, ts) <- foldlM (\(nc, ts) a -> a nc >>= \(nc', t) -> pure (nc', t : ts)) (nc0, []) ks
+        pure (ncfinal, Fork $ reverse ts)
       GrdF grd k -> \nc0 -> case grd of
         PmEffect var con convars -> handleGrd (PosEffect var (Effect con) convars) (NegEffect var (Effect con)) k nc0
         PmEffectPure var resume -> handleGrd (PosEffect var NoEffect [resume]) (NegEffect var NoEffect) k nc0

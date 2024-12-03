@@ -8,6 +8,7 @@ module Unison.Codebase.Editor.Input
     TestInput (..),
     Event (..),
     OutputLocation (..),
+    RelativeToFold (..),
     PatchPath,
     BranchIdG (..),
     BranchId,
@@ -126,8 +127,8 @@ data Input
   | PullI !PullSourceTarget !PullMode
   | PushRemoteBranchI PushRemoteBranchInput
   | ResetI (BranchId2 {- namespace to reset it to -}) (Maybe UnresolvedProjectBranch {- ProjectBranch to reset -})
-  -- todo: Q: Does it make sense to publish to not-the-root of a Github repo?
-  | --          Does it make sense to fork from not-the-root of a Github repo?
+  | -- todo: Q: Does it make sense to publish to not-the-root of a Github repo?
+    --          Does it make sense to fork from not-the-root of a Github repo?
     -- used in Welcome module to give directions to user
     CreateMessage (P.Pretty P.ColorText)
   | -- Change directory.
@@ -167,17 +168,17 @@ data Input
     ExecuteI (HQ.HashQualified Name) [String]
   | -- save the result of a previous Execute
     SaveExecuteResultI Name
-  | -- execute an IO [Result]
-    IOTestI (HQ.HashQualified Name)
-  | -- execute all in-scope IO tests
-    IOTestAllI
+  | -- execute an IO [Result], bool selects runtime
+    IOTestI Bool (HQ.HashQualified Name)
+  | -- execute all in-scope IO tests, interpreter or native
+    IOTestAllI Bool
   | -- make a standalone binary file
     MakeStandaloneI String (HQ.HashQualified Name)
   | -- execute an IO thunk using scheme
     ExecuteSchemeI (HQ.HashQualified Name) [String]
-  | -- compile to a scheme file
-    CompileSchemeI Text (HQ.HashQualified Name)
-  | TestI TestInput
+  | -- compile to a scheme file; profiling flag
+    CompileSchemeI Bool Text (HQ.HashQualified Name)
+  | TestI Bool TestInput
   | CreateAuthorI NameSegment {- identifier -} Text {- name -}
   | -- Display provided definitions.
     DisplayI OutputLocation (NonEmpty (HQ.HashQualified Name))
@@ -188,6 +189,7 @@ data Input
   | FindShallowI Path'
   | StructuredFindI FindScope (HQ.HashQualified Name) -- sfind findScope query
   | StructuredFindReplaceI (HQ.HashQualified Name) -- sfind.replace rewriteQuery
+  | TextFindI Bool [String] -- TextFindI allowLib tokens
   | -- Show provided definitions.
     ShowDefinitionI OutputLocation ShowDefinitionScope (NonEmpty (HQ.HashQualified Name))
   | ShowRootReflogI {- Deprecated -}
@@ -291,10 +293,16 @@ data TestInput = TestInput
 -- Some commands, like `view`, can dump output to either console or a file.
 data OutputLocation
   = ConsoleLocation
-  | LatestFileLocation
-  | FileLocation FilePath
+  | LatestFileLocation RelativeToFold
+  | FileLocation FilePath RelativeToFold
   -- ClipboardLocation
   deriving (Eq, Show)
+
+-- | Above a new fold, or within the topmost fold?
+data RelativeToFold
+  = AboveFold
+  | WithinFold
+  deriving stock (Eq, Show)
 
 data FindScope
   = FindLocal Path'

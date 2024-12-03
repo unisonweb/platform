@@ -29,9 +29,14 @@
   (struct-out unison-typelink)
   (struct-out unison-typelink-builtin)
   (struct-out unison-typelink-derived)
+  (struct-out unison-groupref)
+  (struct-out unison-groupref-builtin)
+  (struct-out unison-groupref-derived)
   (struct-out unison-code)
   (struct-out unison-quote)
   (struct-out unison-timespec)
+
+  build-closure
 
   call-with-handler
   call-with-marks
@@ -112,7 +117,11 @@
   unison-pair->cons
 
   typelink->string
-  termlink->string)
+  termlink->string
+  groupref->string
+
+  groupref->termlink
+  termlink->groupref)
 
 (require
   (rename-in racket
@@ -223,6 +232,48 @@
   (hash i)
   #:reflection-name 'termlink)
 
+; A groupref is like a termlink, but is used for reflection of
+; functions. As such, there is no con case. Also, there's an extra
+; level of indexing involved in grouprefs, because multiple scheme
+; functions can be generated from the same top level unison
+; definition, even after floating.
+(struct unison-groupref ()
+  #:methods gen:custom-write
+  [(define (write-proc gr port mode)
+     (write-string (groupref->string gr #t) port))]
+  #:property prop:equal+hash
+  (let ()
+    (define (equal-proc grl grr rec)
+      (match grl
+        [(unison-groupref-builtin nl)
+         (match grr
+           [(unison-groupref-builtin nr)
+            (rec nl nr)]
+           [else #f])]
+        [(unison-groupref-derived hl il ll)
+         (match grr
+           [(unison-groupref-derived hr ir lr)
+            (and (rec hl hr) (= il ir) (= ll lr))]
+           [else #f])]))
+
+    (define ((hash-proc init) gr rec)
+      (match gr
+        [(unison-groupref-builtin n)
+         (fxxor (fx*/wraparound (rec n) 113)
+                (fx*/wraparound init 109))]
+        [(unison-groupref-derived h i l)
+         (fxxor (fx*/wraparound (rec h) 127)
+                (fx*/wraparound (rec i) 131)
+                (fx*/wraparound (rec l) 137))]))
+
+    (list equal-proc (hash-proc 3) (hash-proc 5))))
+
+(struct unison-groupref-builtin unison-groupref
+  (name))
+
+(struct unison-groupref-derived unison-groupref
+  (hash index local))
+
 (struct unison-typelink ()
   #:transparent
   #:reflection-name 'typelink
@@ -302,7 +353,7 @@
   (write-string ")" port))
 
 (struct unison-closure
-  (arity code env)
+  (ref code env)
   #:transparent
   #:methods gen:custom-write
   [(define (write-proc clo port mode)
@@ -324,24 +375,40 @@
   ; This means that there is never a bare unison function being passed
   ; as a value. So, we can define the slow path here once and for all.
   #:property prop:procedure
-  (lambda (clo #:pure [pure? #f] #:by-name [by-name? #f] . rest)
-    (define arity (unison-closure-arity clo))
-    (define old-env (unison-closure-env clo))
+  (lambda (clo . rest)
     (define code (unison-closure-code clo))
+    (define arity (procedure-arity code))
+    (define old-env (unison-closure-env clo))
 
     (define new-env (append old-env rest))
     (define k (length rest))
     (define l (length new-env))
     (cond
-      [(or by-name? (> arity l))
-       (struct-copy unison-closure clo [env new-env])]
       [(= arity l) ; saturated
-       (apply code #:pure pure? new-env)]
+       (apply code new-env)]
       [(= k 0) clo] ; special case, 0-applying undersaturated
       [(< arity l)
        ; TODO: pending arg annotation if no pure?
        (define-values (now pending) (split-at new-env arity))
-       (apply (apply code #:pure pure? now) #:pure pure? pending)])))
+       (apply (apply code now) pending)]
+      [else ; still undersaturated
+        (struct-copy unison-closure clo [env new-env])])))
+
+(define (reflect-procedure f)
+  (if (unison-closure? f)
+    f
+    (let-values ([(req opt) (procedure-keywords f)])
+      (if (member '#:reflect opt)
+        ; 0-arg case
+        (f #:reflect #t)
+        ; otherwise, by convention, applying enough to 0 args reflects
+        ((f))))))
+
+(define (build-closure f . args)
+  (define clo (reflect-procedure f))
+  (define env (unison-closure-env clo))
+
+  (struct-copy unison-closure clo [env (append env args)]))
 
 (struct unison-timespec (sec nsec)
   #:transparent
@@ -662,7 +729,8 @@
 (define code-associations (make-hash))
 
 (define (declare-code hs co)
-  (hash-set! code-associations hs co))
+  (unless (hash-has-key? code-associations hs)
+    (hash-set! code-associations hs co)))
 
 (define (lookup-code hs)
   (let ([mco (hash-ref code-associations hs #f)])
@@ -694,19 +762,29 @@
     "#"
     (bytevector->base32-string hs #:alphabet 'hex)))
 
-(define (ix-string i)
+(define (ix-string #:sep [sep "."] i)
   (if (= i 0)
     ""
-    (string-append "." (number->string i))))
+    (string-append sep (number->string i))))
+
+(define (clip short s) (if short (substring s 0 8) s))
 
 (define (typelink->string ln [short #f])
-  (define (clip s) (if short (substring s 0 8) s))
-
   (match ln
     [(unison-typelink-builtin name)
      (string-append "##" name)]
     [(unison-typelink-derived hs i)
-     (string-append (clip (hash-string hs)) (ix-string i))]))
+     (string-append (clip short (hash-string hs)) (ix-string i))]))
+
+(define (groupref->string gr [short #f])
+  (match gr
+    [(unison-groupref-builtin name)
+     (string-append "##" name)]
+    [(unison-groupref-derived hs i l)
+     (string-append
+       (clip short (hash-string hs))
+       (ix-string i)
+       (ix-string #:sep "-" l))]))
 
 (define (termlink->string ln [short #f])
   (define (clip s) (if short (substring s 0 8) s))
@@ -720,3 +798,22 @@
      (string-append
        (typelink->string rf short) "#" (number->string t))]))
 
+(define (groupref->termlink gr)
+  (match gr
+    [(unison-groupref-builtin name)
+     (unison-termlink-builtin name)]
+    [(unison-groupref-derived hs i _)
+     (unison-termlink-derived hs i)]))
+
+(define (termlink->groupref ln l)
+  (match ln
+    [#f #f]
+    [(unison-termlink-builtin name)
+     (unison-groupref-builtin name)]
+    [(unison-termlink-derived hs i)
+     (unison-groupref-derived hs i l)]
+    [(unison-termlink-con r i)
+     (raise-argument-error
+       'termlink->groupref
+       "builtin or derived link"
+       ln)]))

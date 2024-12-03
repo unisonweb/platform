@@ -9,7 +9,6 @@ import Control.Exception (catch, displayException, finally, mask)
 import Control.Lens ((?~))
 import Control.Lens.Lens
 import Crypto.Random qualified as Random
-import Data.Configurator.Types (Config)
 import Data.IORef
 import Data.List.NonEmpty qualified as NEL
 import Data.List.NonEmpty qualified as NonEmpty
@@ -48,6 +47,8 @@ import Unison.Prelude
 import Unison.PrettyTerminal
 import Unison.Runtime.IOSource qualified as IOSource
 import Unison.Server.CodebaseServer qualified as Server
+import Unison.Share.Codeserver (isCustomCodeserver)
+import Unison.Share.Codeserver qualified as Codeserver
 import Unison.Symbol (Symbol)
 import Unison.Syntax.Parser qualified as Parser
 import Unison.Util.Pretty qualified as P
@@ -76,10 +77,17 @@ getUserInput codebase authHTTPClient pp currentProjectRoot numberedArgs =
       Line.handleInterrupt (pure Nothing) (Line.withInterrupt (Just <$> act)) >>= \case
         Nothing -> haskelineCtrlCHandling act
         Just a -> pure a
+
+    codeserverPrompt :: String
+    codeserverPrompt =
+      if isCustomCodeserver Codeserver.defaultCodeserver
+        then "🌐" <> Codeserver.codeserverRegName Codeserver.defaultCodeserver <> maybe "" (":" <>) (show <$> Codeserver.codeserverPort Codeserver.defaultCodeserver) <> "\n"
+        else ""
+
     go :: Line.InputT IO Input
     go = do
       let promptString = P.prettyProjectPath pp
-      let fullPrompt = P.toANSI 80 (promptString <> fromString prompt)
+      let fullPrompt = P.toANSI 80 (P.red (P.string codeserverPrompt) <> promptString <> fromString prompt)
       line <- Line.getInputLine fullPrompt
       case line of
         Nothing -> pure QuitI
@@ -124,7 +132,6 @@ main ::
   FilePath ->
   Welcome.Welcome ->
   PP.ProjectPathIds ->
-  Config ->
   [Either Event Input] ->
   Runtime.Runtime Symbol ->
   Runtime.Runtime Symbol ->
@@ -135,7 +142,7 @@ main ::
   (PP.ProjectPathIds -> IO ()) ->
   ShouldWatchFiles ->
   IO ()
-main dir welcome ppIds config initialInputs runtime sbRuntime nRuntime codebase serverBaseUrl ucmVersion lspCheckForChanges shouldWatchFiles = Ki.scoped \scope -> do
+main dir welcome ppIds initialInputs runtime sbRuntime nRuntime codebase serverBaseUrl ucmVersion lspCheckForChanges shouldWatchFiles = Ki.scoped \scope -> do
   _ <- Ki.fork scope do
     -- Pre-load the project root in the background so it'll be ready when a command needs it.
     projectRoot <- Codebase.expectProjectBranchRoot codebase ppIds.project ppIds.branch
@@ -210,21 +217,22 @@ main dir welcome ppIds config initialInputs runtime sbRuntime nRuntime codebase 
                 writeIORef pageOutput True
                 pure x
 
-  let foldLine :: Text
-      foldLine = "\n\n---- Anything below this line is ignored by Unison.\n\n"
-  let writeSourceFile :: Text -> Text -> IO ()
-      writeSourceFile fp contents = do
+  let writeSource :: Text -> Text -> Bool -> IO ()
+      writeSource fp contents addFold = do
         path <- Directory.canonicalizePath (Text.unpack fp)
-        prependUtf8 path (contents <> foldLine)
+        prependUtf8
+          path
+          if addFold
+            then contents <> "\n\n---- Anything below this line is ignored by Unison.\n\n"
+            else contents <> "\n\n"
 
   let env =
         Cli.Env
           { authHTTPClient,
             codebase,
-            config,
             credentialManager,
             loadSource = loadSourceFile,
-            writeSource = writeSourceFile,
+            writeSource,
             generateUniqueName = Parser.uniqueBase32Namegen <$> Random.getSystemDRG,
             notify,
             notifyNumbered = \o ->

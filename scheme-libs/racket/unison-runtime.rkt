@@ -30,7 +30,6 @@
   unison/data-info
   unison/chunked-seq
   unison/primops
-  unison/builtin
   unison/primops-generated
   unison/builtin-generated)
 
@@ -68,12 +67,12 @@
   (let ([bs (grab-bytes port)])
     (match (builtin-Value.deserialize (bytes->chunked-bytes bs))
       [(unison-data _ t (list q))
-       (= t ref-either-right:tag)
+       #:when (= t ref-either-right:tag)
        (apply
          values
          (unison-tuple->list (reify-value (unison-quote-val q))))]
-      [else
-        (raise "unexpected input")])))
+      [val
+        (raise (format "unexpected input: ~a " (describe-value val)))])))
 
 (define (natural->bytes/variable n)
   (let rec ([i n] [acc '()])
@@ -118,9 +117,9 @@
 (define ((eval-exn-handler port) rq)
   (request-case rq
     [pure (result) (encode-success result port)]
-    [ref-exception:typelink
+    [ref-exception
       [0 (fail)
-        (control ref-exception:typelink k
+        (control ref-exception k
           (encode-exception fail port))]]))
 
 ; Implements the evaluation mode of operation. First decodes the
@@ -134,33 +133,34 @@
       ([exn:bug? (lambda (e) (encode-error e out))])
 
       (parameterize ([current-command-line-arguments args])
-        (handle [ref-exception:typelink] (eval-exn-handler out)
+        (handle [ref-exception] (eval-exn-handler out)
                 ((termlink->proc main-ref)))))))
 
 ; Uses racket pretty printing machinery to instead generate a file
 ; containing the given code, and which executes the main definition on
 ; loading. This file can then be built with `raco exe`.
-(define (write-module srcf main-ref icode)
+(define (write-module prof srcf main-ref icode)
   (call-with-output-file
     srcf
     (lambda (port)
       (parameterize ([print-as-expression #t])
         (display "#lang racket/base\n\n" port)
 
-        (for ([expr (build-intermediate-module main-ref icode)])
+        (for ([expr (build-intermediate-module #:profile prof main-ref icode)])
           (pretty-print expr port 1)
           (newline port))
         (newline port)))
     #:exists 'replace))
 
 ; Decodes input and writes a module to the specified file.
-(define (do-generate srcf)
+(define (do-generate prof srcf)
   (define-values (icode main-ref) (decode-input (current-input-port)))
-  (write-module srcf main-ref icode))
+  (write-module prof srcf main-ref icode))
 
 (define generate-to (make-parameter #f))
 (define show-version (make-parameter #f))
 (define use-port-num (make-parameter #f))
+(define enable-profiling (make-parameter #f))
 
 (define (handle-command-line)
   (command-line
@@ -177,6 +177,10 @@
        file
        "generate code to <file>"
        (generate-to file)]
+    #:once-each
+    [("--profile")
+     "enable profiling"
+     (enable-profiling #t)]
     #:args remaining
     (list->vector remaining)))
 
@@ -185,7 +189,7 @@
     (current-command-line-arguments sub-args))
   (cond
     [(show-version) (displayln "unison-runtime version 0.0.11")]
-    [(generate-to) (do-generate (generate-to))]
+    [(generate-to) (do-generate (enable-profiling) (generate-to))]
     [(use-port-num)
      (match (string->number (use-port-num))
        [port

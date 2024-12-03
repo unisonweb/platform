@@ -52,7 +52,6 @@ These are listed in alphabetical order.
 | [comonad-5.0.6](https://hackage.haskell.org/package/comonad-5.0.6) | [BSD3](https://hackage.haskell.org/package/comonad-5.0.6/src/LICENSE) |
 | [concurrent-supply-0.1.8](https://hackage.haskell.org/package/concurrent-supply-0.1.8) | [BSD3](https://hackage.haskell.org/package/concurrent-supply-0.1.8/src/LICENSE) |
 | [conduit-1.3.2](https://hackage.haskell.org/package/conduit-1.3.2) | [MIT](https://hackage.haskell.org/package/conduit-1.3.2/src/LICENSE) |
-| [configurator-0.3.0.0](https://hackage.haskell.org/package/configurator-0.3.0.0) | [BSD3](https://hackage.haskell.org/package/configurator-0.3.0.0/src/LICENSE) |
 | [containers-0.6.2.1](https://hackage.haskell.org/package/containers-0.6.2.1) | [BSD3](https://hackage.haskell.org/package/containers-0.6.2.1/src/LICENSE) |
 | [contravariant-1.5.2](https://hackage.haskell.org/package/contravariant-1.5.2) | [BSD3](https://hackage.haskell.org/package/contravariant-1.5.2/src/LICENSE) |
 | [cryptohash-md5-0.11.100.1](https://hackage.haskell.org/package/cryptohash-md5-0.11.100.1) | [BSD3](https://hackage.haskell.org/package/cryptohash-md5-0.11.100.1/src/LICENSE) |

@@ -78,7 +78,9 @@ unsafeParseFileBuiltinsOnly =
     Parser.ParsingEnv
       { uniqueNames = mempty,
         uniqueTypeGuid = \_ -> pure Nothing,
-        names = Builtin.names
+        names = Builtin.names,
+        maybeNamespace = Nothing,
+        localNamespacePrefixedTypesAndConstructors = mempty
       }
 
 unsafeParseFile :: (Monad m) => String -> Parser.ParsingEnv m -> m (UnisonFile Symbol Ann)

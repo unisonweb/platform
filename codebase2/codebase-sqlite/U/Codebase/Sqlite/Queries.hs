@@ -2863,32 +2863,45 @@ before x y =
     selectAncestorsOfY = ancestorSql y
 
 lca :: CausalHashId -> CausalHashId -> Transaction (Maybe CausalHashId)
-lca x y =
-  queryStreamCol (ancestorSql x) \nextX ->
-    queryStreamCol (ancestorSql y) \nextY -> do
-      let getNext = (,) <$> nextX <*> nextY
-          loop2 seenX seenY =
-            getNext >>= \case
-              (Just px, Just py) ->
-                let seenX' = Set.insert px seenX
-                    seenY' = Set.insert py seenY
-                 in if Set.member px seenY'
-                      then pure (Just px)
-                      else
-                        if Set.member py seenX'
-                          then pure (Just py)
-                          else loop2 seenX' seenY'
-              (Nothing, Nothing) -> pure Nothing
-              (Just px, Nothing) -> loop1 nextX seenY px
-              (Nothing, Just py) -> loop1 nextY seenX py
-          loop1 getNext matches v =
-            if Set.member v matches
-              then pure (Just v)
-              else
-                getNext >>= \case
-                  Just v -> loop1 getNext matches v
-                  Nothing -> pure Nothing
-      loop2 (Set.singleton x) (Set.singleton y)
+lca alice bob =
+  queryMaybeCol
+    [sql|
+      WITH RECURSIVE history_one (causal_id) AS (
+        SELECT :alice
+        UNION
+        SELECT causal_parent.parent_id
+        FROM history_one
+          JOIN causal_parent ON history_one.causal_id = causal_parent.causal_id
+      ),
+      history_two (causal_id) AS (
+        SELECT :bob
+        UNION
+        SELECT causal_parent.parent_id
+        FROM history_two
+          JOIN causal_parent ON history_two.causal_id = causal_parent.causal_id
+      ),
+      common_ancestors (causal_id) AS (
+        SELECT causal_id
+        FROM history_one
+        INTERSECT
+        SELECT causal_id
+        FROM history_two
+        ORDER BY causal_id DESC
+      )
+      SELECT causal_id
+      FROM common_ancestors
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM causal_parent
+        WHERE causal_parent.parent_id = common_ancestors.causal_id
+          AND EXISTS (
+            SELECT 1
+            FROM common_ancestors c
+            WHERE c.causal_id = causal_parent.causal_id
+          )
+      )
+      LIMIT 1
+    |]
 
 ancestorSql :: CausalHashId -> Sql
 ancestorSql h =

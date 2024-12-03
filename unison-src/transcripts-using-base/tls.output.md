@@ -1,6 +1,6 @@
 # Tests for TLS builtins
 
-``` unison
+``` unison :hide
 -- generated with:
 -- openssl req -newkey rsa:2048 -subj '/CN=test.unison.cloud/O=Unison/C=US' -nodes -keyout key.pem -x509 -days 3650 -out cert.pem
 
@@ -9,6 +9,10 @@ self_signed_key_pem="-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAA
 self_signed_cert_pem2 = "-----BEGIN CERTIFICATE-----\nMIIDVTCCAj2gAwIBAgIUdMNT5sYMfDJYH48Rh8LrlN+5wwgwDQYJKoZIhvcNAQEL\nBQAwOjEaMBgGA1UEAwwRdGVzdC51bmlzb24uY2xvdWQxDzANBgNVBAoMBlVuaXNv\nbjELMAkGA1UEBhMCVVMwHhcNMjIwMTI0MjAxNzQ2WhcNMzIwMTIyMjAxNzQ2WjA6\nMRowGAYDVQQDDBF0ZXN0LnVuaXNvbi5jbG91ZDEPMA0GA1UECgwGVW5pc29uMQsw\nCQYDVQQGEwJVUzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAO1XQuqT\n2LkMokZ7nPAMW7EfFLGE7KAK6romXjGieyOXiF29fFRSK6rEYZu/jH0dK9q+kfDK\nuIaIhFCgiNqdaI0r0mnpUNhY68SudMb/5F+bW8KhQpC+fyUOsP2SdI9ShPPcLPsl\nLwUT+usVHchHJdrSClea8jBfXpJ4JL8tv8t72jUcmH0OuTFXKgWrfOVfU4TQBVXR\nrTXggME2muoshPCJXPIM9CQ/ytskX1Y8jlp/Nbz7f6/lRqcgWSc449omXyl/eCao\njmDx/GT9JIyU+Cct3UWLuH3SAHKB2knDd2jf9kDUg6+YVD4tcTXG2pTUDLd/cC3c\nOImBPE/ybAFh210CAwEAAaNTMFEwHQYDVR0OBBYEFIfwxpuqtqxfCpaJGW32jH2J\nNbnYMB8GA1UdIwQYMBaAFIfwxpuqtqxfCpaJGW32jH2JNbnYMA8GA1UdEwEB/wQF\nMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAKh7EDo5XjSd6J190WGH3V8v49J0Sh8M\nP7APe1eL8eTkW1Vh7/QCOhRpkSnyCz2OxJjjeFVAsCO3aLxlRM6wQZQKXu45iM2U\niPmv7ECS5xUn7LqRZd/JG1P6jvRPtBC1+oqA+NNDe27wzQp3rWyDG3pWZga8jJfW\nq+2xQ+s6GfzszxYZ/8MLn4zaUSymnOA+70yQ8czXkSO7MT2jJ7QDX8jxuJPZZARW\nuXeAYPRqD+b4MjdBATEtxgPTDWEi8gtfHFGUgInFhD4hOu+D3NLiE6lfR5brUqpQ\nZ4v8prCI8OjGSUx1dIJhqQHB5O0vdaxO0hkVdfqDVE93UrGBPwBRDlo=\n-----END CERTIFICATE-----"
 
 not_a_cert = "-----BEGIN SCHERMIFICATE-----\n-----END SCHERMIFICATE-----"
+```
+
+``` ucm :hide
+scratch/main> add
 ```
 
 # Using an alternative certificate store
@@ -27,26 +31,25 @@ this_should_not_work=match (decodeCert.impl (toUtf8 not_a_cert) with
 what_should_work _ = this_should_work ++ this_should_not_work
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       this_should_not_work : [Result]
       this_should_work     : [Result]
       what_should_work     : ∀ _. _ -> [Result]
-
 ```
+
 ``` ucm
 scratch/main> add
 
   ⍟ I've added these definitions:
-  
+
     this_should_not_work : [Result]
     this_should_work     : [Result]
     what_should_work     : ∀ _. _ -> [Result]
@@ -54,15 +57,15 @@ scratch/main> add
 scratch/main> io.test what_should_work
 
     New test results:
-  
+
     1. what_should_work   ◉ succesfully decoded self_signed_pem
                           ◉ failed
-  
-  ✅ 2 test(s) passing
-  
-  Tip: Use view 1 to view the source of a test.
 
+  ✅ 2 test(s) passing
+
+  Tip: Use view 1 to view the source of a test.
 ```
+
 Test handshaking a client/server a local TCP connection using our
 self-signed cert.
 
@@ -217,14 +220,13 @@ testCNReject _ =
   runTest test
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       serverThread          : MVar Nat -> Text -> '{IO} ()
@@ -235,13 +237,13 @@ testCNReject _ =
                               -> MVar Nat
                               -> '{IO, Exception} Text
       testConnectSelfSigned : '{IO} [Result]
-
 ```
+
 ``` ucm
 scratch/main> add
 
   ⍟ I've added these definitions:
-  
+
     serverThread          : MVar Nat -> Text -> '{IO} ()
     testCAReject          : '{IO} [Result]
     testCNReject          : '{IO} [Result]
@@ -254,31 +256,30 @@ scratch/main> add
 scratch/main> io.test testConnectSelfSigned
 
     New test results:
-  
+
     1. testConnectSelfSigned   ◉ should have reaped what we've sown
-  
+
   ✅ 1 test(s) passing
-  
+
   Tip: Use view 1 to view the source of a test.
 
 scratch/main> io.test testCAReject
 
     New test results:
-  
+
     1. testCAReject   ◉ correctly rejected self-signed cert
-  
+
   ✅ 1 test(s) passing
-  
+
   Tip: Use view 1 to view the source of a test.
 
 scratch/main> io.test testCNReject
 
     New test results:
-  
-    1. testCNReject   ◉ correctly rejected self-signed cert
-  
-  ✅ 1 test(s) passing
-  
-  Tip: Use view 1 to view the source of a test.
 
+    1. testCNReject   ◉ correctly rejected self-signed cert
+
+  ✅ 1 test(s) passing
+
+  Tip: Use view 1 to view the source of a test.
 ```

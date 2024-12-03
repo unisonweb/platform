@@ -13,7 +13,6 @@ import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
 import Unison.Cli.NamesUtils qualified as Cli
-import Unison.Cli.PrettyPrintUtils qualified as Cli
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Editor.HandleInput.Load (EvalMode (Native, Permissive), evalUnisonFile)
 import Unison.Codebase.Editor.Output qualified as Output
@@ -25,7 +24,9 @@ import Unison.Name (Name)
 import Unison.Parser.Ann (Ann (External))
 import Unison.Prelude
 import Unison.PrettyPrintEnv qualified as PPE
+import Unison.PrettyPrintEnv.Names qualified as PPE
 import Unison.PrettyPrintEnvDecl qualified as PPED
+import Unison.PrettyPrintEnvDecl.Names qualified as PPED
 import Unison.Reference qualified as Reference
 import Unison.Result qualified as Result
 import Unison.Symbol (Symbol)
@@ -41,6 +42,7 @@ import Unison.UnisonFile (TypecheckedUnisonFile)
 import Unison.UnisonFile qualified as UF
 import Unison.UnisonFile.Names qualified as UF
 import Unison.Util.Defns (Defns (..))
+import Unison.Util.Recursion
 import Unison.Var qualified as Var
 
 handleRun :: Bool -> HQ.HashQualified Name -> [String] -> Cli ()
@@ -51,7 +53,7 @@ handleRun native main args = do
     pure (uf, otyp)
   names <- Cli.currentNames
   let namesWithFileDefinitions = UF.addNamesFromTypeCheckedUnisonFile unisonFile names
-  pped <- Cli.prettyPrintEnvDeclFromNames namesWithFileDefinitions
+  let pped = PPED.makePPED (PPE.hqNamer 10 namesWithFileDefinitions) (PPE.suffixifyByHash namesWithFileDefinitions)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   let mode | native = Native | otherwise = Permissive
   (_, xs) <- evalUnisonFile mode suffixifiedPPE unisonFile args
@@ -83,12 +85,14 @@ getTerm main =
   getTerm' main >>= \case
     NoTermWithThatName -> do
       mainType <- Runtime.mainType <$> view #runtime
-      pped <- Cli.currentPrettyPrintEnvDecl
+      names <- Cli.currentNames
+      let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
       let suffixifiedPPE = PPED.suffixifiedPPE pped
       Cli.returnEarly $ Output.NoMainFunction main suffixifiedPPE [mainType]
     TermHasBadType ty -> do
       mainType <- Runtime.mainType <$> view #runtime
-      pped <- Cli.currentPrettyPrintEnvDecl
+      names <- Cli.currentNames
+      let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
       let suffixifiedPPE = PPED.suffixifiedPPE pped
       Cli.returnEarly $ Output.BadMainFunction "run" main ty suffixifiedPPE [mainType]
     GetTermSuccess x -> pure x
@@ -162,7 +166,8 @@ synthesizeForce tl typeOfFunc = do
         Typechecker.Env
           { ambientAbilities = [DD.exceptionType External, Type.builtinIO External],
             typeLookup = mempty {TypeLookup.typeOfTerms = Map.singleton ref typeOfFunc} <> tl,
-            termsByShortname = Map.empty
+            termsByShortname = Map.empty,
+            topLevelComponents = Map.empty
           }
   case Result.runResultT
     ( Typechecker.synthesize
@@ -197,7 +202,7 @@ stripUnisonFileReferences :: TypecheckedUnisonFile Symbol a -> Term Symbol () ->
 stripUnisonFileReferences unisonFile term =
   let refMap :: Map Reference.Id Symbol
       refMap = Map.fromList . map (\(sym, (_, refId, _, _, _)) -> (refId, sym)) . Map.toList . UF.hashTermsId $ unisonFile
-      alg () = \case
+      alg (ABT.Term' _ () abt) = case abt of
         ABT.Var x -> ABT.var x
         ABT.Cycle x -> ABT.cycle x
         ABT.Abs v x -> ABT.abs v x
@@ -205,7 +210,7 @@ stripUnisonFileReferences unisonFile term =
           Term.Ref ref
             | Just var <- (\k -> Map.lookup k refMap) =<< Reference.toId ref -> ABT.var var
           x -> ABT.tm x
-   in ABT.cata alg term
+   in cata alg term
 
 magicMainWatcherString :: String
 magicMainWatcherString = "main"

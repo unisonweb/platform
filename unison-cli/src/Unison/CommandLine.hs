@@ -6,7 +6,6 @@ module Unison.CommandLine
   ( allow,
     parseInput,
     prompt,
-    watchConfig,
     watchFileSystem,
   )
 where
@@ -15,9 +14,6 @@ import Control.Concurrent (forkIO, killThread)
 import Control.Lens hiding (aside)
 import Control.Monad.Except
 import Control.Monad.Trans.Except
-import Data.Configurator (autoConfig, autoReload)
-import Data.Configurator qualified as Config
-import Data.Configurator.Types (Config, Worth (..))
 import Data.List (isPrefixOf, isSuffixOf)
 import Data.Map qualified as Map
 import Data.Semialign qualified as Align
@@ -50,22 +46,11 @@ import Unison.Util.TQueue qualified as Q
 import UnliftIO.STM
 import Prelude hiding (readFile, writeFile)
 
-disableWatchConfig :: Bool
-disableWatchConfig = False
-
 allow :: FilePath -> Bool
 allow p =
   -- ignore Emacs .# prefixed files, see https://github.com/unisonweb/unison/issues/457
   not (".#" `isPrefixOf` takeFileName p)
     && (isSuffixOf ".u" p || isSuffixOf ".uu" p)
-
-watchConfig :: FilePath -> IO (Config, IO ())
-watchConfig path =
-  if disableWatchConfig
-    then pure (Config.empty, pure ())
-    else do
-      (config, t) <- autoReload autoConfig [Optional path]
-      pure (config, killThread t)
 
 watchFileSystem :: Q.TQueue Event -> FilePath -> IO (IO ())
 watchFileSystem q dir = do

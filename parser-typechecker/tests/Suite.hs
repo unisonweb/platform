@@ -9,13 +9,11 @@ import System.IO
 import System.IO.CodePage (withCP65001)
 import Unison.Core.Test.Name qualified as Name
 import Unison.Test.ABT qualified as ABT
-import Unison.Test.ANF qualified as ANF
 import Unison.Test.Codebase.Branch qualified as Branch
 import Unison.Test.Codebase.Causal qualified as Causal
 import Unison.Test.Codebase.Path qualified as Path
 import Unison.Test.CodebaseInit qualified as CodebaseInit
 import Unison.Test.DataDeclaration qualified as DataDeclaration
-import Unison.Test.MCode qualified as MCode
 import Unison.Test.Referent qualified as Referent
 import Unison.Test.Syntax.FileParser qualified as FileParser
 import Unison.Test.Syntax.TermParser qualified as TermParser
@@ -25,7 +23,6 @@ import Unison.Test.Type qualified as Type
 import Unison.Test.Typechecker qualified as Typechecker
 import Unison.Test.Typechecker.Context qualified as Context
 import Unison.Test.Typechecker.TypeError qualified as TypeError
-import Unison.Test.UnisonSources qualified as UnisonSources
 import Unison.Test.Util.Relation qualified as Relation
 import Unison.Test.Util.Text qualified as Text
 import Unison.Test.Var qualified as Var
@@ -38,7 +35,6 @@ test =
       Type.test,
       TypeError.test,
       TypePrinter.test,
-      UnisonSources.test,
       FileParser.test,
       DataDeclaration.test,
       Text.test,
@@ -47,8 +43,6 @@ test =
       Causal.test,
       Referent.test,
       ABT.test,
-      ANF.test,
-      MCode.test,
       Var.test,
       Typechecker.test,
       Context.test,

@@ -111,6 +111,7 @@ import Unison.Codebase.Branch qualified as Branch
 import Unison.Codebase.Branch.Names qualified as Branch
 import Unison.Codebase.Editor.DisplayObject
 import Unison.Codebase.Editor.DisplayObject qualified as DisplayObject
+import Unison.Codebase.Execute qualified as Codebase
 import Unison.Codebase.Path (Path)
 import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.Runtime qualified as Rt
@@ -801,7 +802,7 @@ evalDocRef rt codebase r = do
     eval errsVar (Term.amap (const mempty) -> tm) = do
       -- We use an empty ppe for evalutation, it's only used for adding additional context to errors.
       let evalPPE = PPE.empty
-      let codeLookup = Codebase.toCodeLookup codebase
+      let codeLookup = Codebase.codebaseToCodeLookup codebase
       let cache r = fmap Term.unannotate <$> Codebase.runTransaction codebase (Codebase.lookupWatchCache codebase r)
       r <- fmap hush . liftIO $ Rt.evaluateTerm' codeLookup cache evalPPE rt tm
       -- Only cache watches when we're not in readonly mode

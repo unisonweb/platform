@@ -7,6 +7,7 @@
 #!racket/base
 (require (except-in racket false true unit any)
          racket/vector
+         racket/hash
          unison/boot
          unison/boot-generated
          (only-in unison/bytevector bytevector->base32-string)
@@ -41,12 +42,12 @@
   builtin-crypto.hash:termlink
   builtin-crypto.hmac:termlink
 
-  unison-POp-CACH
-  unison-POp-LOAD
-  unison-POp-LKUP
+  builtin-Value.load
+  builtin-Value.load:termlink
+  builtin-Code.cache_
+  builtin-Code.cache_:termlink
 
   ; some exports of internal machinery for use elsewhere
-  gen-code
   reify-value
   reflect-value
   termlink->name
@@ -85,9 +86,7 @@
     [(unison-data _ t (list as h tms))
      #:when (= t ref-schemeterm-handle:tag)
      `(handle
-        ,(map
-           (lambda (tx) (text->linkname tx))
-           (chunked-list->list as))
+        ,(map text->ident (chunked-list->list as))
         ,(text->ident h)
         ,@(map decode-term (chunked-list->list tms)))]
     [(unison-data _ t (list hd sc cs))
@@ -125,6 +124,22 @@
       (raise
         (format "decode-binding: unimplemented case: ~a" bn))]))
 
+; This decodes the internal unison SchemeIntermed structure for
+; representing generated declarations of intermediate code. The
+; structure is just a pair of a name and a SchemeTerm representing
+; the code.
+(define (decode-intermediate im)
+  (match im
+    [(unison-data _ t (list name tm))
+     #:when (= t ref-schemeintermed-interdef:tag)
+     `(define ,(text->ident name #:suffix ":code")
+        ,(decode-term tm))]
+    [else
+     (raise-argument-error
+       'decode-intermediate
+       "scheme-intermediate"
+       im)]))
+
 (define (decode-hints hs)
   (define (hint->sym t)
     (cond
@@ -140,18 +155,35 @@
       [(unison-data _ t (list))
        (values def (cons (hint->sym t) out))])))
 
+(define (decode-local lo)
+  (match lo
+    [(unison-data _ t (list))
+     #:when (= t ref-optional-none:tag)
+     0]
+    [(unison-data _ t (list n))
+     #:when (= t ref-optional-some:tag)
+     n]))
+
 (define (decode-syntax dfn)
   (match dfn
-    [(unison-data _ t (list nm hs vs bd))
+    [(unison-data _ t (list nm lo hs vs bd))
      #:when (= t ref-schemedefn-define:tag)
      (let-values
        ([(head) (map text->ident
                   (cons nm (chunked-list->list vs)))]
+        [(ln) (decode-local lo)]
         [(def hints) (decode-hints (chunked-list->list hs))]
         [(body) (decode-term bd)])
        (if (null? hints)
-         (list def head body)
-         (list def '#:hints hints head body)))]
+         (list def '#:local ln head body)
+         (list def '#:local ln '#:hints hints head body)))]
+    [(unison-data _ t (list nm hs bd))
+     #:when (= t ref-schemedefn-defineval:tag)
+     (let-values
+       ([(head) (text->ident nm)]
+        [(def hints) (decode-hints (chunked-list->list hs))]
+        [(body) (decode-term bd)])
+       (list def '#:hints (cons 'value hints) (list head) body))]
     [(unison-data _ t (list nm bd))
      #:when (= t ref-schemedefn-alias:tag)
      (list 'define (text->ident nm) (decode-term bd))]
@@ -169,7 +201,7 @@
   (let* ([st (chunked-string->string tx)])
     (string->symbol (string-append st ":typelink"))))
 
-(define (text->ident tx)
+(define (text->ident tx #:suffix [suffix ""])
   (let* ([st (chunked-string->string tx)]
          [n (string->number st)]
          [c (string->char st)])
@@ -178,7 +210,7 @@
       [(equal? st "#t") #t]
       [c c]
       [n n]
-      [else (string->symbol st)])))
+      [else (string->symbol (string-append st suffix))])))
 
 (define (decode-ref rf)
   (match rf
@@ -253,15 +285,6 @@
      (raise (string-append
               "termlink-bytes: called with constructor link"))]))
 
-(define (termlink->reference rn)
-  (match rn
-    [(unison-termlink-builtin name)
-     (ref-reference-builtin
-       (string->chunked-string name))]
-    [(unison-termlink-derived bs i)
-     (ref-reference-derived (ref-id-id bs i))]
-    [else (raise "termlink->reference: con case")]))
-
 (define (group-reference gr)
   (data-case gr
     [0 (r _) r]))
@@ -271,14 +294,18 @@
     (namespace-require ''#%kernel ns)
     ns))
 
-(define runtime-module-map (make-hash))
+(define runtime-module-term-map (make-hash))
+(define runtime-module-type-map (make-hash))
 
 (define (reflect-derived bs i)
   (data ref-reference:typelink ref-reference-derived:tag
     (data ref-id:typelink ref-id-id:tag bs i)))
 
 (define (function->groupref f)
-  (match (lookup-function-link f)
+  (reflect-groupref (unison-closure-ref (build-closure f))))
+
+(define (link->groupref ln)
+  (match ln
     [(unison-termlink-derived h i)
      (ref-groupref-group
        (ref-reference-derived
@@ -288,7 +315,7 @@
      (ref-groupref-group
        (ref-reference-builtin (string->chunked-string name))
        0)]
-    [else (raise "function->groupref: con case")]))
+    [else (raise "link->groupref: con case")]))
 
 (define (reify-vlit vl)
   (match vl
@@ -334,11 +361,6 @@
     [(unison-data _ t (list r i))
      #:when (= t ref-groupref-group:tag)
      (cons (reference->typelink r) i)]))
-
-(define (reflect-groupref rt)
-  (match rt
-    [(cons l i)
-     (ref-groupref-group (typelink->reference l) i)]))
 
 (define (parse-continuation orig k0 vs0)
   (let rec ([k k0] [vs vs0] [frames '()])
@@ -402,7 +424,7 @@
     [(unison-data _ t (list gr bs0))
      #:when (= t ref-value-partial:tag)
      (let ([bs (map reify-value (chunked-list->list bs0))]
-           [proc (resolve-proc gr)])
+           [proc (build-closure (resolve-proc gr))])
        (struct-copy unison-closure proc [env bs]))]
     [(unison-data _ t (list vl))
      #:when (= t ref-value-vlit:tag)
@@ -449,6 +471,18 @@
      (ref-reference-builtin (string->chunked-string "Int"))]
     [else
       (ref-reference-builtin (string->chunked-string "Float"))]))
+
+(define (reflect-groupref gr)
+  (match gr
+    [(unison-groupref-derived h i l)
+     (ref-groupref-group
+       (ref-reference-derived
+         (ref-id-id h i))
+       l)]
+    [(unison-groupref-builtin name)
+     (ref-groupref-group
+       (ref-reference-builtin (string->chunked-string name))
+       0)]))
 
 (define (reflect-value v)
   (match v
@@ -511,10 +545,11 @@
               (map typelink->reference refs)
               (reflect-handlers hs))
             (append args vs))]))]
-    [(unison-closure arity f as)
+    [(unison-closure gr f as)
      (ref-value-partial
-       (function->groupref f)
+       (reflect-groupref gr)
        (list->chunked-list (map reflect-value as)))]
+    [(? procedure?) (reflect-value (build-closure v))]
     [(unison-data rf t fs)
      (ref-value-data
        (reflect-typelink rf)
@@ -524,25 +559,23 @@
 (define (check-sandbox-ok ok l)
   (remove* ok (check-sandbox l)))
 
-(define (sandbox-proc ok f)
-  (check-sandbox-ok ok (lookup-function-link f)))
-
 (define (sandbox-scheme-value ok v)
   (match v
     [(? chunked-list?)
      (for/fold ([acc '()]) ([e (in-chunked-list v)])
-       (append (sandbox-value ok e) acc))]
-    [(unison-closure arity f as)
-     (for/fold ([acc (sandbox-proc ok f)]) ([a (in-list as)])
+       (append (sandbox-scheme-value ok e) acc))]
+    [(unison-closure gr f as)
+     (define link (groupref->termlink gr))
+     (for/fold ([acc (check-sandbox-ok ok link)]) ([a (in-list as)])
        (append (sandbox-scheme-value ok a) acc))]
-    [(? procedure?) (sandbox-proc ok v)]
+    [(? procedure?) (sandbox-scheme-value ok (build-closure v))]
     [(unison-data rf t fs)
      (for/fold ([acc '()]) ([e (in-list fs)])
        (append (sandbox-scheme-value ok e) acc))]
     [else '()]))
 
 (define (check-known l acc)
-  (if (need-dependency? l) (cons l acc) acc))
+  (if (need-code? l) (cons l acc) acc))
 
 ; check sandboxing information for an internal.runtime.Value
 (define (sandbox-value ok v)
@@ -604,77 +637,180 @@
     (chunked-list->list
       (gen-typelink-defns links))))
 
-(define (gen-code args)
-  (let-values ([(tl co) (splat-upair args)])
-    (match tl
-      [(unison-termlink-con r t)
-       (raise "CACH: trying to add code for data constructor")]
-      [(unison-termlink-builtin name)
-       (raise "CACH: trying to add code for a builtin")]
-      [(unison-termlink-derived bs i)
-       (let* ([sg (unison-code-rep co)]
-              [r (reflect-derived bs i)]
-              [ds (cons
-                    (gen-link-def r)
-                    (chunked-list->list (gen-scheme r sg)))]
-              [dc (decode-term (gen-link-decl r))])
-         (append (map decode-syntax ds) (list dc)))])))
+(define (gen-code-decl r)
+  (define linkstr (chunked-string->string (ref-typelink-name r)))
+  (define name:link
+    (string->symbol (string-replace linkstr "typelink" "termlink")))
+  (define name:code
+    (string->symbol (string-replace linkstr "typelink" "code")))
+
+  `(declare-code ,name:link (unison-code ,name:code)))
+
+; Given a termlink, code pair, generates associated definition
+; and declaration code. Returns multiple results.
+;
+; This is the runtime loading version. It isn't necessary to generate
+; code related definitions, because we already have the code values
+; to add directly to the cache.
+(define (gen-code:runtime arities tl co)
+  (match tl
+    [(unison-termlink-derived bs i)
+     (define sg (unison-code-rep co))
+     (define r (reflect-derived bs i))
+     (define ln (decode-syntax (gen-link-def r)))
+     (define ds (chunked-list->list (gen-scheme arities r sg)))
+     (define dc (decode-term (gen-link-decl r)))
+
+     (values ln dc (map decode-syntax ds))]
+    [else
+     (raise-argument-error
+       'gen-code:runtime
+       "unison-termlink-derived?"
+       tl)]))
+
+; Given a termlink, code pair, generates associated definition
+; and declaration code. Returns multiple results.
+;
+; This is the version for compiling to intermediate code. It generates
+; code declarations that will recreate the code values in the
+; compiled executable.
+(define (gen-code:intermed arities tl co)
+  (match tl
+    [(unison-termlink-derived bs i)
+     (define sg (unison-code-rep co))
+     (define r (reflect-derived bs i))
+     (define ln (decode-syntax (gen-link-def r)))
+     (define dc (decode-term (gen-link-decl r)))
+     (define cv (decode-intermediate (gen-code-value r sg)))
+     (define cd (gen-code-decl r))
+     (define ds (chunked-list->list (gen-scheme arities r sg)))
+
+     (values ln dc cv cd (map decode-syntax ds))]
+    [else
+     (raise-argument-error
+       'gen-code:intermed
+       "unison-termlink-derived?"
+       tl)]))
+
+; Converts a link->code map into an appropriately sorted list
+; for code generation. It's necessary to topologically sort
+; the code so that values occur after the things they reference.
+(define (codemap->link-order defs)
+  (define input
+    (for/list ([(tl co) defs])
+      (unison-tuple
+        (termlink->reference tl)
+        (unison-code-rep co))))
+
+  (define result (topsort-code-refs (list->chunked-list input)))
+
+  (for/list ([r (in-chunked-list result)])
+    (reference->termlink r)))
+
+; Given a list of termlink, code pairs, returns multiple lists
+; of definitions and declarations. The lists are returned as
+; multiple results, each one containing a particular type of
+; definition.
+;
+; This is the version for compiling to runtime code.
+(define (gen-codes:runtime arities defs)
+  (for/lists (lndefs lndecs dfns)
+             ([tl (codemap->link-order defs)])
+    (gen-code:runtime arities tl (hash-ref defs tl))))
+
+; Given a list of termlink, code pairs, returns multiple lists
+; of definitions and declarations. The lists are returned as
+; multiple results, each one containing a particular type of
+; definition.
+;
+; This is the version for compiling to intermediate code.
+(define (gen-codes:intermed arities defs)
+  (for/lists (lndefs lndecs codefs codecls dfns)
+             ([tl (codemap->link-order defs)])
+      (gen-code:intermed arities tl (hash-ref defs tl))))
 
 (define (flatten ls)
   (cond
     [(null? ls) '()]
     [else (append (car ls) (flatten (cdr ls)))]))
 
-(define module-count 0)
+(define module-count (box 0))
 
 (define (fresh-module-name)
-  (let ([n module-count])
-    (set! module-count (+ n 1))
-    (string-append "runtime-module-" (number->string n))))
+  (let* ([n (unbox module-count)]
+         [sn (+ n 1)])
+    (if (box-cas! module-count n sn)
+      (string-append "runtime-module-" (number->string n))
+      (fresh-module-name))))
 
 (define (generate-module-name links)
-  (if (null? links)
-    (raise "could not generate module name for dynamic code")
-    (let* ([top (car links)]
-           [bs (termlink-bytes top)]
-           [ebs (fresh-module-name)])
-      (if (hash-has-key? runtime-module-map bs)
-        (generate-module-name (cdr links))
-        (string->symbol ebs)))))
+  (string->symbol (fresh-module-name)))
 
 (define (register-code udefs)
-  (for-each
-    (lambda (p)
-      (let-values ([(ln co) (splat-upair p)])
-        (declare-code ln co)))
-    udefs))
+  (for ([(ln co) udefs])
+    (declare-code ln co)))
 
-(define (add-module-associations links mname)
-  (for-each
-    (lambda (link)
-      (let ([bs (termlink-bytes link)])
-        (if (hash-has-key? runtime-module-map bs)
-          #f
-          (hash-set! runtime-module-map bs mname))))
-    links))
+(define (runtime-code-loaded? link)
+  (hash-has-key? runtime-module-term-map (termlink-bytes link)))
 
-(define (need-dependency? l)
-  (let ([ln (if (unison-data? l) (reference->termlink l) l)])
-    (and (unison-termlink-derived? ln) (not (have-code? ln)))))
+(define (add-module-term-associations links mname)
+  (for ([link links])
+    (define bs (termlink-bytes link))
+    (unless (hash-has-key? runtime-module-term-map bs)
+      (hash-set! runtime-module-term-map bs mname))))
+
+(define (add-module-type-associations links mname)
+  (for ([link links])
+    (unless (hash-has-key? runtime-module-type-map link)
+      (hash-set! runtime-module-type-map link mname))))
+
+(define ((assoc-raise name l))
+  (raise-argument-error name "declared link" l))
+
+(define (termlink->module link
+                          [default (assoc-raise
+                                     'termlink->module
+                                     (describe-value link))])
+  (termbytes->module (termlink-bytes link) default))
+
+(define (termbytes->module bs
+                           [default (assoc-raise
+                                      'termbytes->module
+                                      (describe-hash bs))])
+  (hash-ref runtime-module-term-map bs default))
+
+; Resolves the module in which a typelink is declared. Using a
+; canonical typelink is important for abilities, because the
+; continuation mechanism uses eq? to compare them. This should
+; only be a concern for code, though.
+(define (typelink->module link
+                          [default (assoc-raise
+                                     'module-type-association
+                                     (describe-value link))])
+  (hash-ref runtime-module-type-map link default))
+
+(define (need-code? l)
+  (define ln (if (unison-data? l) (reference->termlink l) l))
+  (and (unison-termlink-derived? ln) (not (have-code? ln))))
+
+(define (need-code-loaded? l)
+  (define ln (if (unison-data? l) (reference->termlink l) l))
+  (and (unison-termlink-derived? ln) (not (runtime-code-loaded? ln))))
+
+(define (have-code-loaded? ln)
+  (and (unison-termlink-derived? ln) (runtime-code-loaded? ln)))
+
+(define (need-typelink? l)
+  (let ([ln (if (unison-data? l) (reference->typelink l) l)])
+    (not (hash-has-key? runtime-module-type-map ln))))
 
 (define (resolve-builtin nm)
-  (dynamic-require
-    'unison/primops
-    nm
-    (lambda ()
-      (dynamic-require
-        'unison/simple-wrappers
-        nm))))
+  (dynamic-require 'unison/primops nm))
 
 (define (termlink->proc tl)
   (match tl
     [(unison-termlink-derived bs i)
-     (let ([mname (hash-ref runtime-module-map bs)])
+     (let ([mname (hash-ref runtime-module-term-map bs)])
        (parameterize ([current-namespace runtime-namespace])
          (dynamic-require `(quote ,mname) (termlink->name tl))))]
     [(unison-termlink-builtin name)
@@ -690,7 +826,7 @@
          (string->symbol (string-append "builtin-" tx))))]
     [1 (bs i)
      (let ([sym (group-ref-sym gr)]
-           [mname (hash-ref runtime-module-map bs)])
+           [mname (termbytes->module bs)])
        (parameterize ([current-namespace runtime-namespace])
          (dynamic-require `(quote ,mname) sym)))]))
 
@@ -698,29 +834,67 @@
 ; This expects to receive a list of termlink, code pairs, and
 ; generates a scheme module that contains the corresponding
 ; definitions.
-(define (build-intermediate-module primary dfns0)
-  (let* ([udefs (chunked-list->list dfns0)]
-         [pname (termlink->name primary)]
-         [tmlinks (map ufst udefs)]
-         [codes (map usnd udefs)]
-         [tylinks (typelink-deps codes)]
-         [sdefs (flatten (map gen-code udefs))])
-    `((require unison/boot
-               unison/data-info
-               unison/primops
-               unison/primops-generated
-               unison/builtin-generated
-               unison/simple-wrappers
-               unison/compound-wrappers)
+(define (build-intermediate-module #:profile [profile? #f] primary dfns0)
+  (define udefs
+    (for/hash ([p (in-chunked-list dfns0)]
+               #:when (need-code-loaded? (ufst p)))
+      (splat-upair p)))
+  (define-values (tmlinks codes arities)
+    (for/lists (ts cs as)
+               ([(tl co) udefs])
+               (values tl co (arity-tuple tl co))))
 
-      ,@(typelink-defns-code tylinks)
+  (define pname (termlink->name primary))
+  (define tylinks (typelink-deps codes))
 
-      ,@sdefs
+  (define-values
+    (lndefs lndecs codefs codecls dfns)
+    (gen-codes:intermed (list->chunked-list arities) udefs))
 
-      (handle [ref-exception:typelink] top-exn-handler
-              (,pname #f)))))
+  `((require unison/boot
+             unison/data
+             unison/data-info
+             unison/primops
+             unison/primops-generated
+             unison/builtin-generated
+             ,@(if profile? '(profile profile/render-text) '()))
 
-(define (build-runtime-module mname tylinks tmlinks defs)
+    ,@(typelink-defns-code tylinks)
+
+    ; termlink definitions
+    ,@lndefs
+
+    ; procedure definitions
+    ,@(flatten dfns)
+
+    ; code definitions
+    ,@codefs
+
+    ; code declarations
+    ,@codecls
+
+    ,(if profile?
+       `(profile
+          (handle [ref-exception] top-exn-handler (,pname #f))
+          #:threads #t
+          #:periodic-renderer (list 60.0 render))
+       `(handle [ref-exception] top-exn-handler (,pname #f)))))
+
+(define (extra-requires tyrefs tmrefs)
+  (define tmreqs
+    (for/list ([l tmrefs]
+               #:when (unison-termlink-derived? l))
+      (termlink->module l)))
+
+  (define tyreqs
+    (for/list ([l (map reference->typelink tyrefs)]
+               #:when (unison-typelink-derived? l))
+      (typelink->module l #f)))
+
+  (remove #f (remove-duplicates (append tmreqs tyreqs))))
+
+
+(define (build-runtime-module mname reqs tylinks tmlinks defs)
   (define (provided-tylink r)
     (string->symbol
       (chunked-string->string
@@ -734,8 +908,7 @@
               unison/primops
               unison/primops-generated
               unison/builtin-generated
-              unison/simple-wrappers
-              unison/compound-wrappers)
+              ,@(map (lambda (s) `(quote ,s)) reqs))
 
      (provide
        ,@tynames
@@ -745,60 +918,194 @@
 
      ,@defs))
 
-(define (add-runtime-module mname tylinks tmlinks defs)
-  (eval (build-runtime-module mname tylinks tmlinks defs)
+(define (add-runtime-module mname reqs tylinks tmlinks defs)
+  (eval (build-runtime-module mname reqs tylinks tmlinks defs)
         runtime-namespace))
 
 (define (code-dependencies co)
-  (chunked-list->list
-    (group-term-dependencies
-      (unison-code-rep co))))
+  (map reference->termlink
+    (chunked-list->list
+      (group-term-dependencies
+        (unison-code-rep co)))))
 
+; Extracts the main arity of a code value. Only the main entry
+; is called from other combinators.
+(define (code-arity co) (group-arity (unison-code-rep co)))
+
+; This adds a synchronization barrier around code loading. It uses
+; a lock associated with the namespace, so this it will also be safe
+; with regard to concurrent instantiations of any modules that get
+; defined.
+;
+; It's possible that this could be made more fine grained. We were
+; running into two issues in practice:
+;
+;   1. It was possible for a module to think it needs to declare
+;      some combinators that actually occur in modules that are
+;      depended upon, resulting in duplicate definiton errors.
+;
+;   2. It was possible for module-n to depend on module-m, but for
+;      module-n to be defined an instantiated before module-m was
+;      actually added to the namespace.
+;
+; This is due to how we keep track of which runtime definitions are
+; in which module. There is a separate map storing those associations,
+; and they are not inherently synchronized with the module registry.
+; Any other synchronization scheme needs to account for these issues.
 (define (add-runtime-code mname0 dfns0)
-  (define (map-links dss)
-    (map (lambda (ds) (map reference->termlink ds)) dss))
+  (namespace-call-with-registry-lock runtime-namespace
+    (lambda () (add-runtime-code-pre mname0 dfns0))))
 
-  (let ([udefs (chunked-list->list dfns0)])
-    (cond
-      [(not (null? udefs))
-       (let* ([tmlinks (map ufst udefs)]
-              [codes (map usnd udefs)]
-              [refs (map termlink->reference tmlinks)]
-              [depss (map code-dependencies codes)]
-              [tylinks (typelink-deps codes)]
-              [deps (flatten depss)]
-              [fdeps (filter need-dependency? deps)]
-              [rdeps (remove* refs fdeps)])
-         (cond
-           [(null? fdeps) empty-chunked-list]
-           [(null? rdeps)
-            (let ([ndefs (map gen-code udefs)]
-                  [sdefs (flatten (map gen-code udefs))]
-                  [mname (or mname0 (generate-module-name tmlinks))])
-              (expand-sandbox tmlinks (map-links depss))
-              (register-code udefs)
-              (add-module-associations tmlinks mname)
-              (add-runtime-module mname tylinks tmlinks sdefs)
-              empty-chunked-list)]
-           [else
-             (list->chunked-list
-               (map reference->termlink rdeps))]))]
-      [else empty-chunked-list])))
+(define (add-runtime-code-pre mname0 dfns0)
+  ; flatten and filter out unnecessary definitions
+  (define udefs
+    (for/hash ([p (in-chunked-list dfns0)]
+               #:when (need-code-loaded? (ufst p)))
+      (splat-upair p)))
 
-(define (unison-POp-CACH dfns0) (add-runtime-code #f dfns0))
+  (define-values (tmlinks codes)
+    (for/lists (fsts snds)
+               ([(fst snd) udefs])
+      (values fst snd)))
 
-(define (unison-POp-LOAD v0)
-  (let* ([val (unison-quote-val v0)]
-         [deps (value-term-dependencies val)]
-         [fldeps (chunked-list->list deps)]
-         [fdeps (filter need-dependency? (chunked-list->list deps))])
-    (if (null? fdeps)
-      (sum 1 (reify-value val))
-        (sum 0
-             (list->chunked-list
-               (map reference->termlink fdeps))))))
+  (cond
+    ; short circuit if we have all the definitions loaded
+    [(null? udefs) empty-chunked-list]
+    [else
+     (define deps (flatten (map code-dependencies codes)))
+     ; classifying dependencies
+     ;   hdeps - dependencies that are already loaded
+     ;   ldeps - dependencies that we have code for, but need loading
+     ;   ndeps - dependencies that we need code for
+     ;   rdeps - ndeps that haven't been provided in dfns0
+     (define-values (nldeps hdeps) (partition need-code-loaded? deps))
+     (define-values (ndeps ldeps) (partition need-code? nldeps))
+     (define rdeps (remove* tmlinks ndeps))
+     (cond
+       [(not (null? rdeps))
+        (list->chunked-list rdeps)]
 
-(define (unison-POp-LKUP tl) (lookup-code tl))
+       [else
+        ; add in definitions that haven't been loaded yet
+        (define tdefs
+          (hash-union udefs (resolve-unloaded ldeps)
+            #:combine (lambda (_ y) y)))
+
+        (add-runtime-code-proc mname0 tdefs)])]))
+
+; Given a termlink and a list of dependencies for said link, tests
+; if the code is recursive. This is done by seeing if it references
+; any link with the same bytes. If it does, it must be (mututally)
+; recursive. The only way for two definitions to get the same parent
+; hash at this point is if they refer to one another.
+(define (detect-recursion link deps)
+  (define self (termlink-bytes link))
+  (ormap (lambda (other)
+           (match other
+             [(unison-termlink-derived other _)
+              (equal? self other)]
+             [else #f]))
+         deps))
+
+(define (arity-tuple tl co)
+  (unison-tuple
+    (termlink->reference tl)
+    (code-arity co)))
+
+; Creates and adds a module for given module name and definitions.
+;
+; Passing #f for mname0 makes the procedure make up a fresh name.
+;
+; udefs should be a map associating termlinks to their code. It is
+; assumed that udefs contains all the associations necessary to load
+; the code successfully. So, any dependencies of the code in the map
+; are either also in the map, or have already been loaded. The
+; procedures that call into this one should have checked these already
+; and given appropriate errors if we're missing code.
+(define (add-runtime-code-proc mname0 udefs)
+  ; Unpack the map into component lists
+  (define-values (tmlinks codes arities depss)
+    (for/lists (ls cs as ds)
+               ([(tl co) udefs])
+      (values
+        tl
+        co
+        (arity-tuple tl co)
+        (code-dependencies co))))
+
+  (define tylinks (chunked-list->list (typelink-deps codes)))
+  (define-values (ntylinks htylinks) (partition need-typelink? tylinks))
+
+  (define hdeps (filter have-code-loaded? (flatten depss)))
+
+  (define-values (lndefs lndecs dfns)
+    (gen-codes:runtime (list->chunked-list arities) udefs))
+  (define sdefs (append lndefs (append* dfns) lndecs))
+  (define reqs (extra-requires htylinks hdeps))
+  (define mname (or mname0 (generate-module-name tmlinks)))
+
+  (expand-sandbox tmlinks depss)
+  (register-code udefs)
+  (add-module-type-associations
+    (map reference->typelink ntylinks)
+    mname)
+  (add-module-term-associations tmlinks mname)
+  (add-runtime-module mname reqs (list->chunked-list ntylinks) tmlinks sdefs)
+
+  ; final result: no dependencies needed
+  empty-chunked-list)
+
+; Finds (transitively) code for references that we _know_ the code for,
+; but which haven't been loaded into the runtime yet.
+(define (resolve-unloaded need #:found [found (make-immutable-hash)])
+  (match need
+    ['() found]
+    [(cons ln need)
+     #:when (hash-has-key? found ln)
+     (resolve-unloaded need #:found found)]
+    [(cons ln need)
+     (match (lookup-code ln)
+       [(unison-sum 0 (list))
+        (raise-argument-error
+          'resolve-unloaded
+          "have-code?"
+          ln)]
+       [(unison-sum 1 (list co))
+        (define deps
+          (filter need-code-loaded?
+                  (code-dependencies co)))
+
+        (resolve-unloaded
+          (append need deps)
+          #:found (hash-set found ln co))])]
+    [else
+      (raise-argument-error
+        'resolve-unloaded
+        "dependency list"
+        need)]))
+
+(define-unison-builtin (builtin-Code.cache_ dfns0)
+  (add-runtime-code #f dfns0))
+
+(define-unison-builtin (builtin-Value.load v0)
+  (define val (unison-quote-val v0))
+  (define deps
+    (map reference->termlink
+         (chunked-list->list (value-term-dependencies val))))
+
+  (namespace-call-with-registry-lock runtime-namespace
+    (lambda ()
+
+      (define-values (ndeps hdeps) (partition need-code? deps))
+
+      (cond
+        [(not (null? ndeps))
+         (ref-either-left (list->chunked-list ndeps))]
+        [else
+         (define ldeps (filter need-code-loaded? hdeps))
+         (define to-load (resolve-unloaded ldeps))
+         (add-runtime-code-proc #f to-load)
+         (ref-either-right (reify-value val))]))))
 
 (define-unison-builtin (builtin-Code.lookup tl)
   (match (lookup-code tl)

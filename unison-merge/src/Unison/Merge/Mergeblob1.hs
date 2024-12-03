@@ -65,6 +65,7 @@ data Mergeblob1 libdep = Mergeblob1
     lcaDeclNameLookup :: PartialDeclNameLookup,
     libdeps :: Map NameSegment libdep,
     libdepsDiff :: Map NameSegment (LibdepDiffOp libdep),
+    lcaLibdeps :: Map NameSegment libdep,
     unconflicts :: DefnsF Unconflicts Referent TypeReference
   }
 
@@ -170,5 +171,6 @@ makeMergeblob1 blob names3 hydratedDefns = do
         lcaDeclNameLookup,
         libdeps,
         libdepsDiff,
+        lcaLibdeps = blob.libdeps.lca,
         unconflicts
       }

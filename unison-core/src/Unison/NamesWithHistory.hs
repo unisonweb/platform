@@ -6,7 +6,6 @@
 module Unison.NamesWithHistory
   ( diff,
     push,
-    shadowing,
     lookupHQType,
     lookupHQType',
     lookupHQTerm,
@@ -104,16 +103,10 @@ push n0 ns = unionLeft0 n1 ns
         uniqueTerms = [(n, ref) | (n, nubOrd -> [ref]) <- Map.toList terms']
         uniqueTypes = [(n, ref) | (n, nubOrd -> [ref]) <- Map.toList types']
 
--- | Prefer names in the first argument, falling back to names in the second.
--- This can be used to shadow names in the codebase with names in a unison file for instance:
--- e.g. @shadowing scratchFileNames codebaseNames@
-shadowing :: Names -> Names -> Names
-shadowing = Names.unionLeft
-
 -- Find all types whose name has a suffix matching the provided `HashQualified`,
 -- returning types with relative names if they exist, and otherwise
 -- returning types with absolute names.
-lookupRelativeHQType :: SearchType -> HashQualified Name -> Names -> Set Reference
+lookupRelativeHQType :: SearchType -> HashQualified Name -> Names -> Set TypeReference
 lookupRelativeHQType searchType hq ns =
   let rs = lookupHQType searchType hq ns
       keep r = any (not . Name.isAbsolute) (R.lookupRan r (Names.types ns))
@@ -122,17 +115,17 @@ lookupRelativeHQType searchType hq ns =
           | Set.null rs' -> rs
           | otherwise -> rs'
 
-lookupRelativeHQType' :: SearchType -> HQ'.HashQualified Name -> Names -> Set Reference
+lookupRelativeHQType' :: SearchType -> HQ'.HashQualified Name -> Names -> Set TypeReference
 lookupRelativeHQType' searchType =
   lookupRelativeHQType searchType . HQ'.toHQ
 
 -- | Find all types whose name has a suffix matching the provided 'HashQualified'.
-lookupHQType :: SearchType -> HashQualified Name -> Names -> Set Reference
+lookupHQType :: SearchType -> HashQualified Name -> Names -> Set TypeReference
 lookupHQType searchType =
   lookupHQRef searchType Names.types Reference.isPrefixOf
 
 -- | Find all types whose name has a suffix matching the provided 'HashQualified''. See 'lookupHQType'.
-lookupHQType' :: SearchType -> HQ'.HashQualified Name -> Names -> Set Reference
+lookupHQType' :: SearchType -> HQ'.HashQualified Name -> Names -> Set TypeReference
 lookupHQType' searchType =
   lookupHQType searchType . HQ'.toHQ
 
@@ -236,10 +229,6 @@ termName length r names =
     hq n = HQ'.take length (HQ'.fromNamedReferent n r)
     isConflicted n = R.manyDom n (Names.terms names)
 
--- Set HashQualified -> Branch m -> Action' m v Names
--- Set HashQualified -> Branch m -> Free (Command m i v) Names
--- Set HashQualified -> Branch m -> Command m i v Names
--- populate historical names
 lookupHQPattern ::
   SearchType ->
   HQ.HashQualified Name ->

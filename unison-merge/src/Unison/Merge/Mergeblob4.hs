@@ -37,7 +37,9 @@ makeMergeblob4 blob = do
             -- call to `error`.
             uniqueNames = Parser.UniqueName \_ _ -> Nothing,
             uniqueTypeGuid = \name -> Identity (Map.lookup name blob.uniqueTypeGuids),
-            names = stageOneNames
+            names = stageOneNames,
+            maybeNamespace = Nothing,
+            localNamespacePrefixedTypesAndConstructors = mempty
           }
   file <- runIdentity (Parsers.parseFile "<merge>" (Pretty.toPlain 80 blob.unparsedFile) parsingEnv)
   Right

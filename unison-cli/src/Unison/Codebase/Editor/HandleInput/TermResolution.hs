@@ -15,7 +15,6 @@ import Data.Set (fromList, toList)
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.NamesUtils qualified as Cli
-import Unison.Cli.PrettyPrintUtils qualified as Cli
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Editor.Output (Output (..))
 import Unison.Codebase.Path (hqSplitFromName')
@@ -27,7 +26,9 @@ import Unison.Names (Names)
 import Unison.NamesWithHistory qualified as Names
 import Unison.Parser.Ann (Ann)
 import Unison.PrettyPrintEnv (PrettyPrintEnv)
+import Unison.PrettyPrintEnv.Names qualified as PPE
 import Unison.PrettyPrintEnvDecl qualified as PPED
+import Unison.PrettyPrintEnvDecl.Names qualified as PPED
 import Unison.Reference (Reference)
 import Unison.Referent (Referent, pattern Con, pattern Ref)
 import Unison.Symbol (Symbol)
@@ -74,7 +75,7 @@ lookupTermRefWithType codebase name = do
 resolveTerm :: HQ.HashQualified Name -> Cli Referent
 resolveTerm name = do
   names <- Cli.currentNames
-  pped <- Cli.prettyPrintEnvDeclFromNames names
+  let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   case lookupTerm name names of
     [] -> Cli.returnEarly (TermNotFound $ fromJust parsed)
@@ -87,7 +88,7 @@ resolveTerm name = do
 resolveCon :: HQ.HashQualified Name -> Cli ConstructorReference
 resolveCon name = do
   names <- Cli.currentNames
-  pped <- Cli.prettyPrintEnvDeclFromNames names
+  let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   case lookupCon name names of
     ([], _) -> Cli.returnEarly (TermNotFound $ fromJust parsed)
@@ -100,7 +101,7 @@ resolveCon name = do
 resolveTermRef :: HQ.HashQualified Name -> Cli Reference
 resolveTermRef name = do
   names <- Cli.currentNames
-  pped <- Cli.prettyPrintEnvDeclFromNames names
+  let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   case lookupTermRefs name names of
     ([], _) -> Cli.returnEarly (TermNotFound $ fromJust parsed)
@@ -114,7 +115,7 @@ resolveMainRef :: HQ.HashQualified Name -> Cli (Reference, PrettyPrintEnv)
 resolveMainRef main = do
   Cli.Env {codebase, runtime} <- ask
   names <- Cli.currentNames
-  pped <- Cli.prettyPrintEnvDeclFromNames names
+  let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   let mainType = Runtime.mainType runtime
   lookupTermRefWithType codebase main >>= \case
