@@ -120,11 +120,8 @@ humanizeDiffs ::
   TwoWay (DefnsF2 (Map Name) Updated Referent TypeReference) ->
   TwoWay (DefnsF2 (Map Name) HumanDiffOp Referent TypeReference)
 humanizeDiffs names3 diffs propagatedUpdates =
-  zipWithF3
-    nameRelations
-    diffs
-    propagatedUpdates
-    \relation diffOps propagatedUpdates -> Defns.zipDefnsWith4 computeHumanDiffOp computeHumanDiffOp lcaRelation relation diffOps propagatedUpdates
+  zipWithF3 nameRelations diffs propagatedUpdates \relation diffOps propagatedUpdates ->
+    Defns.zipDefnsWith4 computeHumanDiffOp computeHumanDiffOp lcaRelation relation diffOps propagatedUpdates
   where
     zipWithF3 :: (Zip.Zip f) => f a -> f b -> f c -> (a -> b -> c -> d) -> f d
     zipWithF3 a b c f = Zip.zipWith (\(x, y) z -> f x y z) (Zip.zip a b) c
@@ -148,7 +145,7 @@ humanizeDiffs names3 diffs propagatedUpdates =
         go :: These (DiffOp (Synhashed ref)) (Updated ref) -> (HumanDiffOp ref)
         go = \case
           This diff -> humanizeDiffOp (Synhashed.value <$> diff)
-          That updated -> (HumanDiffOp'PropagatedUpdate updated)
+          That updated -> HumanDiffOp'PropagatedUpdate updated
           These diff updated -> error (reportBug "E488729" ("The impossible happened, an update in merge was detected as both a propagated AND core update " ++ show diff ++ " and " ++ show updated))
 
         humanizeDiffOp :: DiffOp ref -> HumanDiffOp ref

@@ -238,8 +238,17 @@ doMerge info = do
           Cli.runTransactionWithRollback2 (\rollback -> Right <$> action (rollback . Left))
             & onLeftM (done . Output.ConflictedDefn "merge")
 
+        libdeps3 <- Cli.runTransaction (loadLibdeps branches)
+
+        let blob0 = Merge.makeMergeblob0 nametrees3 libdeps3
+
         names3 :: Merge.ThreeWay Names <- do
-          let causalHashes = Merge.TwoOrThreeWay {alice = info.alice.causalHash, bob = info.bob.causalHash, lca = info.lca.causalHash}
+          let causalHashes =
+                Merge.TwoOrThreeWay
+                  { alice = info.alice.causalHash,
+                    bob = info.bob.causalHash,
+                    lca = info.lca.causalHash
+                  }
           branches <- for causalHashes \ch -> do
             liftIO (Codebase.getBranchForHash env.codebase ch) >>= \case
               Nothing -> done (Output.CouldntLoadBranch ch)
@@ -247,9 +256,7 @@ doMerge info = do
           let names = fmap (Branch.toNames . Branch.head) branches
           pure Merge.ThreeWay {alice = names.alice, bob = names.bob, lca = fromMaybe mempty names.lca}
 
-        libdeps3 <- Cli.runTransaction (loadLibdeps branches)
-
-        let blob0 = Merge.makeMergeblob0 nametrees3 libdeps3
+        respondRegion (Output.Literal "Loading definitions...")
 
         -- Hydrate
         hydratedDefns ::
@@ -270,7 +277,7 @@ doMerge info = do
                  in bimap f g <$> blob0.defns
               )
 
-        respondRegion (Output.Literal "Computing diff between branches...")
+        respondRegion (Output.Literal "Computing diffs...")
 
         blob1 <-
           Merge.makeMergeblob1 blob0 names3 hydratedDefns & onLeft \case
