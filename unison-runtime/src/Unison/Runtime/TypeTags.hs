@@ -13,6 +13,8 @@ module Unison.Runtime.TypeTags
     unitTag,
     leftTag,
     rightTag,
+    falseTag,
+    trueTag,
   )
 where
 
@@ -126,6 +128,12 @@ charTag = mkSimpleTag "charTag" Ty.charRef
 unitTag :: PackedTag
 unitTag = mkSimpleTag "unitTag" Ty.unitRef
 
+falseTag :: PackedTag
+falseTag = mkEnumTag "falseTag" Ty.booleanRef 0
+
+trueTag :: PackedTag
+trueTag = mkEnumTag "trueTag" Ty.booleanRef 1
+
 leftTag, rightTag :: PackedTag
 (leftTag, rightTag)
   | Just n <- Map.lookup Ty.eitherRef builtinTypeNumbering,
@@ -137,8 +145,11 @@ leftTag, rightTag :: PackedTag
 
 -- | Construct a tag for a single-constructor builtin type
 mkSimpleTag :: String -> Reference -> PackedTag
-mkSimpleTag msg r
+mkSimpleTag msg r = mkEnumTag msg r 0
+
+mkEnumTag :: String -> Reference -> Int -> PackedTag
+mkEnumTag msg r i
   | Just n <- Map.lookup r builtinTypeNumbering,
     rt <- toEnum (fromIntegral n) =
-      packTags rt 0
+      packTags rt (toEnum i)
   | otherwise = internalBug $ "internal error: " <> msg

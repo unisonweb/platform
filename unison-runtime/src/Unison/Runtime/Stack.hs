@@ -40,10 +40,13 @@ module Unison.Runtime.Stack
         NatVal,
         DoubleVal,
         IntVal,
+        BoolVal,
         UnboxedVal,
         BoxedVal
       ),
     emptyVal,
+    falseVal,
+    trueVal,
     boxedVal,
     USeq,
     traceK,
@@ -78,6 +81,8 @@ module Unison.Runtime.Stack
     peekOffBi,
     pokeBi,
     pokeOffBi,
+    peekBool,
+    peekOffBool,
     peekOffS,
     pokeS,
     pokeOffS,
@@ -140,16 +145,13 @@ import Unison.Runtime.ANF (PackedTag)
 import Unison.Runtime.Array
 import Unison.Runtime.Foreign
 import Unison.Runtime.MCode
+import Unison.Runtime.TypeTags qualified as TT
 import Unison.Type qualified as Ty
 import Unison.Util.EnumContainers as EC
 import Prelude hiding (words)
 
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
-import Data.Text.IO (hPutStrLn)
-import UnliftIO (stderr, throwIO)
-import GHC.Stack (CallStack, callStack)
-
 type DebugCallStack = (HasCallStack :: Constraint)
 
 unboxedSentinel :: Int
@@ -413,6 +415,25 @@ pattern IntVal :: Int -> Val
 pattern IntVal i <- (matchIntVal -> Just i)
   where
     IntVal i = Val i intTypeTag
+
+matchBoolVal :: Val -> Maybe Bool
+matchBoolVal = \case
+  (BoxedVal (Enum r t)) | r == Ty.booleanRef -> Just (t == TT.falseTag)
+  _ -> Nothing
+
+pattern BoolVal :: Bool -> Val
+pattern BoolVal b <- (matchBoolVal -> Just b)
+  where
+    BoolVal b = if b then trueVal else falseVal
+
+-- Define singletons we can use for the bools to prevent allocation where possible.
+falseVal :: Val
+falseVal = BoxedVal (Enum Ty.booleanRef TT.falseTag)
+{-# NOINLINE falseVal #-}
+
+trueVal :: Val
+trueVal = BoxedVal (Enum Ty.booleanRef TT.trueTag)
+{-# NOINLINE trueVal #-}
 
 doubleToInt :: Double -> Int
 doubleToInt d = indexByteArray (BA.byteArrayFromList [d]) 0
@@ -751,9 +772,7 @@ peekTagOff = peekOffI
 
 pokeBool :: DebugCallStack => Stack -> Bool -> IO ()
 pokeBool stk b =
-  -- Currently this is implemented as a tag, which is branched on to put a packed bool constructor on the stack, but
-  -- we'll want to change it to have its own unboxed type tag eventually.
-  pokeTag stk $ if b then 1 else 0
+  poke stk $ if b then trueVal else falseVal
 {-# INLINE pokeBool #-}
 
 -- | Store a boxed value.
@@ -1095,6 +1114,22 @@ peekBi stk = unwrapForeign . marshalToForeign <$> bpeek stk
 peekOffBi :: (BuiltinForeign b) => Stack -> Int -> IO b
 peekOffBi stk i = unwrapForeign . marshalToForeign <$> bpeekOff stk i
 {-# INLINE peekOffBi #-}
+
+peekBool :: Stack -> IO Bool
+peekBool stk = do
+  b <- bpeek stk
+  pure $ case b of
+    Enum _ t -> t /= TT.falseTag
+    _ -> error "peekBool: not a boolean"
+{-# INLINE peekBool #-}
+
+peekOffBool :: Stack -> Int -> IO Bool
+peekOffBool stk i = do
+  b <- bpeekOff stk i
+  pure $ case b of
+    Enum _ t -> t /= TT.falseTag
+    _ -> error "peekBool: not a boolean"
+{-# INLINE peekOffBool #-}
 
 peekOffS :: Stack -> Int -> IO USeq
 peekOffS stk i =

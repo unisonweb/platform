@@ -295,8 +295,14 @@ instance ForeignConvention Double where
       pure stk
 
 instance ForeignConvention Bool where
-  readForeign = readForeignEnum
-  writeForeign = writeForeignEnum
+  readForeign (i : args) stk = do
+    b <- peekOffBool stk i
+    pure (args, b)
+  readForeign _ _ = foreignCCError "Bool"
+  writeForeign stk b = do
+    stk <- bump stk
+    pokeBool stk b
+    pure stk
 
 instance ForeignConvention String where
   readForeign = readForeignAs unpack

@@ -324,6 +324,8 @@ data UPrim1
   | TRNF -- truncate
   | RNDF -- round
   | TRNC -- truncate
+  -- Bools
+  | NOTB -- not
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data UPrim2
@@ -346,8 +348,12 @@ data UPrim2
   | POWN
   | EQLI -- ==
   | EQLN
+  | NEQI -- !=
+  | NEQN
   | LEQI -- <=
   | LEQN
+  | LESI -- <
+  | LESN
   | ANDN -- and
   | ANDI
   | IORN -- or
@@ -356,7 +362,9 @@ data UPrim2
   | XORI
   | -- floating
     EQLF -- ==
+  | NEQF -- !=
   | LEQF -- <=
+  | LESF -- <
   | ADDF -- +
   | SUBF -- -
   | MULF
@@ -368,6 +376,9 @@ data UPrim2
   | MINF -- min
   | CAST -- unboxed runtime type cast (int to nat, etc.)
   | DRPN -- dropn
+  -- Bools
+  | ANDB -- and
+  | IORB -- or
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data BPrim1
@@ -413,6 +424,8 @@ data BPrim2
   = -- universal
     EQLU -- ==
   | CMPU -- compare
+  | LEQU -- <=
+  | LESU -- <
   -- text
   | DRPT -- drop
   | CATT -- append
@@ -1222,9 +1235,13 @@ emitPOp ANF.SHLN = emitP2 SHLN -- Note: left shift behaves uniformly
 emitPOp ANF.SHRI = emitP2 SHRI
 emitPOp ANF.SHRN = emitP2 SHRN
 emitPOp ANF.LEQI = emitP2 LEQI
+emitPOp ANF.LESI = emitP2 LESI
 emitPOp ANF.LEQN = emitP2 LEQN
+emitPOp ANF.LESN = emitP2 LESN
 emitPOp ANF.EQLI = emitP2 EQLI
+emitPOp ANF.NEQI = emitP2 NEQI
 emitPOp ANF.EQLN = emitP2 EQLN
+emitPOp ANF.NEQN = emitP2 NEQN
 emitPOp ANF.SGNI = emitP1 SGNI
 emitPOp ANF.NEGI = emitP1 NEGI
 emitPOp ANF.INCI = emitP1 INCI
@@ -1249,7 +1266,9 @@ emitPOp ANF.SUBF = emitP2 SUBF
 emitPOp ANF.MULF = emitP2 MULF
 emitPOp ANF.DIVF = emitP2 DIVF
 emitPOp ANF.LEQF = emitP2 LEQF
+emitPOp ANF.LESF = emitP2 LESF
 emitPOp ANF.EQLF = emitP2 EQLF
+emitPOp ANF.NEQF = emitP2 NEQF
 emitPOp ANF.MINF = emitP2 MINF
 emitPOp ANF.MAXF = emitP2 MAXF
 emitPOp ANF.POWF = emitP2 POWF
@@ -1321,6 +1340,8 @@ emitPOp ANF.FLTB = emitBP1 FLTB
 emitPOp ANF.CATB = emitBP2 CATB
 -- universal comparison
 emitPOp ANF.EQLU = emitBP2 EQLU
+emitPOp ANF.LEQU = emitBP2 LEQU
+emitPOp ANF.LESU = emitBP2 LESU
 emitPOp ANF.CMPU = emitBP2 CMPU
 -- code operations
 emitPOp ANF.MISS = emitBP1 MISS
@@ -1346,6 +1367,10 @@ emitPOp ANF.RRFC = emitBP1 RRFC
 emitPOp ANF.TIKR = emitBP1 TIKR
 -- non-prim translations
 emitPOp ANF.BLDS = Seq
+-- Bools
+emitPOp ANF.NOTB = emitP1 NOTB
+emitPOp ANF.ANDB = emitP2 ANDB
+emitPOp ANF.IORB = emitP2 IORB
 emitPOp ANF.FORK = \case
   VArg1 i -> Fork i
   _ -> internalBug "fork takes exactly one boxed argument"

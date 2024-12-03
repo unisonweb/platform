@@ -374,7 +374,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 MISS i)
             _ -> error "exec:BPrim1:MISS: Expected Ref"
       m <- readTVarIO (intermed env)
       stk <- bump stk
-      pokeTag stk $ if (link `M.member` m) then 1 else 0
+      pokeBool stk $ (link `M.member` m)
       pure (denv, stk, k)
 exec !env !denv !_activeThreads !stk !k _ (BPrim1 CACH i)
   | sandboxed env = die "attempted to use sandboxed operation: cache"
@@ -517,11 +517,23 @@ exec !_ !denv !_activeThreads !stk !k _ (BPrim2 EQLU i j) = do
   stk <- bump stk
   pokeBool stk $ universalEq (==) x y
   pure (denv, stk, k)
+exec !_ !denv !_activeThreads !stk !k _ (BPrim2 LEQU i j) = do
+  x <- peekOff stk i
+  y <- peekOff stk j
+  stk <- bump stk
+  pokeBool stk $ (universalCompare compare x y) /= GT
+  pure (denv, stk, k)
+exec !_ !denv !_activeThreads !stk !k _ (BPrim2 LESU i j) = do
+  x <- peekOff stk i
+  y <- peekOff stk j
+  stk <- bump stk
+  pokeBool stk $ (universalCompare compare x y) == LT
+  pure (denv, stk, k)
 exec !_ !denv !_activeThreads !stk !k _ (BPrim2 CMPU i j) = do
   x <- peekOff stk i
   y <- peekOff stk j
   stk <- bump stk
-  pokeI stk . fromEnum $ universalCompare compare x y
+  pokeI stk . pred . fromEnum $ universalCompare compare x y
   pure (denv, stk, k)
 exec !_ !_ !_activeThreads !stk !k r (BPrim2 THRO i j) = do
   name <- peekOffBi @Util.Text.Text stk i
@@ -1225,6 +1237,11 @@ uprim1 !stk COMI !i = do
   stk <- bump stk
   pokeI stk (complement n)
   pure stk
+uprim1 !stk NOTB !i = do
+  b <- peekOffBool stk i
+  stk <- bump stk
+  pokeBool stk (not b)
+  pure stk
 {-# INLINE uprim1 #-}
 
 uprim2 :: Stack -> UPrim2 -> Int -> Int -> IO Stack
@@ -1325,11 +1342,23 @@ uprim2 !stk EQLI !i !j = do
   stk <- bump stk
   pokeBool stk $ m == n
   pure stk
+uprim2 !stk NEQI !i !j = do
+  m <- upeekOff stk i
+  n <- upeekOff stk j
+  stk <- bump stk
+  pokeBool stk $ m /= n
+  pure stk
 uprim2 !stk EQLN !i !j = do
   m <- peekOffN stk i
   n <- peekOffN stk j
   stk <- bump stk
   pokeBool stk $ m == n
+  pure stk
+uprim2 !stk NEQN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  pokeBool stk $ m /= n
   pure stk
 uprim2 !stk LEQI !i !j = do
   m <- upeekOff stk i
@@ -1342,6 +1371,18 @@ uprim2 !stk LEQN !i !j = do
   n <- peekOffN stk j
   stk <- bump stk
   pokeBool stk $ m <= n
+  pure stk
+uprim2 !stk LESI !i !j = do
+  m <- upeekOff stk i
+  n <- upeekOff stk j
+  stk <- bump stk
+  pokeBool stk $ m < n
+  pure stk
+uprim2 !stk LESN !i !j = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  pokeBool stk $ m < n
   pure stk
 uprim2 !stk DIVN !i !j = do
   m <- peekOffN stk i
@@ -1409,11 +1450,23 @@ uprim2 !stk EQLF !i !j = do
   stk <- bump stk
   pokeBool stk $ x == y
   pure stk
+uprim2 !stk NEQF !i !j = do
+  x <- peekOffD stk i
+  y <- peekOffD stk j
+  stk <- bump stk
+  pokeBool stk $ x /= y
+  pure stk
 uprim2 !stk LEQF !i !j = do
   x <- peekOffD stk i
   y <- peekOffD stk j
   stk <- bump stk
   pokeBool stk $ x <= y
+  pure stk
+uprim2 !stk LESF !i !j = do
+  x <- peekOffD stk i
+  y <- peekOffD stk j
+  stk <- bump stk
+  pokeBool stk $ x < y
   pure stk
 uprim2 !stk ATN2 !i !j = do
   x <- peekOffD stk i
@@ -1462,6 +1515,18 @@ uprim2 !stk CAST !vi !ti = do
   v <- upeekOff stk vi
   stk <- bump stk
   poke stk $ UnboxedVal v (unboxedTypeTagFromInt newTypeTag)
+  pure stk
+uprim2 !stk ANDB !i !j = do
+  x <- peekOffBool stk i
+  y <- peekOffBool stk j
+  stk <- bump stk
+  pokeBool stk (x && y)
+  pure stk
+uprim2 !stk IORB !i !j = do
+  x <- peekOffBool stk i
+  y <- peekOffBool stk j
+  stk <- bump stk
+  pokeBool stk (x || y)
   pure stk
 {-# INLINE uprim2 #-}
 
@@ -1877,6 +1942,8 @@ bprim2 !stk REFW i j = do
 bprim2 !stk THRO _ _ = pure stk -- impossible
 bprim2 !stk TRCE _ _ = pure stk -- impossible
 bprim2 !stk EQLU _ _ = pure stk -- impossible
+bprim2 !stk LEQU _ _ = pure stk -- impossible
+bprim2 !stk LESU _ _ = pure stk -- impossible
 bprim2 !stk CMPU _ _ = pure stk -- impossible
 bprim2 !stk SDBX _ _ = pure stk -- impossible
 bprim2 !stk SDBV _ _ = pure stk -- impossible
