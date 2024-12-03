@@ -1585,6 +1585,8 @@ notifyUser dir = \case
     pure $
       P.lines
         [P.text (FZFResolvers.fuzzySelectHeader argDesc), P.indentN 2 $ P.bulleted (P.string <$> fuzzyOptions)]
+  DebugFuzzyOptionsIncorrectArgs _ -> pure $ P.string "Too many arguments were provided."
+  DebugFuzzyOptionsNoCommand command -> pure $ "The command “" <> P.string command <> "” doesn’t exist."
   DebugFuzzyOptionsNoResolver -> pure "No resolver found for fuzzy options in this slot."
   ClearScreen -> do
     ANSI.clearScreen

@@ -15,13 +15,14 @@ import Control.Lens hiding (aside)
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import Data.List (isPrefixOf, isSuffixOf)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Map qualified as Map
-import Data.Semialign qualified as Align
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
-import Data.These (These (..))
 import Data.Vector qualified as Vector
 import System.FilePath (takeFileName)
+import Text.Numeral (defaultInflection)
+import Text.Numeral.Language.ENG qualified as Numeral
 import Text.Regex.TDFA ((=~))
 import Unison.Codebase (Codebase)
 import Unison.Codebase.Branch (Branch0)
@@ -83,35 +84,45 @@ parseInput codebase projPath currentProjectRoot numberedArgs patterns segments =
   case segments of
     [] -> throwE ""
     command : args -> case Map.lookup command patterns of
-      Just pat@(InputPattern {parse, help}) -> do
+      Just pat@(InputPattern {params, help, parse}) -> do
         let expandedNumbers :: InputPattern.Arguments
             expandedNumbers =
               foldMap (\arg -> maybe [Left arg] (fmap pure) $ expandNumber numberedArgs arg) args
-        lift (fzfResolve codebase projPath getCurrentBranch0 pat expandedNumbers) >>= \case
-          Left (NoFZFResolverForArgumentType _argDesc) -> throwError help
-          Left (NoFZFOptions argDesc) -> throwError (noCompletionsMessage argDesc)
-          Left FZFCancelled -> pure Nothing
-          Right resolvedArgs -> do
-            parsedInput <-
-              except
-                . first
-                  ( \msg ->
-                      P.warnCallout $
-                        P.wrap "Sorry, I wasn’t sure how to process your request:"
-                          <> P.newline
-                          <> P.newline
-                          <> P.indentN 2 msg
-                          <> P.newline
-                          <> P.newline
-                          <> P.wrap
-                            ( "You can run"
-                                <> IPs.makeExample IPs.help [fromString command]
-                                <> "for more information on using"
-                                <> IPs.makeExampleEOS pat []
-                            )
-                  )
-                $ parse resolvedArgs
-            pure $ Just (Left command : resolvedArgs, parsedInput)
+        lift (fzfResolve codebase projPath getCurrentBranch0 params expandedNumbers)
+          >>= either
+            ( \case
+                NoFZFResolverForArgumentType _argDesc -> throwError help
+                NoFZFOptions argDesc -> throwError (noCompletionsMessage argDesc)
+                FZFCancelled -> pure Nothing
+                FZFOversaturated extraArgs -> do
+                  let showNum n = fromMaybe (tShow n) $ Numeral.us_cardinal defaultInflection n
+                  maxCount <- maybe (throwError . P.text $ "Internal error: fuzzy finder complained that there are " <> showNum (length extraArgs) <> " too many arguments provided, but the command apparently allows an unbounded number of arguments.") pure $ InputPattern.maxArgs params
+                  let foundCount = showNum $ maxCount + length extraArgs
+                  throwError . P.text $
+                    "I expected no more than " <> showNum maxCount <> " arguments, but received " <> foundCount <> "."
+            )
+            ( \resolvedArgs -> do
+                parsedInput <-
+                  except
+                    . first
+                      ( \msg ->
+                          P.warnCallout $
+                            P.wrap "Sorry, I wasn’t sure how to process your request:"
+                              <> P.newline
+                              <> P.newline
+                              <> P.indentN 2 msg
+                              <> P.newline
+                              <> P.newline
+                              <> P.wrap
+                                ( "You can run"
+                                    <> IPs.makeExample IPs.help [fromString command]
+                                    <> "for more information on using"
+                                    <> IPs.makeExampleEOS pat []
+                                )
+                      )
+                    $ parse resolvedArgs
+                pure $ Just (Left command : resolvedArgs, parsedInput)
+            )
       Nothing ->
         throwE
           . warn
@@ -151,50 +162,62 @@ expandNumber numberedArgs s =
             _ -> Nothing
 
 data FZFResolveFailure
-  = NoFZFResolverForArgumentType InputPattern.ArgumentDescription
-  | NoFZFOptions Text {- argument description -}
+  = NoFZFResolverForArgumentType InputPattern.ParameterDescription
+  | NoFZFOptions
+      -- | argument description
+      Text
   | FZFCancelled
+  | -- | More arguments were provided than the command supports.
+    FZFOversaturated
+      -- | The arguments that couldn’t be assigned to a parameter.
+      (NonEmpty InputPattern.Argument)
 
-fzfResolve :: Codebase IO Symbol Ann -> PP.ProjectPath -> (IO (Branch0 IO)) -> InputPattern -> InputPattern.Arguments -> IO (Either FZFResolveFailure InputPattern.Arguments)
-fzfResolve codebase ppCtx getCurrentBranch pat args = runExceptT do
+fzfResolve ::
+  Codebase IO Symbol Ann ->
+  PP.ProjectPath ->
+  (IO (Branch0 IO)) ->
+  InputPattern.Parameters ->
+  InputPattern.Arguments ->
+  IO (Either FZFResolveFailure InputPattern.Arguments)
+fzfResolve codebase ppCtx getCurrentBranch params args = runExceptT do
   -- We resolve args in two steps, first we check that all arguments that will require a fzf
   -- resolver have one, and only if so do we prompt the user to actually do a fuzzy search.
   -- Otherwise, we might ask the user to perform a search only to realize we don't have a resolver
   -- for a later arg.
-  argumentResolvers :: [ExceptT FZFResolveFailure IO InputPattern.Arguments] <-
-    (Align.align (InputPattern.args pat) args)
-      & traverse \case
-        This (argName, opt, InputPattern.ArgumentType {fzfResolver})
-          | opt == InputPattern.Required || opt == InputPattern.OnePlus ->
-              case fzfResolver of
-                Nothing -> throwError $ NoFZFResolverForArgumentType argName
-                Just fzfResolver -> pure $ fuzzyFillArg opt argName fzfResolver
-          | otherwise -> pure $ pure []
-        That arg -> pure $ pure [arg]
-        These _ arg -> pure $ pure [arg]
+  let argumentResolvers :: [ExceptT FZFResolveFailure IO InputPattern.Arguments] =
+        either
+          (pure . throwError . FZFOversaturated)
+          ( \(InputPattern.Parameters {requiredParams, trailingParams}, args) ->
+              args
+                <> map (meh False) requiredParams
+                <> case trailingParams of
+                  InputPattern.Optional _ _ -> mempty
+                  InputPattern.OnePlus p -> pure $ meh True p
+          )
+          $ InputPattern.foldArgs (\(_, _) arg acc -> pure [arg] : acc) mempty params args
   argumentResolvers & foldMapM id
   where
-    fuzzyFillArg :: InputPattern.IsOptional -> Text -> InputPattern.FZFResolver -> ExceptT FZFResolveFailure IO InputPattern.Arguments
-    fuzzyFillArg opt argDesc InputPattern.FZFResolver {getOptions} = do
+    meh :: Bool -> InputPattern.Parameter -> ExceptT FZFResolveFailure IO InputPattern.Arguments
+    meh allowMulti (argName, InputPattern.ParameterType {fzfResolver}) =
+      maybe
+        (throwError $ NoFZFResolverForArgumentType argName)
+        (fuzzyFillArg allowMulti argName)
+        fzfResolver
+
+    fuzzyFillArg :: Bool -> Text -> InputPattern.FZFResolver -> ExceptT FZFResolveFailure IO InputPattern.Arguments
+    fuzzyFillArg allowMulti argDesc InputPattern.FZFResolver {getOptions} = do
       currentBranch <- Branch.withoutTransitiveLibs <$> liftIO getCurrentBranch
       options <- liftIO $ getOptions codebase ppCtx currentBranch
-      when (null options) $ throwError $ NoFZFOptions argDesc
+      when (null options) . throwError $ NoFZFOptions argDesc
       liftIO $ Text.putStrLn (FZFResolvers.fuzzySelectHeader argDesc)
       results <-
-        liftIO (Fuzzy.fuzzySelect Fuzzy.defaultOptions {Fuzzy.allowMultiSelect = multiSelectForOptional opt} id options)
+        liftIO (Fuzzy.fuzzySelect Fuzzy.defaultOptions {Fuzzy.allowMultiSelect = allowMulti} id options)
           `whenNothingM` throwError FZFCancelled
       -- If the user triggered the fuzzy finder, but selected nothing, abort the command rather than continuing execution
       -- with no arguments.
       if null results
         then throwError FZFCancelled
         else pure (Left . Text.unpack <$> results)
-
-    multiSelectForOptional :: InputPattern.IsOptional -> Bool
-    multiSelectForOptional = \case
-      InputPattern.Required -> False
-      InputPattern.Optional -> False
-      InputPattern.OnePlus -> True
-      InputPattern.ZeroPlus -> True
 
 prompt :: String
 prompt = "> "

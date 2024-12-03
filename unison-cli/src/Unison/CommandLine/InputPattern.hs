@@ -4,13 +4,17 @@
 
 module Unison.CommandLine.InputPattern
   ( InputPattern (..),
+    ParameterDescription,
+    ParameterType (..),
+    Parameter,
+    TrailingParameters (..),
+    Parameters (..),
     Argument,
-    ArgumentType (..),
-    ArgumentDescription,
     Arguments,
-    argType,
+    foldArgs,
+    noParams,
+    paramType,
     FZFResolver (..),
-    IsOptional (..),
     Visibility (..),
 
     -- * Currently Unused
@@ -23,6 +27,7 @@ where
 
 import Control.Lens
 import Data.List.Extra qualified as List
+import Data.List.NonEmpty (NonEmpty (..))
 import System.Console.Haskeline qualified as Line
 import Unison.Auth.HTTPClient (AuthenticatedHttpClient)
 import Unison.Codebase (Codebase)
@@ -34,15 +39,6 @@ import Unison.Prelude
 import Unison.Util.ColorText qualified as CT
 import Unison.Util.Monoid (foldMapM)
 import Unison.Util.Pretty qualified as P
-
--- InputPatterns accept some fixed number of Required arguments of various
--- types, followed by a variable number of a single type of argument.
-data IsOptional
-  = Required -- 1, at the start
-  | Optional -- 0 or 1, at the end
-  | ZeroPlus -- 0 or more, at the end
-  | OnePlus -- 1 or more, at the end
-  deriving (Show, Eq)
 
 data Visibility = Hidden | Visible
   deriving (Show, Eq, Ord)
@@ -58,13 +54,13 @@ type Arguments = [Argument]
 -- | Argument description
 -- It should fit grammatically into sentences like "I was expecting an argument for the <argDesc>"
 -- e.g. "namespace to merge", "definition to delete", "remote target to push to" etc.
-type ArgumentDescription = Text
+type ParameterDescription = Text
 
 data InputPattern = InputPattern
   { patternName :: String,
     aliases :: [String],
     visibility :: Visibility, -- Allow hiding certain commands when debugging or work-in-progress
-    args :: [(ArgumentDescription, IsOptional, ArgumentType)],
+    params :: Parameters,
     help :: P.Pretty CT.ColorText,
     -- | Parse the arguments and return either an error message or a command `Input`.
     --
@@ -78,7 +74,7 @@ data InputPattern = InputPattern
       Either (P.Pretty CT.ColorText) Input
   }
 
-data ArgumentType = ArgumentType
+data ParameterType = ParameterType
   { typeName :: String,
     -- | Generate completion suggestions for this argument type
     suggestions ::
@@ -94,70 +90,79 @@ data ArgumentType = ArgumentType
     fzfResolver :: Maybe FZFResolver
   }
 
-instance Show ArgumentType where
-  show at = "ArgumentType " <> typeName at
+type Parameter = (ParameterDescription, ParameterType)
+
+data TrailingParameters
+  = -- | Optional args followed by a possibly-empty catch-all
+    Optional [Parameter] (Maybe Parameter)
+  | -- | A catch-all that requires at least one value
+    OnePlus Parameter
+
+-- | The `Parameters` for an `InputPattern` are roughly
+--
+-- > [required …] ([optional …] [catchAll] | NonEmpty catchAll)
+data Parameters = Parameters {requiredParams :: [Parameter], trailingParams :: TrailingParameters}
+
+-- | Aligns the pattern parameters with a set of concrete arguments.
+--
+--   If too many arguments are provided, it returns the overflow arguments. In addition to the fold result, it returns
+--  `Parameters` representing what can still be provided (e.g., via fuzzy completion). Note that if the result
+--  `Parameters` has `OnePlus` or non-`null` `requiredArgs`, the application must fail unless more arguments are
+--   provided somehow.
+foldArgs :: (Parameter -> arg -> a -> a) -> a -> Parameters -> [arg] -> Either (NonEmpty arg) (Parameters, a)
+foldArgs fn z Parameters {requiredParams, trailingParams} = foldRequiredArgs requiredParams
+  where
+    foldRequiredArgs = curry \case
+      ([], as) -> foldTrailingArgs as
+      (ps, []) -> pure (Parameters ps trailingParams, z)
+      (p : ps, a : as) -> fmap (fn p a) <$> foldRequiredArgs ps as
+    foldTrailingArgs = case trailingParams of
+      Optional optParams zeroPlus -> foldOptionalArgs zeroPlus optParams
+      OnePlus param -> foldOnePlusArgs param
+    foldOptionalArgs zp = curry \case
+      (ps, []) -> pure (Parameters [] $ Optional ps zp, z)
+      ([], a : as) -> foldZeroPlusArgs zp $ a :| as
+      (p : ps, a : as) -> fmap (fn p a) <$> foldOptionalArgs zp ps as
+    foldZeroPlusArgs = maybe Left (\p -> pure . (Parameters [] . Optional [] $ pure p,) . foldr (fn p) z)
+    foldOnePlusArgs p = \case
+      [] -> pure (Parameters [] $ OnePlus p, z)
+      args -> pure (Parameters [] . Optional [] $ pure p, foldr (fn p) z args)
+
+noParams :: Parameters
+noParams = Parameters [] $ Optional [] Nothing
 
 -- `argType` gets called when the user tries to autocomplete an `i`th argument (zero-indexed).
 -- todo: would be nice if we could alert the user if they try to autocomplete
 -- past the end.  It would also be nice if
-argInfo :: InputPattern -> Int -> Maybe (ArgumentDescription, ArgumentType)
-argInfo InputPattern {args, patternName} i = go (i, args)
-  where
-    -- Strategy: all of these input patterns take some number of arguments.
-    -- If it takes no arguments, then don't autocomplete.
-    go :: (Int, [(Text, IsOptional, ArgumentType)]) -> Maybe (ArgumentDescription, ArgumentType)
-    go (_, []) = Nothing
-    -- If requesting the 0th of >=1 arguments, return it.
-    go (0, (argName, _, t) : _) = Just (argName, t)
-    -- Vararg parameters should appear at the end of the arg list, and work for
-    -- any later argument number.
-    go (_, [(argName, ZeroPlus, t)]) = Just (argName, t)
-    go (_, [(argName, OnePlus, t)]) = Just (argName, t)
-    -- If requesting a later parameter, decrement and drop one.
-    go (n, (_argName, o, _) : argTypes)
-      | o == Optional || o == Required = go (n - 1, argTypes)
-    -- The argument list spec is invalid if something follows a vararg
-    go args =
-      error $
-        "Input pattern "
-          <> show patternName
-          <> " has an invalid argument list: "
-          <> show args
+paramInfo :: Parameters -> Int -> Maybe (ParameterDescription, ParameterType)
+paramInfo Parameters {requiredParams, trailingParams} i =
+  if i < length requiredParams
+    then pure $ requiredParams !! i
+    else case trailingParams of
+      Optional optParams zeroPlus ->
+        let rem = i - length requiredParams
+         in if rem < length optParams
+              then pure $ optParams !! rem
+              else zeroPlus
+      OnePlus arg -> pure arg
 
 -- `argType` gets called when the user tries to autocomplete an `i`th argument (zero-indexed).
 -- todo: would be nice if we could alert the user if they try to autocomplete
 -- past the end.  It would also be nice if
-argType :: InputPattern -> Int -> Maybe ArgumentType
-argType ip i = snd <$> (argInfo ip i)
+paramType :: Parameters -> Int -> Maybe ParameterType
+paramType p = fmap snd . paramInfo p
 
-minArgs :: InputPattern -> Int
-minArgs (InputPattern {args, patternName}) =
-  go (args ^.. folded . _2)
-  where
-    go [] = 0
-    go (Required : argTypes) = 1 + go argTypes
-    go [_] = 0
-    go _ =
-      error $
-        "Invalid args for InputPattern ("
-          <> show patternName
-          <> "): "
-          <> show args
+minArgs :: Parameters -> Int
+minArgs Parameters {requiredParams, trailingParams} =
+  length requiredParams + case trailingParams of
+    Optional _ _ -> 0
+    OnePlus _ -> 1
 
-maxArgs :: InputPattern -> Maybe Int
-maxArgs (InputPattern {args, patternName}) = go argTypes
-  where
-    argTypes = args ^.. folded . _2
-    go [] = Just 0
-    go (Required : argTypes) = (1 +) <$> go argTypes
-    go [Optional] = Just 0
-    go [_] = Nothing
-    go _ =
-      error $
-        "Invalid args for InputPattern ("
-          <> show patternName
-          <> "): "
-          <> show argTypes
+maxArgs :: Parameters -> Maybe Int
+maxArgs Parameters {requiredParams, trailingParams} =
+  case trailingParams of
+    Optional optParams Nothing -> pure $ length requiredParams + length optParams
+    _ -> Nothing
 
 -- | Union suggestions from all possible completions
 unionSuggestions ::

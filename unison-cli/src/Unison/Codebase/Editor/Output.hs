@@ -355,6 +355,8 @@ data Output
   | DisplayDebugCompletions [Completion.Completion]
   | DisplayDebugLSPNameCompletions [(Text, Name, LabeledDependency)]
   | DebugDisplayFuzzyOptions Text [String {- arg description, options -}]
+  | DebugFuzzyOptionsIncorrectArgs (NonEmpty String)
+  | DebugFuzzyOptionsNoCommand String
   | DebugFuzzyOptionsNoResolver
   | DebugTerm (Bool {- verbose mode -}) (Either (Text {- A builtin hash -}) (Term Symbol Ann))
   | DebugDecl (Either (Text {- A builtin hash -}) (DD.Decl Symbol Ann)) (Maybe ConstructorId {- If 'Just' we're debugging a constructor of the given decl -})
@@ -624,6 +626,8 @@ isFailure o = case o of
   DisplayDebugCompletions {} -> False
   DisplayDebugLSPNameCompletions {} -> False
   DebugDisplayFuzzyOptions {} -> False
+  DebugFuzzyOptionsIncorrectArgs {} -> True
+  DebugFuzzyOptionsNoCommand {} -> True
   DebugFuzzyOptionsNoResolver {} -> True
   DebugTerm {} -> False
   DebugDecl {} -> False
