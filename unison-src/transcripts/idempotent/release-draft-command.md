@@ -35,7 +35,7 @@ Now, the `release.draft` demo:
 `release.draft` accepts a single semver argument.
 
 ``` ucm
-foo/main> release.draft 1.2.3
+foo/main> release.draft "1.2.3"
 
   😎 Great! I've created a draft release for you at
   /releases/drafts/1.2.3.
@@ -55,7 +55,7 @@ foo/main> release.draft 1.2.3
 It's an error to try to create a `releases/drafts/x.y.z` branch that already exists.
 
 ``` ucm :error
-foo/main> release.draft 1.2.3
+foo/main> release.draft "1.2.3"
 
   foo/releases/drafts/1.2.3 already exists. You can switch to it
   with `switch foo/releases/drafts/1.2.3`.

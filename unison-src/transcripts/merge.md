@@ -43,7 +43,7 @@ scratch/bob> add
 ```
 Merge result:
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 scratch/alice> view foo bar
 ```
 
@@ -84,7 +84,7 @@ scratch/bob> add
 ```
 Merge result:
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 scratch/alice> view foo bar
 ```
 
@@ -136,7 +136,7 @@ scratch/bob> add
 ```
 Merge result:
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 scratch/alice> view foo bar
 scratch/alice> display bar
 ```
@@ -202,7 +202,7 @@ scratch/bob> display foo
 ```
 Merge result:
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 scratch/alice> view foo bar baz
 scratch/alice> display foo
 ```
@@ -272,7 +272,7 @@ scratch/bob> display foo
 
 Merge result:
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 scratch/alice> view foo bar baz
 scratch/alice> display foo
 ```
@@ -318,7 +318,7 @@ scratch/bob> delete.term foo
 
 Merge result:
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 scratch/alice> view foo
 ```
 
@@ -393,7 +393,7 @@ scratch/main> builtins.mergeio lib.builtins
 ``` ucm
 scratch/main> branch alice
 scratch/main> branch bob
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -421,7 +421,7 @@ foo = "foo"
 
 ``` ucm
 scratch/alice> add
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -449,7 +449,7 @@ foo = "foo"
 
 ``` ucm
 scratch/bob> add
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -460,7 +460,7 @@ scratch/main> project.delete scratch
 
 ``` ucm
 scratch/main> branch topic
-scratch/main> merge /topic
+scratch/main> merge "/topic"
 ```
 
 ``` ucm :hide
@@ -505,7 +505,7 @@ bar = foo ++ " - " ++ foo
 
 ``` ucm :error
 scratch/bob> add
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -555,7 +555,7 @@ scratch/bob> update
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -616,7 +616,7 @@ baz = "bobs baz"
 scratch/bob> update
 ```
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm
@@ -663,7 +663,7 @@ unique type Foo = MkFoo Nat Text
 scratch/bob> update
 ```
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -703,7 +703,7 @@ Bob's renames `Qux` to `BobQux`:
 scratch/bob> move.term Foo.Qux Foo.BobQux
 ```
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -1006,7 +1006,7 @@ Attempt to merge:
 scratch/bob> update
 ```
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 Resolve conflicts and commit:
@@ -1099,7 +1099,7 @@ scratch/bob> add
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -1140,7 +1140,7 @@ scratch/bob> add
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -1186,7 +1186,7 @@ scratch/bob> add
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -1220,7 +1220,7 @@ scratch/alice> delete.term Foo.Bar
 
 Bob's branch:
 ``` ucm :hide
-scratch/main> branch /bob
+scratch/main> branch "/bob"
 ```
 
 ``` unison :hide
@@ -1233,7 +1233,7 @@ scratch/bob> add
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -1281,7 +1281,7 @@ scratch/bob> add
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -1366,7 +1366,7 @@ scratch/bob> add
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -1432,7 +1432,7 @@ scratch/bob> add
 Now we merge:
 
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -1477,7 +1477,7 @@ scratch/bob> add
 ```
 
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -1581,7 +1581,7 @@ When we try to merge Bob into Alice, we should see both versions of `baz`, with 
 the underlying namespace.
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 But `bar` was put into the scratch file instead.
@@ -1636,8 +1636,8 @@ b = 2
 
 ``` ucm
 scratch/carol> add
-scratch/bob> merge /alice
-scratch/carol> merge /bob
+scratch/bob> merge "/alice"
+scratch/carol> merge "/bob"
 scratch/carol> history
 ```
 
@@ -1696,7 +1696,7 @@ scratch/alice> update
 ```
 
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide
@@ -1726,7 +1726,7 @@ scratch/bob> move.term Foo.Lca Foo.Bob
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm
@@ -1789,7 +1789,7 @@ scratch/bob> update
 Note Bob's `hello` references `foo` (Alice's name), not `bar` (Bob's name).
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 ```
 
 ``` ucm :hide

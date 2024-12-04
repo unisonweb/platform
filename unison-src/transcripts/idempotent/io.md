@@ -5,7 +5,7 @@ scratch/main> builtins.merge
 
 scratch/main> builtins.mergeio
 
-scratch/main> load unison-src/transcripts-using-base/base.u
+scratch/main> load "unison-src/transcripts-using-base/base.u"
 
 scratch/main> add
 ```

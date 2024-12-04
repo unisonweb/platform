@@ -1,7 +1,7 @@
 ``` ucm :hide
 scratch/main> builtins.mergeio lib.builtins
 
-scratch/main> load unison-src/transcripts-using-base/doc.md.files/syntax.u
+scratch/main> load "unison-src/transcripts-using-base/doc.md.files/syntax.u"
 ```
 
 We can display the guide before and after adding it to the codebase:

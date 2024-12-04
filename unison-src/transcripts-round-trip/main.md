@@ -7,7 +7,7 @@ scratch/a2> builtins.mergeio lib.builtins
 ```
 
 ``` ucm :hide
-scratch/a1> load unison-src/transcripts-round-trip/reparses-with-same-hash.u
+scratch/a1> load "unison-src/transcripts-round-trip/reparses-with-same-hash.u"
 scratch/a1> add
 ```
 
@@ -48,7 +48,7 @@ Now check that definitions in 'reparses.u' at least parse on round trip:
 
 ``` ucm :hide
 scratch/a3> builtins.mergeio lib.builtins
-scratch/a3> load unison-src/transcripts-round-trip/reparses.u
+scratch/a3> load "unison-src/transcripts-round-trip/reparses.u"
 scratch/a3> add
 ```
 

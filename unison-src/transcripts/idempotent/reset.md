@@ -153,7 +153,7 @@ foo/main> update
 
   Done.
 
-foo/empty> reset /main:
+foo/empty> reset "/main:"
 
   Done.
 

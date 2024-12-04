@@ -37,6 +37,7 @@ import Unison.Codebase.Editor.StructuredArgument (StructuredArgument)
 import Unison.Codebase.ProjectPath qualified as PP
 import Unison.CommandLine.FZFResolvers (FZFResolver (..))
 import Unison.Prelude
+import Unison.Syntax.Lexer.Unison qualified as Lexer
 import Unison.Util.ColorText qualified as CT
 import Unison.Util.Monoid (foldMapM)
 import Unison.Util.Pretty qualified as P
@@ -48,7 +49,7 @@ data Visibility = Hidden | Visible
 -- needs to be parsed or a numbered argument that doesn’t need to be parsed, as
 -- we’ve preserved its representation (although the numbered argument could
 -- still be of the wrong type, which should result in an error).
-type Argument = Either String StructuredArgument
+type Argument = Either Lexer.Lexeme StructuredArgument
 
 type Arguments = [Argument]
 
@@ -71,7 +72,7 @@ data InputPattern = InputPattern
     --          message, and shouldn’t plan for the context it is being output to (e.g., don’t `P.indentN` the entire
     --          message).
     parse ::
-      -- | This list is always a valid length for the pattern. It may be necessary to have a catch-all case for
+      -- \| This list is always a valid length for the pattern. It may be necessary to have a catch-all case for
       --   coverage, but the implementation can assume that, say, a `OnePlus` parameter will always be provided at least
       --   one argument.
       Arguments ->

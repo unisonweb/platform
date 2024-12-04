@@ -15,9 +15,9 @@ http.z = 8
 ``` ucm :hide
 scratch/main> add
 
-scratch/main> branch /app1
+scratch/main> branch "/app1"
 
-scratch/main> branch /app2
+scratch/main> branch "/app2"
 ```
 
 Our `app1` project includes the text library twice and the http library twice as direct dependencies.

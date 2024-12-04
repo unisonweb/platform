@@ -297,27 +297,24 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
                 atomically . Q.undequeue cmdQueue $ Just p
                 pure $ Right switchCommand
               Nothing -> do
-                case words . Text.unpack $ lineTxt of
-                  [] -> Cli.returnEarlyWithoutOutput
-                  args -> do
-                    liftIO $ outputUcmLine p
-                    numberedArgs <- use #numberedArgs
-                    PP.ProjectAndBranch projId branchId <-
-                      PP.toProjectAndBranch . NonEmpty.head <$> use #projectPathStack
-                    let getProjectRoot = liftIO $ Codebase.expectProjectBranchRoot codebase projId branchId
-                    liftIO (parseInput codebase curPath getProjectRoot numberedArgs patternMap args)
-                      >>= either
-                        -- invalid command is treated as a failure
-                        ( \msg -> do
-                            liftIO $ writeIORef hasErrors True
-                            liftIO (readIORef allowErrors) >>= \case
-                              True -> do
-                                liftIO $ outputUcmResult msg
-                                Cli.returnEarlyWithoutOutput
-                              False -> liftIO . dieWithMsg $ Pretty.toPlain terminalWidth msg
-                        )
-                        -- No input received from this line, try again.
-                        (maybe Cli.returnEarlyWithoutOutput $ pure . Right . snd)
+                liftIO $ outputUcmLine p
+                numberedArgs <- use #numberedArgs
+                PP.ProjectAndBranch projId branchId <-
+                  PP.toProjectAndBranch . NonEmpty.head <$> use #projectPathStack
+                let getProjectRoot = liftIO $ Codebase.expectProjectBranchRoot codebase projId branchId
+                liftIO (parseInput codebase curPath getProjectRoot numberedArgs patternMap $ Text.unpack lineTxt)
+                  >>= either
+                    -- invalid command is treated as a failure
+                    ( \msg -> do
+                        liftIO $ writeIORef hasErrors True
+                        liftIO (readIORef allowErrors) >>= \case
+                          True -> do
+                            liftIO $ outputUcmResult msg
+                            Cli.returnEarlyWithoutOutput
+                          False -> liftIO . dieWithMsg $ Pretty.toPlain terminalWidth msg
+                    )
+                    -- No input received from this line, try again.
+                    (maybe Cli.returnEarlyWithoutOutput $ pure . Right . (\(_, _, input) -> input))
 
       startProcessedBlock block = case block of
         Unison infoTags txt -> do

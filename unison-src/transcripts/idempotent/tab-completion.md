@@ -180,7 +180,7 @@ scratch/main> update.old
     type Foo
     add : a -> a
 
-scratch/main> debug.tab-complete delete.type Foo
+scratch/main> debug.tab-complete "delete.type" Foo
 
   * Foo
     Foo.

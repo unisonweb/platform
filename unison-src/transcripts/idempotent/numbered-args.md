@@ -117,7 +117,7 @@ scratch/main> find
   6. qux : Text
   7. builtin type Text
 
-scratch/main> view 2-4
+scratch/main> view "2-4"
 
   baz : Text
   baz = "baz"
@@ -142,7 +142,7 @@ scratch/main> find
   6. qux : Text
   7. builtin type Text
 
-scratch/main> view 1-3 4 5-6
+scratch/main> view "1-3" 4 "5-6"
 
   bar : Text
   bar = "bar"

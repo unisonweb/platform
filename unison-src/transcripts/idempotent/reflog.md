@@ -51,7 +51,7 @@ scratch/main> add
 
     y : Nat
 
-scratch/main> branch /other
+scratch/main> branch "/other"
 
   Done. I've created the other branch based off of main.
 

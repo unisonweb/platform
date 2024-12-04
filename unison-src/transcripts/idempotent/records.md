@@ -3,7 +3,7 @@ Ensure that Records keep their syntax after being added to the codebase
 ``` ucm :hide
 scratch/main> builtins.merge
 
-scratch/main> load unison-src/transcripts-using-base/base.u
+scratch/main> load "unison-src/transcripts-using-base/base.u"
 ```
 
 ## Record with 1 field

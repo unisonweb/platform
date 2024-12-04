@@ -113,7 +113,7 @@ scratch/main> text.find.all hi
   Tip: Try `edit 1` or `edit 1-2` to bring these into your
        scratch file.
 
-scratch/main> view 1-5
+scratch/main> view "1-5"
 
   bar : Nat
   bar = match "well hi there" with
@@ -154,7 +154,7 @@ scratch/main> grep quaffle
 
   Tip: Try `edit 1` to bring this into your scratch file.
 
-scratch/main> view 1-5
+scratch/main> view "1-5"
 
   baz : [Text]
   baz = ["an", "quaffle", "tres"]
@@ -169,7 +169,7 @@ scratch/main> text.find "interesting const"
 
   Tip: Try `edit 1` to bring this into your scratch file.
 
-scratch/main> view 1-5
+scratch/main> view "1-5"
 
   foo : Nat
   foo =

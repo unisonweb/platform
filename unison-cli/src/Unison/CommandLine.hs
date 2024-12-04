@@ -15,12 +15,14 @@ import Control.Lens hiding (aside)
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import Data.List (isPrefixOf, isSuffixOf)
+import Data.List.Extra (breakOn, trimStart)
 import Data.List.NonEmpty (NonEmpty ((:|)), nonEmpty)
 import Data.Map qualified as Map
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
 import Data.Vector qualified as Vector
 import System.FilePath (takeFileName)
+import Text.Megaparsec.Error qualified as EP
 import Text.Numeral (defaultInflection)
 import Text.Numeral.Language.ENG qualified as Numeral
 import Text.Regex.TDFA ((=~))
@@ -40,6 +42,8 @@ import Unison.CommandLine.InputPatterns qualified as IPs
 import Unison.Parser.Ann (Ann)
 import Unison.Prelude
 import Unison.Symbol (Symbol)
+import Unison.Syntax.Lexer.Token qualified as Token
+import Unison.Syntax.Lexer.Unison qualified as Lexer
 import Unison.Util.ColorText qualified as CT
 import Unison.Util.Monoid (foldMapM)
 import Unison.Util.Pretty qualified as P
@@ -69,35 +73,35 @@ watchFileSystem q dir = do
 expandArguments ::
   NumberedArgs ->
   InputPattern.Parameters ->
-  [String] ->
+  [Lexer.Lexeme] ->
   Either (NonEmpty InputPattern.Argument) (InputPattern.Parameters, InputPattern.Arguments)
 expandArguments numberedArgs params =
   fmap (fmap $ reverse)
     . InputPattern.foldArgs'
       ( \acc (_, param) arg ->
-            if InputPattern.isStructured param
-              then
-                either
-                  ( maybe
-                      (arg : acc, [])
-                      ( maybe
-                          (arg : acc, []) -- FIXME: shouldn’t be empty – error here, or enforce nonempty earlier?
-                          (\(h :| t) -> (h : acc, t))
-                          . nonEmpty
-                          . fmap pure
-                      )
-                      . expandNumber numberedArgs
-                  )
-                  ((,[]) . (: acc) . pure)
-                  arg
-              else
-                ( either
-                    Left
-                    pure -- FIXME: Should error, because we have a structured arg when we didn’t expect one
-                    arg
-                    : acc,
-                  []
+          if InputPattern.isStructured param
+            then
+              either
+                ( maybe
+                    (arg : acc, [])
+                    ( maybe
+                        (arg : acc, []) -- FIXME: shouldn’t be empty – error here, or enforce nonempty earlier?
+                        (\(h :| t) -> (h : acc, t))
+                        . nonEmpty
+                        . fmap pure
+                    )
+                    . expandNumber numberedArgs
                 )
+                ((,[]) . (: acc) . pure)
+                arg
+            else
+              ( either
+                  Left
+                  pure -- FIXME: Should error, because we have a structured arg when we didn’t expect one
+                  arg
+                  : acc,
+                []
+              )
       )
       []
       params
@@ -118,7 +122,7 @@ reportTooManyArgs params extraArgs = do
       $ InputPattern.maxArgs params
   let foundCount = showNum $ maxCount + length extraArgs
   throwError . P.text $
-    "I expected no more than " <> showNum maxCount <> " arguments, but received " <> foundCount <> "."
+    "I expected no more than " <> showNum maxCount <> " arguments, but received " <> foundCount <> ":" <> Text.pack (show extraArgs) <> "."
 
 reportFailure :: String -> InputPattern -> P.Pretty CT.ColorText -> P.Pretty CT.ColorText
 reportFailure command pat msg =
@@ -145,21 +149,57 @@ parseInput ::
   NumberedArgs ->
   -- | Input Pattern Map
   Map String InputPattern ->
-  -- | command:arguments
-  [String] ->
-  -- Returns either an error message or the fully expanded arguments list and parsed input.
+  -- | command & arguments
+  String ->
+  -- | Returns either an error message or the fully expanded arguments list and parsed input.
+  -- If the output is `Nothing`, the user cancelled the input (e.g. ctrl-c)
+  IO
+    (Either (P.Pretty CT.ColorText) (Maybe (String, InputPattern.Arguments, Input)))
+parseInput codebase projPath currentProjectRoot numberedArgs patterns inputStr =
+  let (command, args) = breakOn " " $ trimStart inputStr
+   in if command == ""
+        then pure $ pure Nothing
+        else
+          either
+            (pure . Left . P.string . EP.errorBundlePretty)
+            ( fmap (fmap $ fmap \(args, input) -> (command, args, input))
+              . parseInput' codebase projPath currentProjectRoot numberedArgs patterns command
+              . fmap Token.payload
+              . init
+            )
+            $ Lexer.lexer' "UCM" args
+
+parseInput' ::
+  Codebase IO Symbol Ann ->
+  -- | Current location
+  PP.ProjectPath ->
+  IO (Branch.Branch IO) ->
+  -- | Numbered arguments
+  NumberedArgs ->
+  -- | Input Pattern Map
+  Map String InputPattern ->
+  -- | command
+  String ->
+  -- | arguments
+  [Lexer.Lexeme] ->
+  -- | Returns either an error message or the fully expanded arguments list and parsed input.
   -- If the output is `Nothing`, the user cancelled the input (e.g. ctrl-c)
   IO (Either (P.Pretty CT.ColorText) (Maybe (InputPattern.Arguments, Input)))
-parseInput codebase projPath currentProjectRoot numberedArgs patterns segments = runExceptT do
+parseInput' codebase projPath currentProjectRoot numberedArgs patterns command args = runExceptT do
   let getCurrentBranch0 :: IO (Branch0 IO)
       getCurrentBranch0 = do
         projRoot <- currentProjectRoot
         pure . Branch.head $ Branch.getAt' (projPath ^. PP.path_) projRoot
 
-  case segments of
-    [] -> throwE ""
-    command : args -> case Map.lookup command patterns of
-      Just pat@(InputPattern {params, help, parse}) -> do
+  maybe
+    ( throwE . warn . P.wrap $
+        "I don't know how to"
+          <> P.group (fromString command <> ".")
+          <> "Type"
+          <> IPs.makeExample' IPs.help
+          <> "or `?` to get help."
+    )
+    ( \pat@(InputPattern {params, help, parse}) -> do
         (remainingParams, expandedNumbers) <- either (reportTooManyArgs params) pure $ expandArguments numberedArgs params args
         lift (fzfResolve codebase projPath getCurrentBranch0 remainingParams expandedNumbers)
           >>= either
@@ -171,17 +211,10 @@ parseInput codebase projPath currentProjectRoot numberedArgs patterns segments =
             )
             ( \resolvedArgs -> do
                 parsedInput <- except . first (reportFailure command pat) $ parse resolvedArgs
-                pure $ Just (Left command : resolvedArgs, parsedInput)
+                pure $ Just (resolvedArgs, parsedInput)
             )
-      Nothing ->
-        throwE
-          . warn
-          . P.wrap
-          $ "I don't know how to"
-            <> P.group (fromString command <> ".")
-            <> "Type"
-            <> IPs.makeExample' IPs.help
-            <> "or `?` to get help."
+    )
+    $ Map.lookup command patterns
   where
     noCompletionsMessage argDesc =
       P.callout "⚠️" $
@@ -193,8 +226,13 @@ parseInput codebase projPath currentProjectRoot numberedArgs patterns segments =
           ]
 
 -- Expand a numeric argument like `1` or a range like `3-9`
-expandNumber :: NumberedArgs -> String -> Maybe NumberedArgs
-expandNumber numberedArgs s =
+expandNumber :: NumberedArgs -> Lexer.Lexeme -> Maybe NumberedArgs
+expandNumber numberedArgs (Lexer.Numeric s) =
+  (\nums -> [arg | i <- nums, Just arg <- [vargs Vector.!? (i - 1)]]) <$> expandedNumber
+  where
+    vargs = Vector.fromList numberedArgs
+    expandedNumber = pure <$> readMay s
+expandNumber numberedArgs (Lexer.Textual s) =
   (\nums -> [arg | i <- nums, Just arg <- [vargs Vector.!? (i - 1)]]) <$> expandedNumber
   where
     vargs = Vector.fromList numberedArgs
@@ -209,6 +247,7 @@ expandNumber numberedArgs s =
           case (junk, moreJunk, ns) of
             ("", "", [from, to]) -> enumFromTo <$> readMay from <*> readMay to
             (_, _, _) -> Nothing
+expandNumber _ _ = Nothing
 
 data FZFResolveFailure
   = NoFZFResolverForArgumentType InputPattern.ParameterDescription
@@ -261,7 +300,7 @@ fzfResolve codebase ppCtx getCurrentBranch InputPattern.Parameters {requiredPara
       -- with no arguments.
       if null results
         then throwError FZFCancelled
-        else pure (Left . Text.unpack <$> results)
+        else pure (fmap (Left . Token.payload) . Lexer.lexer "UCM" . Text.unpack =<< results)
 
 prompt :: String
 prompt = "> "

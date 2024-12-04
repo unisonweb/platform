@@ -145,7 +145,6 @@ where
 
 import Control.Lens.Cons qualified as Cons
 import Data.Bitraversable (bitraverse)
-import Data.Char (isSpace)
 import Data.List (intercalate)
 import Data.List.Extra qualified as List
 import Data.List.NonEmpty qualified as NE
@@ -190,7 +189,6 @@ import Unison.Codebase.Editor.UriParser (readRemoteNamespaceParser)
 import Unison.Codebase.Editor.UriParser qualified as UriParser
 import Unison.Codebase.Path (Path, Path')
 import Unison.Codebase.Path qualified as Path
-import Unison.Codebase.Path.Parse qualified as Path
 import Unison.Codebase.ProjectPath (ProjectPath)
 import Unison.Codebase.ProjectPath qualified as PP
 import Unison.Codebase.PushBehavior qualified as PushBehavior
@@ -234,8 +232,10 @@ import Unison.Server.Backend qualified as Backend
 import Unison.Server.SearchResult (SearchResult)
 import Unison.Server.SearchResult qualified as SR
 import Unison.ShortHash (ShortHash)
-import Unison.Syntax.HashQualified qualified as HQ (parseText, toText)
-import Unison.Syntax.Name qualified as Name (parseTextEither, toText)
+import Unison.Syntax.HashQualified qualified as HQ (toText)
+import Unison.Syntax.HashQualifiedPrime qualified as HQ' (toText)
+import Unison.Syntax.Lexer.Unison qualified as Lexer
+import Unison.Syntax.Name qualified as Name (toText)
 import Unison.Syntax.NameSegment qualified as NameSegment
 import Unison.Util.ColorText qualified as CT
 import Unison.Util.Monoid (intercalateMap)
@@ -290,17 +290,17 @@ formatStructuredArgument schLength = \case
 -- | Converts an arbitrary argument to a `String`. This is for cases where the
 -- command /should/ accept a structured argument of some type, but currently
 -- wants a `String`.
-unifyArgument :: I.Argument -> String
-unifyArgument = either id (Text.unpack . formatStructuredArgument Nothing)
+unifyArgument :: I.Argument -> Either (P.Pretty CT.ColorText) String
+unifyArgument = either extractLexemeString (pure . Text.unpack . formatStructuredArgument Nothing)
 
 showPatternHelp :: InputPattern -> P.Pretty CT.ColorText
 showPatternHelp i =
   P.lines
-    [ P.bold (fromString $ I.patternName i)
-        <> fromString
-          ( if not . null $ I.aliases i
-              then " (or " <> intercalate ", " (I.aliases i) <> ")"
-              else ""
+    [ P.bold (patternName i)
+        <> P.string
+          ( if null $ I.aliases i
+              then ""
+              else " (or " <> intercalate ", " (I.aliases i) <> ")"
           ),
       I.help i
     ]
@@ -324,7 +324,7 @@ searchResultToHQ oprefix = \case
 
 unsupportedStructuredArgument :: InputPattern -> Text -> I.Argument -> Either (P.Pretty CT.ColorText) String
 unsupportedStructuredArgument command expected =
-  either pure . const . Left . P.wrap $
+  either extractLexemeString . const . Left . P.wrap $
     makeExample' command
       <> "can’t accept a numbered argument for"
       <> P.text expected
@@ -377,7 +377,7 @@ patternName = fromString . I.patternName
 makeExample, makeExampleNoBackticks :: InputPattern -> [P.Pretty CT.ColorText] -> P.Pretty CT.ColorText
 makeExample p args = P.group . backtick $ makeExampleNoBackticks p args
 makeExampleNoBackticks p args =
-  P.group $ intercalateMap " " id (P.nonEmpty $ fromString (I.patternName p) : args)
+  P.group $ intercalateMap " " id (P.nonEmpty $ patternName p : args)
 
 makeExample' :: InputPattern -> P.Pretty CT.ColorText
 makeExample' p = makeExample p []
@@ -385,7 +385,7 @@ makeExample' p = makeExample p []
 makeExampleEOS :: InputPattern -> [P.Pretty CT.ColorText] -> P.Pretty CT.ColorText
 makeExampleEOS p args =
   P.group $
-    backtick (intercalateMap " " id (P.nonEmpty $ fromString (I.patternName p) : args)) <> "."
+    backtick (intercalateMap " " id (P.nonEmpty $ patternName p : args)) <> "."
 
 helpFor :: InputPattern -> P.Pretty CT.ColorText
 helpFor = I.help
@@ -393,7 +393,7 @@ helpFor = I.help
 handleProjectArg :: I.Argument -> Either (P.Pretty CT.ColorText) ProjectName
 handleProjectArg =
   either
-    (\name -> first (const $ expectedButActually' "a project" name) . tryInto @ProjectName $ Text.pack name)
+    ((\name -> first (const $ expectedButActually' "a project" name) . tryInto @ProjectName $ Text.pack name) <=< extractLexemeString)
     \case
       SA.Project project -> pure project
       otherArgType -> Left $ wrongStructuredArgument "a project" otherArgType
@@ -402,7 +402,7 @@ handleMaybeProjectBranchArg ::
   I.Argument -> Either (P.Pretty CT.ColorText) (ProjectAndBranch (Maybe ProjectName) ProjectBranchName)
 handleMaybeProjectBranchArg =
   either
-    (megaparse branchWithOptionalProjectParser . Text.pack)
+    (megaparse branchWithOptionalProjectParser . Text.pack <=< extractLexemeString)
     \case
       SA.ProjectBranch pb -> pure pb
       otherArgType -> Left $ wrongStructuredArgument "a branch" otherArgType
@@ -411,7 +411,7 @@ handleProjectMaybeBranchArg ::
   I.Argument -> Either (P.Pretty CT.ColorText) (ProjectAndBranch ProjectName (Maybe ProjectBranchNameOrLatestRelease))
 handleProjectMaybeBranchArg =
   either
-    (\str -> first (const $ expectedButActually' "a project or branch" str) . tryInto $ Text.pack str)
+    ((\str -> first (const $ expectedButActually' "a project or branch" str) . tryInto $ Text.pack str) <=< extractLexemeString)
     \case
       SA.Project proj -> pure $ ProjectAndBranch proj Nothing
       SA.ProjectBranch (ProjectAndBranch (Just proj) branch) ->
@@ -421,7 +421,7 @@ handleProjectMaybeBranchArg =
 handleHashQualifiedNameArg :: I.Argument -> Either (P.Pretty CT.ColorText) (HQ.HashQualified Name)
 handleHashQualifiedNameArg =
   either
-    parseHashQualifiedName
+    extractLexemeHQ
     \case
       SA.Name name -> pure $ HQ.NameOnly name
       SA.NameWithBranchPrefix mprefix name ->
@@ -437,7 +437,7 @@ handleHashQualifiedNameArg =
 handlePathArg :: I.Argument -> Either (P.Pretty CT.ColorText) Path
 handlePathArg =
   either
-    (first P.text . Path.parsePath)
+    extractLexemePath
     \case
       SA.Name name -> pure $ Path.fromName name
       SA.NameWithBranchPrefix _ name -> pure $ Path.fromName name
@@ -455,7 +455,7 @@ handlePathArg =
 handlePath'Arg :: I.Argument -> Either (P.Pretty CT.ColorText) Path'
 handlePath'Arg =
   either
-    (first P.text . Path.parsePath')
+    extractLexemePath'
     \case
       SA.AbsolutePath path -> pure $ Path.absoluteToPath' path
       SA.Name name -> pure $ Path.fromName' name
@@ -466,21 +466,16 @@ handlePath'Arg =
 
 handleNewName :: I.Argument -> Either (P.Pretty CT.ColorText) Path.Split'
 handleNewName =
-  either
-    (first P.text . Path.parseSplit')
-    (const . Left $ "can’t use a numbered argument for a new name")
+  either extractLexemeSplit' (const . Left $ "can’t use a numbered argument for a new name")
 
 handleNewPath :: I.Argument -> Either (P.Pretty CT.ColorText) Path'
-handleNewPath =
-  either
-    (first P.text . Path.parsePath')
-    (const . Left $ "can’t use a numbered argument for a new namespace")
+handleNewPath = either extractLexemePath' (const . Left $ "can’t use a numbered argument for a new namespace")
 
 -- | When only a relative name is allowed.
 handleSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) Path.Split
 handleSplitArg =
   either
-    (first P.text . Path.parseSplit)
+    extractLexemeSplit
     \case
       SA.Name name | Name.isRelative name -> pure $ Path.splitFromName name
       SA.NameWithBranchPrefix _ name | Name.isRelative name -> pure $ Path.splitFromName name
@@ -489,7 +484,7 @@ handleSplitArg =
 handleSplit'Arg :: I.Argument -> Either (P.Pretty CT.ColorText) Path.Split'
 handleSplit'Arg =
   either
-    (first P.text . Path.parseSplit')
+    extractLexemeSplit'
     \case
       SA.Name name -> pure $ Path.splitFromName' name
       SA.NameWithBranchPrefix (BranchAtSCH _) name -> pure $ Path.splitFromName' name
@@ -500,7 +495,7 @@ handleSplit'Arg =
 handleProjectBranchNameArg :: I.Argument -> Either (P.Pretty CT.ColorText) ProjectBranchName
 handleProjectBranchNameArg =
   either
-    (first (const $ P.text "Wanted a branch name, but it wasn’t") . tryInto . Text.pack)
+    (first (const $ P.text "Wanted a branch name, but it wasn’t") . tryInto . Text.pack <=< extractLexemeString)
     \case
       SA.ProjectBranch (ProjectAndBranch _ branch) -> pure branch
       otherNumArg -> Left $ wrongStructuredArgument "a branch name" otherNumArg
@@ -508,7 +503,7 @@ handleProjectBranchNameArg =
 handleBranchIdArg :: I.Argument -> Either (P.Pretty CT.ColorText) Input.BranchId
 handleBranchIdArg =
   either
-    (first P.text . Input.parseBranchId)
+    (first P.text . Input.parseBranchId <=< extractLexemeString)
     \case
       SA.AbsolutePath path -> pure . BranchAtPath $ Path.absoluteToPath' path
       SA.Name name -> pure . BranchAtPath $ Path.fromName' name
@@ -530,7 +525,7 @@ _handleBranchIdOrProjectArg ::
   Either (P.Pretty CT.ColorText) (These Input.BranchId (ProjectAndBranch (Maybe ProjectName) ProjectBranchName))
 _handleBranchIdOrProjectArg =
   either
-    (\str -> maybe (Left $ expectedButActually' "a branch" str) pure $ branchIdOrProject str)
+    ((\str -> maybe (Left $ expectedButActually' "a branch" str) pure $ branchIdOrProject str) <=< extractLexemeString)
     \case
       SA.Namespace hash -> pure . This . BranchAtSCH $ SCH.fromFullHash hash
       SA.AbsolutePath path -> pure . This . BranchAtPath $ Path.absoluteToPath' path
@@ -562,7 +557,7 @@ _handleBranchIdOrProjectArg =
 handleBranchId2Arg :: I.Argument -> Either (P.Pretty P.ColorText) Input.BranchId2
 handleBranchId2Arg =
   either
-    Input.parseBranchId2
+    (Input.parseBranchId2 <=< extractLexemeString)
     \case
       SA.Namespace hash -> pure . Left $ SCH.fromFullHash hash
       SA.AbsolutePath path -> pure . pure . UnqualifiedPath $ Path.absoluteToPath' path
@@ -579,7 +574,7 @@ handleBranchId2Arg =
 handleBranchRelativePathArg :: I.Argument -> Either (P.Pretty P.ColorText) BranchRelativePath
 handleBranchRelativePathArg =
   either
-    parseBranchRelativePath
+    (parseBranchRelativePath <=< extractLexemeString)
     \case
       SA.AbsolutePath path -> pure . UnqualifiedPath $ Path.absoluteToPath' path
       SA.Name name -> pure . UnqualifiedPath $ Path.fromName' name
@@ -617,7 +612,7 @@ hq'NameToSplit = \case
 handleHashQualifiedSplit'Arg :: I.Argument -> Either (P.Pretty CT.ColorText) Path.HQSplit'
 handleHashQualifiedSplit'Arg =
   either
-    (first P.text . Path.parseHQSplit')
+    extractLexemeHQSplit'
     \case
       SA.Name name -> pure $ Path.hqSplitFromName' name
       hq@(SA.HashQualified name) -> first (const $ expectedButActually "a name" hq "a hash") $ hqNameToSplit' name
@@ -633,7 +628,7 @@ handleHashQualifiedSplit'Arg =
 handleHashQualifiedSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) Path.HQSplit
 handleHashQualifiedSplitArg =
   either
-    (first P.text . Path.parseHQSplit)
+    extractLexemeHQSplit
     \case
       n@(SA.Name name) ->
         bitraverse
@@ -655,7 +650,7 @@ handleHashQualifiedSplitArg =
 handleShortCausalHashArg :: I.Argument -> Either (P.Pretty CT.ColorText) ShortCausalHash
 handleShortCausalHashArg =
   either
-    (first (P.text . Text.pack) . Input.parseShortCausalHash)
+    (first (P.text . Text.pack) . Input.parseShortCausalHash <=< extractLexemeString)
     \case
       SA.Namespace hash -> pure $ SCH.fromFullHash hash
       otherNumArg -> Left $ wrongStructuredArgument "a causal hash" otherNumArg
@@ -664,7 +659,7 @@ handleShortHashOrHQSplit'Arg ::
   I.Argument -> Either (P.Pretty CT.ColorText) (Either ShortHash Path.HQSplit')
 handleShortHashOrHQSplit'Arg =
   either
-    (first P.text . Path.parseShortHashOrHQSplit')
+    extractLexemeHashOrSplit'
     \case
       SA.HashQualified name -> pure $ hqNameToSplit' name
       SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure . pure $ hq'NameToSplit' hqname
@@ -686,7 +681,7 @@ handleRelativeNameSegmentArg arg = do
 handleNameArg :: I.Argument -> Either (P.Pretty CT.ColorText) Name
 handleNameArg =
   either
-    (first P.text . Name.parseTextEither . Text.pack)
+    extractLexemeName
     \case
       SA.Name name -> pure name
       SA.NameWithBranchPrefix (BranchAtSCH _) name -> pure name
@@ -708,7 +703,7 @@ handlePullSourceArg ::
     (ReadRemoteNamespace (These ProjectName ProjectBranchNameOrLatestRelease))
 handlePullSourceArg =
   either
-    (megaparse (readRemoteNamespaceParser ProjectBranchSpecifier'NameOrLatestRelease) . Text.pack)
+    (megaparse (readRemoteNamespaceParser ProjectBranchSpecifier'NameOrLatestRelease) . Text.pack <=< extractLexemeString)
     \case
       SA.Project project -> pure . RemoteRepo.ReadShare'ProjectBranch $ This project
       SA.ProjectBranch (ProjectAndBranch project branch) ->
@@ -720,7 +715,7 @@ handlePushTargetArg ::
   I.Argument -> Either (P.Pretty CT.ColorText) (These ProjectName ProjectBranchName)
 handlePushTargetArg =
   either
-    (\str -> maybe (Left $ expectedButActually' "a target to push to" str) pure $ parsePushTarget str)
+    ((\str -> maybe (Left $ expectedButActually' "a target to push to" str) pure $ parsePushTarget str) <=< extractLexemeString)
     $ \case
       SA.Project project -> pure $ This project
       SA.ProjectBranch (ProjectAndBranch project branch) -> pure $ maybe That These project branch
@@ -729,7 +724,7 @@ handlePushTargetArg =
 handlePushSourceArg :: I.Argument -> Either (P.Pretty CT.ColorText) Input.PushSource
 handlePushSourceArg =
   either
-    (\str -> maybe (Left $ expectedButActually' "a source to push from" str) pure $ parsePushSource str)
+    ((\str -> maybe (Left $ expectedButActually' "a source to push from" str) pure $ parsePushSource str) <=< extractLexemeString)
     \case
       SA.Project project -> pure . Input.ProjySource $ This project
       SA.ProjectBranch (ProjectAndBranch project branch) -> pure . Input.ProjySource $ maybe That These project branch
@@ -738,11 +733,64 @@ handlePushSourceArg =
 handleProjectAndBranchNamesArg :: I.Argument -> Either (P.Pretty CT.ColorText) ProjectAndBranchNames
 handleProjectAndBranchNamesArg =
   either
-    (\str -> first (const $ expectedButActually' "a project or branch" str) . tryInto @ProjectAndBranchNames $ Text.pack str)
+    ((\str -> first (const $ expectedButActually' "a project or branch" str) . tryInto @ProjectAndBranchNames $ Text.pack str) <=< extractLexemeString)
     $ fmap ProjectAndBranchNames'Unambiguous . \case
       SA.Project project -> pure $ This project
       SA.ProjectBranch (ProjectAndBranch mproj branch) -> pure $ maybe That These mproj branch
       otherNumArg -> Left $ wrongStructuredArgument "a project or branch" otherNumArg
+
+extractLexemeHQ' :: Lexer.Lexeme -> Either (P.Pretty CT.ColorText) (HQ'.HashQualified Name)
+extractLexemeHQ' = \case
+  Lexer.SymbolyId hq -> pure hq
+  Lexer.WordyId hq -> pure hq
+  lexeme -> Left $ "Was expecting a name, but received " <> P.string (show lexeme)
+
+extractLexemeHQ :: Lexer.Lexeme -> Either (P.Pretty CT.ColorText) (HQ.HashQualified Name)
+extractLexemeHQ = \case
+  Lexer.Hash hash -> pure $ HQ.HashOnly hash
+  lexeme ->
+    bimap (const $ "Was expecting a name or hash, but received " <> P.string (show lexeme)) HQ'.toHQ $
+      extractLexemeHQ' lexeme
+
+extractLexemeName :: Lexer.Lexeme -> Either (P.Pretty CT.ColorText) Name
+extractLexemeName = fmap HQ'.toName . extractLexemeHQ'
+
+extractLexemePath' :: Lexer.Lexeme -> Either (P.Pretty CT.ColorText) Path'
+extractLexemePath' = \case
+  Lexer.Reserved "." -> pure Path.absoluteEmpty'
+  lexeme ->
+    bimap (const $ "Was expecting a path, but received " <> P.string (show lexeme)) Path.fromName' $
+      extractLexemeName lexeme
+
+extractLexemePath :: Lexer.Lexeme -> Either (P.Pretty CT.ColorText) Path
+extractLexemePath = fmap Path.fromName . extractLexemeName
+
+extractLexemeSplit :: Lexer.Lexeme -> Either (P.Pretty CT.ColorText) Path.Split
+extractLexemeSplit = fmap Path.splitFromName . extractLexemeName
+
+extractLexemeSplit' :: Lexer.Lexeme -> Either (P.Pretty CT.ColorText) Path.Split'
+extractLexemeSplit' = fmap Path.splitFromName' . extractLexemeName
+
+extractLexemeHQSplit' :: Lexer.Lexeme -> Either (P.Pretty CT.ColorText) Path.HQSplit'
+extractLexemeHQSplit' = fmap hq'NameToSplit' . extractLexemeHQ'
+
+extractLexemeHQSplit :: Lexer.Lexeme -> Either (P.Pretty CT.ColorText) Path.HQSplit
+extractLexemeHQSplit = fmap hq'NameToSplit . extractLexemeHQ'
+
+extractLexemeHashOrSplit' :: Lexer.Lexeme -> Either (P.Pretty CT.ColorText) (Either ShortHash Path.HQSplit')
+extractLexemeHashOrSplit' = \case
+  Lexer.Hash hash -> pure $ Left hash
+  lex -> pure <$> extractLexemeHQSplit' lex
+
+extractLexemeString :: Lexer.Lexeme -> Either (P.Pretty CT.ColorText) String
+extractLexemeString = \case
+  Lexer.Character char -> pure $ pure char
+  Lexer.Numeric str -> pure str
+  Lexer.Reserved str -> pure str
+  Lexer.SymbolyId hq -> pure . Text.unpack $ HQ'.toText hq
+  Lexer.Textual str -> pure str
+  Lexer.WordyId hq -> pure . Text.unpack $ HQ'.toText hq
+  eme -> Left $ "Was expecting a string, but received " <> P.string (show eme)
 
 mergeBuiltins :: InputPattern
 mergeBuiltins =
@@ -1095,9 +1143,7 @@ textfind allowLib =
       if allowLib
         then ("text.find.all", ["grep.all"], "Use `text.find` to exclude `lib` from search.")
         else ("text.find", ["grep"], "Use `text.find.all` to include search of `lib`.")
-    parse = \case
-      [] -> Left (P.text "Please supply at least one token.")
-      words -> pure $ Input.TextFindI allowLib (untokenize $ [e | Left e <- words])
+    parse = fmap (Input.TextFindI allowLib) . traverse (unsupportedStructuredArgument (textfind allowLib) "text")
     msg =
       P.lines
         [ P.wrap $
@@ -1111,21 +1157,6 @@ textfind allowLib =
           "",
           P.wrap alternate
         ]
-
--- | Reinterprets `"` in the expected way, combining tokens until reaching
--- the closing quote.
--- Example: `untokenize ["\"uno", "dos\""]` becomes `["uno dos"]`.
-untokenize :: [String] -> [String]
-untokenize words = go (unwords words)
-  where
-    go words = case words of
-      [] -> []
-      '"' : quoted -> takeWhile (/= '"') quoted : go (drop 1 . dropWhile (/= '"') $ quoted)
-      unquoted -> case span ok unquoted of
-        ("", rem) -> go (dropWhile isSpace rem)
-        (tok, rem) -> tok : go (dropWhile isSpace rem)
-        where
-          ok ch = ch /= '"' && not (isSpace ch)
 
 sfind :: InputPattern
 sfind =
@@ -1223,7 +1254,7 @@ findIn' cmd mkfscope =
     (Parameters [("namespace", namespaceArg)] . Optional [] $ Just ("query", exactDefinitionArg))
     findHelp
     \case
-      p : args -> Input.FindI False . mkfscope <$> handlePath'Arg p <*> pure (unifyArgument <$> args)
+      p : args -> Input.FindI False . mkfscope <$> handlePath'Arg p <*> traverse unifyArgument args
       args -> wrongArgsLength "at least one argument" args
 
 findHelp :: P.Pretty CT.ColorText
@@ -1270,7 +1301,7 @@ find' cmd fscope =
     I.Visible
     (Parameters [] . Optional [] $ Just ("query", exactDefinitionArg))
     findHelp
-    (pure . Input.FindI False fscope . fmap unifyArgument)
+    $ fmap (Input.FindI False fscope) . traverse unifyArgument
 
 findShallow :: InputPattern
 findShallow =
@@ -1301,7 +1332,7 @@ findVerbose =
     ( "`find.verbose` searches for definitions like `find`, but includes hashes "
         <> "and aliases in the results."
     )
-    (pure . Input.FindI True (Input.FindLocal Path.relativeEmpty') . fmap unifyArgument)
+    $ fmap (Input.FindI True $ Input.FindLocal Path.relativeEmpty') . traverse unifyArgument
 
 findVerboseAll :: InputPattern
 findVerboseAll =
@@ -1313,7 +1344,7 @@ findVerboseAll =
     ( "`find.all.verbose` searches for definitions like `find.all`, but includes hashes "
         <> "and aliases in the results."
     )
-    (pure . Input.FindI True (Input.FindLocalAndDeps Path.relativeEmpty') . fmap unifyArgument)
+    $ fmap (Input.FindI True $ Input.FindLocalAndDeps Path.relativeEmpty') . traverse unifyArgument
 
 renameTerm :: InputPattern
 renameTerm =
@@ -1570,7 +1601,8 @@ cd =
         ]
     )
     \case
-      [Left ".."] -> Right Input.UpI
+      -- FIXME: Test this – ideal if it doesn’t need to be quoted
+      [Left (Lexer.Textual "..")] -> Right Input.UpI
       [p] -> Input.SwitchBranchI <$> handlePath'Arg p
       args -> wrongArgsLength "exactly one argument" args
 
@@ -1614,7 +1646,7 @@ deleteNamespaceForce =
 
 deleteNamespaceParser :: Input.Insistence -> I.Arguments -> Either (P.Pretty CT.ColorText) Input
 deleteNamespaceParser insistence = \case
-  [Left "."] -> first fromString . pure $ Input.DeleteI (DeleteTarget'Namespace insistence Nothing)
+  [Left (Lexer.Reserved ".")] -> pure $ Input.DeleteI (DeleteTarget'Namespace insistence Nothing)
   [p] -> Input.DeleteI . DeleteTarget'Namespace insistence <$> (Just <$> handleSplitArg p)
   args -> wrongArgsLength "exactly one argument" args
 
@@ -1904,7 +1936,7 @@ debugFuzzyOptions =
     \case
       cmd : args ->
         Input.DebugFuzzyOptionsI
-          <$> unsupportedStructuredArgument debugFuzzyOptions "a command" cmd
+          <$> unifyArgument cmd
           <*> traverse (unsupportedStructuredArgument debugFuzzyOptions "text") args
       args -> wrongArgsLength "at least one argument" args
 
@@ -2459,9 +2491,9 @@ topicNameArg =
   let topics = Map.keys helpTopicsMap
    in ParameterType
         { typeName = "topic",
-          suggestions = \q _ _ _ -> pure (exactComplete q topics),
-          fzfResolver = Just $ Resolvers.fuzzySelectFromList (Text.pack <$> topics),
-          isStructured = False
+          suggestions = \q _ _ _ -> pure $ exactComplete q topics,
+          fzfResolver = Just . Resolvers.fuzzySelectFromList $ Text.pack <$> topics,
+          isStructured = True
         }
 
 helpTopics :: InputPattern
@@ -2473,13 +2505,13 @@ helpTopics =
     (Parameters [] $ Optional [("topic", topicNameArg)] Nothing)
     ("`help-topics` lists all topics and `help-topics <topic>` shows an explanation of that topic.")
     \case
-        [] -> Right $ Input.CreateMessage topics
-        [topic] -> do
-          topic <- unsupportedStructuredArgument helpTopics "a help topic" topic
-          case Map.lookup topic helpTopicsMap of
-            Nothing -> Left $ "I don't know of that topic. Try `help-topics`."
-            Just t -> Right $ Input.CreateMessage t
-        _ -> Left $ "Use `help-topics <topic>` or `help-topics`."
+      [] -> Right $ Input.CreateMessage topics
+      [topic] -> do
+        topic <- unifyArgument topic
+        case Map.lookup topic helpTopicsMap of
+          Nothing -> Left $ "I don't know of that topic. Try `help-topics`."
+          Just t -> Right $ Input.CreateMessage t
+      _ -> Left $ "Use `help-topics <topic>` or `help-topics`."
   where
     topics =
       P.callout "🌻" $
@@ -2663,7 +2695,7 @@ help =
             showPatternHelp
             visibleInputs
       [cmd] -> do
-        cmd <- unsupportedStructuredArgument help "a command" cmd
+        cmd <- unifyArgument cmd
         case (Map.lookup cmd commandsByName, isHelp cmd) of
           (Nothing, Just msg) -> Right $ Input.CreateMessage msg
           (Nothing, Nothing) -> Left $ "I don't know of that command. Try" <> makeExampleEOS help []
@@ -3218,7 +3250,8 @@ createAuthor =
     "create.author"
     []
     I.Visible
-    (Parameters [("definition name", noCompletionsArg)] $ OnePlus ("author name", noCompletionsArg))
+    -- FIXME: This isn’t actually a dependency, but it has the same structure
+    (Parameters [("definition name", dependencyArg), ("author name", noCompletionsArg)] $ Optional [] Nothing)
     ( makeExample createAuthor ["alicecoder", "\"Alice McGee\""]
         <> " "
         <> P.wrap
@@ -3231,20 +3264,11 @@ createAuthor =
           )
     )
     \case
-      symbolStr : authorStr@(_ : _) ->
+      [symbolStr, authorStr] ->
         Input.CreateAuthorI
           <$> handleRelativeNameSegmentArg symbolStr
-          <*> fmap
-            (parseAuthorName . unwords)
-            (traverse (unsupportedStructuredArgument createAuthor "text") authorStr)
+          <*> fmap Text.pack (unsupportedStructuredArgument createAuthor "text" authorStr)
       args -> wrongArgsLength "at least two arguments" args
-  where
-    -- let's have a real parser in not too long
-    parseAuthorName :: String -> Text
-    parseAuthorName =
-      Text.pack . \case
-        ('"' : quoted) -> init quoted
-        bare -> bare
 
 authLogin :: InputPattern
 authLogin =
@@ -4278,19 +4302,6 @@ parsePushSource sourceStr =
 -- | Parse a push target.
 parsePushTarget :: String -> Maybe (These ProjectName ProjectBranchName)
 parsePushTarget = Megaparsec.parseMaybe UriParser.writeRemoteNamespace . Text.pack
-
-parseHashQualifiedName ::
-  String -> Either (P.Pretty CT.ColorText) (HQ.HashQualified Name)
-parseHashQualifiedName s =
-  maybe
-    ( Left
-        . P.wrap
-        $ P.string s
-          <> " is not a well-formed name, hash, or hash-qualified name. "
-          <> "I expected something like `foo`, `#abc123`, or `foo#abc123`."
-    )
-    Right
-    $ HQ.parseText (Text.pack s)
 
 explainRemote :: PushPull -> P.Pretty CT.ColorText
 explainRemote pushPull =
