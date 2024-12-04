@@ -20,6 +20,7 @@ module Unison.Runtime.Builtin
     numberedTermLookup,
     Sandbox (..),
     baseSandboxInfo,
+    unitValue,
   )
 where
 
@@ -1837,6 +1838,9 @@ builtinLookup =
 type FDecl v =
   ReaderT Bool (State (Word64, [(Data.Text.Text, (Sandbox, SuperNormal v))], EnumMap Word64 (Data.Text.Text, ForeignFunc)))
 
+type FDecl' v =
+  ReaderT Bool (State (Word64, [(Data.Text.Text, (Sandbox, SuperNormal v))], EnumMap Word64 (Data.Text.Text, ForeignFunc')))
+
 -- Data type to determine whether a builtin should be tracked for
 -- sandboxing. Untracked means that it can be freely used, and Tracked
 -- means that the sandboxing check will by default consider them
@@ -2114,17 +2118,22 @@ declareForeign sand name op func0 = do
         code = (name, (sand, uncurry Lambda (op w)))
      in (w + 1, code : codes, mapInsert w (name, func) funcs)
 
-mkForeignIOF ::
-  (ForeignConvention a, ForeignConvention r) =>
-  (a -> IO r) ->
-  ForeignFunc
-mkForeignIOF f = mkForeign $ \a -> tryIOE (f a)
-  where
-    tryIOE :: IO a -> IO (Either Failure a)
-    tryIOE = fmap handleIOE . try
-    handleIOE :: Either IOException a -> Either Failure a
-    handleIOE (Left e) = Left $ Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue
-    handleIOE (Right a) = Right a
+declareForeign' ::
+  Sandbox ->
+  Data.Text.Text ->
+  ForeignOp ->
+  ForeignFunc' ->
+  FDecl' Symbol ()
+declareForeign' sand name op func0 = do
+  sanitize <- ask
+  modify $ \(w, codes, funcs) ->
+    let func
+          | sanitize,
+            Tracked <- sand =
+              error "TODO: fill in sandboxing error"
+          | otherwise = func0
+        code = (name, (sand, uncurry Lambda (op w)))
+     in (w + 1, code : codes, mapInsert w (name, func) funcs)
 
 unitValue :: Val
 unitValue = BoxedVal $ Closure.Enum Ty.unitRef (PackedTag 0)
@@ -2132,471 +2141,196 @@ unitValue = BoxedVal $ Closure.Enum Ty.unitRef (PackedTag 0)
 natValue :: Word64 -> Val
 natValue w = NatVal w
 
-mkForeignTls ::
-  forall a r.
-  (ForeignConvention a, ForeignConvention r) =>
-  (a -> IO r) ->
-  ForeignFunc
-mkForeignTls f = mkForeign $ \a -> fmap flatten (tryIO2 (tryIO1 (f a)))
-  where
-    tryIO1 :: IO r -> IO (Either TLS.TLSException r)
-    tryIO1 = try
-    tryIO2 :: IO (Either TLS.TLSException r) -> IO (Either IOException (Either TLS.TLSException r))
-    tryIO2 = try
-    flatten :: Either IOException (Either TLS.TLSException r) -> Either (Failure) r
-    flatten (Left e) = Left (Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue)
-    flatten (Right (Left e)) = Left (Failure Ty.tlsFailureRef (Util.Text.pack (show e)) unitValue)
-    flatten (Right (Right a)) = Right a
-
-mkForeignTlsE ::
-  forall a r.
-  (ForeignConvention a, ForeignConvention r) =>
-  (a -> IO (Either Failure r)) ->
-  ForeignFunc
-mkForeignTlsE f = mkForeign $ \a -> fmap flatten (tryIO2 (tryIO1 (f a)))
-  where
-    tryIO1 :: IO (Either Failure r) -> IO (Either TLS.TLSException (Either Failure r))
-    tryIO1 = try
-    tryIO2 :: IO (Either TLS.TLSException (Either Failure r)) -> IO (Either IOException (Either TLS.TLSException (Either Failure r)))
-    tryIO2 = try
-    flatten :: Either IOException (Either TLS.TLSException (Either Failure r)) -> Either Failure r
-    flatten (Left e) = Left (Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue)
-    flatten (Right (Left e)) = Left (Failure Ty.tlsFailureRef (Util.Text.pack (show e)) unitValue)
-    flatten (Right (Right (Left e))) = Left e
-    flatten (Right (Right (Right a))) = Right a
-
-declareUdpForeigns :: FDecl Symbol ()
+declareUdpForeigns :: FDecl' Symbol ()
 declareUdpForeigns = do
-  declareForeign Tracked "IO.UDP.clientSocket.impl.v1" arg2ToEF
-    . mkForeignIOF
-    $ \(host :: Util.Text.Text, port :: Util.Text.Text) ->
-      let hostStr = Util.Text.toString host
-          portStr = Util.Text.toString port
-       in UDP.clientSocket hostStr portStr True
+  declareForeign' Tracked "IO.UDP.clientSocket.impl.v1" arg2ToEF IO_UDP_clientSocket_impl_v1
 
-  declareForeign Tracked "IO.UDP.UDPSocket.recv.impl.v1" argToEF
-    . mkForeignIOF
-    $ \(sock :: UDPSocket) -> Bytes.fromArray <$> UDP.recv sock
+  declareForeign' Tracked "IO.UDP.UDPSocket.recv.impl.v1" argToEF IO_UDP_UDPSocket_recv_impl_v1
 
-  declareForeign Tracked "IO.UDP.UDPSocket.send.impl.v1" arg2ToEF0
-    . mkForeignIOF
-    $ \(sock :: UDPSocket, bytes :: Bytes.Bytes) ->
-      UDP.send sock (Bytes.toArray bytes)
+  declareForeign' Tracked "IO.UDP.UDPSocket.send.impl.v1" arg2ToEF0 IO_UDP_UDPSocket_send_impl_v1
+  declareForeign' Tracked "IO.UDP.UDPSocket.close.impl.v1" argToEF0 IO_UDP_UDPSocket_close_impl_v1
 
-  declareForeign Tracked "IO.UDP.UDPSocket.close.impl.v1" argToEF0
-    . mkForeignIOF
-    $ \(sock :: UDPSocket) -> UDP.close sock
+  declareForeign' Tracked "IO.UDP.ListenSocket.close.impl.v1" argToEF0 IO_UDP_ListenSocket_close_impl_v1
 
-  declareForeign Tracked "IO.UDP.ListenSocket.close.impl.v1" argToEF0
-    . mkForeignIOF
-    $ \(sock :: ListenSocket) -> UDP.stop sock
+  declareForeign' Tracked "IO.UDP.UDPSocket.toText.impl.v1" (argNDirect 1) IO_UDP_UDPSocket_toText_impl_v1
 
-  declareForeign Tracked "IO.UDP.UDPSocket.toText.impl.v1" (argNDirect 1)
-    . mkForeign
-    $ \(sock :: UDPSocket) -> pure $ show sock
+  declareForeign' Tracked "IO.UDP.serverSocket.impl.v1" arg2ToEF IO_UDP_serverSocket_impl_v1
 
-  declareForeign Tracked "IO.UDP.serverSocket.impl.v1" arg2ToEF
-    . mkForeignIOF
-    $ \(ip :: Util.Text.Text, port :: Util.Text.Text) ->
-      let maybeIp = readMaybe $ Util.Text.toString ip :: Maybe IP
-          maybePort = readMaybe $ Util.Text.toString port :: Maybe PortNumber
-       in case (maybeIp, maybePort) of
-            (Nothing, _) -> fail "Invalid IP Address"
-            (_, Nothing) -> fail "Invalid Port Number"
-            (Just ip, Just pt) -> UDP.serverSocket (ip, pt)
+  declareForeign' Tracked "IO.UDP.ListenSocket.toText.impl.v1" (argNDirect 1) IO_UDP_ListenSocket_toText_impl_v1
 
-  declareForeign Tracked "IO.UDP.ListenSocket.toText.impl.v1" (argNDirect 1)
-    . mkForeign
-    $ \(sock :: ListenSocket) -> pure $ show sock
+  declareForeign' Tracked "IO.UDP.ListenSocket.recvFrom.impl.v1" argToEFTup IO_UDP_ListenSocket_recvFrom_impl_v1
 
-  declareForeign Tracked "IO.UDP.ListenSocket.recvFrom.impl.v1" argToEFTup
-    . mkForeignIOF
-    $ fmap (first Bytes.fromArray) <$> UDP.recvFrom
+  declareForeign' Tracked "IO.UDP.ClientSockAddr.toText.v1" (argNDirect 1) IO_UDP_ClientSockAddr_toText_v1
 
-  declareForeign Tracked "IO.UDP.ClientSockAddr.toText.v1" (argNDirect 1)
-    . mkForeign
-    $ \(sock :: ClientSockAddr) -> pure $ show sock
+  declareForeign' Tracked "IO.UDP.ListenSocket.sendTo.impl.v1" arg3ToEF0 IO_UDP_ListenSocket_sendTo_impl_v1
 
-  declareForeign Tracked "IO.UDP.ListenSocket.sendTo.impl.v1" arg3ToEF0
-    . mkForeignIOF
-    $ \(socket :: ListenSocket, bytes :: Bytes.Bytes, addr :: ClientSockAddr) ->
-      UDP.sendTo socket (Bytes.toArray bytes) addr
-
-declareForeigns :: FDecl Symbol ()
+declareForeigns :: FDecl' Symbol ()
 declareForeigns = do
   declareUdpForeigns
-  declareForeign Tracked "IO.openFile.impl.v3" argIomrToEF $
-    mkForeignIOF $ \(fnameText :: Util.Text.Text, n :: Int) ->
-      let fname = Util.Text.toString fnameText
-          mode = case n of
-            0 -> ReadMode
-            1 -> WriteMode
-            2 -> AppendMode
-            _ -> ReadWriteMode
-       in openFile fname mode
+  declareForeign' Tracked "IO.openFile.impl.v3" argIomrToEF IO_openFile_impl_v3
 
-  declareForeign Tracked "IO.closeFile.impl.v3" argToEF0 $ mkForeignIOF hClose
-  declareForeign Tracked "IO.isFileEOF.impl.v3" argToEFBool $ mkForeignIOF hIsEOF
-  declareForeign Tracked "IO.isFileOpen.impl.v3" argToEFBool $ mkForeignIOF hIsOpen
-  declareForeign Tracked "IO.getEcho.impl.v1" argToEFBool $ mkForeignIOF hGetEcho
-  declareForeign Tracked "IO.ready.impl.v1" argToEFBool $ mkForeignIOF hReady
-  declareForeign Tracked "IO.getChar.impl.v1" argToEFChar $ mkForeignIOF hGetChar
-  declareForeign Tracked "IO.isSeekable.impl.v3" argToEFBool $ mkForeignIOF hIsSeekable
+  declareForeign' Tracked "IO.closeFile.impl.v3" argToEF0 IO_closeFile_impl_v3
+  declareForeign' Tracked "IO.isFileEOF.impl.v3" argToEFBool IO_isFileEOF_impl_v3
+  declareForeign' Tracked "IO.isFileOpen.impl.v3" argToEFBool IO_isFileOpen_impl_v3
+  declareForeign' Tracked "IO.getEcho.impl.v1" argToEFBool IO_getEcho_impl_v1
+  declareForeign' Tracked "IO.ready.impl.v1" argToEFBool IO_ready_impl_v1
+  declareForeign' Tracked "IO.getChar.impl.v1" argToEFChar IO_getChar_impl_v1
+  declareForeign' Tracked "IO.isSeekable.impl.v3" argToEFBool IO_isSeekable_impl_v3
 
-  declareForeign Tracked "IO.seekHandle.impl.v3" seek'handle
-    . mkForeignIOF
-    $ \(h, sm, n) -> hSeek h sm (fromIntegral (n :: Int))
+  declareForeign' Tracked "IO.seekHandle.impl.v3" seek'handle IO_seekHandle_impl_v3
 
-  declareForeign Tracked "IO.handlePosition.impl.v3" argToEFNat
-    -- TODO: truncating integer
-    . mkForeignIOF
-    $ \h -> fromInteger @Word64 <$> hTell h
+  declareForeign' Tracked "IO.handlePosition.impl.v3" argToEFNat IO_handlePosition_impl_v3
 
-  declareForeign Tracked "IO.getBuffering.impl.v3" get'buffering $
-    mkForeignIOF hGetBuffering
+  declareForeign' Tracked "IO.getBuffering.impl.v3" get'buffering IO_getBuffering_impl_v3
 
-  declareForeign Tracked "IO.setBuffering.impl.v3" set'buffering
-    . mkForeignIOF
-    $ uncurry hSetBuffering
+  declareForeign' Tracked "IO.setBuffering.impl.v3" set'buffering IO_setBuffering_impl_v3
 
-  declareForeign Tracked "IO.setEcho.impl.v1" set'echo . mkForeignIOF $ uncurry hSetEcho
+  declareForeign' Tracked "IO.setEcho.impl.v1" set'echo IO_setEcho_impl_v1
 
-  declareForeign Tracked "IO.getLine.impl.v1" argToEF $
-    mkForeignIOF $
-      fmap Util.Text.fromText . Text.IO.hGetLine
+  declareForeign' Tracked "IO.getLine.impl.v1" argToEF IO_getLine_impl_v1
 
-  declareForeign Tracked "IO.getBytes.impl.v3" arg2ToEF . mkForeignIOF $
-    \(h, n) -> Bytes.fromArray <$> hGet h n
+  declareForeign' Tracked "IO.getBytes.impl.v3" arg2ToEF IO_getBytes_impl_v3
+  declareForeign' Tracked "IO.getSomeBytes.impl.v1" arg2ToEF IO_getSomeBytes_impl_v1
+  declareForeign' Tracked "IO.putBytes.impl.v3" arg2ToEF0 IO_putBytes_impl_v3
+  declareForeign' Tracked "IO.systemTime.impl.v3" unitToEF IO_systemTime_impl_v3
 
-  declareForeign Tracked "IO.getSomeBytes.impl.v1" arg2ToEF . mkForeignIOF $
-    \(h, n) -> Bytes.fromArray <$> hGetSome h n
+  declareForeign' Tracked "IO.systemTimeMicroseconds.v1" unitToR IO_systemTimeMicroseconds_v1
 
-  declareForeign Tracked "IO.putBytes.impl.v3" arg2ToEF0 . mkForeignIOF $ \(h, bs) -> hPut h (Bytes.toArray bs)
+  declareForeign' Tracked "Clock.internals.monotonic.v1" unitToEF Clock_internals_monotonic_v1
 
-  declareForeign Tracked "IO.systemTime.impl.v3" unitToEF $
-    mkForeignIOF $
-      \() -> getPOSIXTime
+  declareForeign' Tracked "Clock.internals.realtime.v1" unitToEF Clock_internals_realtime_v1
 
-  declareForeign Tracked "IO.systemTimeMicroseconds.v1" unitToR $
-    mkForeign $
-      \() -> fmap (1e6 *) getPOSIXTime
+  declareForeign' Tracked "Clock.internals.processCPUTime.v1" unitToEF Clock_internals_processCPUTime_v1
 
-  declareForeign Tracked "Clock.internals.monotonic.v1" unitToEF $
-    mkForeignIOF $
-      \() -> getTime Monotonic
+  declareForeign' Tracked "Clock.internals.threadCPUTime.v1" unitToEF Clock_internals_threadCPUTime_v1
 
-  declareForeign Tracked "Clock.internals.realtime.v1" unitToEF $
-    mkForeignIOF $
-      \() -> getTime Realtime
-
-  declareForeign Tracked "Clock.internals.processCPUTime.v1" unitToEF $
-    mkForeignIOF $
-      \() -> getTime ProcessCPUTime
-
-  declareForeign Tracked "Clock.internals.threadCPUTime.v1" unitToEF $
-    mkForeignIOF $
-      \() -> getTime ThreadCPUTime
-
-  declareForeign Tracked "Clock.internals.sec.v1" (argNDirect 1) $
-    mkForeign (\n -> pure (fromIntegral $ sec n :: Word64))
+  declareForeign' Tracked "Clock.internals.sec.v1" (argNDirect 1) Clock_internals_sec_v1
 
   -- A TimeSpec that comes from getTime never has negative nanos,
   -- so we can safely cast to Nat
-  declareForeign Tracked "Clock.internals.nsec.v1" (argNDirect 1) $
-    mkForeign (\n -> pure (fromIntegral $ nsec n :: Word64))
-
-  declareForeign Tracked "Clock.internals.systemTimeZone.v1" time'zone $
-    mkForeign
-      ( \secs -> do
-          TimeZone offset summer name <- getTimeZone (posixSecondsToUTCTime (fromIntegral (secs :: Int)))
-          pure (offset :: Int, summer, name)
-      )
-
-  let chop = reverse . dropWhile isPathSeparator . reverse
-
-  declareForeign Tracked "IO.getTempDirectory.impl.v3" unitToEF $
-    mkForeignIOF $
-      \() -> chop <$> getTemporaryDirectory
-
-  declareForeign Tracked "IO.createTempDirectory.impl.v3" argToEF $
-    mkForeignIOF $ \prefix -> do
-      temp <- getTemporaryDirectory
-      chop <$> createTempDirectory temp prefix
-
-  declareForeign Tracked "IO.getCurrentDirectory.impl.v3" unitToEF
-    . mkForeignIOF
-    $ \() -> getCurrentDirectory
+  declareForeign' Tracked "Clock.internals.nsec.v1" (argNDirect 1) Clock_internals_nsec_v1
 
-  declareForeign Tracked "IO.setCurrentDirectory.impl.v3" argToEF0 $
-    mkForeignIOF setCurrentDirectory
+  declareForeign' Tracked "Clock.internals.systemTimeZone.v1" time'zone Clock_internals_systemTimeZone_v1
 
-  declareForeign Tracked "IO.fileExists.impl.v3" argToEFBool $
-    mkForeignIOF doesPathExist
-
-  declareForeign Tracked "IO.getEnv.impl.v1" argToEF $
-    mkForeignIOF getEnv
-
-  declareForeign Tracked "IO.getArgs.impl.v1" unitToEF $
-    mkForeignIOF $
-      \() -> fmap Util.Text.pack <$> SYS.getArgs
-
-  declareForeign Tracked "IO.isDirectory.impl.v3" argToEFBool $
-    mkForeignIOF doesDirectoryExist
-
-  declareForeign Tracked "IO.createDirectory.impl.v3" argToEF0 $
-    mkForeignIOF $
-      createDirectoryIfMissing True
-
-  declareForeign Tracked "IO.removeDirectory.impl.v3" argToEF0 $
-    mkForeignIOF removeDirectoryRecursive
-
-  declareForeign Tracked "IO.renameDirectory.impl.v3" arg2ToEF0 $
-    mkForeignIOF $
-      uncurry renameDirectory
-
-  declareForeign Tracked "IO.directoryContents.impl.v3" argToEF $
-    mkForeignIOF $
-      (fmap Util.Text.pack <$>) . getDirectoryContents
-
-  declareForeign Tracked "IO.removeFile.impl.v3" argToEF0 $
-    mkForeignIOF removeFile
-
-  declareForeign Tracked "IO.renameFile.impl.v3" arg2ToEF0 $
-    mkForeignIOF $
-      uncurry renameFile
-
-  declareForeign Tracked "IO.getFileTimestamp.impl.v3" argToEFNat
-    . mkForeignIOF
-    $ fmap utcTimeToPOSIXSeconds . getModificationTime
-
-  declareForeign Tracked "IO.getFileSize.impl.v3" argToEFNat
-    -- TODO: truncating integer
-    . mkForeignIOF
-    $ \fp -> fromInteger @Word64 <$> getFileSize fp
+  declareForeign' Tracked "IO.getTempDirectory.impl.v3" unitToEF IO_getTempDirectory_impl_v3
 
-  declareForeign Tracked "IO.serverSocket.impl.v3" maybeToEF
-    . mkForeignIOF
-    $ \( mhst :: Maybe Util.Text.Text,
-         port
-         ) ->
-        fst <$> SYS.bindSock (hostPreference mhst) port
-
-  declareForeign Tracked "Socket.toText" (argNDirect 1)
-    . mkForeign
-    $ \(sock :: Socket) -> pure $ show sock
-
-  declareForeign Tracked "Handle.toText" (argNDirect 1)
-    . mkForeign
-    $ \(hand :: Handle) -> pure $ show hand
-
-  declareForeign Tracked "ThreadId.toText" (argNDirect 1)
-    . mkForeign
-    $ \(threadId :: ThreadId) -> pure $ show threadId
-
-  declareForeign Tracked "IO.socketPort.impl.v3" argToEFNat
-    . mkForeignIOF
-    $ \(handle :: Socket) -> do
-      n <- SYS.socketPort handle
-      return (fromIntegral n :: Word64)
+  declareForeign' Tracked "IO.createTempDirectory.impl.v3" argToEF IO_createTempDirectory_impl_v3
 
-  declareForeign Tracked "IO.listen.impl.v3" argToEF0
-    . mkForeignIOF
-    $ \sk -> SYS.listenSock sk 2048
+  declareForeign' Tracked "IO.getCurrentDirectory.impl.v3" unitToEF IO_getCurrentDirectory_impl_v3
 
-  declareForeign Tracked "IO.clientSocket.impl.v3" arg2ToEF
-    . mkForeignIOF
-    $ fmap fst . uncurry SYS.connectSock
+  declareForeign' Tracked "IO.setCurrentDirectory.impl.v3" argToEF0 IO_setCurrentDirectory_impl_v3
 
-  declareForeign Tracked "IO.closeSocket.impl.v3" argToEF0 $
-    mkForeignIOF SYS.closeSock
+  declareForeign' Tracked "IO.fileExists.impl.v3" argToEFBool IO_fileExists_impl_v3
 
-  declareForeign Tracked "IO.socketAccept.impl.v3" argToEF
-    . mkForeignIOF
-    $ fmap fst . SYS.accept
+  declareForeign' Tracked "IO.getEnv.impl.v1" argToEF IO_getEnv_impl_v1
 
-  declareForeign Tracked "IO.socketSend.impl.v3" arg2ToEF0
-    . mkForeignIOF
-    $ \(sk, bs) -> SYS.send sk (Bytes.toArray bs)
+  declareForeign' Tracked "IO.getArgs.impl.v1" unitToEF IO_getArgs_impl_v1
 
-  declareForeign Tracked "IO.socketReceive.impl.v3" arg2ToEF
-    . mkForeignIOF
-    $ \(hs, n) ->
-      maybe mempty Bytes.fromArray <$> SYS.recv hs n
+  declareForeign' Tracked "IO.isDirectory.impl.v3" argToEFBool IO_isDirectory_impl_v3
 
-  declareForeign Tracked "IO.kill.impl.v3" argToEF0 $ mkForeignIOF killThread
+  declareForeign' Tracked "IO.createDirectory.impl.v3" argToEF0 IO_createDirectory_impl_v3
 
-  let mx :: Word64
-      mx = fromIntegral (maxBound :: Int)
+  declareForeign' Tracked "IO.removeDirectory.impl.v3" argToEF0 IO_removeDirectory_impl_v3
 
-      customDelay :: Word64 -> IO ()
-      customDelay n
-        | n < mx = threadDelay (fromIntegral n)
-        | otherwise = threadDelay maxBound >> customDelay (n - mx)
+  declareForeign' Tracked "IO.renameDirectory.impl.v3" arg2ToEF0 IO_renameDirectory_impl_v3
 
-  declareForeign Tracked "IO.delay.impl.v3" argToEFUnit $
-    mkForeignIOF customDelay
+  declareForeign' Tracked "IO.directoryContents.impl.v3" argToEF IO_directoryContents_impl_v3
 
-  declareForeign Tracked "IO.stdHandle" standard'handle
-    . mkForeign
-    $ \(n :: Int) -> case n of
-      0 -> pure SYS.stdin
-      1 -> pure SYS.stdout
-      2 -> pure SYS.stderr
-      _ -> die "IO.stdHandle: invalid input."
-
-  let exitDecode ExitSuccess = 0
-      exitDecode (ExitFailure n) = n
+  declareForeign' Tracked "IO.removeFile.impl.v3" argToEF0 IO_removeFile_impl_v3
 
-  declareForeign Tracked "IO.process.call" (argNDirect 2) . mkForeign $
-    \(exe, map Util.Text.unpack -> args) ->
-      withCreateProcess (proc exe args) $ \_ _ _ p ->
-        exitDecode <$> waitForProcess p
-
-  declareForeign Tracked "IO.process.start" start'process . mkForeign $
-    \(exe, map Util.Text.unpack -> args) ->
-      runInteractiveProcess exe args Nothing Nothing
-
-  declareForeign Tracked "IO.process.kill" argToUnit . mkForeign $
-    terminateProcess
-
-  declareForeign Tracked "IO.process.wait" (argNDirect 1) . mkForeign $
-    \ph -> exitDecode <$> waitForProcess ph
-
-  declareForeign Tracked "IO.process.exitCode" argToMaybe . mkForeign $
-    fmap (fmap exitDecode) . getProcessExitCode
-
-  declareForeign Tracked "MVar.new" (argNDirect 1)
-    . mkForeign
-    $ \(c :: Val) -> newMVar c
-
-  declareForeign Tracked "MVar.newEmpty.v2" unitDirect
-    . mkForeign
-    $ \() -> newEmptyMVar @Val
+  declareForeign' Tracked "IO.renameFile.impl.v3" arg2ToEF0 IO_renameFile_impl_v3
 
-  declareForeign Tracked "MVar.take.impl.v3" argToEF
-    . mkForeignIOF
-    $ \(mv :: MVar Val) -> takeMVar mv
+  declareForeign' Tracked "IO.getFileTimestamp.impl.v3" argToEFNat IO_getFileTimestamp_impl_v3
 
-  declareForeign Tracked "MVar.tryTake" argToMaybe
-    . mkForeign
-    $ \(mv :: MVar Val) -> tryTakeMVar mv
+  declareForeign' Tracked "IO.getFileSize.impl.v3" argToEFNat IO_getFileSize_impl_v3
 
-  declareForeign Tracked "MVar.put.impl.v3" arg2ToEF0
-    . mkForeignIOF
-    $ \(mv :: MVar Val, x) -> putMVar mv x
+  declareForeign' Tracked "IO.serverSocket.impl.v3" maybeToEF IO_serverSocket_impl_v3
 
-  declareForeign Tracked "MVar.tryPut.impl.v3" arg2ToEFBool
-    . mkForeignIOF
-    $ \(mv :: MVar Val, x) -> tryPutMVar mv x
+  declareForeign' Tracked "Socket.toText" (argNDirect 1) Socket_toText
 
-  declareForeign Tracked "MVar.swap.impl.v3" arg2ToEF
-    . mkForeignIOF
-    $ \(mv :: MVar Val, x) -> swapMVar mv x
+  declareForeign' Tracked "Handle.toText" (argNDirect 1) Handle_toText
 
-  declareForeign Tracked "MVar.isEmpty" (argNDirect 1)
-    . mkForeign
-    $ \(mv :: MVar Val) -> isEmptyMVar mv
+  declareForeign' Tracked "ThreadId.toText" (argNDirect 1) ThreadId_toText
 
-  declareForeign Tracked "MVar.read.impl.v3" argToEF
-    . mkForeignIOF
-    $ \(mv :: MVar Val) -> readMVar mv
+  declareForeign' Tracked "IO.socketPort.impl.v3" argToEFNat IO_socketPort_impl_v3
 
-  declareForeign Tracked "MVar.tryRead.impl.v3" argToEFM
-    . mkForeignIOF
-    $ \(mv :: MVar Val) -> tryReadMVar mv
+  declareForeign' Tracked "IO.listen.impl.v3" argToEF0 IO_listen_impl_v3
 
-  declareForeign Untracked "Char.toText" (argNDirect 1) . mkForeign $
-    \(ch :: Char) -> pure (Util.Text.singleton ch)
+  declareForeign' Tracked "IO.clientSocket.impl.v3" arg2ToEF IO_clientSocket_impl_v3
 
-  declareForeign Untracked "Text.repeat" (argNDirect 2) . mkForeign $
-    \(n :: Word64, txt :: Util.Text.Text) -> pure (Util.Text.replicate (fromIntegral n) txt)
+  declareForeign' Tracked "IO.closeSocket.impl.v3" argToEF0 IO_closeSocket_impl_v3
 
-  declareForeign Untracked "Text.reverse" (argNDirect 1) . mkForeign $
-    pure . Util.Text.reverse
+  declareForeign' Tracked "IO.socketAccept.impl.v3" argToEF IO_socketAccept_impl_v3
 
-  declareForeign Untracked "Text.toUppercase" (argNDirect 1) . mkForeign $
-    pure . Util.Text.toUppercase
+  declareForeign' Tracked "IO.socketSend.impl.v3" arg2ToEF0 IO_socketSend_impl_v3
 
-  declareForeign Untracked "Text.toLowercase" (argNDirect 1) . mkForeign $
-    pure . Util.Text.toLowercase
+  declareForeign' Tracked "IO.socketReceive.impl.v3" arg2ToEF IO_socketReceive_impl_v3
 
-  declareForeign Untracked "Text.toUtf8" (argNDirect 1) . mkForeign $
-    pure . Util.Text.toUtf8
+  declareForeign' Tracked "IO.kill.impl.v3" argToEF0 IO_kill_impl_v3
 
-  declareForeign Untracked "Text.fromUtf8.impl.v3" argToEF . mkForeign $
-    pure . mapLeft (\t -> Failure Ty.ioFailureRef (Util.Text.pack t) unitValue) . Util.Text.fromUtf8
+  declareForeign' Tracked "IO.delay.impl.v3" argToEFUnit IO_delay_impl_v3
 
-  declareForeign Tracked "Tls.ClientConfig.default" (argNDirect 2) . mkForeign $
-    \(hostName :: Util.Text.Text, serverId :: Bytes.Bytes) ->
-      fmap
-        ( \store ->
-            (defaultParamsClient (Util.Text.unpack hostName) (Bytes.toArray serverId))
-              { TLS.clientSupported = def {TLS.supportedCiphers = Cipher.ciphersuite_strong},
-                TLS.clientShared = def {TLS.sharedCAStore = store}
-              }
-        )
-        X.getSystemCertificateStore
+  declareForeign' Tracked "IO.stdHandle" standard'handle IO_stdHandle
 
-  declareForeign Tracked "Tls.ServerConfig.default" (argNDirect 2) $
-    mkForeign $
-      \(certs :: [X.SignedCertificate], key :: X.PrivKey) ->
-        pure $
-          (def :: TLS.ServerParams)
-            { TLS.serverSupported = def {TLS.supportedCiphers = Cipher.ciphersuite_strong},
-              TLS.serverShared = def {TLS.sharedCredentials = Credentials [(X.CertificateChain certs, key)]}
-            }
+  declareForeign' Tracked "IO.process.call" (argNDirect 2) IO_process_call
 
-  let updateClient :: X.CertificateStore -> TLS.ClientParams -> TLS.ClientParams
-      updateClient certs client = client {TLS.clientShared = ((clientShared client) {TLS.sharedCAStore = certs})}
-   in declareForeign Tracked "Tls.ClientConfig.certificates.set" (argNDirect 2) . mkForeign $
-        \(certs :: [X.SignedCertificate], params :: ClientParams) -> pure $ updateClient (X.makeCertificateStore certs) params
+  declareForeign' Tracked "IO.process.start" start'process IO_process_start
 
-  let updateServer :: X.CertificateStore -> TLS.ServerParams -> TLS.ServerParams
-      updateServer certs client = client {TLS.serverShared = ((serverShared client) {TLS.sharedCAStore = certs})}
-   in declareForeign Tracked "Tls.ServerConfig.certificates.set" (argNDirect 2) . mkForeign $
-        \(certs :: [X.SignedCertificate], params :: ServerParams) -> pure $ updateServer (X.makeCertificateStore certs) params
+  declareForeign' Tracked "IO.process.kill" argToUnit IO_process_kill
 
-  declareForeign Tracked "TVar.new" (argNDirect 1) . mkForeign $
-    \(c :: Val) -> unsafeSTMToIO $ STM.newTVar c
+  declareForeign' Tracked "IO.process.wait" (argNDirect 1) IO_process_wait
 
-  declareForeign Tracked "TVar.read" (argNDirect 1) . mkForeign $
-    \(v :: STM.TVar Val) -> unsafeSTMToIO $ STM.readTVar v
+  declareForeign' Tracked "IO.process.exitCode" argToMaybe IO_process_exitCode
+  declareForeign' Tracked "MVar.new" (argNDirect 1) MVar_new
 
-  declareForeign Tracked "TVar.write" arg2To0 . mkForeign $
-    \(v :: STM.TVar Val, c :: Val) ->
-      unsafeSTMToIO $ STM.writeTVar v c
+  declareForeign' Tracked "MVar.newEmpty.v2" unitDirect MVar_newEmpty_v2
 
-  declareForeign Tracked "TVar.newIO" (argNDirect 1) . mkForeign $
-    \(c :: Val) -> STM.newTVarIO c
+  declareForeign' Tracked "MVar.take.impl.v3" argToEF MVar_take_impl_v3
 
-  declareForeign Tracked "TVar.readIO" (argNDirect 1) . mkForeign $
-    \(v :: STM.TVar Val) -> STM.readTVarIO v
+  declareForeign' Tracked "MVar.tryTake" argToMaybe MVar_tryTake
 
-  declareForeign Tracked "TVar.swap" (argNDirect 2) . mkForeign $
-    \(v, c :: Val) -> unsafeSTMToIO $ STM.swapTVar v c
+  declareForeign' Tracked "MVar.put.impl.v3" arg2ToEF0 MVar_put_impl_v3
 
-  declareForeign Tracked "STM.retry" unitDirect . mkForeign $
-    \() -> unsafeSTMToIO STM.retry :: IO Val
+  declareForeign' Tracked "MVar.tryPut.impl.v3" arg2ToEFBool MVar_tryPut_impl_v3
 
-  declareForeign Tracked "Promise.new" unitDirect . mkForeign $
-    \() -> newPromise @Val
+  declareForeign' Tracked "MVar.swap.impl.v3" arg2ToEF MVar_swap_impl_v3
 
+  declareForeign' Tracked "MVar.isEmpty" (argNDirect 1) MVar_isEmpty
+
+  declareForeign' Tracked "MVar.read.impl.v3" argToEF MVar_read_impl_v3
+
+  declareForeign' Tracked "MVar.tryRead.impl.v3" argToEFM MVar_tryRead_impl_v3
+
+  declareForeign' Untracked "Char.toText" (argNDirect 1) Char_toText
+  declareForeign' Untracked "Text.repeat" (argNDirect 2) Text_repeat
+  declareForeign' Untracked "Text.reverse" (argNDirect 1) Text_reverse
+  declareForeign' Untracked "Text.toUppercase" (argNDirect 1) Text_toUppercase
+  declareForeign' Untracked "Text.toLowercase" (argNDirect 1) Text_toLowercase
+  declareForeign' Untracked "Text.toUtf8" (argNDirect 1) Text_toUtf8
+  declareForeign' Untracked "Text.fromUtf8.impl.v3" argToEF Text_fromUtf8_impl_v3
+  declareForeign' Tracked "Tls.ClientConfig.default" (argNDirect 2) Tls_ClientConfig_default
+  declareForeign' Tracked "Tls.ServerConfig.default" (argNDirect 2) Tls_ServerConfig_default
+  declareForeign' Tracked "Tls.ClientConfig.certificates.set" (argNDirect 2) Tls_ClientConfig_certificates_set
+
+  declareForeign' Tracked "Tls.ServerConfig.certificates.set" (argNDirect 2) Tls_ServerConfig_certificates_set
+
+  declareForeign' Tracked "TVar.new" (argNDirect 1) TVar_new
+
+  declareForeign' Tracked "TVar.read" (argNDirect 1) TVar_read
+  declareForeign' Tracked "TVar.write" arg2To0 TVar_write
+  declareForeign' Tracked "TVar.newIO" (argNDirect 1) TVar_newIO
+
+  declareForeign' Tracked "TVar.readIO" (argNDirect 1) TVar_readIO
+  declareForeign' Tracked "TVar.swap" (argNDirect 2) TVar_swap
+  declareForeign' Tracked "STM.retry" unitDirect STM_retry
+  declareForeign' Tracked "Promise.new" unitDirect Promise_new
   -- the only exceptions from Promise.read are async and shouldn't be caught
-  declareForeign Tracked "Promise.read" (argNDirect 1) . mkForeign $
-    \(p :: Promise Val) -> readPromise p
+  declareForeign' Tracked "Promise.read" (argNDirect 1) Promise_read
+  declareForeign' Tracked "Promise.tryRead" argToMaybe Promise_tryRead
 
-  declareForeign Tracked "Promise.tryRead" argToMaybe . mkForeign $
-    \(p :: Promise Val) -> tryReadPromise p
-
-  declareForeign Tracked "Promise.write" (argNDirect 2) . mkForeign $
-    \(p :: Promise Val, a :: Val) -> writePromise p a
-
-  declareForeign Tracked "Tls.newClient.impl.v3" arg2ToEF . mkForeignTls $
-    \( config :: TLS.ClientParams,
-       socket :: SYS.Socket
-       ) -> TLS.contextNew socket config
-
-  declareForeign Tracked "Tls.newServer.impl.v3" arg2ToEF . mkForeignTls $
+  declareForeign' Tracked "Promise.write" (argNDirect 2) Promise_write
+  declareForeign' Tracked "Tls.newClient.impl.v3" arg2ToEF Tls_newClient_impl_v3
+  declareForeign' Tracked "Tls.newServer.impl.v3" arg2ToEF . mkForeignTls $
     \( config :: TLS.ServerParams,
        socket :: SYS.Socket
        ) -> TLS.contextNew socket config
@@ -3324,10 +3058,6 @@ checkBoundsPrim name isz off esz act
 
     bsz = fromIntegral isz
     w = off + esz
-
-hostPreference :: Maybe Util.Text.Text -> SYS.HostPreference
-hostPreference Nothing = SYS.HostAny
-hostPreference (Just host) = SYS.Host $ Util.Text.unpack host
 
 signEd25519Wrapper ::
   (Bytes.Bytes, Bytes.Bytes, Bytes.Bytes) -> Either Failure Bytes.Bytes

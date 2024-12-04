@@ -24,6 +24,7 @@ import Data.Traversable
 import GHC.Conc as STM (unsafeIOToSTM)
 import Unison.Builtin.Decls (exceptionRef, ioFailureRef)
 import Unison.Builtin.Decls qualified as Rf
+import Unison.Builtin.Decls qualified as Ty
 import Unison.ConstructorReference qualified as CR
 import Unison.Prelude hiding (Text)
 import Unison.Reference
@@ -51,6 +52,7 @@ import Unison.Runtime.Array as PA
 import Unison.Runtime.Builtin
 import Unison.Runtime.Exception
 import Unison.Runtime.Foreign
+import Unison.Runtime.Foreign qualified as F
 import Unison.Runtime.Foreign.Function
 import Unison.Runtime.MCode
 import Unison.Runtime.Stack
@@ -289,8 +291,13 @@ jump0 !callback !env !activeThreads !clo = do
   where
     k0 = CB (Hook callback)
 
-unitValue :: Closure
-unitValue = Enum Rf.unitRef TT.unitTag
+unitValue :: Val
+unitValue = BoxedVal $ unitClosure
+{-# NOINLINE unitValue #-}
+
+unitClosure :: Closure
+unitClosure = Enum Ty.unitRef (PackedTag 0)
+{-# NOINLINE unitClosure #-}
 
 lookupDenv :: Word64 -> DEnv -> Val
 lookupDenv p denv = fromMaybe (BoxedVal BlackHole) $ EC.lookup p denv
@@ -601,6 +608,8 @@ exec !env !denv !_activeThreads !stk !k _ (ForeignCall _ w args)
         <$> (arg stk args >>= ev >>= res stk)
   | otherwise =
       die $ "reference to unknown foreign function: " ++ show w
+exec !_env !denv !_activeThreads !stk !k _ (ForeignCall' _ func args) =
+  (denv,,k) <$> foreignCall args func stk
 exec !env !denv !activeThreads !stk !k _ (Fork i)
   | sandboxed env = die "attempted to use sandboxed operation: fork"
   | otherwise = do
@@ -648,22 +657,22 @@ encodeExn stk exc = do
         disp e = Util.Text.pack $ show e
         (link, msg, extra)
           | Just (ioe :: IOException) <- fromException exn =
-              (Rf.ioFailureRef, disp ioe, boxedVal unitValue)
+              (Rf.ioFailureRef, disp ioe, unitValue)
           | Just re <- fromException exn = case re of
               PE _stk msg ->
-                (Rf.runtimeFailureRef, Util.Text.pack $ toPlainUnbroken msg, boxedVal unitValue)
+                (Rf.runtimeFailureRef, Util.Text.pack $ toPlainUnbroken msg, unitValue)
               BU _ tx val -> (Rf.runtimeFailureRef, Util.Text.fromText tx, val)
           | Just (ae :: ArithException) <- fromException exn =
-              (Rf.arithmeticFailureRef, disp ae, boxedVal unitValue)
+              (Rf.arithmeticFailureRef, disp ae, unitValue)
           | Just (nae :: NestedAtomically) <- fromException exn =
-              (Rf.stmFailureRef, disp nae, boxedVal unitValue)
+              (Rf.stmFailureRef, disp nae, unitValue)
           | Just (be :: BlockedIndefinitelyOnSTM) <- fromException exn =
-              (Rf.stmFailureRef, disp be, boxedVal unitValue)
+              (Rf.stmFailureRef, disp be, unitValue)
           | Just (be :: BlockedIndefinitelyOnMVar) <- fromException exn =
-              (Rf.ioFailureRef, disp be, boxedVal unitValue)
+              (Rf.ioFailureRef, disp be, unitValue)
           | Just (ie :: AsyncException) <- fromException exn =
-              (Rf.threadKilledFailureRef, disp ie, boxedVal unitValue)
-          | otherwise = (Rf.miscFailureRef, disp exn, boxedVal unitValue)
+              (Rf.threadKilledFailureRef, disp ie, unitValue)
+          | otherwise = (Rf.miscFailureRef, disp exn, unitValue)
 
 numValue :: Maybe Reference -> Val -> IO Word64
 numValue _ (UnboxedVal v _) = pure (fromIntegral @Int @Word64 v)
@@ -1937,7 +1946,7 @@ bprim2 !stk REFW i j = do
   v <- peekOff stk j
   IORef.writeIORef ref v
   stk <- bump stk
-  bpoke stk unitValue
+  bpoke stk unitClosure
   pure stk
 bprim2 !stk THRO _ _ = pure stk -- impossible
 bprim2 !stk TRCE _ _ = pure stk -- impossible
