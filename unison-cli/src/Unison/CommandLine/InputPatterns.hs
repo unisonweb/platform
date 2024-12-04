@@ -841,7 +841,7 @@ add =
     "add"
     []
     I.Visible
-    (Parameters [] . Optional [] $ Just ("definition", noCompletionsArg))
+    (Parameters [] . Optional [] $ Just ("definition", exactDefinitionArg))
     ( "`add` adds to the codebase all the definitions from the most recently "
         <> "typechecked file."
     )
@@ -853,7 +853,7 @@ previewAdd =
     "add.preview"
     []
     I.Visible
-    (Parameters [] . Optional [] $ Just ("definition", noCompletionsArg))
+    (Parameters [] . Optional [] $ Just ("definition", exactDefinitionArg))
     ( "`add.preview` previews additions to the codebase from the most recently "
         <> "typechecked file. This command only displays cached typechecking "
         <> "results. Use `load` to reparse & typecheck the file if the context "
@@ -883,7 +883,7 @@ updateOldNoPatch =
     "update.old.nopatch"
     []
     I.Visible
-    (Parameters [] . Optional [] $ Just ("definition", noCompletionsArg))
+    (Parameters [] . Optional [] $ Just ("definition", exactDefinitionArg))
     ( P.wrap
         ( makeExample' updateOldNoPatch
             <> "works like"
@@ -911,7 +911,7 @@ updateOld =
     "update.old"
     []
     I.Visible
-    (Parameters [] . Optional [("patch", patchArg)] $ Just ("definition", noCompletionsArg))
+    (Parameters [] . Optional [("patch", patchArg)] $ Just ("definition", exactDefinitionArg))
     ( P.wrap
         ( makeExample' updateOld
             <> "works like"
@@ -948,7 +948,7 @@ previewUpdate =
     "update.old.preview"
     []
     I.Visible
-    (Parameters [] . Optional [] $ Just ("definition", noCompletionsArg))
+    (Parameters [] . Optional [] $ Just ("definition", exactDefinitionArg))
     ( "`update.old.preview` previews updates to the codebase from the most "
         <> "recently typechecked file. This command only displays cached "
         <> "typechecking results. Use `load` to reparse & typecheck the file if "
@@ -1892,7 +1892,7 @@ debugFuzzyOptions =
     "debug.fuzzy-options"
     []
     I.Hidden
-    (Parameters [] $ OnePlus ("command arguments", noCompletionsArg))
+    (Parameters [("command", commandNameArg)] . Optional [] $ Just ("arguments", noCompletionsArg))
     ( P.lines
         [ P.wrap $ "This command can be used to test and debug ucm's fuzzy-options within transcripts.",
           P.wrap $ "Write a command invocation with _ for any args you'd like to see completion options for.",
