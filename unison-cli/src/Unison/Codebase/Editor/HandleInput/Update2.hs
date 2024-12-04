@@ -106,70 +106,75 @@ handleUpdate2 = do
     Merge.checkDeclCoherency nametree numConstructors
       & onLeft (Cli.returnEarly . Output.IncoherentDeclDuringUpdate)
 
-  Cli.respond Output.UpdateLookingForDependents
+  finalOutput <-
+    Cli.label \done ->
+      Cli.withRespondRegion \respondRegion -> do
+        respondRegion $
+          Output.Literal (Pretty.wrap "Okay, I'm searching the branch for code that needs to be updated...")
 
-  (dependents, hydratedDependents) <-
-    Cli.runTransaction do
-      -- Get all dependents of things being updated
-      dependents0 <-
-        getNamespaceDependentsOf2
-          (flattenNametrees nametree)
-          (getExistingReferencesNamed termAndDeclNames (Branch.toNames currentBranch0ExcludingLibdeps))
+        (dependents, hydratedDependents) <-
+          Cli.runTransaction do
+            -- Get all dependents of things being updated
+            dependents0 <-
+              getNamespaceDependentsOf2
+                (flattenNametrees nametree)
+                (getExistingReferencesNamed termAndDeclNames (Branch.toNames currentBranch0ExcludingLibdeps))
 
-      -- Throw away the dependents that are shadowed by the file itself
-      let dependents1 :: DefnsF (Map Name) TermReferenceId TypeReferenceId
-          dependents1 =
-            bimap
-              (`Map.withoutKeys` (Set.map Name.unsafeParseVar (UF.termNamespaceBindings tuf)))
-              (`Map.withoutKeys` (Set.map Name.unsafeParseVar (UF.typeNamespaceBindings tuf)))
-              dependents0
+            -- Throw away the dependents that are shadowed by the file itself
+            let dependents1 :: DefnsF (Map Name) TermReferenceId TypeReferenceId
+                dependents1 =
+                  bimap
+                    (`Map.withoutKeys` (Set.map Name.unsafeParseVar (UF.termNamespaceBindings tuf)))
+                    (`Map.withoutKeys` (Set.map Name.unsafeParseVar (UF.typeNamespaceBindings tuf)))
+                    dependents0
 
-      -- Hydrate the dependents for rendering
-      hydratedDependents <-
-        hydrateDefns
-          (Codebase.unsafeGetTermComponent env.codebase)
-          Operations.expectDeclComponent
-          dependents1
+            -- Hydrate the dependents for rendering
+            hydratedDependents <-
+              hydrateDefns
+                (Codebase.unsafeGetTermComponent env.codebase)
+                Operations.expectDeclComponent
+                dependents1
 
-      pure (dependents1, hydratedDependents)
+            pure (dependents1, hydratedDependents)
 
-  secondTuf <- do
-    case defnsAreEmpty dependents of
-      -- If there are no dependents of the updates, then just use the already-typechecked file.
-      True -> pure tuf
-      False -> do
-        Cli.respond Output.UpdateStartTypechecking
+        secondTuf <- do
+          case defnsAreEmpty dependents of
+            -- If there are no dependents of the updates, then just use the already-typechecked file.
+            True -> pure tuf
+            False -> do
+              respondRegion (Output.Literal (Pretty.wrap "That's done. Now I'm making sure everything typechecks..."))
 
-        let prettyUnisonFile =
-              let ppe = makePPE 10 namesIncludingLibdeps (UF.typecheckedToNames tuf) dependents
-               in makePrettyUnisonFile
-                    (Pretty.prettyUnisonFile ppe (UF.discardTypes tuf))
-                    (renderDefnsForUnisonFile declNameLookup ppe (over (#terms . mapped) snd hydratedDependents))
+              let prettyUnisonFile =
+                    let ppe = makePPE 10 namesIncludingLibdeps (UF.typecheckedToNames tuf) dependents
+                     in makePrettyUnisonFile
+                          (Pretty.prettyUnisonFile ppe (UF.discardTypes tuf))
+                          (renderDefnsForUnisonFile declNameLookup ppe (over (#terms . mapped) snd hydratedDependents))
 
-        parsingEnv <- Cli.makeParsingEnv pp namesIncludingLibdeps
+              parsingEnv <- Cli.makeParsingEnv pp namesIncludingLibdeps
 
-        secondTuf <-
-          parseAndTypecheck prettyUnisonFile parsingEnv & onNothingM do
-            scratchFilePath <- fst <$> Cli.expectLatestFile
-            liftIO $ env.writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 prettyUnisonFile) True
-            Cli.returnEarly Output.UpdateTypecheckingFailure
+              secondTuf <-
+                parseAndTypecheck prettyUnisonFile parsingEnv & onNothingM do
+                  scratchFilePath <- fst <$> Cli.expectLatestFile
+                  liftIO $ env.writeSource (Text.pack scratchFilePath) (Text.pack $ Pretty.toPlain 80 prettyUnisonFile) True
+                  done Output.UpdateTypecheckingFailure
 
-        Cli.respond Output.UpdateTypecheckingSuccess
+              respondRegion (Output.Literal (Pretty.wrap "Everything typechecks, so I'm saving the results..."))
 
-        pure secondTuf
+              pure secondTuf
 
-  path <- Cli.getCurrentProjectPath
-  branchUpdates <-
-    Cli.runTransactionWithRollback \abort -> do
-      Codebase.addDefsToCodebase env.codebase secondTuf
-      typecheckedUnisonFileToBranchUpdates
-        abort
-        (\typeName -> Right (Map.lookup typeName declNameLookup.declToConstructors))
-        secondTuf
-  Cli.stepAt "update" (path, Branch.batchUpdates branchUpdates)
-  #latestTypecheckedFile .= Nothing
+        path <- Cli.getCurrentProjectPath
+        branchUpdates <-
+          Cli.runTransactionWithRollback \abort -> do
+            Codebase.addDefsToCodebase env.codebase secondTuf
+            typecheckedUnisonFileToBranchUpdates
+              abort
+              (\typeName -> Right (Map.lookup typeName declNameLookup.declToConstructors))
+              secondTuf
+        Cli.stepAt "update" (path, Branch.batchUpdates branchUpdates)
+        #latestTypecheckedFile .= Nothing
+        pure Output.Success
 
-  Cli.respond Output.Success
+  Cli.respond finalOutput
 
 makePrettyUnisonFile :: Pretty ColorText -> DefnsF (Map Name) (Pretty ColorText) (Pretty ColorText) -> Pretty ColorText
 makePrettyUnisonFile originalFile dependents =
