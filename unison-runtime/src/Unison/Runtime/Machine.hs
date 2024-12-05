@@ -623,6 +623,8 @@ exec !env !denv !activeThreads !stk !k _ (TryForce i)
       ev <- Control.Exception.try $ nestEval env activeThreads (poke stk) v
       stk <- encodeExn stk ev
       pure (denv, stk, k)
+exec !_ !_ !_ !_ !_ _ (SandboxingFailure t) = do
+  die $ "Attempted to use disallowed builtin in sandboxed environment: " <> DTx.unpack t
 {-# INLINE exec #-}
 
 encodeExn ::

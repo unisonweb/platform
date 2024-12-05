@@ -60,7 +60,7 @@ import Data.Functor ((<&>))
 import Data.Map.Strict qualified as M
 import Data.Primitive.PrimArray
 import Data.Primitive.PrimArray qualified as PA
-import Data.Text as Text (unpack)
+import Data.Text qualified as Text
 import Data.Void (Void, absurd)
 import Data.Word (Word16, Word64)
 import GHC.Stack (HasCallStack)
@@ -253,6 +253,9 @@ import Unison.Var (Var)
 -- mutation is to enable more efficient implementation of
 -- certain recursive, 'deep' handlers, since those can operate
 -- more like stateful code than control operators.
+
+data Sandboxed = Tracked | Untracked
+  deriving (Show, Eq, Ord)
 
 data Args'
   = Arg1 !Int
@@ -787,6 +790,8 @@ data GInstr comb
     Seq !Args
   | -- Force a delayed expression, catching any runtime exceptions involved
     TryForce !Int
+  | -- Attempted to use a builtin that was not allowed in the current sandboxing context.
+    SandboxingFailure !Text.Text -- The name of the builtin which failed was sandboxed.
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 type Section = GSection CombIx

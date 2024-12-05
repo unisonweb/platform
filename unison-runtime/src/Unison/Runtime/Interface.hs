@@ -1321,7 +1321,7 @@ tabulateErrors errs =
 restoreCache :: StoredCache -> IO CCache
 restoreCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
   cc <-
-    CCache builtinForeigns False debugText
+    CCache False debugText
       <$> newTVarIO srcCombs
       <*> newTVarIO combs
       <*> newTVarIO (crs <> builtinTermBackref)

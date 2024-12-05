@@ -54,6 +54,13 @@ getComb =
       Lam <$> gInt <*> gInt <*> getSection
     CachedClosureT -> error "getComb: Unexpected serialized Cached Closure"
 
+getMForeignFunc :: (MonadGet m) => m MForeignFunc
+getMForeignFunc = do
+  toEnum <$> gInt
+
+putMForeignFunc :: (MonadPut m) => MForeignFunc -> m ()
+putMForeignFunc = pInt . fromEnum
+
 data SectionT
   = AppT
   | CallT
@@ -161,6 +168,7 @@ data InstrT
   | SeqT
   | TryForceT
   | RefCAST
+  | SandboxingFailureT
 
 instance Tag InstrT where
   tag2word UPrim1T = 0
@@ -181,6 +189,7 @@ instance Tag InstrT where
   tag2word SeqT = 15
   tag2word TryForceT = 16
   tag2word RefCAST = 17
+  tag2word SandboxingFailureT = 18
 
   word2tag 0 = pure UPrim1T
   word2tag 1 = pure UPrim2T
@@ -200,6 +209,7 @@ instance Tag InstrT where
   word2tag 15 = pure SeqT
   word2tag 16 = pure TryForceT
   word2tag 17 = pure RefCAST
+  word2tag 18 = pure SandboxingFailureT
   word2tag n = unknownTag "InstrT" n
 
 putInstr :: (MonadPut m) => GInstr cix -> m ()
@@ -209,7 +219,7 @@ putInstr = \case
   (BPrim1 bp i) -> putTag BPrim1T *> putTag bp *> pInt i
   (BPrim2 bp i j) -> putTag BPrim2T *> putTag bp *> pInt i *> pInt j
   (RefCAS i j k) -> putTag RefCAST *> pInt i *> pInt j *> pInt k
-  (ForeignCall b w a) -> putTag ForeignCallT *> serialize b *> pWord w *> putArgs a
+  (ForeignCall b ff a) -> putTag ForeignCallT *> serialize b *> putMForeignFunc ff *> putArgs a
   (SetDyn w i) -> putTag SetDynT *> pWord w *> pInt i
   (Capture w) -> putTag CaptureT *> pWord w
   (Name r a) -> putTag NameT *> putRef r *> putArgs a
@@ -222,6 +232,9 @@ putInstr = \case
   (Atomically i) -> putTag AtomicallyT *> pInt i
   (Seq a) -> putTag SeqT *> putArgs a
   (TryForce i) -> putTag TryForceT *> pInt i
+  (SandboxingFailure {}) ->
+    -- Sandboxing failures should only exist in code we're actively running, it shouldn't be serialized.
+    error "putInstr: Unexpected serialized Sandboxing Failure"
 
 getInstr :: (MonadGet m) => m Instr
 getInstr =
@@ -231,7 +244,7 @@ getInstr =
     BPrim1T -> BPrim1 <$> getTag <*> gInt
     BPrim2T -> BPrim2 <$> getTag <*> gInt <*> gInt
     RefCAST -> RefCAS <$> gInt <*> gInt <*> gInt
-    ForeignCallT -> ForeignCall <$> deserialize <*> gWord <*> getArgs
+    ForeignCallT -> ForeignCall <$> deserialize <*> getMForeignFunc <*> getArgs
     SetDynT -> SetDyn <$> gWord <*> gInt
     CaptureT -> Capture <$> gWord
     NameT -> Name <$> getRef <*> getArgs
@@ -244,6 +257,7 @@ getInstr =
     AtomicallyT -> Atomically <$> gInt
     SeqT -> Seq <$> getArgs
     TryForceT -> TryForce <$> gInt
+    SandboxingFailureT -> error "getInstr: Unexpected serialized Sandboxing Failure"
 
 data ArgsT
   = ZArgsT

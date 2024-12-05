@@ -12,10 +12,8 @@ module Unison.Runtime.Builtin
     builtinTypeNumbering,
     builtinTermBackref,
     builtinTypeBackref,
-    builtinForeigns,
     builtinArities,
     builtinInlineInfo,
-    sandboxedForeigns,
     numberedTermLookup,
     Sandbox (..),
     baseSandboxInfo,
@@ -25,23 +23,17 @@ module Unison.Runtime.Builtin
   )
 where
 
-import Control.Concurrent.STM qualified as STM
-import Control.Monad.Reader (ReaderT (..), ask, runReaderT)
 import Control.Monad.State.Strict (State, execState, modify)
 import Data.Map qualified as Map
 import Data.Set (insert)
 import Data.Set qualified as Set
 import Data.Text qualified
-import GHC.Conc qualified as STM
-import GHC.IO (IO (IO))
 import Unison.ABT.Normalized hiding (TTm)
 import Unison.Builtin.Decls qualified as Ty
 import Unison.Prelude hiding (Text, some)
 import Unison.Reference
 import Unison.Runtime.ANF as ANF
 import Unison.Runtime.Builtin.Types
-import Unison.Runtime.Exception (die)
-import Unison.Runtime.Foreign qualified as F
 import Unison.Runtime.Stack (UnboxedTypeTag (..), Val (..), unboxedTypeTagToInt)
 import Unison.Runtime.Stack qualified as Closure
 import Unison.Symbol
@@ -1696,8 +1688,7 @@ builtinLookup =
       ]
       ++ foreignWrappers
 
-type FDecl v =
-  ReaderT Bool (State (Word64, [(Data.Text.Text, (Sandbox, SuperNormal v))], Map Word64 (Data.Text.Text, ForeignFunc)))
+type FDecl v = State (Map ForeignFunc (Sandbox, SuperNormal v, Data.Text.Text))
 
 -- Data type to determine whether a builtin should be tracked for
 -- sandboxing. Untracked means that it can be freely used, and Tracked
@@ -1706,25 +1697,16 @@ type FDecl v =
 data Sandbox = Tracked | Untracked
   deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
-bomb :: Data.Text.Text -> a -> IO r
-bomb name _ = die $ "attempted to use sandboxed operation: " ++ Data.Text.unpack name
-
 declareForeign ::
   Sandbox ->
   Data.Text.Text ->
   ForeignOp ->
   ForeignFunc ->
   FDecl Symbol ()
-declareForeign sand name op func0 = do
-  sanitize <- ask
-  modify $ \(w, codes, funcs) ->
-    let func
-          | sanitize,
-            Tracked <- sand =
-              error "TODO: fill in sandboxing error"
-          | otherwise = func0
-        code = (name, (sand, uncurry Lambda (op w)))
-     in (w + 1, code : codes, mapInsert w (name, func) funcs)
+declareForeign sand name op func = do
+  modify $ \funcs ->
+    let code = uncurry Lambda (op func)
+     in (Map.insert func (sand, code, name) funcs)
 
 unitValue :: Val
 unitValue = BoxedVal $ Closure.Enum Ty.unitRef (PackedTag 0)
@@ -2096,13 +2078,14 @@ declareForeigns = do
   declareForeign Untracked "Char.Class.is" (argNDirect 2) Char_Class_is
   declareForeign Untracked "Text.patterns.char" (argNDirect 1) Text_patterns_char
 
-foreignDeclResults ::
-  Bool -> (Word64, [(Data.Text.Text, (Sandbox, SuperNormal Symbol))], EnumMap Word64 (Data.Text.Text, ForeignFunc))
-foreignDeclResults sanitize =
-  execState (runReaderT declareForeigns sanitize) (0, [], mempty)
+foreignDeclResults :: (Map ForeignFunc (Sandbox, SuperNormal Symbol, Data.Text.Text))
+foreignDeclResults =
+  execState declareForeigns mempty
 
 foreignWrappers :: [(Data.Text.Text, (Sandbox, SuperNormal Symbol))]
-foreignWrappers | (_, l, _) <- foreignDeclResults False = reverse l
+foreignWrappers =
+  Map.elems foreignDeclResults
+    <&> \(sand, code, name) -> (name, (sand, code))
 
 numberedTermLookup :: EnumMap Word64 (SuperNormal Symbol)
 numberedTermLookup =
@@ -2116,16 +2099,8 @@ builtinTermBackref :: EnumMap Word64 Reference
 builtinTermBackref =
   mapFromList . zip [1 ..] . Map.keys $ builtinLookup
 
-builtinForeigns :: EnumMap Word64 ForeignFunc
-builtinForeigns | (_, _, m) <- foreignDeclResults False = snd <$> m
-
-sandboxedForeigns :: EnumMap Word64 ForeignFunc
-sandboxedForeigns | (_, _, m) <- foreignDeclResults True = snd <$> m
-
 builtinForeignNames :: Map ANF.ForeignFunc Data.Text.Text
-builtinForeignNames
-  | (_, _, m) <- foreignDeclResults False =
-      m
+builtinForeignNames = foreignDeclResults <&> \(_, _, n) -> n
 
 -- Bootstrapping for sandbox check. The eventual map will be one with
 -- associations `r -> s` where `s` is all the 'sensitive' base
@@ -2146,6 +2121,3 @@ builtinArities =
 builtinInlineInfo :: Map Reference (Int, ANormal Symbol)
 builtinInlineInfo =
   ANF.buildInlineMap $ fmap (Rec [] . snd) builtinLookup
-
-unsafeSTMToIO :: STM.STM a -> IO a
-unsafeSTMToIO (STM.STM m) = IO m
