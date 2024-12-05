@@ -317,7 +317,7 @@ putGroup ::
   (MonadPut m) =>
   (Var v) =>
   Map Reference Word64 ->
-  EC.EnumMap FOp Text ->
+  EC.EnumMap ForeignFunc Text ->
   SuperGroup v ->
   m ()
 putGroup refrep fops (Rec bs e) =
@@ -338,7 +338,7 @@ getGroup = do
   cs <- replicateM l (getComb ctx n)
   Rec (zip vs cs) <$> getComb ctx n
 
-putCode :: (MonadPut m) => EC.EnumMap FOp Text -> Code -> m ()
+putCode :: (MonadPut m) => EC.EnumMap ForeignFunc Text -> Code -> m ()
 putCode fops (CodeRep g c) = putGroup mempty fops g *> putCacheability c
 
 getCode :: (MonadGet m) => Word32 -> m Code
@@ -363,7 +363,7 @@ putComb ::
   (MonadPut m) =>
   (Var v) =>
   Map Reference Word64 ->
-  EC.EnumMap FOp Text ->
+  EC.EnumMap ForeignFunc Text ->
   [v] ->
   SuperNormal v ->
   m ()
@@ -384,7 +384,7 @@ putNormal ::
   (MonadPut m) =>
   (Var v) =>
   Map Reference Word64 ->
-  EC.EnumMap FOp Text ->
+  EC.EnumMap ForeignFunc Text ->
   [v] ->
   ANormal v ->
   m ()
@@ -482,7 +482,7 @@ putFunc ::
   (MonadPut m) =>
   (Var v) =>
   Map Reference Word64 ->
-  EC.EnumMap FOp Text ->
+  EC.EnumMap ForeignFunc Text ->
   [v] ->
   Func v ->
   m ()
@@ -757,7 +757,7 @@ putBranches ::
   (MonadPut m) =>
   (Var v) =>
   Map Reference Word64 ->
-  EC.EnumMap FOp Text ->
+  EC.EnumMap ForeignFunc Text ->
   [v] ->
   Branched (ANormal v) ->
   m ()
@@ -825,7 +825,7 @@ putCase ::
   (MonadPut m) =>
   (Var v) =>
   Map Reference Word64 ->
-  EC.EnumMap FOp Text ->
+  EC.EnumMap ForeignFunc Text ->
   [v] ->
   ([Mem], ANormal v) ->
   m ()
@@ -997,7 +997,7 @@ deserializeCode bs = runGetS (getVersion >>= getCode) bs
         n | 1 <= n && n <= 3 -> pure n
         n -> fail $ "deserializeGroup: unknown version: " ++ show n
 
-serializeCode :: EC.EnumMap FOp Text -> Code -> ByteString
+serializeCode :: EC.EnumMap ForeignFunc Text -> Code -> ByteString
 serializeCode fops co = runPutS (putVersion *> putCode fops co)
   where
     putVersion = putWord32be codeVersion
@@ -1023,7 +1023,7 @@ serializeCode fops co = runPutS (putVersion *> putCode fops co)
 -- shouldn't be subject to rehashing.
 serializeGroupForRehash ::
   (Var v) =>
-  EC.EnumMap FOp Text ->
+  EC.EnumMap ForeignFunc Text ->
   Reference ->
   SuperGroup v ->
   L.ByteString

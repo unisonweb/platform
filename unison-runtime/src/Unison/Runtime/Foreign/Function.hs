@@ -6,10 +6,7 @@
 {-# LANGUAGE ViewPatterns #-}
 
 module Unison.Runtime.Foreign.Function
-  ( ForeignFunc (..),
-    ForeignConvention (..),
-    ForeignFunc' (..),
-    mkForeign,
+  ( ForeignConvention (..),
   )
 where
 
@@ -33,7 +30,6 @@ import Unison.Runtime.ANF (Code, PackedTag (..), Value, internalBug)
 import Unison.Runtime.Array qualified as PA
 import Unison.Runtime.Exception
 import Unison.Runtime.Foreign
-import Unison.Runtime.MCode
 import Unison.Runtime.Stack
 import Unison.Type
   ( iarrayRef,
@@ -51,41 +47,11 @@ import Unison.Util.Bytes (Bytes)
 import Unison.Util.RefPromise (Promise)
 import Unison.Util.Text (Text, pack, unpack)
 
--- Foreign functions operating on stacks
-data ForeignFunc where
-  FF ::
-    (Stack -> Args -> IO a) ->
-    (Stack -> r -> IO Stack) ->
-    (a -> IO r) ->
-    ForeignFunc
-
-instance Show ForeignFunc where
-  show _ = "ForeignFunc"
-
-instance Eq ForeignFunc where
-  _ == _ = internalBug "Eq ForeignFunc"
-
-instance Ord ForeignFunc where
-  compare _ _ = internalBug "Ord ForeignFunc"
-
 class ForeignConvention a where
   readForeign ::
     [Int] -> Stack -> IO ([Int], a)
   writeForeign ::
     Stack -> a -> IO Stack
-
-mkForeign ::
-  (ForeignConvention a, ForeignConvention r) =>
-  (a -> IO r) ->
-  ForeignFunc
-mkForeign ev = FF readArgs writeForeign ev
-  where
-    readArgs stk (argsToLists -> args) =
-      readForeign args stk >>= \case
-        ([], a) -> pure a
-        _ ->
-          internalBug
-            "mkForeign: too many arguments for foreign function"
 
 instance ForeignConvention Int where
   readForeign (i : args) stk = (args,) <$> peekOffI stk i

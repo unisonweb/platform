@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -Wno-unused-imports #-}
-
 module Unison.Runtime.Foreign.Impl (foreignCall) where
 
 import Control.Concurrent (ThreadId)
@@ -11,12 +9,9 @@ import Control.Concurrent.MVar as SYS
 import Control.Concurrent.STM qualified as STM
 import Control.DeepSeq (NFData)
 import Control.Exception
-import Control.Exception (evaluate)
 import Control.Exception.Safe qualified as Exception
 import Control.Monad.Catch (MonadCatch)
 import Control.Monad.Primitive qualified as PA
-import Control.Monad.Reader (ReaderT (..), ask, runReaderT)
-import Control.Monad.State.Strict (State, execState, modify)
 import Crypto.Error (CryptoError (..), CryptoFailable (..))
 import Crypto.Hash qualified as Hash
 import Crypto.MAC.HMAC qualified as HMAC
@@ -30,10 +25,7 @@ import Data.ByteString.Lazy qualified as L
 import Data.Default (def)
 import Data.Digest.Murmur64 (asWord64, hash64)
 import Data.IP (IP)
-import Data.Map qualified as Map
 import Data.PEM (PEM, pemContent, pemParseLBS)
-import Data.Set (insert)
-import Data.Set qualified as Set
 import Data.Text qualified
 import Data.Text.IO qualified as Text.IO
 import Data.Time.Clock.POSIX as SYS
@@ -129,34 +121,25 @@ import System.Process as SYS
     withCreateProcess,
   )
 import System.X509 qualified as X
-import Unison.ABT.Normalized hiding (TTm)
 import Unison.Builtin.Decls qualified as Ty
 import Unison.Prelude hiding (Text, some)
 import Unison.Reference
 import Unison.Referent (Referent, pattern Ref)
-import Unison.Runtime.ANF as ANF
+import Unison.Runtime.ANF qualified as ANF
 import Unison.Runtime.ANF.Rehash (checkGroupHashes)
-import Unison.Runtime.ANF.Serialize as ANF
+import Unison.Runtime.ANF.Serialize qualified as ANF
 import Unison.Runtime.Array qualified as PA
 import Unison.Runtime.Builtin
-import Unison.Runtime.Builtin.Types
-import Unison.Runtime.Crypto.Rsa as Rsa
+import Unison.Runtime.Crypto.Rsa qualified as Rsa
 import Unison.Runtime.Exception (die)
-import Unison.Runtime.Foreign
-  ( Foreign (Wrap),
-    HashAlgorithm (..),
-  )
 import Unison.Runtime.Foreign hiding (Failure)
 import Unison.Runtime.Foreign qualified as F
-import Unison.Runtime.Foreign.Function hiding (mkForeign)
+import Unison.Runtime.Foreign.Function (ForeignConvention (..))
 import Unison.Runtime.MCode
 import Unison.Runtime.Stack
-import Unison.Runtime.Stack (UnboxedTypeTag (..), Val (..), emptyVal, unboxedTypeTagToInt)
-import Unison.Runtime.Stack qualified as Closure
 import Unison.Symbol
 import Unison.Type qualified as Ty
 import Unison.Util.Bytes qualified as Bytes
-import Unison.Util.EnumContainers as EC
 import Unison.Util.RefPromise
   ( Promise,
     newPromise,
@@ -167,10 +150,9 @@ import Unison.Util.RefPromise
 import Unison.Util.Text (Text)
 import Unison.Util.Text qualified as Util.Text
 import Unison.Util.Text.Pattern qualified as TPat
-import Unison.Var
 import UnliftIO qualified
 
-foreignCall :: ForeignFunc' -> Args -> Stack -> IO Stack
+foreignCall :: MForeignFunc -> Args -> Stack -> IO Stack
 foreignCall = \case
   IO_UDP_clientSocket_impl_v1 -> mkForeignIOF $ \(host :: Util.Text.Text, port :: Util.Text.Text) ->
     let hostStr = Util.Text.toString host
@@ -474,31 +456,31 @@ foreignCall = \case
   Tls_terminate_impl_v3 -> mkForeignTls $
     \(tls :: TLS.Context) -> TLS.bye tls
   Code_validateLinks -> mkForeign $
-    \(lsgs0 :: [(Referent, Code)]) -> do
+    \(lsgs0 :: [(Referent, ANF.Code)]) -> do
       let f (msg, rs) =
             F.Failure Ty.miscFailureRef (Util.Text.fromText msg) rs
       pure . first f $ checkGroupHashes lsgs0
   Code_dependencies -> mkForeign $
-    \(CodeRep sg _) ->
-      pure $ Wrap Ty.termLinkRef . Ref <$> groupTermLinks sg
+    \(ANF.CodeRep sg _) ->
+      pure $ Wrap Ty.termLinkRef . Ref <$> ANF.groupTermLinks sg
   Code_serialize -> mkForeign $
-    \(co :: Code) ->
-      pure . Bytes.fromArray $ serializeCode builtinForeignNames co
+    \(co :: ANF.Code) ->
+      pure . Bytes.fromArray $ ANF.serializeCode builtinForeignNames co
   Code_deserialize ->
     mkForeign $
-      pure . deserializeCode . Bytes.toArray
+      pure . ANF.deserializeCode . Bytes.toArray
   Code_display -> mkForeign $
-    \(nm, (CodeRep sg _)) ->
-      pure $ prettyGroup @Symbol (Util.Text.unpack nm) sg ""
+    \(nm, (ANF.CodeRep sg _)) ->
+      pure $ ANF.prettyGroup @Symbol (Util.Text.unpack nm) sg ""
   Value_dependencies ->
     mkForeign $
-      pure . fmap (Wrap Ty.termLinkRef . Ref) . valueTermLinks
+      pure . fmap (Wrap Ty.termLinkRef . Ref) . ANF.valueTermLinks
   Value_serialize ->
     mkForeign $
-      pure . Bytes.fromArray . serializeValue
+      pure . Bytes.fromArray . ANF.serializeValue
   Value_deserialize ->
     mkForeign $
-      pure . deserializeValue . Bytes.toArray
+      pure . ANF.deserializeValue . Bytes.toArray
   Crypto_HashAlgorithm_Sha3_512 -> mkHashAlgorithm "Sha3_512" Hash.SHA3_512
   Crypto_HashAlgorithm_Sha3_256 -> mkHashAlgorithm "Sha3_256" Hash.SHA3_256
   Crypto_HashAlgorithm_Sha2_512 -> mkHashAlgorithm "Sha2_512" Hash.SHA512
@@ -526,7 +508,7 @@ foreignCall = \case
             L.ByteString ->
             Hash.Digest a
           hashlazy _ l = Hash.hashlazy l
-       in pure . Bytes.fromArray . hashlazy alg $ serializeValueForHash x
+       in pure . Bytes.fromArray . hashlazy alg $ ANF.serializeValueForHash x
   Crypto_hmac -> mkForeign $
     \(HashAlgorithm _ alg, key, x) ->
       let hmac ::
@@ -536,7 +518,7 @@ foreignCall = \case
               . HMAC.updates
                 (HMAC.initialize $ Bytes.toArray @BA.Bytes key)
               $ L.toChunks s
-       in pure . Bytes.fromArray . hmac alg $ serializeValueForHash x
+       in pure . Bytes.fromArray . hmac alg $ ANF.serializeValueForHash x
   Crypto_Ed25519_sign_impl ->
     mkForeign $
       pure . signEd25519Wrapper
@@ -551,7 +533,7 @@ foreignCall = \case
       pure . verifyRsaWrapper
   Universal_murmurHash ->
     mkForeign $
-      pure . asWord64 . hash64 . serializeValueForHash
+      pure . asWord64 . hash64 . ANF.serializeValueForHash
   IO_randomBytes -> mkForeign $
     \n -> Bytes.fromArray <$> getRandomBytes @IO @ByteString n
   Bytes_zlib_compress -> mkForeign $ pure . Bytes.zlibCompress

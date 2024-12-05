@@ -49,11 +49,10 @@ import Unison.Runtime.ANF as ANF
   )
 import Unison.Runtime.ANF qualified as ANF
 import Unison.Runtime.Array as PA
-import Unison.Runtime.Builtin
+import Unison.Runtime.Builtin hiding (unitValue)
 import Unison.Runtime.Exception
 import Unison.Runtime.Foreign
-import Unison.Runtime.Foreign qualified as F
-import Unison.Runtime.Foreign.Function
+import Unison.Runtime.Foreign.Impl (foreignCall)
 import Unison.Runtime.MCode
 import Unison.Runtime.Stack
 import Unison.Runtime.TypeTags qualified as TT
@@ -110,8 +109,7 @@ data Tracer
 
 -- code caching environment
 data CCache = CCache
-  { foreignFuncs :: EnumMap Word64 ForeignFunc,
-    sandboxed :: Bool,
+  { sandboxed :: Bool,
     tracer :: Bool -> Val -> Tracer,
     -- Combinators in their original form, where they're easier to serialize into SCache
     srcCombs :: TVar (EnumMap Word64 Combs),
@@ -151,7 +149,7 @@ refNumTy' cc r = M.lookup r <$> refNumsTy cc
 
 baseCCache :: Bool -> IO CCache
 baseCCache sandboxed = do
-  CCache ffuncs sandboxed noTrace
+  CCache sandboxed noTrace
     <$> newTVarIO srcCombs
     <*> newTVarIO combs
     <*> newTVarIO builtinTermBackref
@@ -165,7 +163,6 @@ baseCCache sandboxed = do
     <*> newTVarIO baseSandboxInfo
   where
     cacheableCombs = mempty
-    ffuncs | sandboxed = sandboxedForeigns | otherwise = builtinForeigns
     noTrace _ _ = NoTrace
     ftm = 1 + maximum builtinTermNumbering
     fty = 1 + maximum builtinTypeNumbering
@@ -602,14 +599,8 @@ exec !_ !denv !_activeThreads !stk !k _ (Seq as) = do
   stk <- bump stk
   pokeS stk $ Sq.fromList l
   pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (ForeignCall _ w args)
-  | Just (FF arg res ev) <- EC.lookup w (foreignFuncs env) =
-      (denv,,k)
-        <$> (arg stk args >>= ev >>= res stk)
-  | otherwise =
-      die $ "reference to unknown foreign function: " ++ show w
-exec !_env !denv !_activeThreads !stk !k _ (ForeignCall' _ func args) =
-  (denv,,k) <$> foreignCall args func stk
+exec !_env !denv !_activeThreads !stk !k _ (ForeignCall _ func args) =
+  (denv,,k) <$> foreignCall func args stk
 exec !env !denv !activeThreads !stk !k _ (Fork i)
   | sandboxed env = die "attempted to use sandboxed operation: fork"
   | otherwise = do

@@ -35,7 +35,7 @@ module Unison.Runtime.MCode
     GBranch (..),
     Branch,
     RBranch,
-    ForeignFunc' (..),
+    MForeignFunc (..),
     emitCombs,
     emitComb,
     resolveCombs,
@@ -461,7 +461,7 @@ data BPrim2
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 -- | Enum representing every foreign call.
-data ForeignFunc'
+data MForeignFunc
   = IO_UDP_clientSocket_impl_v1
   | IO_UDP_UDPSocket_recv_impl_v1
   | IO_UDP_UDPSocket_send_impl_v1
@@ -748,16 +748,10 @@ data GInstr comb
   | -- Use a check-and-set ticket to update a reference
     -- (ref stack index, ticket stack index, new value stack index)
     RefCAS !Int !Int !Int
-  | -- Call out to a Haskell function. This is considerably slower
-    -- for very simple operations, hence the primops.
+  | -- Call out to a Haskell function.
     ForeignCall
       !Bool -- catch exceptions
-      !Word64 -- FFI call
-      !Args -- arguments
-  | -- Call out to a Haskell function.
-    ForeignCall'
-      !Bool -- catch exceptions
-      !ForeignFunc' -- FFI call
+      !MForeignFunc -- FFI call
       !Args -- arguments
   | -- Set the value of a dynamic reference
     SetDyn
@@ -1649,8 +1643,257 @@ emitPOp ANF.TFRC = \case
 -- to 'foreing function' calls, but there is a special case for the
 -- standard handle access function, because it does not yield an
 -- explicit error.
-emitFOp :: ANF.FOp -> Args -> Instr
-emitFOp fop = ForeignCall True (fromIntegral $ fromEnum fop)
+emitFOp :: ANF.ForeignFunc -> Args -> Instr
+emitFOp fop = ForeignCall True (convertFF fop)
+  where
+    convertFF :: ANF.ForeignFunc -> MForeignFunc
+    convertFF = \case
+      ANF.IO_UDP_clientSocket_impl_v1 -> IO_UDP_clientSocket_impl_v1
+      ANF.IO_UDP_UDPSocket_recv_impl_v1 -> IO_UDP_UDPSocket_recv_impl_v1
+      ANF.IO_UDP_UDPSocket_send_impl_v1 -> IO_UDP_UDPSocket_send_impl_v1
+      ANF.IO_UDP_UDPSocket_close_impl_v1 -> IO_UDP_UDPSocket_close_impl_v1
+      ANF.IO_UDP_ListenSocket_close_impl_v1 -> IO_UDP_ListenSocket_close_impl_v1
+      ANF.IO_UDP_UDPSocket_toText_impl_v1 -> IO_UDP_UDPSocket_toText_impl_v1
+      ANF.IO_UDP_serverSocket_impl_v1 -> IO_UDP_serverSocket_impl_v1
+      ANF.IO_UDP_ListenSocket_toText_impl_v1 -> IO_UDP_ListenSocket_toText_impl_v1
+      ANF.IO_UDP_ListenSocket_recvFrom_impl_v1 -> IO_UDP_ListenSocket_recvFrom_impl_v1
+      ANF.IO_UDP_ClientSockAddr_toText_v1 -> IO_UDP_ClientSockAddr_toText_v1
+      ANF.IO_UDP_ListenSocket_sendTo_impl_v1 -> IO_UDP_ListenSocket_sendTo_impl_v1
+      ANF.IO_openFile_impl_v3 -> IO_openFile_impl_v3
+      ANF.IO_closeFile_impl_v3 -> IO_closeFile_impl_v3
+      ANF.IO_isFileEOF_impl_v3 -> IO_isFileEOF_impl_v3
+      ANF.IO_isFileOpen_impl_v3 -> IO_isFileOpen_impl_v3
+      ANF.IO_getEcho_impl_v1 -> IO_getEcho_impl_v1
+      ANF.IO_ready_impl_v1 -> IO_ready_impl_v1
+      ANF.IO_getChar_impl_v1 -> IO_getChar_impl_v1
+      ANF.IO_isSeekable_impl_v3 -> IO_isSeekable_impl_v3
+      ANF.IO_seekHandle_impl_v3 -> IO_seekHandle_impl_v3
+      ANF.IO_handlePosition_impl_v3 -> IO_handlePosition_impl_v3
+      ANF.IO_getBuffering_impl_v3 -> IO_getBuffering_impl_v3
+      ANF.IO_setBuffering_impl_v3 -> IO_setBuffering_impl_v3
+      ANF.IO_setEcho_impl_v1 -> IO_setEcho_impl_v1
+      ANF.IO_getLine_impl_v1 -> IO_getLine_impl_v1
+      ANF.IO_getBytes_impl_v3 -> IO_getBytes_impl_v3
+      ANF.IO_getSomeBytes_impl_v1 -> IO_getSomeBytes_impl_v1
+      ANF.IO_putBytes_impl_v3 -> IO_putBytes_impl_v3
+      ANF.IO_systemTime_impl_v3 -> IO_systemTime_impl_v3
+      ANF.IO_systemTimeMicroseconds_v1 -> IO_systemTimeMicroseconds_v1
+      ANF.Clock_internals_monotonic_v1 -> Clock_internals_monotonic_v1
+      ANF.Clock_internals_realtime_v1 -> Clock_internals_realtime_v1
+      ANF.Clock_internals_processCPUTime_v1 -> Clock_internals_processCPUTime_v1
+      ANF.Clock_internals_threadCPUTime_v1 -> Clock_internals_threadCPUTime_v1
+      ANF.Clock_internals_sec_v1 -> Clock_internals_sec_v1
+      ANF.Clock_internals_nsec_v1 -> Clock_internals_nsec_v1
+      ANF.Clock_internals_systemTimeZone_v1 -> Clock_internals_systemTimeZone_v1
+      ANF.IO_getTempDirectory_impl_v3 -> IO_getTempDirectory_impl_v3
+      ANF.IO_createTempDirectory_impl_v3 -> IO_createTempDirectory_impl_v3
+      ANF.IO_getCurrentDirectory_impl_v3 -> IO_getCurrentDirectory_impl_v3
+      ANF.IO_setCurrentDirectory_impl_v3 -> IO_setCurrentDirectory_impl_v3
+      ANF.IO_fileExists_impl_v3 -> IO_fileExists_impl_v3
+      ANF.IO_getEnv_impl_v1 -> IO_getEnv_impl_v1
+      ANF.IO_getArgs_impl_v1 -> IO_getArgs_impl_v1
+      ANF.IO_isDirectory_impl_v3 -> IO_isDirectory_impl_v3
+      ANF.IO_createDirectory_impl_v3 -> IO_createDirectory_impl_v3
+      ANF.IO_removeDirectory_impl_v3 -> IO_removeDirectory_impl_v3
+      ANF.IO_renameDirectory_impl_v3 -> IO_renameDirectory_impl_v3
+      ANF.IO_directoryContents_impl_v3 -> IO_directoryContents_impl_v3
+      ANF.IO_removeFile_impl_v3 -> IO_removeFile_impl_v3
+      ANF.IO_renameFile_impl_v3 -> IO_renameFile_impl_v3
+      ANF.IO_getFileTimestamp_impl_v3 -> IO_getFileTimestamp_impl_v3
+      ANF.IO_getFileSize_impl_v3 -> IO_getFileSize_impl_v3
+      ANF.IO_serverSocket_impl_v3 -> IO_serverSocket_impl_v3
+      ANF.Socket_toText -> Socket_toText
+      ANF.Handle_toText -> Handle_toText
+      ANF.ThreadId_toText -> ThreadId_toText
+      ANF.IO_socketPort_impl_v3 -> IO_socketPort_impl_v3
+      ANF.IO_listen_impl_v3 -> IO_listen_impl_v3
+      ANF.IO_clientSocket_impl_v3 -> IO_clientSocket_impl_v3
+      ANF.IO_closeSocket_impl_v3 -> IO_closeSocket_impl_v3
+      ANF.IO_socketAccept_impl_v3 -> IO_socketAccept_impl_v3
+      ANF.IO_socketSend_impl_v3 -> IO_socketSend_impl_v3
+      ANF.IO_socketReceive_impl_v3 -> IO_socketReceive_impl_v3
+      ANF.IO_kill_impl_v3 -> IO_kill_impl_v3
+      ANF.IO_delay_impl_v3 -> IO_delay_impl_v3
+      ANF.IO_stdHandle -> IO_stdHandle
+      ANF.IO_process_call -> IO_process_call
+      ANF.IO_process_start -> IO_process_start
+      ANF.IO_process_kill -> IO_process_kill
+      ANF.IO_process_wait -> IO_process_wait
+      ANF.IO_process_exitCode -> IO_process_exitCode
+      ANF.MVar_new -> MVar_new
+      ANF.MVar_newEmpty_v2 -> MVar_newEmpty_v2
+      ANF.MVar_take_impl_v3 -> MVar_take_impl_v3
+      ANF.MVar_tryTake -> MVar_tryTake
+      ANF.MVar_put_impl_v3 -> MVar_put_impl_v3
+      ANF.MVar_tryPut_impl_v3 -> MVar_tryPut_impl_v3
+      ANF.MVar_swap_impl_v3 -> MVar_swap_impl_v3
+      ANF.MVar_isEmpty -> MVar_isEmpty
+      ANF.MVar_read_impl_v3 -> MVar_read_impl_v3
+      ANF.MVar_tryRead_impl_v3 -> MVar_tryRead_impl_v3
+      ANF.Char_toText -> Char_toText
+      ANF.Text_repeat -> Text_repeat
+      ANF.Text_reverse -> Text_reverse
+      ANF.Text_toUppercase -> Text_toUppercase
+      ANF.Text_toLowercase -> Text_toLowercase
+      ANF.Text_toUtf8 -> Text_toUtf8
+      ANF.Text_fromUtf8_impl_v3 -> Text_fromUtf8_impl_v3
+      ANF.Tls_ClientConfig_default -> Tls_ClientConfig_default
+      ANF.Tls_ServerConfig_default -> Tls_ServerConfig_default
+      ANF.Tls_ClientConfig_certificates_set -> Tls_ClientConfig_certificates_set
+      ANF.Tls_ServerConfig_certificates_set -> Tls_ServerConfig_certificates_set
+      ANF.TVar_new -> TVar_new
+      ANF.TVar_read -> TVar_read
+      ANF.TVar_write -> TVar_write
+      ANF.TVar_newIO -> TVar_newIO
+      ANF.TVar_readIO -> TVar_readIO
+      ANF.TVar_swap -> TVar_swap
+      ANF.STM_retry -> STM_retry
+      ANF.Promise_new -> Promise_new
+      ANF.Promise_read -> Promise_read
+      ANF.Promise_tryRead -> Promise_tryRead
+      ANF.Promise_write -> Promise_write
+      ANF.Tls_newClient_impl_v3 -> Tls_newClient_impl_v3
+      ANF.Tls_newServer_impl_v3 -> Tls_newServer_impl_v3
+      ANF.Tls_handshake_impl_v3 -> Tls_handshake_impl_v3
+      ANF.Tls_send_impl_v3 -> Tls_send_impl_v3
+      ANF.Tls_decodeCert_impl_v3 -> Tls_decodeCert_impl_v3
+      ANF.Tls_encodeCert -> Tls_encodeCert
+      ANF.Tls_decodePrivateKey -> Tls_decodePrivateKey
+      ANF.Tls_encodePrivateKey -> Tls_encodePrivateKey
+      ANF.Tls_receive_impl_v3 -> Tls_receive_impl_v3
+      ANF.Tls_terminate_impl_v3 -> Tls_terminate_impl_v3
+      ANF.Code_validateLinks -> Code_validateLinks
+      ANF.Code_dependencies -> Code_dependencies
+      ANF.Code_serialize -> Code_serialize
+      ANF.Code_deserialize -> Code_deserialize
+      ANF.Code_display -> Code_display
+      ANF.Value_dependencies -> Value_dependencies
+      ANF.Value_serialize -> Value_serialize
+      ANF.Value_deserialize -> Value_deserialize
+      ANF.Crypto_HashAlgorithm_Sha3_512 -> Crypto_HashAlgorithm_Sha3_512
+      ANF.Crypto_HashAlgorithm_Sha3_256 -> Crypto_HashAlgorithm_Sha3_256
+      ANF.Crypto_HashAlgorithm_Sha2_512 -> Crypto_HashAlgorithm_Sha2_512
+      ANF.Crypto_HashAlgorithm_Sha2_256 -> Crypto_HashAlgorithm_Sha2_256
+      ANF.Crypto_HashAlgorithm_Sha1 -> Crypto_HashAlgorithm_Sha1
+      ANF.Crypto_HashAlgorithm_Blake2b_512 -> Crypto_HashAlgorithm_Blake2b_512
+      ANF.Crypto_HashAlgorithm_Blake2b_256 -> Crypto_HashAlgorithm_Blake2b_256
+      ANF.Crypto_HashAlgorithm_Blake2s_256 -> Crypto_HashAlgorithm_Blake2s_256
+      ANF.Crypto_HashAlgorithm_Md5 -> Crypto_HashAlgorithm_Md5
+      ANF.Crypto_hashBytes -> Crypto_hashBytes
+      ANF.Crypto_hmacBytes -> Crypto_hmacBytes
+      ANF.Crypto_hash -> Crypto_hash
+      ANF.Crypto_hmac -> Crypto_hmac
+      ANF.Crypto_Ed25519_sign_impl -> Crypto_Ed25519_sign_impl
+      ANF.Crypto_Ed25519_verify_impl -> Crypto_Ed25519_verify_impl
+      ANF.Crypto_Rsa_sign_impl -> Crypto_Rsa_sign_impl
+      ANF.Crypto_Rsa_verify_impl -> Crypto_Rsa_verify_impl
+      ANF.Universal_murmurHash -> Universal_murmurHash
+      ANF.IO_randomBytes -> IO_randomBytes
+      ANF.Bytes_zlib_compress -> Bytes_zlib_compress
+      ANF.Bytes_gzip_compress -> Bytes_gzip_compress
+      ANF.Bytes_zlib_decompress -> Bytes_zlib_decompress
+      ANF.Bytes_gzip_decompress -> Bytes_gzip_decompress
+      ANF.Bytes_toBase16 -> Bytes_toBase16
+      ANF.Bytes_toBase32 -> Bytes_toBase32
+      ANF.Bytes_toBase64 -> Bytes_toBase64
+      ANF.Bytes_toBase64UrlUnpadded -> Bytes_toBase64UrlUnpadded
+      ANF.Bytes_fromBase16 -> Bytes_fromBase16
+      ANF.Bytes_fromBase32 -> Bytes_fromBase32
+      ANF.Bytes_fromBase64 -> Bytes_fromBase64
+      ANF.Bytes_fromBase64UrlUnpadded -> Bytes_fromBase64UrlUnpadded
+      ANF.Bytes_decodeNat64be -> Bytes_decodeNat64be
+      ANF.Bytes_decodeNat64le -> Bytes_decodeNat64le
+      ANF.Bytes_decodeNat32be -> Bytes_decodeNat32be
+      ANF.Bytes_decodeNat32le -> Bytes_decodeNat32le
+      ANF.Bytes_decodeNat16be -> Bytes_decodeNat16be
+      ANF.Bytes_decodeNat16le -> Bytes_decodeNat16le
+      ANF.Bytes_encodeNat64be -> Bytes_encodeNat64be
+      ANF.Bytes_encodeNat64le -> Bytes_encodeNat64le
+      ANF.Bytes_encodeNat32be -> Bytes_encodeNat32be
+      ANF.Bytes_encodeNat32le -> Bytes_encodeNat32le
+      ANF.Bytes_encodeNat16be -> Bytes_encodeNat16be
+      ANF.Bytes_encodeNat16le -> Bytes_encodeNat16le
+      ANF.MutableArray_copyTo_force -> MutableArray_copyTo_force
+      ANF.MutableByteArray_copyTo_force -> MutableByteArray_copyTo_force
+      ANF.ImmutableArray_copyTo_force -> ImmutableArray_copyTo_force
+      ANF.ImmutableArray_size -> ImmutableArray_size
+      ANF.MutableArray_size -> MutableArray_size
+      ANF.ImmutableByteArray_size -> ImmutableByteArray_size
+      ANF.MutableByteArray_size -> MutableByteArray_size
+      ANF.ImmutableByteArray_copyTo_force -> ImmutableByteArray_copyTo_force
+      ANF.MutableArray_read -> MutableArray_read
+      ANF.MutableByteArray_read8 -> MutableByteArray_read8
+      ANF.MutableByteArray_read16be -> MutableByteArray_read16be
+      ANF.MutableByteArray_read24be -> MutableByteArray_read24be
+      ANF.MutableByteArray_read32be -> MutableByteArray_read32be
+      ANF.MutableByteArray_read40be -> MutableByteArray_read40be
+      ANF.MutableByteArray_read64be -> MutableByteArray_read64be
+      ANF.MutableArray_write -> MutableArray_write
+      ANF.MutableByteArray_write8 -> MutableByteArray_write8
+      ANF.MutableByteArray_write16be -> MutableByteArray_write16be
+      ANF.MutableByteArray_write32be -> MutableByteArray_write32be
+      ANF.MutableByteArray_write64be -> MutableByteArray_write64be
+      ANF.ImmutableArray_read -> ImmutableArray_read
+      ANF.ImmutableByteArray_read8 -> ImmutableByteArray_read8
+      ANF.ImmutableByteArray_read16be -> ImmutableByteArray_read16be
+      ANF.ImmutableByteArray_read24be -> ImmutableByteArray_read24be
+      ANF.ImmutableByteArray_read32be -> ImmutableByteArray_read32be
+      ANF.ImmutableByteArray_read40be -> ImmutableByteArray_read40be
+      ANF.ImmutableByteArray_read64be -> ImmutableByteArray_read64be
+      ANF.MutableByteArray_freeze_force -> MutableByteArray_freeze_force
+      ANF.MutableArray_freeze_force -> MutableArray_freeze_force
+      ANF.MutableByteArray_freeze -> MutableByteArray_freeze
+      ANF.MutableArray_freeze -> MutableArray_freeze
+      ANF.MutableByteArray_length -> MutableByteArray_length
+      ANF.ImmutableByteArray_length -> ImmutableByteArray_length
+      ANF.IO_array -> IO_array
+      ANF.IO_arrayOf -> IO_arrayOf
+      ANF.IO_bytearray -> IO_bytearray
+      ANF.IO_bytearrayOf -> IO_bytearrayOf
+      ANF.Scope_array -> Scope_array
+      ANF.Scope_arrayOf -> Scope_arrayOf
+      ANF.Scope_bytearray -> Scope_bytearray
+      ANF.Scope_bytearrayOf -> Scope_bytearrayOf
+      ANF.Text_patterns_literal -> Text_patterns_literal
+      ANF.Text_patterns_digit -> Text_patterns_digit
+      ANF.Text_patterns_letter -> Text_patterns_letter
+      ANF.Text_patterns_space -> Text_patterns_space
+      ANF.Text_patterns_punctuation -> Text_patterns_punctuation
+      ANF.Text_patterns_anyChar -> Text_patterns_anyChar
+      ANF.Text_patterns_eof -> Text_patterns_eof
+      ANF.Text_patterns_charRange -> Text_patterns_charRange
+      ANF.Text_patterns_notCharRange -> Text_patterns_notCharRange
+      ANF.Text_patterns_charIn -> Text_patterns_charIn
+      ANF.Text_patterns_notCharIn -> Text_patterns_notCharIn
+      ANF.Pattern_many -> Pattern_many
+      ANF.Pattern_many_corrected -> Pattern_many_corrected
+      ANF.Pattern_capture -> Pattern_capture
+      ANF.Pattern_captureAs -> Pattern_captureAs
+      ANF.Pattern_join -> Pattern_join
+      ANF.Pattern_or -> Pattern_or
+      ANF.Pattern_replicate -> Pattern_replicate
+      ANF.Pattern_run -> Pattern_run
+      ANF.Pattern_isMatch -> Pattern_isMatch
+      ANF.Char_Class_any -> Char_Class_any
+      ANF.Char_Class_not -> Char_Class_not
+      ANF.Char_Class_and -> Char_Class_and
+      ANF.Char_Class_or -> Char_Class_or
+      ANF.Char_Class_range -> Char_Class_range
+      ANF.Char_Class_anyOf -> Char_Class_anyOf
+      ANF.Char_Class_alphanumeric -> Char_Class_alphanumeric
+      ANF.Char_Class_upper -> Char_Class_upper
+      ANF.Char_Class_lower -> Char_Class_lower
+      ANF.Char_Class_whitespace -> Char_Class_whitespace
+      ANF.Char_Class_control -> Char_Class_control
+      ANF.Char_Class_printable -> Char_Class_printable
+      ANF.Char_Class_mark -> Char_Class_mark
+      ANF.Char_Class_number -> Char_Class_number
+      ANF.Char_Class_punctuation -> Char_Class_punctuation
+      ANF.Char_Class_symbol -> Char_Class_symbol
+      ANF.Char_Class_separator -> Char_Class_separator
+      ANF.Char_Class_letter -> Char_Class_letter
+      ANF.Char_Class_is -> Char_Class_is
+      ANF.Text_patterns_char -> Text_patterns_char
 
 -- Helper functions for packing the variable argument representation
 -- into the indexes stored in prim op instructions
