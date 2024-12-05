@@ -575,7 +575,7 @@ handleBranchRelativePathArg =
           Nothing -> pure $ BranchPathInCurrentProject branch Path.absoluteEmpty
       otherNumArg -> Left $ wrongStructuredArgument "a branch id" otherNumArg
 
-hqNameToHQ' :: HQ.HashQualified Name -> Either ShortHash (HQ'.HashQualified Name)
+hqNameToHQ' :: HQ.HashQualified Name -> HQ'.HashOrHQ Name
 hqNameToHQ' = \case
   HQ.HashOnly hash -> Left hash
   HQ.NameOnly name -> pure $ HQ'.NameOnly name
@@ -638,11 +638,11 @@ handleShortCausalHashArg =
       SA.Namespace hash -> pure $ SCH.fromFullHash hash
       otherNumArg -> Left $ wrongStructuredArgument "a causal hash" otherNumArg
 
-handleShortHashOrHQNameArg ::
-  I.Argument -> Either (P.Pretty CT.ColorText) (Either ShortHash (HQ'.HashQualified Name))
-handleShortHashOrHQNameArg =
+handleHashOrHQNameArg ::
+  I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashOrHQ Name)
+handleHashOrHQNameArg =
   either
-    (first P.text . Path.parseShortHashOrHQName)
+    (first P.text . Path.parseHashOrHQName)
     \case
       SA.HashQualified name -> pure $ hqNameToHQ' name
       SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure $ pure hqname
@@ -1438,7 +1438,7 @@ aliasTerm =
       args = [("term to alias", Required, exactDefinitionTermQueryArg), ("alias name", Required, newNameArg)],
       help = "`alias.term foo bar` introduces `bar` with the same definition as `foo`.",
       parse = \case
-        [oldName, newName] -> Input.AliasTermI False <$> handleShortHashOrHQNameArg oldName <*> handleNameArg newName
+        [oldName, newName] -> Input.AliasTermI False <$> handleHashOrHQNameArg oldName <*> handleNameArg newName
         _ -> Left $ P.wrap "`alias.term` takes two arguments, like `alias.term oldname newname`."
     }
 
@@ -1451,7 +1451,7 @@ debugAliasTermForce =
       args = [("term to alias", Required, exactDefinitionTermQueryArg), ("alias name", Required, newNameArg)],
       help = "`debug.alias.term.force foo bar` introduces `bar` with the same definition as `foo`.",
       parse = \case
-        [oldName, newName] -> Input.AliasTermI True <$> handleShortHashOrHQNameArg oldName <*> handleNameArg newName
+        [oldName, newName] -> Input.AliasTermI True <$> handleHashOrHQNameArg oldName <*> handleNameArg newName
         _ ->
           Left $
             P.wrap "`debug.alias.term.force` takes two arguments, like `debug.alias.term.force oldname newname`."
@@ -1466,7 +1466,7 @@ aliasType =
     [("type to alias", Required, exactDefinitionTypeQueryArg), ("alias name", Required, newNameArg)]
     "`alias.type Foo Bar` introduces `Bar` with the same definition as `Foo`."
     \case
-      [oldName, newName] -> Input.AliasTypeI False <$> handleShortHashOrHQNameArg oldName <*> handleNameArg newName
+      [oldName, newName] -> Input.AliasTypeI False <$> handleHashOrHQNameArg oldName <*> handleNameArg newName
       _ -> Left $ P.wrap "`alias.type` takes two arguments, like `alias.type oldname newname`."
 
 debugAliasTypeForce :: InputPattern
@@ -1478,7 +1478,7 @@ debugAliasTypeForce =
       args = [("type to alias", Required, exactDefinitionTypeQueryArg), ("alias name", Required, newNameArg)],
       help = "`debug.alias.type.force Foo Bar` introduces `Bar` with the same definition as `Foo`.",
       parse = \case
-        [oldName, newName] -> Input.AliasTypeI True <$> handleShortHashOrHQNameArg oldName <*> handleNameArg newName
+        [oldName, newName] -> Input.AliasTypeI True <$> handleHashOrHQNameArg oldName <*> handleNameArg newName
         _ ->
           Left $
             P.wrap "`debug.alias.type.force` takes two arguments, like `debug.alias.type.force oldname newname`."

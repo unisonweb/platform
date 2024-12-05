@@ -31,9 +31,11 @@ fromHQ = \case
   HQ.HashQualified n sh -> Just $ HashQualified n sh
   HQ.HashOnly {} -> Nothing
 
+type HashOrHQ n = Either ShortHash (HashQualified n)
+
 -- | Like 'fromHQ', but if the 'HQ.HashQualified' is just a 'ShortHash', return it on the 'Left', rather than as a
 -- 'Nothing'.
-fromHQ2 :: HQ.HashQualified n -> Either ShortHash (HashQualified n)
+fromHQ2 :: HQ.HashQualified n -> HashOrHQ n
 fromHQ2 = \case
   HQ.NameOnly n -> Right $ NameOnly n
   HQ.HashQualified n sh -> Right $ HashQualified n sh

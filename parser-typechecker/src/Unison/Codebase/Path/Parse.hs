@@ -6,7 +6,7 @@ module Unison.Codebase.Path.Parse
     parseName,
     parseHQSplit,
     parseHQName,
-    parseShortHashOrHQName,
+    parseHashOrHQName,
 
     -- * Path parsers
     pathP,
@@ -27,7 +27,6 @@ import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.Name (Name)
 import Unison.Name qualified as Name
 import Unison.Prelude hiding (empty, toList)
-import Unison.ShortHash (ShortHash)
 import Unison.Syntax.Lexer qualified as Lexer
 import Unison.Syntax.Name qualified as Name
 import Unison.Syntax.NameSegment qualified as NameSegment (renderParseErr)
@@ -54,8 +53,8 @@ parseName :: String -> Either Text Name
 parseName =
   runParser splitP'
 
-parseShortHashOrHQName :: String -> Either Text (Either ShortHash (HQ'.HashQualified Name))
-parseShortHashOrHQName =
+parseHashOrHQName :: String -> Either Text (HQ'.HashOrHQ Name)
+parseHashOrHQName =
   runParser shortHashOrHqSplitP'
 
 parseHQSplit :: String -> Either Text HQSplit
@@ -95,7 +94,7 @@ splitP = splitFromName <$> P.withParsecT (fmap NameSegment.renderParseErr) Name.
 splitP' :: Parsec (Lexer.Token Text) [Char] Name
 splitP' = P.withParsecT (fmap NameSegment.renderParseErr) Name.nameP
 
-shortHashOrHqSplitP' :: Parsec (Lexer.Token Text) [Char] (Either ShortHash (HQ'.HashQualified Name))
+shortHashOrHqSplitP' :: Parsec (Lexer.Token Text) [Char] (HQ'.HashOrHQ Name)
 shortHashOrHqSplitP' = Left <$> ShortHash.shortHashP <|> Right <$> hqNameP
 
 hqNameP :: Parsec (Lexer.Token Text) [Char] (HQ'.HashQualified Name)

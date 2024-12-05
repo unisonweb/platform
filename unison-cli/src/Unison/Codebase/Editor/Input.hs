@@ -18,7 +18,6 @@ module Unison.Codebase.Editor.Input
     parseBranchId,
     parseBranchId2,
     parseShortCausalHash,
-    HashOrHQName,
     Insistence (..),
     PullMode (..),
     OptionalPatch (..),
@@ -49,7 +48,6 @@ import Unison.Name (Name)
 import Unison.NameSegment (NameSegment)
 import Unison.Prelude
 import Unison.Project (ProjectAndBranch, ProjectAndBranchNames, ProjectBranchName, ProjectBranchNameOrLatestRelease, ProjectName, Semver)
-import Unison.ShortHash (ShortHash)
 import Unison.Util.Pretty qualified as P
 
 data Event
@@ -85,8 +83,6 @@ type AbsBranchId = BranchIdG Path.Absolute
 
 -- | An unambiguous project branch name, use the current project name if not provided.
 type UnresolvedProjectBranch = ProjectAndBranch (Maybe ProjectName) ProjectBranchName
-
-type HashOrHQName = Either ShortHash (HQ'.HashQualified Name)
 
 -- | Should we force the operation or not?
 data Insistence = Force | Try
@@ -143,8 +139,8 @@ data Input
     -- > names .foo.bar#asdflkjsdf
     -- > names #sdflkjsdfhsdf
     NamesI IsGlobal (HQ.HashQualified Name)
-  | AliasTermI !Bool HashOrHQName Name -- bool = force?
-  | AliasTypeI !Bool HashOrHQName Name -- bool = force?
+  | AliasTermI !Bool (HQ'.HashOrHQ Name) Name -- bool = force?
+  | AliasTypeI !Bool (HQ'.HashOrHQ Name) Name -- bool = force?
   | AliasManyI [Path.HQSplit] Path'
   | MoveAllI Path.Path' Path.Path'
   | MoveTermI (HQ'.HashQualified Name) Name
