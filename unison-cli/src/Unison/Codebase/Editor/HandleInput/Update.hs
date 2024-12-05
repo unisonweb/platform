@@ -211,7 +211,7 @@ handleUpdate input optionalPatch requestedNames = do
         Nothing -> "update.nopatch"
         Just p ->
           p
-            & Path.unsplit'
+            & Path.fromName'
             & Path.resolve @_ @_ @Path.Absolute currentPathAbs
             & tShow
   void $ Cli.updateAt description ppRoot (const projectRootBranchWithPropagatedPatch)

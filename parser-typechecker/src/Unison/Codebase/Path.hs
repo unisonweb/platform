@@ -23,6 +23,7 @@ module Unison.Codebase.Path
     relativeEmpty,
     relativeEmpty',
     currentPath,
+    parentOfName,
     prefix,
     prefixAbs,
     prefixRel,
@@ -35,8 +36,6 @@ module Unison.Codebase.Path
     HQSplitAbsolute,
     AbsSplit,
     Split,
-    Split',
-    HQSplit',
     ancestors,
 
     -- * utilities
@@ -56,7 +55,6 @@ module Unison.Codebase.Path
     unsafeParseText,
     unsafeParseText',
     toAbsoluteSplit,
-    toSplit',
     toList,
     toName,
     toName',
@@ -65,14 +63,9 @@ module Unison.Codebase.Path
     absToText,
     relToText,
     unsplit,
-    unsplit',
     unsplitAbsolute,
     nameFromHQSplit,
-    nameFromHQSplit',
-    nameFromSplit',
     splitFromName,
-    splitFromName',
-    hqSplitFromName',
 
     -- * things that could be replaced with `Cons` instances
     cons,
@@ -85,7 +78,6 @@ where
 
 import Control.Lens hiding (cons, snoc, unsnoc, pattern Empty)
 import Control.Lens qualified as Lens
-import Data.Bitraversable (bitraverse)
 import Data.Foldable qualified as Foldable
 import Data.List.Extra (dropPrefix)
 import Data.List.NonEmpty (NonEmpty ((:|)))
@@ -170,11 +162,6 @@ instance Show Absolute where
 instance Show Relative where
   show = Text.unpack . relToText
 
-unsplit' :: Split' -> Path'
-unsplit' = \case
-  (AbsolutePath' (Absolute p), seg) -> AbsolutePath' (Absolute (unsplit (p, seg)))
-  (RelativePath' (Relative p), seg) -> RelativePath' (Relative (unsplit (p, seg)))
-
 unsplit :: Split -> Path
 unsplit (Path p, a) = Path (p :|> a)
 
@@ -183,20 +170,15 @@ unsplitAbsolute =
   coerce unsplit
 
 nameFromHQSplit :: HQSplit -> HQ'.HashQualified Name
-nameFromHQSplit = nameFromHQSplit' . first (RelativePath' . Relative)
-
-nameFromHQSplit' :: HQSplit' -> HQ'.HashQualified Name
-nameFromHQSplit' (p, a) = fmap (nameFromSplit' . (p,)) a
+nameFromHQSplit hqs =
+  let (segs, hqseg) = first (reverse . toList) hqs
+   in Name.fromReverseSegments . (:| segs) <$> hqseg
 
 type AbsSplit = (Absolute, NameSegment)
 
 type Split = (Path, NameSegment)
 
 type HQSplit = (Path, HQ'.HQSegment)
-
-type Split' = (Path', NameSegment)
-
-type HQSplit' = (Path', HQ'.HQSegment)
 
 type HQSplitAbsolute = (Absolute, HQ'.HQSegment)
 
@@ -242,11 +224,8 @@ longestPathPrefix a b =
   List.splitOnLongestCommonPrefix (toList a) (toList b)
     & \(a, b, c) -> (fromList a, fromList b, fromList c)
 
-toSplit' :: Path' -> Maybe (Path', NameSegment)
-toSplit' = Lens.unsnoc
-
-toAbsoluteSplit :: Absolute -> (Path', a) -> (Absolute, a)
-toAbsoluteSplit a (p, s) = (resolve a p, s)
+toAbsoluteSplit :: Absolute -> Name -> (Absolute, NameSegment)
+toAbsoluteSplit a = first (resolve a) . parentOfName
 
 absoluteEmpty :: Absolute
 absoluteEmpty = Absolute empty
@@ -275,9 +254,6 @@ fromList = Path . Seq.fromList
 ancestors :: Absolute -> Seq Absolute
 ancestors (Absolute (Path segments)) = Absolute . Path <$> Seq.inits segments
 
-hqSplitFromName' :: Name -> HQSplit'
-hqSplitFromName' = fmap HQ'.fromName . splitFromName'
-
 -- |
 -- >>> splitFromName "a.b.c"
 -- (a.b,c)
@@ -285,24 +261,8 @@ hqSplitFromName' = fmap HQ'.fromName . splitFromName'
 -- >>> splitFromName "foo"
 -- (,foo)
 splitFromName :: Name -> Split
-splitFromName =
-  over _1 fromPath' . splitFromName'
-
-splitFromName' :: Name -> Split'
-splitFromName' name =
-  case Name.reverseSegments name of
-    (seg :| pathSegments) ->
-      let path = fromList (reverse pathSegments)
-       in ( if Name.isAbsolute name
-              then AbsolutePath' (Absolute path)
-              else RelativePath' (Relative path),
-            seg
-          )
-
-nameFromSplit' :: Split' -> Name
-nameFromSplit' (path', seg) = case path' of
-  AbsolutePath' abs -> Name.makeAbsolute . Name.fromReverseSegments $ seg :| reverse (toList $ unabsolute abs)
-  RelativePath' rel -> Name.makeRelative . Name.fromReverseSegments $ seg :| reverse (toList $ unrelative rel)
+splitFromName name = case Name.reverseSegments name of
+  h :| t -> (fromList $ reverse t, h)
 
 -- | Remove a path prefix from a name.
 -- Returns 'Nothing' if there are no remaining segments to construct the name from.
@@ -315,7 +275,14 @@ unprefixName prefix = toName . unprefix prefix . fromName'
 -- | Returns `Nothing` if the second argument is absolute. A common pattern is
 --   @fromMaybe name $ maybePrefixName prefix name@ to use the unmodified path in that case.
 maybePrefixName :: Path' -> Name -> Maybe Name
-maybePrefixName pre = fmap nameFromSplit' . bitraverse (maybePrefix pre) pure . splitFromName'
+maybePrefixName pre name =
+  if Name.isAbsolute name
+    then Nothing
+    else
+      pure
+        let newName = case Name.reverseSegments name of
+              h :| t -> Name.fromReverseSegments $ h :| t <> reverse (toList $ fromPath' pre)
+         in if isAbsolute pre then Name.makeAbsolute newName else newName
 
 prefixNameIfRel :: Path' -> Name -> Name
 prefixNameIfRel p name = fromMaybe name $ maybePrefixName p name
@@ -346,6 +313,16 @@ uncons = Lens.uncons
 --       identifiers called Function.(.)
 fromName :: Name -> Path
 fromName = fromList . List.NonEmpty.toList . Name.segments
+
+parentOfName :: Name -> (Path', NameSegment)
+parentOfName name =
+  let h :| t = Name.reverseSegments name
+      path = fromList $ reverse t
+   in ( if Name.isAbsolute name
+          then AbsolutePath' (Absolute path)
+          else RelativePath' (Relative path),
+        h
+      )
 
 fromName' :: Name -> Path'
 fromName' n
@@ -518,15 +495,6 @@ instance Snoc Path' Path' NameSegment NameSegment where
         AbsolutePath' abs -> AbsolutePath' . Absolute . Lens.snoc (unabsolute abs)
         RelativePath' rel -> RelativePath' . Relative . Lens.snoc (unrelative rel)
 
-instance Snoc Split' Split' NameSegment NameSegment where
-  _Snoc = prism (uncurry snoc') \case
-    -- unsnoc
-    (Lens.unsnoc -> Just (s, a), ns) -> Right ((s, a), ns)
-    e -> Left e
-    where
-      snoc' :: Split' -> NameSegment -> Split'
-      snoc' (p, a) n = (Lens.snoc p a, n)
-
 class Resolve l r o where
   resolve :: l -> r -> o
 
@@ -549,12 +517,6 @@ instance Resolve Path' Path' Path' where
   resolve _ a@(AbsolutePath' {}) = a
   resolve (AbsolutePath' a) (RelativePath' r) = AbsolutePath' (resolve a r)
   resolve (RelativePath' r1) (RelativePath' r2) = RelativePath' (resolve r1 r2)
-
-instance Resolve Path' Split' Path' where
-  resolve l r = resolve l (unsplit' r)
-
-instance Resolve Path' Split' Split' where
-  resolve l (r, ns) = (resolve l r, ns)
 
 instance Resolve Absolute HQSplit HQSplitAbsolute where
   resolve l (r, hq) = (resolve l (Relative r), hq)

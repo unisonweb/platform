@@ -393,7 +393,7 @@ loop e = do
               pure ()
             AliasTermI force src' dest' -> do
               Cli.Env {codebase} <- ask
-              src <- traverseOf _Right Cli.resolveSplit' src'
+              src <- traverseOf _Right Cli.resolveHQName src'
               srcTerms <-
                 either
                   (Cli.runTransaction . Backend.termReferentsByShortHash codebase)
@@ -408,7 +408,7 @@ loop e = do
                     (False, Right name) -> do
                       hqLength <- Cli.runTransaction Codebase.hashLength
                       pure (DeleteNameAmbiguous hqLength name srcTerms Set.empty)
-              dest <- Cli.resolveSplit' dest'
+              dest <- Cli.resolveName dest'
               destTerms <- Cli.getTermsAt (HQ'.NameOnly <$> dest)
               when (not force && not (Set.null destTerms)) do
                 Cli.returnEarly (TermAlreadyExists dest' destTerms)
@@ -416,7 +416,7 @@ loop e = do
               Cli.stepAt description (BranchUtil.makeAddTermName dest srcTerm)
               Cli.respond Success
             AliasTypeI force src' dest' -> do
-              src <- traverseOf _Right Cli.resolveSplit' src'
+              src <- traverseOf _Right Cli.resolveHQName src'
               srcTypes <-
                 either
                   (Cli.runTransaction . Backend.typeReferencesByShortHash)
@@ -431,7 +431,7 @@ loop e = do
                     (False, Right name) -> do
                       hqLength <- Cli.runTransaction Codebase.hashLength
                       pure (DeleteNameAmbiguous hqLength name Set.empty srcTypes)
-              dest <- Cli.resolveSplit' dest'
+              dest <- Cli.resolveName dest'
               destTypes <- Cli.getTypesAt (HQ'.NameOnly <$> dest)
               when (not force && not (Set.null destTypes)) do
                 Cli.returnEarly (TypeAlreadyExists dest' destTypes)
@@ -533,9 +533,9 @@ loop e = do
               description <- inputDescription input
               -- add the new definitions to the codebase and to the namespace
               Cli.runTransaction (traverse_ (uncurry3 (Codebase.putTerm codebase)) [guid, author, copyrightHolder])
-              authorPath <- Cli.resolveSplit' authorPath'
-              copyrightHolderPath <- Cli.resolveSplit' (base |> NameSegment.copyrightHoldersSegment |> authorNameSegment)
-              guidPath <- Cli.resolveSplit' (authorPath' |> NameSegment.guidSegment)
+              authorPath <- Cli.resolveName authorPath'
+              copyrightHolderPath <- Cli.resolveName (base |> NameSegment.copyrightHoldersSegment |> authorNameSegment)
+              guidPath <- Cli.resolveName (authorPath' |> NameSegment.guidSegment)
               pb <- Cli.getCurrentProjectBranch
               Cli.stepManyAt
                 pb
@@ -550,14 +550,14 @@ loop e = do
               Cli.respondNumbered $
                 ShowDiffAfterCreateAuthor
                   authorNameSegment
-                  (Path.unsplit' base)
+                  (Path.fromName' base)
                   currentPath
                   ppe
                   diff
               where
                 d :: Reference.Id -> Referent
                 d = Referent.Ref . Reference.DerivedId
-                base :: Path.Split' = (Path.relativeEmpty', NameSegment.metadataSegment)
+                base = Name.fromReverseSegments $ NameSegment.metadataSegment Nel.:| []
                 authorPath' = base |> NameSegment.authorsSegment |> authorNameSegment
             MoveTermI src' dest' -> doMoveTerm src' dest' =<< inputDescription input
             MoveTypeI src' dest' -> doMoveType src' dest' =<< inputDescription input
@@ -1047,16 +1047,14 @@ inputDescription input =
     ops :: Maybe Path.Split -> Cli Text
     ops = maybe (pure ".") ps
     wat = error $ show input ++ " is not expected to alter the branch"
-    hhqs' :: Either SH.ShortHash Path.HQSplit' -> Cli Text
+    hhqs' :: Either SH.ShortHash (HQ'.HashQualified Name) -> Cli Text
     hhqs' = \case
       Left sh -> pure (SH.toText sh)
       Right x -> hqs' x
-    hqs' :: Path.HQSplit' -> Cli Text
-    hqs' (p0, hq) = do
-      p <- if Path.isRoot' p0 then pure mempty else p' p0
-      pure (p <> "." <> HQ'.toTextWith NameSegment.toEscapedText hq)
-    hqs (p, hq) = hqs' (Path' . Right . Path.Relative $ p, hq)
-    ps' = p' . Path.unsplit'
+    hqs' :: HQ'.HashQualified Name -> Cli Text
+    hqs' hq = pure $ HQ'.toTextWith Name.toText hq
+    hqs (p, hq) = hqs' $ Name.fromReverseSegments . (Nel.:| reverse (toList $ Path.toSeq p)) <$> hq
+    ps' = p' . Path.fromName'
     ps = p . Path.unsplit
     bid2 :: BranchId2 -> Cli Text
     bid2 = \case
@@ -1352,14 +1350,14 @@ delete ::
   DeleteOutput ->
   ((Path.Absolute, HQ'.HQSegment) -> Cli (Set Referent)) -> -- compute matching terms
   ((Path.Absolute, HQ'.HQSegment) -> Cli (Set Reference)) -> -- compute matching types
-  [Path.HQSplit'] -> -- targets for deletion
+  [HQ'.HashQualified Name] -> -- targets for deletion
   Cli ()
 delete input doutput getTerms getTypes hqs' = do
   -- persists the original hash qualified entity for error reporting
   typesTermsTuple <-
     traverse
       ( \hq -> do
-          absolute <- Cli.resolveSplit' hq
+          absolute <- Cli.resolveHQName hq
           types <- getTypes (first PP.absPath absolute)
           terms <- getTerms (first PP.absPath absolute)
           return (hq, types, terms)
@@ -1369,23 +1367,28 @@ delete input doutput getTerms getTypes hqs' = do
   -- if there are any entities which cannot be deleted because they don't exist, short circuit.
   if not $ null notFounds
     then do
-      let toName :: [(Path.HQSplit', Set Reference, Set referent)] -> [Name]
+      let toName :: [(HQ'.HashQualified Name, Set Reference, Set referent)] -> [Name]
           toName notFounds =
-            map (\(split, _, _) -> HQ'.toName $ Path.nameFromHQSplit' split) notFounds
+            map (\(split, _, _) -> HQ'.toName split) notFounds
       Cli.returnEarly $ NamesNotFound (toName notFounds)
     else do
       checkDeletes typesTermsTuple doutput input
 
-checkDeletes :: [(Path.HQSplit', Set Reference, Set Referent)] -> DeleteOutput -> Input -> Cli ()
+checkDeletes :: [(HQ'.HashQualified Name, Set Reference, Set Referent)] -> DeleteOutput -> Input -> Cli ()
 checkDeletes typesTermsTuples doutput inputs = do
   let toSplitName ::
-        (Path.HQSplit', Set Reference, Set Referent) ->
+        (HQ'.HashQualified Name, Set Reference, Set Referent) ->
         Cli (Path.AbsSplit, Name, Set Reference, Set Referent)
       toSplitName hq = do
-        (pp, ns) <- Cli.resolveSplit' (HQ'.toName <$> hq ^. _1)
+        (pp, ns) <- Cli.resolveName (HQ'.toName $ hq ^. _1)
         let resolvedSplit = (pp.absPath, ns)
         return
-          (resolvedSplit, Path.nameFromSplit' $ first (Path.RelativePath' . Path.Relative . Path.unabsolute) resolvedSplit, hq ^. _2, hq ^. _3)
+          ( resolvedSplit,
+            Name.fromReverseSegments . uncurry (flip (Nel.:|)) $
+              first (reverse . toList . Path.toSeq . Path.unabsolute) resolvedSplit,
+            hq ^. _2,
+            hq ^. _3
+          )
 
   -- get the splits and names with terms and types
   splitsNames <- traverse toSplitName typesTermsTuples

@@ -17,10 +17,10 @@ import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.NamesUtils qualified as Cli
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Editor.Output (Output (..))
-import Unison.Codebase.Path (hqSplitFromName')
 import Unison.Codebase.Runtime qualified as Runtime
 import Unison.ConstructorReference
 import Unison.HashQualified qualified as HQ
+import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.Name (Name)
 import Unison.Names (Names)
 import Unison.NamesWithHistory qualified as Names
@@ -62,12 +62,7 @@ lookupTermRefWithType ::
   Cli [(Reference, Type Symbol Ann)]
 lookupTermRefWithType codebase name = do
   names <- Cli.currentNames
-  liftIO
-    . Codebase.runTransaction codebase
-    . fmap catMaybes
-    . traverse annot
-    . fst
-    $ lookupTermRefs name names
+  liftIO . Codebase.runTransaction codebase . fmap catMaybes . traverse annot . fst $ lookupTermRefs name names
   where
     annot tm =
       fmap ((,) tm) <$> Codebase.getTypeOfTerm codebase tm
@@ -78,12 +73,9 @@ resolveTerm name = do
   let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   case lookupTerm name names of
-    [] -> Cli.returnEarly (TermNotFound $ fromJust parsed)
-      where
-        parsed = hqSplitFromName' <$> HQ.toName name
+    [] -> Cli.returnEarly . TermNotFound . fromJust $ HQ'.fromHQ name
     [rf] -> pure rf
-    rfs ->
-      Cli.returnEarly (TermAmbiguous suffixifiedPPE name (fromList rfs))
+    rfs -> Cli.returnEarly . TermAmbiguous suffixifiedPPE name $ fromList rfs
 
 resolveCon :: HQ.HashQualified Name -> Cli ConstructorReference
 resolveCon name = do
@@ -91,12 +83,9 @@ resolveCon name = do
   let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   case lookupCon name names of
-    ([], _) -> Cli.returnEarly (TermNotFound $ fromJust parsed)
-      where
-        parsed = hqSplitFromName' <$> HQ.toName name
+    ([], _) -> Cli.returnEarly . TermNotFound . fromJust $ HQ'.fromHQ name
     ([co], _) -> pure co
-    (_, rfts) ->
-      Cli.returnEarly (TermAmbiguous suffixifiedPPE name (fromList rfts))
+    (_, rfts) -> Cli.returnEarly . TermAmbiguous suffixifiedPPE name $ fromList rfts
 
 resolveTermRef :: HQ.HashQualified Name -> Cli Reference
 resolveTermRef name = do
@@ -104,12 +93,9 @@ resolveTermRef name = do
   let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   case lookupTermRefs name names of
-    ([], _) -> Cli.returnEarly (TermNotFound $ fromJust parsed)
-      where
-        parsed = hqSplitFromName' <$> HQ.toName name
+    ([], _) -> Cli.returnEarly . TermNotFound . fromJust $ HQ'.fromHQ name
     ([rf], _) -> pure rf
-    (_, rfts) ->
-      Cli.returnEarly (TermAmbiguous suffixifiedPPE name (fromList rfts))
+    (_, rfts) -> Cli.returnEarly . TermAmbiguous suffixifiedPPE name $ fromList rfts
 
 resolveMainRef :: HQ.HashQualified Name -> Cli (Reference, PrettyPrintEnv)
 resolveMainRef main = do

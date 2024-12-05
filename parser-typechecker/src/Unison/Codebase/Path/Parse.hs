@@ -3,10 +3,10 @@ module Unison.Codebase.Path.Parse
     parsePath,
     parsePath',
     parseSplit,
-    parseSplit',
+    parseName,
     parseHQSplit,
-    parseHQSplit',
-    parseShortHashOrHQSplit',
+    parseHQName,
+    parseShortHashOrHQName,
 
     -- * Path parsers
     pathP,
@@ -16,6 +16,7 @@ module Unison.Codebase.Path.Parse
   )
 where
 
+import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Text qualified as Text
 import Text.Megaparsec (Parsec)
 import Text.Megaparsec qualified as P
@@ -23,6 +24,8 @@ import Text.Megaparsec.Char qualified as P (char)
 import Text.Megaparsec.Internal qualified as P (withParsecT)
 import Unison.Codebase.Path
 import Unison.HashQualifiedPrime qualified as HQ'
+import Unison.Name (Name)
+import Unison.Name qualified as Name
 import Unison.Prelude hiding (empty, toList)
 import Unison.ShortHash (ShortHash)
 import Unison.Syntax.Lexer qualified as Lexer
@@ -41,29 +44,32 @@ parsePath' :: String -> Either Text Path'
 parsePath' = \case
   "" -> Right relativeEmpty'
   "." -> Right absoluteEmpty'
-  path -> unsplit' <$> parseSplit' path
+  path -> fromName' <$> parseName path
 
 parseSplit :: String -> Either Text Split
 parseSplit =
   runParser splitP
 
-parseSplit' :: String -> Either Text Split'
-parseSplit' =
+parseName :: String -> Either Text Name
+parseName =
   runParser splitP'
 
-parseShortHashOrHQSplit' :: String -> Either Text (Either ShortHash HQSplit')
-parseShortHashOrHQSplit' =
+parseShortHashOrHQName :: String -> Either Text (Either ShortHash (HQ'.HashQualified Name))
+parseShortHashOrHQName =
   runParser shortHashOrHqSplitP'
 
 parseHQSplit :: String -> Either Text HQSplit
 parseHQSplit s =
-  parseHQSplit' s >>= \case
-    (RelativePath' (Relative p), hqseg) -> Right (p, hqseg)
-    _ -> Left $ "Sorry, you can't use an absolute name like " <> Text.pack s <> " here."
+  parseHQName s >>= \hq ->
+    let name = HQ'.toName hq
+     in if Name.isAbsolute name
+          then Left $ "Sorry, you can't use an absolute name like " <> Text.pack s <> " here."
+          else
+            let h :| t = Name.reverseSegments name
+             in pure (fromList $ reverse t, h <$ hq)
 
-parseHQSplit' :: String -> Either Text HQSplit'
-parseHQSplit' =
-  runParser hqSplitP'
+parseHQName :: String -> Either Text (HQ'.HashQualified Name)
+parseHQName = runParser hqNameP
 
 runParser :: Parsec (Lexer.Token Text) [Char] a -> String -> Either Text a
 runParser p =
@@ -73,32 +79,28 @@ runParser p =
 -- Path parsers
 
 pathP :: Parsec (Lexer.Token Text) [Char] Path
-pathP =
-  (unsplit <$> splitP) <|> pure empty
+pathP = (unsplit <$> splitP) <|> pure empty
 
 pathP' :: Parsec (Lexer.Token Text) [Char] Path'
 pathP' =
   asum
-    [ unsplit' <$> splitP',
+    [ fromName' <$> splitP',
       P.char '.' $> absoluteEmpty',
       pure relativeEmpty'
     ]
 
 splitP :: Parsec (Lexer.Token Text) [Char] Split
-splitP =
-  splitFromName <$> P.withParsecT (fmap NameSegment.renderParseErr) Name.relativeNameP
+splitP = splitFromName <$> P.withParsecT (fmap NameSegment.renderParseErr) Name.relativeNameP
 
-splitP' :: Parsec (Lexer.Token Text) [Char] Split'
-splitP' =
-  splitFromName' <$> P.withParsecT (fmap NameSegment.renderParseErr) Name.nameP
+splitP' :: Parsec (Lexer.Token Text) [Char] Name
+splitP' = P.withParsecT (fmap NameSegment.renderParseErr) Name.nameP
 
-shortHashOrHqSplitP' :: Parsec (Lexer.Token Text) [Char] (Either ShortHash HQSplit')
-shortHashOrHqSplitP' =
-  Left <$> ShortHash.shortHashP <|> Right <$> hqSplitP'
+shortHashOrHqSplitP' :: Parsec (Lexer.Token Text) [Char] (Either ShortHash (HQ'.HashQualified Name))
+shortHashOrHqSplitP' = Left <$> ShortHash.shortHashP <|> Right <$> hqNameP
 
-hqSplitP' :: Parsec (Lexer.Token Text) [Char] HQSplit'
-hqSplitP' = do
-  (segs, seg) <- splitP'
+hqNameP :: Parsec (Lexer.Token Text) [Char] (HQ'.HashQualified Name)
+hqNameP = do
+  name <- splitP'
   P.optional (P.withParsecT (fmap ("invalid hash: " <>)) ShortHash.shortHashP) <&> \case
-    Nothing -> (segs, HQ'.fromName seg)
-    Just hash -> (segs, HQ'.HashQualified seg hash)
+    Nothing -> HQ'.fromName name
+    Just hash -> HQ'.HashQualified name hash

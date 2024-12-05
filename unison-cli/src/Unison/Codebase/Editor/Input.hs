@@ -18,7 +18,7 @@ module Unison.Codebase.Editor.Input
     parseBranchId,
     parseBranchId2,
     parseShortCausalHash,
-    HashOrHQSplit',
+    HashOrHQName,
     Insistence (..),
     PullMode (..),
     OptionalPatch (..),
@@ -44,6 +44,7 @@ import Unison.Codebase.ShortCausalHash (ShortCausalHash)
 import Unison.Codebase.ShortCausalHash qualified as SCH
 import Unison.CommandLine.BranchRelativePath (BranchRelativePath, parseBranchRelativePath)
 import Unison.HashQualified qualified as HQ
+import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.Name (Name)
 import Unison.NameSegment (NameSegment)
 import Unison.Prelude
@@ -59,7 +60,7 @@ type Source = Text -- "id x = x\nconst a b = a"
 
 type SourceName = Text -- "foo.u" or "buffer 7"
 
-type PatchPath = Path.Split'
+type PatchPath = Name
 
 data OptionalPatch = NoPatch | DefaultPatch | UsePatch PatchPath
   deriving (Eq, Ord, Show)
@@ -85,7 +86,7 @@ type AbsBranchId = BranchIdG Path.Absolute
 -- | An unambiguous project branch name, use the current project name if not provided.
 type UnresolvedProjectBranch = ProjectAndBranch (Maybe ProjectName) ProjectBranchName
 
-type HashOrHQSplit' = Either ShortHash Path.HQSplit'
+type HashOrHQName = Either ShortHash (HQ'.HashQualified Name)
 
 -- | Should we force the operation or not?
 data Insistence = Force | Try
@@ -142,13 +143,12 @@ data Input
     -- > names .foo.bar#asdflkjsdf
     -- > names #sdflkjsdfhsdf
     NamesI IsGlobal (HQ.HashQualified Name)
-  | AliasTermI !Bool HashOrHQSplit' Path.Split' -- bool = force?
-  | AliasTypeI !Bool HashOrHQSplit' Path.Split' -- bool = force?
+  | AliasTermI !Bool HashOrHQName Name -- bool = force?
+  | AliasTypeI !Bool HashOrHQName Name -- bool = force?
   | AliasManyI [Path.HQSplit] Path'
   | MoveAllI Path.Path' Path.Path'
-  | -- Move = Rename; It's an HQSplit' not an HQSplit', meaning the arg has to have a name.
-    MoveTermI Path.HQSplit' Path.Split'
-  | MoveTypeI Path.HQSplit' Path.Split'
+  | MoveTermI (HQ'.HashQualified Name) Name
+  | MoveTypeI (HQ'.HashQualified Name) Name
   | MoveBranchI Path.Path' Path.Path'
   | -- delete = unname
     DeleteI DeleteTarget
@@ -323,9 +323,9 @@ data DeleteOutput
   deriving stock (Eq, Show)
 
 data DeleteTarget
-  = DeleteTarget'TermOrType DeleteOutput [Path.HQSplit']
-  | DeleteTarget'Term DeleteOutput [Path.HQSplit']
-  | DeleteTarget'Type DeleteOutput [Path.HQSplit']
+  = DeleteTarget'TermOrType DeleteOutput [HQ'.HashQualified Name]
+  | DeleteTarget'Term DeleteOutput [HQ'.HashQualified Name]
+  | DeleteTarget'Type DeleteOutput [HQ'.HashQualified Name]
   | DeleteTarget'Namespace Insistence (Maybe Path.Split)
   | DeleteTarget'ProjectBranch (ProjectAndBranch (Maybe ProjectName) ProjectBranchName)
   | DeleteTarget'Project ProjectName

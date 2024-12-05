@@ -2,11 +2,12 @@
 
 module Unison.Test.Codebase.Path where
 
+import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Maybe (fromJust)
 import EasyTest
-import Unison.Codebase.Path (Path (..), Path' (..), Relative (..))
-import Unison.Codebase.Path.Parse (parseHQSplit', parseShortHashOrHQSplit')
+import Unison.Codebase.Path.Parse (parseHQName, parseShortHashOrHQName)
 import Unison.HashQualifiedPrime qualified as HQ'
+import Unison.Name qualified as Name
 import Unison.NameSegment.Internal (NameSegment (NameSegment))
 import Unison.Prelude
 import Unison.ShortHash qualified as SH
@@ -14,32 +15,43 @@ import Unison.ShortHash qualified as SH
 test :: Test ()
 test =
   scope "path" . tests $
-    [ scope "parseShortHashOrHQSplit'" . tests $
+    [ scope "parseShortHashOrHQName" . tests $
         [ let s = "foo.bar#34"
            in scope s . expect $
-                parseShortHashOrHQSplit' s
-                  == (Right . Right)
-                    (relative ["foo"], HQ'.HashQualified (NameSegment "bar") (fromJust (SH.fromText "#34"))),
+                parseShortHashOrHQName s
+                  == pure
+                    ( pure
+                        . HQ'.HashQualified (Name.fromReverseSegments $ NameSegment "bar" :| [NameSegment "foo"])
+                        . fromJust
+                        $ SH.fromText "#34"
+                    ),
           let s = "foo.bar.+"
            in scope s . expect $
-                parseShortHashOrHQSplit' s
-                  == (Right . Right)
-                    (relative ["foo", "bar"], HQ'.NameOnly (NameSegment "+")),
+                parseShortHashOrHQName s
+                  == pure
+                    ( pure . HQ'.NameOnly . Name.fromReverseSegments $
+                        NameSegment "+" :| [NameSegment "bar", NameSegment "foo"]
+                    ),
           let s = "#123"
            in scope s . expect $
-                parseShortHashOrHQSplit' s
-                  == (Right . Left) (fromJust (SH.fromText "#123"))
+                parseShortHashOrHQName s == pure (Left . fromJust $ SH.fromText "#123")
         ],
-      scope "parseHQ'Split'" . tests $
+      scope "parseHQ'Name" . tests $
         [ let s = "foo.bar#34"
            in scope s . expect $
-                parseHQSplit' s == Right (relative ["foo"], HQ'.HashQualified (NameSegment "bar") (fromJust (SH.fromText "#34"))),
+                parseHQName s
+                  == pure
+                    ( HQ'.HashQualified (Name.fromReverseSegments $ NameSegment "bar" :| [NameSegment "foo"])
+                        . fromJust
+                        $ SH.fromText "#34"
+                    ),
           let s = "foo.bar.+"
            in scope s . expect $
-                parseHQSplit' s == Right (relative ["foo", "bar"], HQ'.NameOnly (NameSegment "+")),
-          let s = "#123" in scope s . expect $ isLeft $ parseHQSplit' s
+                parseHQName s
+                  == pure
+                    ( HQ'.NameOnly . Name.fromReverseSegments $
+                        NameSegment "+" :| [NameSegment "bar", NameSegment "foo"]
+                    ),
+          let s = "#123" in scope s . expect $ isLeft $ parseHQName s
         ]
     ]
-
-relative :: Seq Text -> Path'
-relative = Path' . Right . Relative . Path . fmap NameSegment

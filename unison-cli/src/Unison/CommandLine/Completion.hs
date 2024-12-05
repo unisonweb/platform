@@ -266,10 +266,10 @@ parseLaxPath'Query :: Text -> (Path.Path', Text)
 parseLaxPath'Query txt =
   case P.runParser ((,) <$> Path.splitP' <*> P.takeRest) "" (Text.unpack txt) of
     Left _err -> (Path.relativeEmpty', txt)
-    Right ((path, segment), rest) ->
+    Right (name, rest) ->
       if take 1 rest == "."
-        then (Path.unsplit' (path, segment), Text.empty)
-        else (path, NameSegment.toEscapedText segment)
+        then (Path.fromName' name, Text.empty)
+        else NameSegment.toEscapedText <$> Path.parentOfName name
 
 -- | Completes a namespace argument by prefix-matching against the query.
 prefixCompleteNamespace ::
