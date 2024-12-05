@@ -143,11 +143,10 @@ import Unison.Runtime.Builtin.Types
 import Unison.Runtime.Crypto.Rsa as Rsa
 import Unison.Runtime.Exception (die)
 import Unison.Runtime.Foreign
-import Unison.Runtime.Foreign
   ( Foreign (Wrap),
     HashAlgorithm (..),
-    pattern Failure,
   )
+import Unison.Runtime.Foreign hiding (Failure)
 import Unison.Runtime.Foreign qualified as F
 import Unison.Runtime.Foreign.Function hiding (mkForeign)
 import Unison.Runtime.MCode
@@ -382,7 +381,7 @@ foreignCall = \case
       pure . Util.Text.toUtf8
   Text_fromUtf8_impl_v3 ->
     mkForeign $
-      pure . mapLeft (\t -> Failure Ty.ioFailureRef (Util.Text.pack t) unitValue) . Util.Text.fromUtf8
+      pure . mapLeft (\t -> F.Failure Ty.ioFailureRef (Util.Text.pack t) unitValue) . Util.Text.fromUtf8
   Tls_ClientConfig_default -> mkForeign $
     \(hostName :: Util.Text.Text, serverId :: Bytes.Bytes) ->
       fmap
@@ -451,144 +450,405 @@ foreignCall = \case
       \( tls :: TLS.Context,
          bytes :: Bytes.Bytes
          ) -> TLS.sendData tls (Bytes.toLazyByteString bytes)
-  Tls_decodeCert_impl_v3 -> undefined
-  Tls_encodeCert -> undefined
-  Tls_decodePrivateKey -> undefined
-  Tls_encodePrivateKey -> undefined
-  Tls_receive_impl_v3 -> undefined
-  Tls_terminate_impl_v3 -> undefined
-  Code_validateLinks -> undefined
-  Code_dependencies -> undefined
-  Code_serialize -> undefined
-  Code_deserialize -> undefined
-  Code_display -> undefined
-  Value_dependencies -> undefined
-  Value_serialize -> undefined
-  Value_deserialize -> undefined
-  Crypto_HashAlgorithm_Sha3_512 -> undefined
-  Crypto_HashAlgorithm_Sha3_256 -> undefined
-  Crypto_HashAlgorithm_Sha2_512 -> undefined
-  Crypto_HashAlgorithm_Sha2_256 -> undefined
-  Crypto_HashAlgorithm_Sha1 -> undefined
-  Crypto_HashAlgorithm_Blake2b_512 -> undefined
-  Crypto_HashAlgorithm_Blake2b_256 -> undefined
-  Crypto_HashAlgorithm_Blake2s_256 -> undefined
-  Crypto_HashAlgorithm_Md5 -> undefined
-  Crypto_hashBytes -> undefined
-  Crypto_hmacBytes -> undefined
-  Crypto_hash -> undefined
-  Crypto_hmac -> undefined
-  Crypto_Ed25519_sign_impl -> undefined
-  Crypto_Ed25519_verify_impl -> undefined
-  Crypto_Rsa_sign_impl -> undefined
-  Crypto_Rsa_verify_impl -> undefined
-  Universal_murmurHash -> undefined
-  IO_randomBytes -> undefined
-  Bytes_zlib_compress -> undefined
-  Bytes_gzip_compress -> undefined
-  Bytes_zlib_decompress -> undefined
-  Bytes_gzip_decompress -> undefined
-  Bytes_toBase16 -> undefined
-  Bytes_toBase32 -> undefined
-  Bytes_toBase64 -> undefined
-  Bytes_toBase64UrlUnpadded -> undefined
-  Bytes_fromBase16 -> undefined
-  Bytes_fromBase32 -> undefined
-  Bytes_fromBase64 -> undefined
-  Bytes_fromBase64UrlUnpadded -> undefined
-  Bytes_decodeNat64be -> undefined
-  Bytes_decodeNat64le -> undefined
-  Bytes_decodeNat32be -> undefined
-  Bytes_decodeNat32le -> undefined
-  Bytes_decodeNat16be -> undefined
-  Bytes_decodeNat16le -> undefined
-  Bytes_encodeNat64be -> undefined
-  Bytes_encodeNat64le -> undefined
-  Bytes_encodeNat32be -> undefined
-  Bytes_encodeNat32le -> undefined
-  Bytes_encodeNat16be -> undefined
-  Bytes_encodeNat16le -> undefined
-  MutableArray_copyTo_force -> undefined
-  MutableByteArray_copyTo_force -> undefined
-  ImmutableArray_copyTo_force -> undefined
-  ImmutableArray_size -> undefined
-  MutableArray_size -> undefined
-  ImmutableByteArray_size -> undefined
-  MutableByteArray_size -> undefined
-  ImmutableByteArray_copyTo_force -> undefined
-  MutableArray_read -> undefined
-  MutableByteArray_read8 -> undefined
-  MutableByteArray_read16be -> undefined
-  MutableByteArray_read24be -> undefined
-  MutableByteArray_read32be -> undefined
-  MutableByteArray_read40be -> undefined
-  MutableByteArray_read64be -> undefined
-  MutableArray_write -> undefined
-  MutableByteArray_write8 -> undefined
-  MutableByteArray_write16be -> undefined
-  MutableByteArray_write32be -> undefined
-  MutableByteArray_write64be -> undefined
-  ImmutableArray_read -> undefined
-  ImmutableByteArray_read8 -> undefined
-  ImmutableByteArray_read16be -> undefined
-  ImmutableByteArray_read24be -> undefined
-  ImmutableByteArray_read32be -> undefined
-  ImmutableByteArray_read40be -> undefined
-  ImmutableByteArray_read64be -> undefined
-  MutableByteArray_freeze_force -> undefined
-  MutableArray_freeze_force -> undefined
-  MutableByteArray_freeze -> undefined
-  MutableArray_freeze -> undefined
-  MutableByteArray_length -> undefined
-  ImmutableByteArray_length -> undefined
-  IO_array -> undefined
-  IO_arrayOf -> undefined
-  IO_bytearray -> undefined
-  IO_bytearrayOf -> undefined
-  Scope_array -> undefined
-  Scope_arrayOf -> undefined
-  Scope_bytearray -> undefined
-  Scope_bytearrayOf -> undefined
-  Text_patterns_literal -> undefined
-  Text_patterns_digit -> undefined
-  Text_patterns_letter -> undefined
-  Text_patterns_space -> undefined
-  Text_patterns_punctuation -> undefined
-  Text_patterns_anyChar -> undefined
-  Text_patterns_eof -> undefined
-  Text_patterns_charRange -> undefined
-  Text_patterns_notCharRange -> undefined
-  Text_patterns_charIn -> undefined
-  Text_patterns_notCharIn -> undefined
-  Pattern_many -> undefined
-  Pattern_many_corrected -> undefined
-  Pattern_capture -> undefined
-  Pattern_captureAs -> undefined
-  Pattern_join -> undefined
-  Pattern_or -> undefined
-  Pattern_replicate -> undefined
-  Pattern_run -> undefined
-  Pattern_isMatch -> undefined
-  Char_Class_any -> undefined
-  Char_Class_not -> undefined
-  Char_Class_and -> undefined
-  Char_Class_or -> undefined
-  Char_Class_range -> undefined
-  Char_Class_anyOf -> undefined
-  Char_Class_alphanumeric -> undefined
-  Char_Class_upper -> undefined
-  Char_Class_lower -> undefined
-  Char_Class_whitespace -> undefined
-  Char_Class_control -> undefined
-  Char_Class_printable -> undefined
-  Char_Class_mark -> undefined
-  Char_Class_number -> undefined
-  Char_Class_punctuation -> undefined
-  Char_Class_symbol -> undefined
-  Char_Class_separator -> undefined
-  Char_Class_letter -> undefined
-  Char_Class_is -> undefined
-  Text_patterns_char -> undefined
+  Tls_decodeCert_impl_v3 ->
+    let wrapFailure t = F.Failure Ty.tlsFailureRef (Util.Text.pack t) unitValue
+        decoded :: Bytes.Bytes -> Either String PEM
+        decoded bytes = case pemParseLBS $ Bytes.toLazyByteString bytes of
+          Right (pem : _) -> Right pem
+          Right [] -> Left "no PEM found"
+          Left l -> Left l
+        asCert :: PEM -> Either String X.SignedCertificate
+        asCert pem = X.decodeSignedCertificate $ pemContent pem
+     in mkForeignTlsE $
+          \(bytes :: Bytes.Bytes) -> pure $ mapLeft wrapFailure $ (decoded >=> asCert) bytes
+  Tls_encodeCert -> mkForeign $
+    \(cert :: X.SignedCertificate) -> pure $ Bytes.fromArray $ X.encodeSignedObject cert
+  Tls_decodePrivateKey -> mkForeign $
+    \(bytes :: Bytes.Bytes) -> pure $ X.readKeyFileFromMemory $ L.toStrict $ Bytes.toLazyByteString bytes
+  Tls_encodePrivateKey -> mkForeign $
+    \(privateKey :: X.PrivKey) -> pure $ Util.Text.toUtf8 $ Util.Text.pack $ show privateKey
+  Tls_receive_impl_v3 -> mkForeignTls $
+    \(tls :: TLS.Context) -> do
+      bs <- TLS.recvData tls
+      pure $ Bytes.fromArray bs
+  Tls_terminate_impl_v3 -> mkForeignTls $
+    \(tls :: TLS.Context) -> TLS.bye tls
+  Code_validateLinks -> mkForeign $
+    \(lsgs0 :: [(Referent, Code)]) -> do
+      let f (msg, rs) =
+            F.Failure Ty.miscFailureRef (Util.Text.fromText msg) rs
+      pure . first f $ checkGroupHashes lsgs0
+  Code_dependencies -> mkForeign $
+    \(CodeRep sg _) ->
+      pure $ Wrap Ty.termLinkRef . Ref <$> groupTermLinks sg
+  Code_serialize -> mkForeign $
+    \(co :: Code) ->
+      pure . Bytes.fromArray $ serializeCode builtinForeignNames co
+  Code_deserialize ->
+    mkForeign $
+      pure . deserializeCode . Bytes.toArray
+  Code_display -> mkForeign $
+    \(nm, (CodeRep sg _)) ->
+      pure $ prettyGroup @Symbol (Util.Text.unpack nm) sg ""
+  Value_dependencies ->
+    mkForeign $
+      pure . fmap (Wrap Ty.termLinkRef . Ref) . valueTermLinks
+  Value_serialize ->
+    mkForeign $
+      pure . Bytes.fromArray . serializeValue
+  Value_deserialize ->
+    mkForeign $
+      pure . deserializeValue . Bytes.toArray
+  Crypto_HashAlgorithm_Sha3_512 -> mkHashAlgorithm "Sha3_512" Hash.SHA3_512
+  Crypto_HashAlgorithm_Sha3_256 -> mkHashAlgorithm "Sha3_256" Hash.SHA3_256
+  Crypto_HashAlgorithm_Sha2_512 -> mkHashAlgorithm "Sha2_512" Hash.SHA512
+  Crypto_HashAlgorithm_Sha2_256 -> mkHashAlgorithm "Sha2_256" Hash.SHA256
+  Crypto_HashAlgorithm_Sha1 -> mkHashAlgorithm "Sha1" Hash.SHA1
+  Crypto_HashAlgorithm_Blake2b_512 -> mkHashAlgorithm "Blake2b_512" Hash.Blake2b_512
+  Crypto_HashAlgorithm_Blake2b_256 -> mkHashAlgorithm "Blake2b_256" Hash.Blake2b_256
+  Crypto_HashAlgorithm_Blake2s_256 -> mkHashAlgorithm "Blake2s_256" Hash.Blake2s_256
+  Crypto_HashAlgorithm_Md5 -> mkHashAlgorithm "Md5" Hash.MD5
+  Crypto_hashBytes -> mkForeign $
+    \(HashAlgorithm _ alg, b :: Bytes.Bytes) ->
+      let ctx = Hash.hashInitWith alg
+       in pure . Bytes.fromArray . Hash.hashFinalize $ Hash.hashUpdates ctx (Bytes.byteStringChunks b)
+  Crypto_hmacBytes -> mkForeign $
+    \(HashAlgorithm _ alg, key :: Bytes.Bytes, msg :: Bytes.Bytes) ->
+      let out = u alg $ HMAC.hmac (Bytes.toArray @BA.Bytes key) (Bytes.toArray @BA.Bytes msg)
+          u :: a -> HMAC.HMAC a -> HMAC.HMAC a
+          u _ h = h -- to help typechecker along
+       in pure $ Bytes.fromArray out
+  Crypto_hash -> mkForeign $
+    \(HashAlgorithm _ alg, x) ->
+      let hashlazy ::
+            (Hash.HashAlgorithm a) =>
+            a ->
+            L.ByteString ->
+            Hash.Digest a
+          hashlazy _ l = Hash.hashlazy l
+       in pure . Bytes.fromArray . hashlazy alg $ serializeValueForHash x
+  Crypto_hmac -> mkForeign $
+    \(HashAlgorithm _ alg, key, x) ->
+      let hmac ::
+            (Hash.HashAlgorithm a) => a -> L.ByteString -> HMAC.HMAC a
+          hmac _ s =
+            HMAC.finalize
+              . HMAC.updates
+                (HMAC.initialize $ Bytes.toArray @BA.Bytes key)
+              $ L.toChunks s
+       in pure . Bytes.fromArray . hmac alg $ serializeValueForHash x
+  Crypto_Ed25519_sign_impl ->
+    mkForeign $
+      pure . signEd25519Wrapper
+  Crypto_Ed25519_verify_impl ->
+    mkForeign $
+      pure . verifyEd25519Wrapper
+  Crypto_Rsa_sign_impl ->
+    mkForeign $
+      pure . signRsaWrapper
+  Crypto_Rsa_verify_impl ->
+    mkForeign $
+      pure . verifyRsaWrapper
+  Universal_murmurHash ->
+    mkForeign $
+      pure . asWord64 . hash64 . serializeValueForHash
+  IO_randomBytes -> mkForeign $
+    \n -> Bytes.fromArray <$> getRandomBytes @IO @ByteString n
+  Bytes_zlib_compress -> mkForeign $ pure . Bytes.zlibCompress
+  Bytes_gzip_compress -> mkForeign $ pure . Bytes.gzipCompress
+  Bytes_zlib_decompress -> mkForeign $ \bs ->
+    catchAll (pure (Bytes.zlibDecompress bs))
+  Bytes_gzip_decompress -> mkForeign $ \bs ->
+    catchAll (pure (Bytes.gzipDecompress bs))
+  Bytes_toBase16 -> mkForeign $ pure . Bytes.toBase16
+  Bytes_toBase32 -> mkForeign $ pure . Bytes.toBase32
+  Bytes_toBase64 -> mkForeign $ pure . Bytes.toBase64
+  Bytes_toBase64UrlUnpadded -> mkForeign $ pure . Bytes.toBase64UrlUnpadded
+  Bytes_fromBase16 ->
+    mkForeign $
+      pure . mapLeft Util.Text.fromText . Bytes.fromBase16
+  Bytes_fromBase32 ->
+    mkForeign $
+      pure . mapLeft Util.Text.fromText . Bytes.fromBase32
+  Bytes_fromBase64 ->
+    mkForeign $
+      pure . mapLeft Util.Text.fromText . Bytes.fromBase64
+  Bytes_fromBase64UrlUnpadded ->
+    mkForeign $
+      pure . mapLeft Util.Text.fromText . Bytes.fromBase64UrlUnpadded
+  Bytes_decodeNat64be -> mkForeign $ pure . Bytes.decodeNat64be
+  Bytes_decodeNat64le -> mkForeign $ pure . Bytes.decodeNat64le
+  Bytes_decodeNat32be -> mkForeign $ pure . Bytes.decodeNat32be
+  Bytes_decodeNat32le -> mkForeign $ pure . Bytes.decodeNat32le
+  Bytes_decodeNat16be -> mkForeign $ pure . Bytes.decodeNat16be
+  Bytes_decodeNat16le -> mkForeign $ pure . Bytes.decodeNat16le
+  Bytes_encodeNat64be -> mkForeign $ pure . Bytes.encodeNat64be
+  Bytes_encodeNat64le -> mkForeign $ pure . Bytes.encodeNat64le
+  Bytes_encodeNat32be -> mkForeign $ pure . Bytes.encodeNat32be
+  Bytes_encodeNat32le -> mkForeign $ pure . Bytes.encodeNat32le
+  Bytes_encodeNat16be -> mkForeign $ pure . Bytes.encodeNat16be
+  Bytes_encodeNat16le -> mkForeign $ pure . Bytes.encodeNat16le
+  MutableArray_copyTo_force -> mkForeign $
+    \(dst, doff, src, soff, l) ->
+      let name = "MutableArray.copyTo!"
+       in if l == 0
+            then pure (Right ())
+            else
+              checkBounds name (PA.sizeofMutableArray dst) (doff + l - 1) $
+                checkBounds name (PA.sizeofMutableArray src) (soff + l - 1) $
+                  Right
+                    <$> PA.copyMutableArray @IO @Val
+                      dst
+                      (fromIntegral doff)
+                      src
+                      (fromIntegral soff)
+                      (fromIntegral l)
+  MutableByteArray_copyTo_force -> mkForeign $
+    \(dst, doff, src, soff, l) ->
+      let name = "MutableByteArray.copyTo!"
+       in if l == 0
+            then pure (Right ())
+            else
+              checkBoundsPrim name (PA.sizeofMutableByteArray dst) (doff + l) 0 $
+                checkBoundsPrim name (PA.sizeofMutableByteArray src) (soff + l) 0 $
+                  Right
+                    <$> PA.copyMutableByteArray @IO
+                      dst
+                      (fromIntegral doff)
+                      src
+                      (fromIntegral soff)
+                      (fromIntegral l)
+  ImmutableArray_copyTo_force -> mkForeign $
+    \(dst, doff, src, soff, l) ->
+      let name = "ImmutableArray.copyTo!"
+       in if l == 0
+            then pure (Right ())
+            else
+              checkBounds name (PA.sizeofMutableArray dst) (doff + l - 1) $
+                checkBounds name (PA.sizeofArray src) (soff + l - 1) $
+                  Right
+                    <$> PA.copyArray @IO @Val
+                      dst
+                      (fromIntegral doff)
+                      src
+                      (fromIntegral soff)
+                      (fromIntegral l)
+  ImmutableArray_size ->
+    mkForeign $
+      pure . fromIntegral @Int @Word64 . PA.sizeofArray @Val
+  MutableArray_size ->
+    mkForeign $
+      pure . fromIntegral @Int @Word64 . PA.sizeofMutableArray @PA.RealWorld @Val
+  ImmutableByteArray_size ->
+    mkForeign $
+      pure . fromIntegral @Int @Word64 . PA.sizeofByteArray
+  MutableByteArray_size ->
+    mkForeign $
+      pure . fromIntegral @Int @Word64 . PA.sizeofMutableByteArray @PA.RealWorld
+  ImmutableByteArray_copyTo_force -> mkForeign $
+    \(dst, doff, src, soff, l) ->
+      let name = "ImmutableByteArray.copyTo!"
+       in if l == 0
+            then pure (Right ())
+            else
+              checkBoundsPrim name (PA.sizeofMutableByteArray dst) (doff + l) 0 $
+                checkBoundsPrim name (PA.sizeofByteArray src) (soff + l) 0 $
+                  Right
+                    <$> PA.copyByteArray @IO
+                      dst
+                      (fromIntegral doff)
+                      src
+                      (fromIntegral soff)
+                      (fromIntegral l)
+  MutableArray_read ->
+    mkForeign $
+      checkedRead "MutableArray.read"
+  MutableByteArray_read8 ->
+    mkForeign $
+      checkedRead8 "MutableByteArray.read8"
+  MutableByteArray_read16be ->
+    mkForeign $
+      checkedRead16 "MutableByteArray.read16be"
+  MutableByteArray_read24be ->
+    mkForeign $
+      checkedRead24 "MutableByteArray.read24be"
+  MutableByteArray_read32be ->
+    mkForeign $
+      checkedRead32 "MutableByteArray.read32be"
+  MutableByteArray_read40be ->
+    mkForeign $
+      checkedRead40 "MutableByteArray.read40be"
+  MutableByteArray_read64be ->
+    mkForeign $
+      checkedRead64 "MutableByteArray.read64be"
+  MutableArray_write ->
+    mkForeign $
+      checkedWrite "MutableArray.write"
+  MutableByteArray_write8 ->
+    mkForeign $
+      checkedWrite8 "MutableByteArray.write8"
+  MutableByteArray_write16be ->
+    mkForeign $
+      checkedWrite16 "MutableByteArray.write16be"
+  MutableByteArray_write32be ->
+    mkForeign $
+      checkedWrite32 "MutableByteArray.write32be"
+  MutableByteArray_write64be ->
+    mkForeign $
+      checkedWrite64 "MutableByteArray.write64be"
+  ImmutableArray_read ->
+    mkForeign $
+      checkedIndex "ImmutableArray.read"
+  ImmutableByteArray_read8 ->
+    mkForeign $
+      checkedIndex8 "ImmutableByteArray.read8"
+  ImmutableByteArray_read16be ->
+    mkForeign $
+      checkedIndex16 "ImmutableByteArray.read16be"
+  ImmutableByteArray_read24be ->
+    mkForeign $
+      checkedIndex24 "ImmutableByteArray.read24be"
+  ImmutableByteArray_read32be ->
+    mkForeign $
+      checkedIndex32 "ImmutableByteArray.read32be"
+  ImmutableByteArray_read40be ->
+    mkForeign $
+      checkedIndex40 "ImmutableByteArray.read40be"
+  ImmutableByteArray_read64be ->
+    mkForeign $
+      checkedIndex64 "ImmutableByteArray.read64be"
+  MutableByteArray_freeze_force ->
+    mkForeign $
+      PA.unsafeFreezeByteArray
+  MutableArray_freeze_force ->
+    mkForeign $
+      PA.unsafeFreezeArray @IO @Val
+  MutableByteArray_freeze -> mkForeign $
+    \(src, off, len) ->
+      if len == 0
+        then fmap Right . PA.unsafeFreezeByteArray =<< PA.newByteArray 0
+        else
+          checkBoundsPrim
+            "MutableByteArray.freeze"
+            (PA.sizeofMutableByteArray src)
+            (off + len)
+            0
+            $ Right <$> PA.freezeByteArray src (fromIntegral off) (fromIntegral len)
+  MutableArray_freeze -> mkForeign $
+    \(src :: PA.MutableArray PA.RealWorld Val, off, len) ->
+      if len == 0
+        then fmap Right . PA.unsafeFreezeArray =<< PA.newArray 0 emptyVal
+        else
+          checkBounds
+            "MutableArray.freeze"
+            (PA.sizeofMutableArray src)
+            (off + len - 1)
+            $ Right <$> PA.freezeArray src (fromIntegral off) (fromIntegral len)
+  MutableByteArray_length ->
+    mkForeign $
+      pure . PA.sizeofMutableByteArray @PA.RealWorld
+  ImmutableByteArray_length ->
+    mkForeign $
+      pure . PA.sizeofByteArray
+  IO_array -> mkForeign $
+    \n -> PA.newArray n emptyVal
+  IO_arrayOf -> mkForeign $
+    \(v :: Val, n) -> PA.newArray n v
+  IO_bytearray -> mkForeign $ PA.newByteArray
+  IO_bytearrayOf -> mkForeign $
+    \(init, sz) -> do
+      arr <- PA.newByteArray sz
+      PA.fillByteArray arr 0 sz init
+      pure arr
+  Scope_array -> mkForeign $
+    \n -> PA.newArray n emptyVal
+  Scope_arrayOf -> mkForeign $
+    \(v :: Val, n) -> PA.newArray n v
+  Scope_bytearray -> mkForeign $ PA.newByteArray
+  Scope_bytearrayOf -> mkForeign $
+    \(init, sz) -> do
+      arr <- PA.newByteArray sz
+      PA.fillByteArray arr 0 sz init
+      pure arr
+  Text_patterns_literal -> mkForeign $
+    \txt -> evaluate . TPat.cpattern $ TPat.Literal txt
+  Text_patterns_digit ->
+    mkForeign $
+      let v = TPat.cpattern (TPat.Char (TPat.CharRange '0' '9')) in \() -> pure v
+  Text_patterns_letter ->
+    mkForeign $
+      let v = TPat.cpattern (TPat.Char (TPat.CharClass TPat.Letter)) in \() -> pure v
+  Text_patterns_space ->
+    mkForeign $
+      let v = TPat.cpattern (TPat.Char (TPat.CharClass TPat.Whitespace)) in \() -> pure v
+  Text_patterns_punctuation ->
+    mkForeign $
+      let v = TPat.cpattern (TPat.Char (TPat.CharClass TPat.Punctuation)) in \() -> pure v
+  Text_patterns_anyChar ->
+    mkForeign $
+      let v = TPat.cpattern (TPat.Char TPat.Any) in \() -> pure v
+  Text_patterns_eof ->
+    mkForeign $
+      let v = TPat.cpattern TPat.Eof in \() -> pure v
+  Text_patterns_charRange -> mkForeign $
+    \(beg, end) -> evaluate . TPat.cpattern . TPat.Char $ TPat.CharRange beg end
+  Text_patterns_notCharRange -> mkForeign $
+    \(beg, end) -> evaluate . TPat.cpattern . TPat.Char . TPat.Not $ TPat.CharRange beg end
+  Text_patterns_charIn -> mkForeign $ \ccs -> do
+    cs <- for ccs $ \case
+      CharVal c -> pure c
+      _ -> die "Text.patterns.charIn: non-character closure"
+    evaluate . TPat.cpattern . TPat.Char $ TPat.CharSet cs
+  Text_patterns_notCharIn -> mkForeign $ \ccs -> do
+    cs <- for ccs $ \case
+      CharVal c -> pure c
+      _ -> die "Text.patterns.notCharIn: non-character closure"
+    evaluate . TPat.cpattern . TPat.Char . TPat.Not $ TPat.CharSet cs
+  Pattern_many -> mkForeign $
+    \(TPat.CP p _) -> evaluate . TPat.cpattern $ TPat.Many False p
+  Pattern_many_corrected -> mkForeign $
+    \(TPat.CP p _) -> evaluate . TPat.cpattern $ TPat.Many True p
+  Pattern_capture -> mkForeign $
+    \(TPat.CP p _) -> evaluate . TPat.cpattern $ TPat.Capture p
+  Pattern_captureAs -> mkForeign $
+    \(t, (TPat.CP p _)) -> evaluate . TPat.cpattern $ TPat.CaptureAs t p
+  Pattern_join -> mkForeign $ \ps ->
+    evaluate . TPat.cpattern . TPat.Join $ map (\(TPat.CP p _) -> p) ps
+  Pattern_or -> mkForeign $
+    \(TPat.CP l _, TPat.CP r _) -> evaluate . TPat.cpattern $ TPat.Or l r
+  Pattern_replicate -> mkForeign $
+    \(m0 :: Word64, n0 :: Word64, TPat.CP p _) ->
+      let m = fromIntegral m0; n = fromIntegral n0
+       in evaluate . TPat.cpattern $ TPat.Replicate m n p
+  Pattern_run -> mkForeign $
+    \(TPat.CP _ matcher, input :: Text) -> pure $ matcher input
+  Pattern_isMatch -> mkForeign $
+    \(TPat.CP _ matcher, input :: Text) -> pure . isJust $ matcher input
+  Char_Class_any -> mkForeign $ \() -> pure TPat.Any
+  Char_Class_not -> mkForeign $ pure . TPat.Not
+  Char_Class_and -> mkForeign $ \(a, b) -> pure $ TPat.Intersect a b
+  Char_Class_or -> mkForeign $ \(a, b) -> pure $ TPat.Union a b
+  Char_Class_range -> mkForeign $ \(a, b) -> pure $ TPat.CharRange a b
+  Char_Class_anyOf -> mkForeign $ \ccs -> do
+    cs <- for ccs $ \case
+      CharVal c -> pure c
+      _ -> die "Text.patterns.charIn: non-character closure"
+    evaluate $ TPat.CharSet cs
+  Char_Class_alphanumeric -> mkForeign $ \() -> pure (TPat.CharClass TPat.AlphaNum)
+  Char_Class_upper -> mkForeign $ \() -> pure (TPat.CharClass TPat.Upper)
+  Char_Class_lower -> mkForeign $ \() -> pure (TPat.CharClass TPat.Lower)
+  Char_Class_whitespace -> mkForeign $ \() -> pure (TPat.CharClass TPat.Whitespace)
+  Char_Class_control -> mkForeign $ \() -> pure (TPat.CharClass TPat.Control)
+  Char_Class_printable -> mkForeign $ \() -> pure (TPat.CharClass TPat.Printable)
+  Char_Class_mark -> mkForeign $ \() -> pure (TPat.CharClass TPat.MarkChar)
+  Char_Class_number -> mkForeign $ \() -> pure (TPat.CharClass TPat.Number)
+  Char_Class_punctuation -> mkForeign $ \() -> pure (TPat.CharClass TPat.Punctuation)
+  Char_Class_symbol -> mkForeign $ \() -> pure (TPat.CharClass TPat.Symbol)
+  Char_Class_separator -> mkForeign $ \() -> pure (TPat.CharClass TPat.Separator)
+  Char_Class_letter -> mkForeign $ \() -> pure (TPat.CharClass TPat.Letter)
+  Char_Class_is -> mkForeign $ \(cl, c) -> evaluate $ TPat.charPatternPred cl c
+  Text_patterns_char -> mkForeign $ \c ->
+    let v = TPat.cpattern (TPat.Char c) in pure v
   where
     chop = reverse . dropWhile isPathSeparator . reverse
 
@@ -606,6 +866,18 @@ foreignCall = \case
 
     exitDecode ExitSuccess = 0
     exitDecode (ExitFailure n) = n
+
+    mkHashAlgorithm :: forall alg. (Hash.HashAlgorithm alg) => Data.Text.Text -> alg -> Args -> Stack -> IO Stack
+    mkHashAlgorithm txt alg =
+      let algoRef = Builtin ("crypto.HashAlgorithm." <> txt)
+       in mkForeign $ \() -> pure (HashAlgorithm algoRef alg)
+
+    catchAll :: (MonadCatch m, MonadIO m, NFData a) => m a -> m (Either Util.Text.Text a)
+    catchAll e = do
+      e <- Exception.tryAnyDeep e
+      pure $ case e of
+        Left se -> Left (Util.Text.pack (show se))
+        Right a -> Right a
 {-# INLINE foreignCall #-}
 
 mkForeign :: (ForeignConvention a, ForeignConvention b) => (a -> IO b) -> Args -> Stack -> IO Stack
@@ -634,7 +906,7 @@ mkForeignIOF f = mkForeign $ \a -> tryIOE (f a)
     tryIOE :: IO a -> IO (Either (F.Failure Val) a)
     tryIOE = fmap handleIOE . UnliftIO.try
     handleIOE :: Either IOException a -> Either (F.Failure Val) a
-    handleIOE (Left e) = Left $ Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue
+    handleIOE (Left e) = Left $ F.Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue
     handleIOE (Right a) = Right a
 {-# INLINE mkForeignIOF #-}
 
@@ -652,28 +924,371 @@ mkForeignTls f = mkForeign $ \a -> fmap flatten (tryIO2 (tryIO1 (f a)))
     tryIO2 :: IO (Either TLS.TLSException r) -> IO (Either IOException (Either TLS.TLSException r))
     tryIO2 = UnliftIO.try
     flatten :: Either IOException (Either TLS.TLSException r) -> Either ((F.Failure Val)) r
-    flatten (Left e) = Left (Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue)
-    flatten (Right (Left e)) = Left (Failure Ty.tlsFailureRef (Util.Text.pack (show e)) unitValue)
+    flatten (Left e) = Left (F.Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue)
+    flatten (Right (Left e)) = Left (F.Failure Ty.tlsFailureRef (Util.Text.pack (show e)) unitValue)
     flatten (Right (Right a)) = Right a
 
 mkForeignTlsE ::
   forall a r.
   (ForeignConvention a, ForeignConvention r) =>
-  (a -> IO (Either (F.Failure Val) r)) ->
+  (a -> IO (Either Failure r)) ->
   Args ->
   Stack ->
   IO Stack
 mkForeignTlsE f = mkForeign $ \a -> fmap flatten (tryIO2 (tryIO1 (f a)))
   where
-    tryIO1 :: IO (Either (F.Failure Val) r) -> IO (Either TLS.TLSException (Either (F.Failure Val) r))
+    tryIO1 :: IO (Either Failure r) -> IO (Either TLS.TLSException (Either Failure r))
     tryIO1 = UnliftIO.try
-    tryIO2 :: IO (Either TLS.TLSException (Either (F.Failure Val) r)) -> IO (Either IOException (Either TLS.TLSException (Either (F.Failure Val) r)))
+    tryIO2 :: IO (Either TLS.TLSException (Either Failure r)) -> IO (Either IOException (Either TLS.TLSException (Either Failure r)))
     tryIO2 = UnliftIO.try
-    flatten :: Either IOException (Either TLS.TLSException (Either (F.Failure Val) r)) -> Either (F.Failure Val) r
-    flatten (Left e) = Left (Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue)
-    flatten (Right (Left e)) = Left (Failure Ty.tlsFailureRef (Util.Text.pack (show e)) unitValue)
+    flatten :: Either IOException (Either TLS.TLSException (Either Failure r)) -> Either Failure r
+    flatten (Left e) = Left (F.Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue)
+    flatten (Right (Left e)) = Left (F.Failure Ty.tlsFailureRef (Util.Text.pack (show e)) unitValue)
     flatten (Right (Right (Left e))) = Left e
     flatten (Right (Right (Right a))) = Right a
 
 unsafeSTMToIO :: STM.STM a -> IO a
 unsafeSTMToIO (STM.STM m) = IO m
+
+signEd25519Wrapper ::
+  (Bytes.Bytes, Bytes.Bytes, Bytes.Bytes) -> Either Failure Bytes.Bytes
+signEd25519Wrapper (secret0, public0, msg0) = case validated of
+  CryptoFailed err ->
+    Left (F.Failure Ty.cryptoFailureRef (errMsg err) unitValue)
+  CryptoPassed (secret, public) ->
+    Right . Bytes.fromArray $ Ed25519.sign secret public msg
+  where
+    msg = Bytes.toArray msg0 :: ByteString
+    validated =
+      (,)
+        <$> Ed25519.secretKey (Bytes.toArray secret0 :: ByteString)
+        <*> Ed25519.publicKey (Bytes.toArray public0 :: ByteString)
+
+    errMsg CryptoError_PublicKeySizeInvalid =
+      "ed25519: Public key size invalid"
+    errMsg CryptoError_SecretKeySizeInvalid =
+      "ed25519: Secret key size invalid"
+    errMsg CryptoError_SecretKeyStructureInvalid =
+      "ed25519: Secret key structure invalid"
+    errMsg _ = "ed25519: unexpected error"
+
+verifyEd25519Wrapper ::
+  (Bytes.Bytes, Bytes.Bytes, Bytes.Bytes) -> Either Failure Bool
+verifyEd25519Wrapper (public0, msg0, sig0) = case validated of
+  CryptoFailed err ->
+    Left $ F.Failure Ty.cryptoFailureRef (errMsg err) unitValue
+  CryptoPassed (public, sig) ->
+    Right $ Ed25519.verify public msg sig
+  where
+    msg = Bytes.toArray msg0 :: ByteString
+    validated =
+      (,)
+        <$> Ed25519.publicKey (Bytes.toArray public0 :: ByteString)
+        <*> Ed25519.signature (Bytes.toArray sig0 :: ByteString)
+
+    errMsg CryptoError_PublicKeySizeInvalid =
+      "ed25519: Public key size invalid"
+    errMsg CryptoError_SecretKeySizeInvalid =
+      "ed25519: Secret key size invalid"
+    errMsg CryptoError_SecretKeyStructureInvalid =
+      "ed25519: Secret key structure invalid"
+    errMsg _ = "ed25519: unexpected error"
+
+signRsaWrapper ::
+  (Bytes.Bytes, Bytes.Bytes) -> Either Failure Bytes.Bytes
+signRsaWrapper (secret0, msg0) = case validated of
+  Left err ->
+    Left (F.Failure Ty.cryptoFailureRef err unitValue)
+  Right secret ->
+    case RSA.sign Nothing (Just Hash.SHA256) secret msg of
+      Left err -> Left (F.Failure Ty.cryptoFailureRef (Rsa.rsaErrorToText err) unitValue)
+      Right signature -> Right $ Bytes.fromByteString signature
+  where
+    msg = Bytes.toArray msg0 :: ByteString
+    validated = Rsa.parseRsaPrivateKey (Bytes.toArray secret0 :: ByteString)
+
+verifyRsaWrapper ::
+  (Bytes.Bytes, Bytes.Bytes, Bytes.Bytes) -> Either Failure Bool
+verifyRsaWrapper (public0, msg0, sig0) = case validated of
+  Left err ->
+    Left $ F.Failure Ty.cryptoFailureRef err unitValue
+  Right public ->
+    Right $ RSA.verify (Just Hash.SHA256) public msg sig
+  where
+    msg = Bytes.toArray msg0 :: ByteString
+    sig = Bytes.toArray sig0 :: ByteString
+    validated = Rsa.parseRsaPublicKey (Bytes.toArray public0 :: ByteString)
+
+type Failure = F.Failure Val
+
+checkBounds :: Text -> Int -> Word64 -> IO (Either Failure b) -> IO (Either Failure b)
+checkBounds name l w act
+  | w < fromIntegral l = act
+  | otherwise = pure $ Left err
+  where
+    msg = name <> ": array index out of bounds"
+    err = F.Failure Ty.arrayFailureRef msg (natValue w)
+
+-- Performs a bounds check on a byte array. Strategy is as follows:
+--
+--   isz = signed array size-in-bytes
+--   off = unsigned byte offset into the array
+--   esz = unsigned number of bytes to be read
+--
+--   1. Turn the signed size-in-bytes of the array unsigned
+--   2. Add the offset to the to-be-read number to get the maximum size needed
+--   3. Check that the actual array size is at least as big as the needed size
+--   4. Check that the offset is less than the size
+--
+-- Step 4 ensures that step 3 has not overflowed. Since an actual array size can
+-- only be 63 bits (since it is signed), the only way for 3 to overflow is if
+-- the offset is larger than a possible array size, since it would need to be
+-- 2^64-k, where k is the small (<=8) number of bytes to be read.
+checkBoundsPrim ::
+  Text -> Int -> Word64 -> Word64 -> IO (Either Failure b) -> IO (Either Failure b)
+checkBoundsPrim name isz off esz act
+  | w > bsz || off > bsz = pure $ Left err
+  | otherwise = act
+  where
+    msg = name <> ": array index out of bounds"
+    err = F.Failure Ty.arrayFailureRef msg (natValue off)
+
+    bsz = fromIntegral isz
+    w = off + esz
+
+type RW = PA.PrimState IO
+
+checkedRead ::
+  Text -> (PA.MutableArray RW Val, Word64) -> IO (Either Failure Val)
+checkedRead name (arr, w) =
+  checkBounds
+    name
+    (PA.sizeofMutableArray arr)
+    w
+    (Right <$> PA.readArray arr (fromIntegral w))
+
+checkedWrite ::
+  Text -> (PA.MutableArray RW Val, Word64, Val) -> IO (Either Failure ())
+checkedWrite name (arr, w, v) =
+  checkBounds
+    name
+    (PA.sizeofMutableArray arr)
+    w
+    (Right <$> PA.writeArray arr (fromIntegral w) v)
+
+checkedIndex ::
+  Text -> (PA.Array Val, Word64) -> IO (Either Failure Val)
+checkedIndex name (arr, w) =
+  checkBounds
+    name
+    (PA.sizeofArray arr)
+    w
+    (Right <$> PA.indexArrayM arr (fromIntegral w))
+
+checkedRead8 :: Text -> (PA.MutableByteArray RW, Word64) -> IO (Either Failure Word64)
+checkedRead8 name (arr, i) =
+  checkBoundsPrim name (PA.sizeofMutableByteArray arr) i 1 $
+    (Right . fromIntegral) <$> PA.readByteArray @Word8 arr j
+  where
+    j = fromIntegral i
+
+checkedRead16 :: Text -> (PA.MutableByteArray RW, Word64) -> IO (Either Failure Word64)
+checkedRead16 name (arr, i) =
+  checkBoundsPrim name (PA.sizeofMutableByteArray arr) i 2 $
+    mk16
+      <$> PA.readByteArray @Word8 arr j
+      <*> PA.readByteArray @Word8 arr (j + 1)
+  where
+    j = fromIntegral i
+
+checkedRead24 :: Text -> (PA.MutableByteArray RW, Word64) -> IO (Either Failure Word64)
+checkedRead24 name (arr, i) =
+  checkBoundsPrim name (PA.sizeofMutableByteArray arr) i 3 $
+    mk24
+      <$> PA.readByteArray @Word8 arr j
+      <*> PA.readByteArray @Word8 arr (j + 1)
+      <*> PA.readByteArray @Word8 arr (j + 2)
+  where
+    j = fromIntegral i
+
+checkedRead32 :: Text -> (PA.MutableByteArray RW, Word64) -> IO (Either Failure Word64)
+checkedRead32 name (arr, i) =
+  checkBoundsPrim name (PA.sizeofMutableByteArray arr) i 4 $
+    mk32
+      <$> PA.readByteArray @Word8 arr j
+      <*> PA.readByteArray @Word8 arr (j + 1)
+      <*> PA.readByteArray @Word8 arr (j + 2)
+      <*> PA.readByteArray @Word8 arr (j + 3)
+  where
+    j = fromIntegral i
+
+checkedRead40 :: Text -> (PA.MutableByteArray RW, Word64) -> IO (Either Failure Word64)
+checkedRead40 name (arr, i) =
+  checkBoundsPrim name (PA.sizeofMutableByteArray arr) i 6 $
+    mk40
+      <$> PA.readByteArray @Word8 arr j
+      <*> PA.readByteArray @Word8 arr (j + 1)
+      <*> PA.readByteArray @Word8 arr (j + 2)
+      <*> PA.readByteArray @Word8 arr (j + 3)
+      <*> PA.readByteArray @Word8 arr (j + 4)
+  where
+    j = fromIntegral i
+
+checkedRead64 :: Text -> (PA.MutableByteArray RW, Word64) -> IO (Either Failure Word64)
+checkedRead64 name (arr, i) =
+  checkBoundsPrim name (PA.sizeofMutableByteArray arr) i 8 $
+    mk64
+      <$> PA.readByteArray @Word8 arr j
+      <*> PA.readByteArray @Word8 arr (j + 1)
+      <*> PA.readByteArray @Word8 arr (j + 2)
+      <*> PA.readByteArray @Word8 arr (j + 3)
+      <*> PA.readByteArray @Word8 arr (j + 4)
+      <*> PA.readByteArray @Word8 arr (j + 5)
+      <*> PA.readByteArray @Word8 arr (j + 6)
+      <*> PA.readByteArray @Word8 arr (j + 7)
+  where
+    j = fromIntegral i
+
+mk16 :: Word8 -> Word8 -> Either Failure Word64
+mk16 b0 b1 = Right $ (fromIntegral b0 `shiftL` 8) .|. (fromIntegral b1)
+
+mk24 :: Word8 -> Word8 -> Word8 -> Either Failure Word64
+mk24 b0 b1 b2 =
+  Right $
+    (fromIntegral b0 `shiftL` 16)
+      .|. (fromIntegral b1 `shiftL` 8)
+      .|. (fromIntegral b2)
+
+mk32 :: Word8 -> Word8 -> Word8 -> Word8 -> Either Failure Word64
+mk32 b0 b1 b2 b3 =
+  Right $
+    (fromIntegral b0 `shiftL` 24)
+      .|. (fromIntegral b1 `shiftL` 16)
+      .|. (fromIntegral b2 `shiftL` 8)
+      .|. (fromIntegral b3)
+
+mk40 :: Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Either Failure Word64
+mk40 b0 b1 b2 b3 b4 =
+  Right $
+    (fromIntegral b0 `shiftL` 32)
+      .|. (fromIntegral b1 `shiftL` 24)
+      .|. (fromIntegral b2 `shiftL` 16)
+      .|. (fromIntegral b3 `shiftL` 8)
+      .|. (fromIntegral b4)
+
+mk64 :: Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Either Failure Word64
+mk64 b0 b1 b2 b3 b4 b5 b6 b7 =
+  Right $
+    (fromIntegral b0 `shiftL` 56)
+      .|. (fromIntegral b1 `shiftL` 48)
+      .|. (fromIntegral b2 `shiftL` 40)
+      .|. (fromIntegral b3 `shiftL` 32)
+      .|. (fromIntegral b4 `shiftL` 24)
+      .|. (fromIntegral b5 `shiftL` 16)
+      .|. (fromIntegral b6 `shiftL` 8)
+      .|. (fromIntegral b7)
+
+checkedWrite8 :: Text -> (PA.MutableByteArray RW, Word64, Word64) -> IO (Either Failure ())
+checkedWrite8 name (arr, i, v) =
+  checkBoundsPrim name (PA.sizeofMutableByteArray arr) i 1 $ do
+    PA.writeByteArray arr j (fromIntegral v :: Word8)
+    pure (Right ())
+  where
+    j = fromIntegral i
+
+checkedWrite16 :: Text -> (PA.MutableByteArray RW, Word64, Word64) -> IO (Either Failure ())
+checkedWrite16 name (arr, i, v) =
+  checkBoundsPrim name (PA.sizeofMutableByteArray arr) i 2 $ do
+    PA.writeByteArray arr j (fromIntegral $ v `shiftR` 8 :: Word8)
+    PA.writeByteArray arr (j + 1) (fromIntegral v :: Word8)
+    pure (Right ())
+  where
+    j = fromIntegral i
+
+checkedWrite32 :: Text -> (PA.MutableByteArray RW, Word64, Word64) -> IO (Either Failure ())
+checkedWrite32 name (arr, i, v) =
+  checkBoundsPrim name (PA.sizeofMutableByteArray arr) i 4 $ do
+    PA.writeByteArray arr j (fromIntegral $ v `shiftR` 24 :: Word8)
+    PA.writeByteArray arr (j + 1) (fromIntegral $ v `shiftR` 16 :: Word8)
+    PA.writeByteArray arr (j + 2) (fromIntegral $ v `shiftR` 8 :: Word8)
+    PA.writeByteArray arr (j + 3) (fromIntegral v :: Word8)
+    pure (Right ())
+  where
+    j = fromIntegral i
+
+checkedWrite64 :: Text -> (PA.MutableByteArray RW, Word64, Word64) -> IO (Either Failure ())
+checkedWrite64 name (arr, i, v) =
+  checkBoundsPrim name (PA.sizeofMutableByteArray arr) i 8 $ do
+    PA.writeByteArray arr j (fromIntegral $ v `shiftR` 56 :: Word8)
+    PA.writeByteArray arr (j + 1) (fromIntegral $ v `shiftR` 48 :: Word8)
+    PA.writeByteArray arr (j + 2) (fromIntegral $ v `shiftR` 40 :: Word8)
+    PA.writeByteArray arr (j + 3) (fromIntegral $ v `shiftR` 32 :: Word8)
+    PA.writeByteArray arr (j + 4) (fromIntegral $ v `shiftR` 24 :: Word8)
+    PA.writeByteArray arr (j + 5) (fromIntegral $ v `shiftR` 16 :: Word8)
+    PA.writeByteArray arr (j + 6) (fromIntegral $ v `shiftR` 8 :: Word8)
+    PA.writeByteArray arr (j + 7) (fromIntegral v :: Word8)
+    pure (Right ())
+  where
+    j = fromIntegral i
+
+-- index single byte
+checkedIndex8 :: Text -> (PA.ByteArray, Word64) -> IO (Either Failure Word64)
+checkedIndex8 name (arr, i) =
+  checkBoundsPrim name (PA.sizeofByteArray arr) i 1 . pure $
+    let j = fromIntegral i
+     in Right . fromIntegral $ PA.indexByteArray @Word8 arr j
+
+-- index 16 big-endian
+checkedIndex16 :: Text -> (PA.ByteArray, Word64) -> IO (Either Failure Word64)
+checkedIndex16 name (arr, i) =
+  checkBoundsPrim name (PA.sizeofByteArray arr) i 2 . pure $
+    let j = fromIntegral i
+     in mk16 (PA.indexByteArray arr j) (PA.indexByteArray arr (j + 1))
+
+-- index 32 big-endian
+checkedIndex24 :: Text -> (PA.ByteArray, Word64) -> IO (Either Failure Word64)
+checkedIndex24 name (arr, i) =
+  checkBoundsPrim name (PA.sizeofByteArray arr) i 3 . pure $
+    let j = fromIntegral i
+     in mk24
+          (PA.indexByteArray arr j)
+          (PA.indexByteArray arr (j + 1))
+          (PA.indexByteArray arr (j + 2))
+
+-- index 32 big-endian
+checkedIndex32 :: Text -> (PA.ByteArray, Word64) -> IO (Either Failure Word64)
+checkedIndex32 name (arr, i) =
+  checkBoundsPrim name (PA.sizeofByteArray arr) i 4 . pure $
+    let j = fromIntegral i
+     in mk32
+          (PA.indexByteArray arr j)
+          (PA.indexByteArray arr (j + 1))
+          (PA.indexByteArray arr (j + 2))
+          (PA.indexByteArray arr (j + 3))
+
+-- index 40 big-endian
+checkedIndex40 :: Text -> (PA.ByteArray, Word64) -> IO (Either Failure Word64)
+checkedIndex40 name (arr, i) =
+  checkBoundsPrim name (PA.sizeofByteArray arr) i 5 . pure $
+    let j = fromIntegral i
+     in mk40
+          (PA.indexByteArray arr j)
+          (PA.indexByteArray arr (j + 1))
+          (PA.indexByteArray arr (j + 2))
+          (PA.indexByteArray arr (j + 3))
+          (PA.indexByteArray arr (j + 4))
+
+-- index 64 big-endian
+checkedIndex64 :: Text -> (PA.ByteArray, Word64) -> IO (Either Failure Word64)
+checkedIndex64 name (arr, i) =
+  checkBoundsPrim name (PA.sizeofByteArray arr) i 8 . pure $
+    let j = fromIntegral i
+     in mk64
+          (PA.indexByteArray arr j)
+          (PA.indexByteArray arr (j + 1))
+          (PA.indexByteArray arr (j + 2))
+          (PA.indexByteArray arr (j + 3))
+          (PA.indexByteArray arr (j + 4))
+          (PA.indexByteArray arr (j + 5))
+          (PA.indexByteArray arr (j + 6))
+          (PA.indexByteArray arr (j + 7))

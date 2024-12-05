@@ -21,6 +21,8 @@ module Unison.Runtime.Builtin
     Sandbox (..),
     baseSandboxInfo,
     unitValue,
+    natValue,
+    builtinForeignNames,
   )
 where
 
@@ -2330,462 +2332,180 @@ declareForeigns = do
 
   declareForeign' Tracked "Promise.write" (argNDirect 2) Promise_write
   declareForeign' Tracked "Tls.newClient.impl.v3" arg2ToEF Tls_newClient_impl_v3
-  declareForeign' Tracked "Tls.newServer.impl.v3" arg2ToEF . mkForeignTls $
-    \( config :: TLS.ServerParams,
-       socket :: SYS.Socket
-       ) -> TLS.contextNew socket config
+  declareForeign' Tracked "Tls.newServer.impl.v3" arg2ToEF Tls_newServer_impl_v3
+  declareForeign' Tracked "Tls.handshake.impl.v3" argToEF0 Tls_handshake_impl_v3
+  declareForeign' Tracked "Tls.send.impl.v3" arg2ToEF0 Tls_send_impl_v3
+  declareForeign' Tracked "Tls.decodeCert.impl.v3" argToEF Tls_decodeCert_impl_v3
 
-  declareForeign Tracked "Tls.handshake.impl.v3" argToEF0 . mkForeignTls $
-    \(tls :: TLS.Context) -> TLS.handshake tls
+  declareForeign' Tracked "Tls.encodeCert" (argNDirect 1) Tls_encodeCert
 
-  declareForeign Tracked "Tls.send.impl.v3" arg2ToEF0 . mkForeignTls $
-    \( tls :: TLS.Context,
-       bytes :: Bytes.Bytes
-       ) -> TLS.sendData tls (Bytes.toLazyByteString bytes)
+  declareForeign' Tracked "Tls.decodePrivateKey" (argNDirect 1) Tls_decodePrivateKey
+  declareForeign' Tracked "Tls.encodePrivateKey" (argNDirect 1) Tls_encodePrivateKey
 
-  let wrapFailure t = Failure Ty.tlsFailureRef (Util.Text.pack t) unitValue
-      decoded :: Bytes.Bytes -> Either String PEM
-      decoded bytes = case pemParseLBS $ Bytes.toLazyByteString bytes of
-        Right (pem : _) -> Right pem
-        Right [] -> Left "no PEM found"
-        Left l -> Left l
-      asCert :: PEM -> Either String X.SignedCertificate
-      asCert pem = X.decodeSignedCertificate $ pemContent pem
-   in declareForeign Tracked "Tls.decodeCert.impl.v3" argToEF . mkForeignTlsE $
-        \(bytes :: Bytes.Bytes) -> pure $ mapLeft wrapFailure $ (decoded >=> asCert) bytes
+  declareForeign' Tracked "Tls.receive.impl.v3" argToEF Tls_receive_impl_v3
 
-  declareForeign Tracked "Tls.encodeCert" (argNDirect 1) . mkForeign $
-    \(cert :: X.SignedCertificate) -> pure $ Bytes.fromArray $ X.encodeSignedObject cert
-
-  declareForeign Tracked "Tls.decodePrivateKey" (argNDirect 1) . mkForeign $
-    \(bytes :: Bytes.Bytes) -> pure $ X.readKeyFileFromMemory $ L.toStrict $ Bytes.toLazyByteString bytes
-
-  declareForeign Tracked "Tls.encodePrivateKey" (argNDirect 1) . mkForeign $
-    \(privateKey :: X.PrivKey) -> pure $ Util.Text.toUtf8 $ Util.Text.pack $ show privateKey
-
-  declareForeign Tracked "Tls.receive.impl.v3" argToEF . mkForeignTls $
-    \(tls :: TLS.Context) -> do
-      bs <- TLS.recvData tls
-      pure $ Bytes.fromArray bs
-
-  declareForeign Tracked "Tls.terminate.impl.v3" argToEF0 . mkForeignTls $
-    \(tls :: TLS.Context) -> TLS.bye tls
-
-  declareForeign Untracked "Code.validateLinks" argToExnE
-    . mkForeign
-    $ \(lsgs0 :: [(Referent, Code)]) -> do
-      let f (msg, rs) =
-            Failure Ty.miscFailureRef (Util.Text.fromText msg) rs
-      pure . first f $ checkGroupHashes lsgs0
-  declareForeign Untracked "Code.dependencies" (argNDirect 1)
-    . mkForeign
-    $ \(CodeRep sg _) ->
-      pure $ Wrap Ty.termLinkRef . Ref <$> groupTermLinks sg
-  declareForeign Untracked "Code.serialize" (argNDirect 1)
-    . mkForeign
-    $ \(co :: Code) ->
-      pure . Bytes.fromArray $ serializeCode builtinForeignNames co
-  declareForeign Untracked "Code.deserialize" argToEither
-    . mkForeign
-    $ pure . deserializeCode . Bytes.toArray
-  declareForeign Untracked "Code.display" (argNDirect 2) . mkForeign $
-    \(nm, (CodeRep sg _)) ->
-      pure $ prettyGroup @Symbol (Util.Text.unpack nm) sg ""
-  declareForeign Untracked "Value.dependencies" (argNDirect 1)
-    . mkForeign
-    $ pure . fmap (Wrap Ty.termLinkRef . Ref) . valueTermLinks
-  declareForeign Untracked "Value.serialize" (argNDirect 1)
-    . mkForeign
-    $ pure . Bytes.fromArray . serializeValue
-  declareForeign Untracked "Value.deserialize" argToEither
-    . mkForeign
-    $ pure . deserializeValue . Bytes.toArray
+  declareForeign' Tracked "Tls.terminate.impl.v3" argToEF0 Tls_terminate_impl_v3
+  declareForeign' Untracked "Code.validateLinks" argToExnE Code_validateLinks
+  declareForeign' Untracked "Code.dependencies" (argNDirect 1) Code_dependencies
+  declareForeign' Untracked "Code.serialize" (argNDirect 1) Code_serialize
+  declareForeign' Untracked "Code.deserialize" argToEither Code_deserialize
+  declareForeign' Untracked "Code.display" (argNDirect 2) Code_display
+  declareForeign' Untracked "Value.dependencies" (argNDirect 1) Value_dependencies
+  declareForeign' Untracked "Value.serialize" (argNDirect 1) Value_serialize
+  declareForeign' Untracked "Value.deserialize" argToEither Value_deserialize
   -- Hashing functions
-  let declareHashAlgorithm :: forall alg. (Hash.HashAlgorithm alg) => Data.Text.Text -> alg -> FDecl Symbol ()
-      declareHashAlgorithm txt alg = do
-        let algoRef = Builtin ("crypto.HashAlgorithm." <> txt)
-        declareForeign Untracked ("crypto.HashAlgorithm." <> txt) direct . mkForeign $ \() ->
-          pure (HashAlgorithm algoRef alg)
+  declareForeign' Untracked "crypto.HashAlgorithm.Sha3_512" direct Crypto_HashAlgorithm_Sha3_512
+  declareForeign' Untracked "crypto.HashAlgorithm.Sha3_256" direct Crypto_HashAlgorithm_Sha3_256
+  declareForeign' Untracked "crypto.HashAlgorithm.Sha2_512" direct Crypto_HashAlgorithm_Sha2_512
+  declareForeign' Untracked "crypto.HashAlgorithm.Sha2_256" direct Crypto_HashAlgorithm_Sha2_256
+  declareForeign' Untracked "crypto.HashAlgorithm.Sha1" direct Crypto_HashAlgorithm_Sha1
+  declareForeign' Untracked "crypto.HashAlgorithm.Blake2b_512" direct Crypto_HashAlgorithm_Blake2b_512
+  declareForeign' Untracked "crypto.HashAlgorithm.Blake2b_256" direct Crypto_HashAlgorithm_Blake2b_256
+  declareForeign' Untracked "crypto.HashAlgorithm.Blake2s_256" direct Crypto_HashAlgorithm_Blake2s_256
+  declareForeign' Untracked "crypto.HashAlgorithm.Md5" direct Crypto_HashAlgorithm_Md5
 
-  declareHashAlgorithm "Sha3_512" Hash.SHA3_512
-  declareHashAlgorithm "Sha3_256" Hash.SHA3_256
-  declareHashAlgorithm "Sha2_512" Hash.SHA512
-  declareHashAlgorithm "Sha2_256" Hash.SHA256
-  declareHashAlgorithm "Sha1" Hash.SHA1
-  declareHashAlgorithm "Blake2b_512" Hash.Blake2b_512
-  declareHashAlgorithm "Blake2b_256" Hash.Blake2b_256
-  declareHashAlgorithm "Blake2s_256" Hash.Blake2s_256
-  declareHashAlgorithm "Md5" Hash.MD5
+  declareForeign' Untracked "crypto.hashBytes" (argNDirect 2) Crypto_hashBytes
+  declareForeign' Untracked "crypto.hmacBytes" (argNDirect 3) Crypto_hmacBytes
 
-  declareForeign Untracked "crypto.hashBytes" (argNDirect 2) . mkForeign $
-    \(HashAlgorithm _ alg, b :: Bytes.Bytes) ->
-      let ctx = Hash.hashInitWith alg
-       in pure . Bytes.fromArray . Hash.hashFinalize $ Hash.hashUpdates ctx (Bytes.byteStringChunks b)
+  declareForeign' Untracked "crypto.hash" crypto'hash Crypto_hash
+  declareForeign' Untracked "crypto.hmac" crypto'hmac Crypto_hmac
+  declareForeign' Untracked "crypto.Ed25519.sign.impl" arg3ToEF Crypto_Ed25519_sign_impl
 
-  declareForeign Untracked "crypto.hmacBytes" (argNDirect 3)
-    . mkForeign
-    $ \(HashAlgorithm _ alg, key :: Bytes.Bytes, msg :: Bytes.Bytes) ->
-      let out = u alg $ HMAC.hmac (Bytes.toArray @BA.Bytes key) (Bytes.toArray @BA.Bytes msg)
-          u :: a -> HMAC.HMAC a -> HMAC.HMAC a
-          u _ h = h -- to help typechecker along
-       in pure $ Bytes.fromArray out
+  declareForeign' Untracked "crypto.Ed25519.verify.impl" arg3ToEFBool Crypto_Ed25519_verify_impl
 
-  declareForeign Untracked "crypto.hash" crypto'hash . mkForeign $
-    \(HashAlgorithm _ alg, x) ->
-      let hashlazy ::
-            (Hash.HashAlgorithm a) =>
-            a ->
-            L.ByteString ->
-            Hash.Digest a
-          hashlazy _ l = Hash.hashlazy l
-       in pure . Bytes.fromArray . hashlazy alg $ serializeValueForHash x
+  declareForeign' Untracked "crypto.Rsa.sign.impl" arg2ToEF Crypto_Rsa_sign_impl
 
-  declareForeign Untracked "crypto.hmac" crypto'hmac . mkForeign $
-    \(HashAlgorithm _ alg, key, x) ->
-      let hmac ::
-            (Hash.HashAlgorithm a) => a -> L.ByteString -> HMAC.HMAC a
-          hmac _ s =
-            HMAC.finalize
-              . HMAC.updates
-                (HMAC.initialize $ Bytes.toArray @BA.Bytes key)
-              $ L.toChunks s
-       in pure . Bytes.fromArray . hmac alg $ serializeValueForHash x
+  declareForeign' Untracked "crypto.Rsa.verify.impl" arg3ToEFBool Crypto_Rsa_verify_impl
 
-  declareForeign Untracked "crypto.Ed25519.sign.impl" arg3ToEF
-    . mkForeign
-    $ pure . signEd25519Wrapper
+  declareForeign' Untracked "Universal.murmurHash" murmur'hash Universal_murmurHash
+  declareForeign' Tracked "IO.randomBytes" (argNDirect 1) IO_randomBytes
+  declareForeign' Untracked "Bytes.zlib.compress" (argNDirect 1) Bytes_zlib_compress
+  declareForeign' Untracked "Bytes.gzip.compress" (argNDirect 1) Bytes_gzip_compress
+  declareForeign' Untracked "Bytes.zlib.decompress" argToEither Bytes_zlib_decompress
+  declareForeign' Untracked "Bytes.gzip.decompress" argToEither Bytes_gzip_decompress
 
-  declareForeign Untracked "crypto.Ed25519.verify.impl" arg3ToEFBool
-    . mkForeign
-    $ pure . verifyEd25519Wrapper
+  declareForeign' Untracked "Bytes.toBase16" (argNDirect 1) Bytes_toBase16
+  declareForeign' Untracked "Bytes.toBase32" (argNDirect 1) Bytes_toBase32
+  declareForeign' Untracked "Bytes.toBase64" (argNDirect 1) Bytes_toBase64
+  declareForeign' Untracked "Bytes.toBase64UrlUnpadded" (argNDirect 1) Bytes_toBase64UrlUnpadded
 
-  declareForeign Untracked "crypto.Rsa.sign.impl" arg2ToEF
-    . mkForeign
-    $ pure . signRsaWrapper
+  declareForeign' Untracked "Bytes.fromBase16" argToEither Bytes_fromBase16
+  declareForeign' Untracked "Bytes.fromBase32" argToEither Bytes_fromBase32
+  declareForeign' Untracked "Bytes.fromBase64" argToEither Bytes_fromBase64
+  declareForeign' Untracked "Bytes.fromBase64UrlUnpadded" argToEither Bytes_fromBase64UrlUnpadded
 
-  declareForeign Untracked "crypto.Rsa.verify.impl" arg3ToEFBool
-    . mkForeign
-    $ pure . verifyRsaWrapper
+  declareForeign' Untracked "Bytes.decodeNat64be" argToMaybeNTup Bytes_decodeNat64be
+  declareForeign' Untracked "Bytes.decodeNat64le" argToMaybeNTup Bytes_decodeNat64le
+  declareForeign' Untracked "Bytes.decodeNat32be" argToMaybeNTup Bytes_decodeNat32be
+  declareForeign' Untracked "Bytes.decodeNat32le" argToMaybeNTup Bytes_decodeNat32le
+  declareForeign' Untracked "Bytes.decodeNat16be" argToMaybeNTup Bytes_decodeNat16be
+  declareForeign' Untracked "Bytes.decodeNat16le" argToMaybeNTup Bytes_decodeNat16le
 
-  let catchAll :: (MonadCatch m, MonadIO m, NFData a) => m a -> m (Either Util.Text.Text a)
-      catchAll e = do
-        e <- Exception.tryAnyDeep e
-        pure $ case e of
-          Left se -> Left (Util.Text.pack (show se))
-          Right a -> Right a
+  declareForeign' Untracked "Bytes.encodeNat64be" (argNDirect 1) Bytes_encodeNat64be
+  declareForeign' Untracked "Bytes.encodeNat64le" (argNDirect 1) Bytes_encodeNat64le
+  declareForeign' Untracked "Bytes.encodeNat32be" (argNDirect 1) Bytes_encodeNat32be
+  declareForeign' Untracked "Bytes.encodeNat32le" (argNDirect 1) Bytes_encodeNat32le
+  declareForeign' Untracked "Bytes.encodeNat16be" (argNDirect 1) Bytes_encodeNat16be
+  declareForeign' Untracked "Bytes.encodeNat16le" (argNDirect 1) Bytes_encodeNat16le
 
-  declareForeign Untracked "Universal.murmurHash" murmur'hash . mkForeign $
-    pure . asWord64 . hash64 . serializeValueForHash
+  declareForeign' Untracked "MutableArray.copyTo!" arg5ToExnUnit MutableArray_copyTo_force
 
-  declareForeign Tracked "IO.randomBytes" (argNDirect 1) . mkForeign $
-    \n -> Bytes.fromArray <$> getRandomBytes @IO @ByteString n
+  declareForeign' Untracked "MutableByteArray.copyTo!" arg5ToExnUnit MutableByteArray_copyTo_force
 
-  declareForeign Untracked "Bytes.zlib.compress" (argNDirect 1) . mkForeign $ pure . Bytes.zlibCompress
-  declareForeign Untracked "Bytes.gzip.compress" (argNDirect 1) . mkForeign $ pure . Bytes.gzipCompress
-  declareForeign Untracked "Bytes.zlib.decompress" argToEither . mkForeign $ \bs ->
-    catchAll (pure (Bytes.zlibDecompress bs))
-  declareForeign Untracked "Bytes.gzip.decompress" argToEither . mkForeign $ \bs ->
-    catchAll (pure (Bytes.gzipDecompress bs))
+  declareForeign' Untracked "ImmutableArray.copyTo!" arg5ToExnUnit ImmutableArray_copyTo_force
 
-  declareForeign Untracked "Bytes.toBase16" (argNDirect 1) . mkForeign $ pure . Bytes.toBase16
-  declareForeign Untracked "Bytes.toBase32" (argNDirect 1) . mkForeign $ pure . Bytes.toBase32
-  declareForeign Untracked "Bytes.toBase64" (argNDirect 1) . mkForeign $ pure . Bytes.toBase64
-  declareForeign Untracked "Bytes.toBase64UrlUnpadded" (argNDirect 1) . mkForeign $ pure . Bytes.toBase64UrlUnpadded
+  declareForeign' Untracked "ImmutableArray.size" (argNDirect 1) ImmutableArray_size
+  declareForeign' Untracked "MutableArray.size" (argNDirect 1) MutableArray_size
+  declareForeign' Untracked "ImmutableByteArray.size" (argNDirect 1) ImmutableByteArray_size
+  declareForeign' Untracked "MutableByteArray.size" (argNDirect 1) MutableByteArray_size
 
-  declareForeign Untracked "Bytes.fromBase16" argToEither . mkForeign $
-    pure . mapLeft Util.Text.fromText . Bytes.fromBase16
-  declareForeign Untracked "Bytes.fromBase32" argToEither . mkForeign $
-    pure . mapLeft Util.Text.fromText . Bytes.fromBase32
-  declareForeign Untracked "Bytes.fromBase64" argToEither . mkForeign $
-    pure . mapLeft Util.Text.fromText . Bytes.fromBase64
-  declareForeign Untracked "Bytes.fromBase64UrlUnpadded" argToEither . mkForeign $
-    pure . mapLeft Util.Text.fromText . Bytes.fromBase64UrlUnpadded
+  declareForeign' Untracked "ImmutableByteArray.copyTo!" arg5ToExnUnit ImmutableByteArray_copyTo_force
 
-  declareForeign Untracked "Bytes.decodeNat64be" argToMaybeNTup . mkForeign $ pure . Bytes.decodeNat64be
-  declareForeign Untracked "Bytes.decodeNat64le" argToMaybeNTup . mkForeign $ pure . Bytes.decodeNat64le
-  declareForeign Untracked "Bytes.decodeNat32be" argToMaybeNTup . mkForeign $ pure . Bytes.decodeNat32be
-  declareForeign Untracked "Bytes.decodeNat32le" argToMaybeNTup . mkForeign $ pure . Bytes.decodeNat32le
-  declareForeign Untracked "Bytes.decodeNat16be" argToMaybeNTup . mkForeign $ pure . Bytes.decodeNat16be
-  declareForeign Untracked "Bytes.decodeNat16le" argToMaybeNTup . mkForeign $ pure . Bytes.decodeNat16le
+  declareForeign' Untracked "MutableArray.read" arg2ToExn MutableArray_read
+  declareForeign' Untracked "MutableByteArray.read8" arg2ToExn MutableByteArray_read8
+  declareForeign' Untracked "MutableByteArray.read16be" arg2ToExn MutableByteArray_read16be
+  declareForeign' Untracked "MutableByteArray.read24be" arg2ToExn MutableByteArray_read24be
+  declareForeign' Untracked "MutableByteArray.read32be" arg2ToExn MutableByteArray_read32be
+  declareForeign' Untracked "MutableByteArray.read40be" arg2ToExn MutableByteArray_read40be
+  declareForeign' Untracked "MutableByteArray.read64be" arg2ToExn MutableByteArray_read64be
 
-  declareForeign Untracked "Bytes.encodeNat64be" (argNDirect 1) . mkForeign $ pure . Bytes.encodeNat64be
-  declareForeign Untracked "Bytes.encodeNat64le" (argNDirect 1) . mkForeign $ pure . Bytes.encodeNat64le
-  declareForeign Untracked "Bytes.encodeNat32be" (argNDirect 1) . mkForeign $ pure . Bytes.encodeNat32be
-  declareForeign Untracked "Bytes.encodeNat32le" (argNDirect 1) . mkForeign $ pure . Bytes.encodeNat32le
-  declareForeign Untracked "Bytes.encodeNat16be" (argNDirect 1) . mkForeign $ pure . Bytes.encodeNat16be
-  declareForeign Untracked "Bytes.encodeNat16le" (argNDirect 1) . mkForeign $ pure . Bytes.encodeNat16le
+  declareForeign' Untracked "MutableArray.write" arg3ToExnUnit MutableArray_write
+  declareForeign' Untracked "MutableByteArray.write8" arg3ToExnUnit MutableByteArray_write8
+  declareForeign' Untracked "MutableByteArray.write16be" arg3ToExnUnit MutableByteArray_write16be
+  declareForeign' Untracked "MutableByteArray.write32be" arg3ToExnUnit MutableByteArray_write32be
+  declareForeign' Untracked "MutableByteArray.write64be" arg3ToExnUnit MutableByteArray_write64be
 
-  declareForeign Untracked "MutableArray.copyTo!" arg5ToExnUnit
-    . mkForeign
-    $ \(dst, doff, src, soff, l) ->
-      let name = "MutableArray.copyTo!"
-       in if l == 0
-            then pure (Right ())
-            else
-              checkBounds name (PA.sizeofMutableArray dst) (doff + l - 1) $
-                checkBounds name (PA.sizeofMutableArray src) (soff + l - 1) $
-                  Right
-                    <$> PA.copyMutableArray @IO @Val
-                      dst
-                      (fromIntegral doff)
-                      src
-                      (fromIntegral soff)
-                      (fromIntegral l)
+  declareForeign' Untracked "ImmutableArray.read" arg2ToExn ImmutableArray_read
+  declareForeign' Untracked "ImmutableByteArray.read8" arg2ToExn ImmutableByteArray_read8
+  declareForeign' Untracked "ImmutableByteArray.read16be" arg2ToExn ImmutableByteArray_read16be
+  declareForeign' Untracked "ImmutableByteArray.read24be" arg2ToExn ImmutableByteArray_read24be
+  declareForeign' Untracked "ImmutableByteArray.read32be" arg2ToExn ImmutableByteArray_read32be
+  declareForeign' Untracked "ImmutableByteArray.read40be" arg2ToExn ImmutableByteArray_read40be
+  declareForeign' Untracked "ImmutableByteArray.read64be" arg2ToExn ImmutableByteArray_read64be
 
-  declareForeign Untracked "MutableByteArray.copyTo!" arg5ToExnUnit
-    . mkForeign
-    $ \(dst, doff, src, soff, l) ->
-      let name = "MutableByteArray.copyTo!"
-       in if l == 0
-            then pure (Right ())
-            else
-              checkBoundsPrim name (PA.sizeofMutableByteArray dst) (doff + l) 0 $
-                checkBoundsPrim name (PA.sizeofMutableByteArray src) (soff + l) 0 $
-                  Right
-                    <$> PA.copyMutableByteArray @IO
-                      dst
-                      (fromIntegral doff)
-                      src
-                      (fromIntegral soff)
-                      (fromIntegral l)
+  declareForeign' Untracked "MutableByteArray.freeze!" (argNDirect 1) MutableByteArray_freeze_force
+  declareForeign' Untracked "MutableArray.freeze!" (argNDirect 1) MutableArray_freeze_force
 
-  declareForeign Untracked "ImmutableArray.copyTo!" arg5ToExnUnit
-    . mkForeign
-    $ \(dst, doff, src, soff, l) ->
-      let name = "ImmutableArray.copyTo!"
-       in if l == 0
-            then pure (Right ())
-            else
-              checkBounds name (PA.sizeofMutableArray dst) (doff + l - 1) $
-                checkBounds name (PA.sizeofArray src) (soff + l - 1) $
-                  Right
-                    <$> PA.copyArray @IO @Val
-                      dst
-                      (fromIntegral doff)
-                      src
-                      (fromIntegral soff)
-                      (fromIntegral l)
+  declareForeign' Untracked "MutableByteArray.freeze" arg3ToExn MutableByteArray_freeze
+  declareForeign' Untracked "MutableArray.freeze" arg3ToExn MutableArray_freeze
 
-  declareForeign Untracked "ImmutableArray.size" (argNDirect 1) . mkForeign $
-    pure . fromIntegral @Int @Word64 . PA.sizeofArray @Val
-  declareForeign Untracked "MutableArray.size" (argNDirect 1) . mkForeign $
-    pure . fromIntegral @Int @Word64 . PA.sizeofMutableArray @PA.RealWorld @Val
-  declareForeign Untracked "ImmutableByteArray.size" (argNDirect 1) . mkForeign $
-    pure . fromIntegral @Int @Word64 . PA.sizeofByteArray
-  declareForeign Untracked "MutableByteArray.size" (argNDirect 1) . mkForeign $
-    pure . fromIntegral @Int @Word64 . PA.sizeofMutableByteArray @PA.RealWorld
+  declareForeign' Untracked "MutableByteArray.length" (argNDirect 1) MutableByteArray_length
 
-  declareForeign Untracked "ImmutableByteArray.copyTo!" arg5ToExnUnit
-    . mkForeign
-    $ \(dst, doff, src, soff, l) ->
-      let name = "ImmutableByteArray.copyTo!"
-       in if l == 0
-            then pure (Right ())
-            else
-              checkBoundsPrim name (PA.sizeofMutableByteArray dst) (doff + l) 0 $
-                checkBoundsPrim name (PA.sizeofByteArray src) (soff + l) 0 $
-                  Right
-                    <$> PA.copyByteArray @IO
-                      dst
-                      (fromIntegral doff)
-                      src
-                      (fromIntegral soff)
-                      (fromIntegral l)
+  declareForeign' Untracked "ImmutableByteArray.length" (argNDirect 1) ImmutableByteArray_length
 
-  declareForeign Untracked "MutableArray.read" arg2ToExn
-    . mkForeign
-    $ checkedRead "MutableArray.read"
-  declareForeign Untracked "MutableByteArray.read8" arg2ToExn
-    . mkForeign
-    $ checkedRead8 "MutableByteArray.read8"
-  declareForeign Untracked "MutableByteArray.read16be" arg2ToExn
-    . mkForeign
-    $ checkedRead16 "MutableByteArray.read16be"
-  declareForeign Untracked "MutableByteArray.read24be" arg2ToExn
-    . mkForeign
-    $ checkedRead24 "MutableByteArray.read24be"
-  declareForeign Untracked "MutableByteArray.read32be" arg2ToExn
-    . mkForeign
-    $ checkedRead32 "MutableByteArray.read32be"
-  declareForeign Untracked "MutableByteArray.read40be" arg2ToExn
-    . mkForeign
-    $ checkedRead40 "MutableByteArray.read40be"
-  declareForeign Untracked "MutableByteArray.read64be" arg2ToExn
-    . mkForeign
-    $ checkedRead64 "MutableByteArray.read64be"
+  declareForeign' Tracked "IO.array" (argNDirect 1) IO_array
+  declareForeign' Tracked "IO.arrayOf" (argNDirect 2) IO_arrayOf
+  declareForeign' Tracked "IO.bytearray" (argNDirect 1) IO_bytearray
+  declareForeign' Tracked "IO.bytearrayOf" (argNDirect 2) IO_bytearrayOf
 
-  declareForeign Untracked "MutableArray.write" arg3ToExnUnit
-    . mkForeign
-    $ checkedWrite "MutableArray.write"
-  declareForeign Untracked "MutableByteArray.write8" arg3ToExnUnit
-    . mkForeign
-    $ checkedWrite8 "MutableByteArray.write8"
-  declareForeign Untracked "MutableByteArray.write16be" arg3ToExnUnit
-    . mkForeign
-    $ checkedWrite16 "MutableByteArray.write16be"
-  declareForeign Untracked "MutableByteArray.write32be" arg3ToExnUnit
-    . mkForeign
-    $ checkedWrite32 "MutableByteArray.write32be"
-  declareForeign Untracked "MutableByteArray.write64be" arg3ToExnUnit
-    . mkForeign
-    $ checkedWrite64 "MutableByteArray.write64be"
+  declareForeign' Untracked "Scope.array" (argNDirect 1) Scope_array
+  declareForeign' Untracked "Scope.arrayOf" (argNDirect 2) Scope_arrayOf
+  declareForeign' Untracked "Scope.bytearray" (argNDirect 1) Scope_bytearray
+  declareForeign' Untracked "Scope.bytearrayOf" (argNDirect 2) Scope_bytearrayOf
 
-  declareForeign Untracked "ImmutableArray.read" arg2ToExn
-    . mkForeign
-    $ checkedIndex "ImmutableArray.read"
-  declareForeign Untracked "ImmutableByteArray.read8" arg2ToExn
-    . mkForeign
-    $ checkedIndex8 "ImmutableByteArray.read8"
-  declareForeign Untracked "ImmutableByteArray.read16be" arg2ToExn
-    . mkForeign
-    $ checkedIndex16 "ImmutableByteArray.read16be"
-  declareForeign Untracked "ImmutableByteArray.read24be" arg2ToExn
-    . mkForeign
-    $ checkedIndex24 "ImmutableByteArray.read24be"
-  declareForeign Untracked "ImmutableByteArray.read32be" arg2ToExn
-    . mkForeign
-    $ checkedIndex32 "ImmutableByteArray.read32be"
-  declareForeign Untracked "ImmutableByteArray.read40be" arg2ToExn
-    . mkForeign
-    $ checkedIndex40 "ImmutableByteArray.read40be"
-  declareForeign Untracked "ImmutableByteArray.read64be" arg2ToExn
-    . mkForeign
-    $ checkedIndex64 "ImmutableByteArray.read64be"
+  declareForeign' Untracked "Text.patterns.literal" (argNDirect 1) Text_patterns_literal
+  declareForeign' Untracked "Text.patterns.digit" direct Text_patterns_digit
+  declareForeign' Untracked "Text.patterns.letter" direct Text_patterns_letter
+  declareForeign' Untracked "Text.patterns.space" direct Text_patterns_space
+  declareForeign' Untracked "Text.patterns.punctuation" direct Text_patterns_punctuation
+  declareForeign' Untracked "Text.patterns.anyChar" direct Text_patterns_anyChar
+  declareForeign' Untracked "Text.patterns.eof" direct Text_patterns_eof
+  declareForeign' Untracked "Text.patterns.charRange" (argNDirect 2) Text_patterns_charRange
+  declareForeign' Untracked "Text.patterns.notCharRange" (argNDirect 2) Text_patterns_notCharRange
+  declareForeign' Untracked "Text.patterns.charIn" (argNDirect 1) Text_patterns_charIn
+  declareForeign' Untracked "Text.patterns.notCharIn" (argNDirect 1) Text_patterns_notCharIn
+  declareForeign' Untracked "Pattern.many" (argNDirect 1) Pattern_many
+  declareForeign' Untracked "Pattern.many.corrected" (argNDirect 1) Pattern_many_corrected
+  declareForeign' Untracked "Pattern.capture" (argNDirect 1) Pattern_capture
+  declareForeign' Untracked "Pattern.captureAs" (argNDirect 2) Pattern_captureAs
+  declareForeign' Untracked "Pattern.join" (argNDirect 1) Pattern_join
+  declareForeign' Untracked "Pattern.or" (argNDirect 2) Pattern_or
+  declareForeign' Untracked "Pattern.replicate" (argNDirect 3) Pattern_replicate
 
-  declareForeign Untracked "MutableByteArray.freeze!" (argNDirect 1) . mkForeign $
-    PA.unsafeFreezeByteArray
-  declareForeign Untracked "MutableArray.freeze!" (argNDirect 1) . mkForeign $
-    PA.unsafeFreezeArray @IO @Val
+  declareForeign' Untracked "Pattern.run" arg2ToMaybeTup Pattern_run
 
-  declareForeign Untracked "MutableByteArray.freeze" arg3ToExn . mkForeign $
-    \(src, off, len) ->
-      if len == 0
-        then fmap Right . PA.unsafeFreezeByteArray =<< PA.newByteArray 0
-        else
-          checkBoundsPrim
-            "MutableByteArray.freeze"
-            (PA.sizeofMutableByteArray src)
-            (off + len)
-            0
-            $ Right <$> PA.freezeByteArray src (fromIntegral off) (fromIntegral len)
+  declareForeign' Untracked "Pattern.isMatch" (argNDirect 2) Pattern_isMatch
 
-  declareForeign Untracked "MutableArray.freeze" arg3ToExn . mkForeign $
-    \(src :: PA.MutableArray PA.RealWorld Val, off, len) ->
-      if len == 0
-        then fmap Right . PA.unsafeFreezeArray =<< PA.newArray 0 emptyVal
-        else
-          checkBounds
-            "MutableArray.freeze"
-            (PA.sizeofMutableArray src)
-            (off + len - 1)
-            $ Right <$> PA.freezeArray src (fromIntegral off) (fromIntegral len)
-
-  declareForeign Untracked "MutableByteArray.length" (argNDirect 1) . mkForeign $
-    pure . PA.sizeofMutableByteArray @PA.RealWorld
-
-  declareForeign Untracked "ImmutableByteArray.length" (argNDirect 1) . mkForeign $
-    pure . PA.sizeofByteArray
-
-  declareForeign Tracked "IO.array" (argNDirect 1) . mkForeign $
-    \n -> PA.newArray n emptyVal
-  declareForeign Tracked "IO.arrayOf" (argNDirect 2) . mkForeign $
-    \(v :: Val, n) -> PA.newArray n v
-  declareForeign Tracked "IO.bytearray" (argNDirect 1) . mkForeign $ PA.newByteArray
-  declareForeign Tracked "IO.bytearrayOf" (argNDirect 2)
-    . mkForeign
-    $ \(init, sz) -> do
-      arr <- PA.newByteArray sz
-      PA.fillByteArray arr 0 sz init
-      pure arr
-
-  declareForeign Untracked "Scope.array" (argNDirect 1) . mkForeign $
-    \n -> PA.newArray n emptyVal
-  declareForeign Untracked "Scope.arrayOf" (argNDirect 2) . mkForeign $
-    \(v :: Val, n) -> PA.newArray n v
-  declareForeign Untracked "Scope.bytearray" (argNDirect 1) . mkForeign $ PA.newByteArray
-  declareForeign Untracked "Scope.bytearrayOf" (argNDirect 2)
-    . mkForeign
-    $ \(init, sz) -> do
-      arr <- PA.newByteArray sz
-      PA.fillByteArray arr 0 sz init
-      pure arr
-
-  declareForeign Untracked "Text.patterns.literal" (argNDirect 1) . mkForeign $
-    \txt -> evaluate . TPat.cpattern $ TPat.Literal txt
-  declareForeign Untracked "Text.patterns.digit" direct . mkForeign $
-    let v = TPat.cpattern (TPat.Char (TPat.CharRange '0' '9')) in \() -> pure v
-  declareForeign Untracked "Text.patterns.letter" direct . mkForeign $
-    let v = TPat.cpattern (TPat.Char (TPat.CharClass TPat.Letter)) in \() -> pure v
-  declareForeign Untracked "Text.patterns.space" direct . mkForeign $
-    let v = TPat.cpattern (TPat.Char (TPat.CharClass TPat.Whitespace)) in \() -> pure v
-  declareForeign Untracked "Text.patterns.punctuation" direct . mkForeign $
-    let v = TPat.cpattern (TPat.Char (TPat.CharClass TPat.Punctuation)) in \() -> pure v
-  declareForeign Untracked "Text.patterns.anyChar" direct . mkForeign $
-    let v = TPat.cpattern (TPat.Char TPat.Any) in \() -> pure v
-  declareForeign Untracked "Text.patterns.eof" direct . mkForeign $
-    let v = TPat.cpattern TPat.Eof in \() -> pure v
-  declareForeign Untracked "Text.patterns.charRange" (argNDirect 2) . mkForeign $
-    \(beg, end) -> evaluate . TPat.cpattern . TPat.Char $ TPat.CharRange beg end
-  declareForeign Untracked "Text.patterns.notCharRange" (argNDirect 2) . mkForeign $
-    \(beg, end) -> evaluate . TPat.cpattern . TPat.Char . TPat.Not $ TPat.CharRange beg end
-  declareForeign Untracked "Text.patterns.charIn" (argNDirect 1) . mkForeign $ \ccs -> do
-    cs <- for ccs $ \case
-      CharVal c -> pure c
-      _ -> die "Text.patterns.charIn: non-character closure"
-    evaluate . TPat.cpattern . TPat.Char $ TPat.CharSet cs
-  declareForeign Untracked "Text.patterns.notCharIn" (argNDirect 1) . mkForeign $ \ccs -> do
-    cs <- for ccs $ \case
-      CharVal c -> pure c
-      _ -> die "Text.patterns.notCharIn: non-character closure"
-    evaluate . TPat.cpattern . TPat.Char . TPat.Not $ TPat.CharSet cs
-  declareForeign Untracked "Pattern.many" (argNDirect 1) . mkForeign $
-    \(TPat.CP p _) -> evaluate . TPat.cpattern $ TPat.Many False p
-  declareForeign Untracked "Pattern.many.corrected" (argNDirect 1) . mkForeign $
-    \(TPat.CP p _) -> evaluate . TPat.cpattern $ TPat.Many True p
-  declareForeign Untracked "Pattern.capture" (argNDirect 1) . mkForeign $
-    \(TPat.CP p _) -> evaluate . TPat.cpattern $ TPat.Capture p
-  declareForeign Untracked "Pattern.captureAs" (argNDirect 2) . mkForeign $
-    \(t, (TPat.CP p _)) -> evaluate . TPat.cpattern $ TPat.CaptureAs t p
-  declareForeign Untracked "Pattern.join" (argNDirect 1) . mkForeign $ \ps ->
-    evaluate . TPat.cpattern . TPat.Join $ map (\(TPat.CP p _) -> p) ps
-  declareForeign Untracked "Pattern.or" (argNDirect 2) . mkForeign $
-    \(TPat.CP l _, TPat.CP r _) -> evaluate . TPat.cpattern $ TPat.Or l r
-  declareForeign Untracked "Pattern.replicate" (argNDirect 3) . mkForeign $
-    \(m0 :: Word64, n0 :: Word64, TPat.CP p _) ->
-      let m = fromIntegral m0; n = fromIntegral n0
-       in evaluate . TPat.cpattern $ TPat.Replicate m n p
-
-  declareForeign Untracked "Pattern.run" arg2ToMaybeTup . mkForeign $
-    \(TPat.CP _ matcher, input :: Text) -> pure $ matcher input
-
-  declareForeign Untracked "Pattern.isMatch" (argNDirect 2) . mkForeign $
-    \(TPat.CP _ matcher, input :: Text) -> pure . isJust $ matcher input
-
-  declareForeign Untracked "Char.Class.any" direct . mkForeign $ \() -> pure TPat.Any
-  declareForeign Untracked "Char.Class.not" (argNDirect 1) . mkForeign $ pure . TPat.Not
-  declareForeign Untracked "Char.Class.and" (argNDirect 2) . mkForeign $ \(a, b) -> pure $ TPat.Intersect a b
-  declareForeign Untracked "Char.Class.or" (argNDirect 2) . mkForeign $ \(a, b) -> pure $ TPat.Union a b
-  declareForeign Untracked "Char.Class.range" (argNDirect 2) . mkForeign $ \(a, b) -> pure $ TPat.CharRange a b
-  declareForeign Untracked "Char.Class.anyOf" (argNDirect 1) . mkForeign $ \ccs -> do
-    cs <- for ccs $ \case
-      CharVal c -> pure c
-      _ -> die "Text.patterns.charIn: non-character closure"
-    evaluate $ TPat.CharSet cs
-  declareForeign Untracked "Char.Class.alphanumeric" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.AlphaNum)
-  declareForeign Untracked "Char.Class.upper" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Upper)
-  declareForeign Untracked "Char.Class.lower" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Lower)
-  declareForeign Untracked "Char.Class.whitespace" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Whitespace)
-  declareForeign Untracked "Char.Class.control" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Control)
-  declareForeign Untracked "Char.Class.printable" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Printable)
-  declareForeign Untracked "Char.Class.mark" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.MarkChar)
-  declareForeign Untracked "Char.Class.number" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Number)
-  declareForeign Untracked "Char.Class.punctuation" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Punctuation)
-  declareForeign Untracked "Char.Class.symbol" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Symbol)
-  declareForeign Untracked "Char.Class.separator" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Separator)
-  declareForeign Untracked "Char.Class.letter" direct . mkForeign $ \() -> pure (TPat.CharClass TPat.Letter)
-  declareForeign Untracked "Char.Class.is" (argNDirect 2) . mkForeign $ \(cl, c) -> evaluate $ TPat.charPatternPred cl c
-  declareForeign Untracked "Text.patterns.char" (argNDirect 1) . mkForeign $ \c ->
-    let v = TPat.cpattern (TPat.Char c) in pure v
+  declareForeign' Untracked "Char.Class.any" direct Char_Class_any
+  declareForeign' Untracked "Char.Class.not" (argNDirect 1) Char_Class_not
+  declareForeign' Untracked "Char.Class.and" (argNDirect 2) Char_Class_and
+  declareForeign' Untracked "Char.Class.or" (argNDirect 2) Char_Class_or
+  declareForeign' Untracked "Char.Class.range" (argNDirect 2) Char_Class_range
+  declareForeign' Untracked "Char.Class.anyOf" (argNDirect 1) Char_Class_anyOf
+  declareForeign' Untracked "Char.Class.alphanumeric" direct Char_Class_alphanumeric
+  declareForeign' Untracked "Char.Class.upper" direct Char_Class_upper
+  declareForeign' Untracked "Char.Class.lower" direct Char_Class_lower
+  declareForeign' Untracked "Char.Class.whitespace" direct Char_Class_whitespace
+  declareForeign' Untracked "Char.Class.control" direct Char_Class_control
+  declareForeign' Untracked "Char.Class.printable" direct Char_Class_printable
+  declareForeign' Untracked "Char.Class.mark" direct Char_Class_mark
+  declareForeign' Untracked "Char.Class.number" direct Char_Class_number
+  declareForeign' Untracked "Char.Class.punctuation" direct Char_Class_punctuation
+  declareForeign' Untracked "Char.Class.symbol" direct Char_Class_symbol
+  declareForeign' Untracked "Char.Class.separator" direct Char_Class_separator
+  declareForeign' Untracked "Char.Class.letter" direct Char_Class_letter
+  declareForeign' Untracked "Char.Class.is" (argNDirect 2) Char_Class_is
+  declareForeign' Untracked "Text.patterns.char" (argNDirect 1) Text_patterns_char
 
 type RW = PA.PrimState IO
 
@@ -3058,75 +2778,6 @@ checkBoundsPrim name isz off esz act
 
     bsz = fromIntegral isz
     w = off + esz
-
-signEd25519Wrapper ::
-  (Bytes.Bytes, Bytes.Bytes, Bytes.Bytes) -> Either Failure Bytes.Bytes
-signEd25519Wrapper (secret0, public0, msg0) = case validated of
-  CryptoFailed err ->
-    Left (Failure Ty.cryptoFailureRef (errMsg err) unitValue)
-  CryptoPassed (secret, public) ->
-    Right . Bytes.fromArray $ Ed25519.sign secret public msg
-  where
-    msg = Bytes.toArray msg0 :: ByteString
-    validated =
-      (,)
-        <$> Ed25519.secretKey (Bytes.toArray secret0 :: ByteString)
-        <*> Ed25519.publicKey (Bytes.toArray public0 :: ByteString)
-
-    errMsg CryptoError_PublicKeySizeInvalid =
-      "ed25519: Public key size invalid"
-    errMsg CryptoError_SecretKeySizeInvalid =
-      "ed25519: Secret key size invalid"
-    errMsg CryptoError_SecretKeyStructureInvalid =
-      "ed25519: Secret key structure invalid"
-    errMsg _ = "ed25519: unexpected error"
-
-verifyEd25519Wrapper ::
-  (Bytes.Bytes, Bytes.Bytes, Bytes.Bytes) -> Either Failure Bool
-verifyEd25519Wrapper (public0, msg0, sig0) = case validated of
-  CryptoFailed err ->
-    Left $ Failure Ty.cryptoFailureRef (errMsg err) unitValue
-  CryptoPassed (public, sig) ->
-    Right $ Ed25519.verify public msg sig
-  where
-    msg = Bytes.toArray msg0 :: ByteString
-    validated =
-      (,)
-        <$> Ed25519.publicKey (Bytes.toArray public0 :: ByteString)
-        <*> Ed25519.signature (Bytes.toArray sig0 :: ByteString)
-
-    errMsg CryptoError_PublicKeySizeInvalid =
-      "ed25519: Public key size invalid"
-    errMsg CryptoError_SecretKeySizeInvalid =
-      "ed25519: Secret key size invalid"
-    errMsg CryptoError_SecretKeyStructureInvalid =
-      "ed25519: Secret key structure invalid"
-    errMsg _ = "ed25519: unexpected error"
-
-signRsaWrapper ::
-  (Bytes.Bytes, Bytes.Bytes) -> Either Failure Bytes.Bytes
-signRsaWrapper (secret0, msg0) = case validated of
-  Left err ->
-    Left (Failure Ty.cryptoFailureRef err unitValue)
-  Right secret ->
-    case RSA.sign Nothing (Just Hash.SHA256) secret msg of
-      Left err -> Left (Failure Ty.cryptoFailureRef (Rsa.rsaErrorToText err) unitValue)
-      Right signature -> Right $ Bytes.fromByteString signature
-  where
-    msg = Bytes.toArray msg0 :: ByteString
-    validated = Rsa.parseRsaPrivateKey (Bytes.toArray secret0 :: ByteString)
-
-verifyRsaWrapper ::
-  (Bytes.Bytes, Bytes.Bytes, Bytes.Bytes) -> Either Failure Bool
-verifyRsaWrapper (public0, msg0, sig0) = case validated of
-  Left err ->
-    Left $ Failure Ty.cryptoFailureRef err unitValue
-  Right public ->
-    Right $ RSA.verify (Just Hash.SHA256) public msg sig
-  where
-    msg = Bytes.toArray msg0 :: ByteString
-    sig = Bytes.toArray sig0 :: ByteString
-    validated = Rsa.parseRsaPublicKey (Bytes.toArray public0 :: ByteString)
 
 foreignDeclResults ::
   Bool -> (Word64, [(Data.Text.Text, (Sandbox, SuperNormal Symbol))], EnumMap Word64 (Data.Text.Text, ForeignFunc))
