@@ -8,16 +8,14 @@
 
   inputs = {
     haskellNix.url = "github:input-output-hk/haskell.nix";
-    nixpkgs-haskellNix.follows = "haskellNix/nixpkgs-unstable";
-    nixpkgs-release.url = "github:NixOS/nixpkgs/release-24.05";
+    nixpkgs.follows = "haskellNix/nixpkgs-2405";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
   outputs = {
     self,
     haskellNix,
-    nixpkgs-haskellNix,
-    nixpkgs-release,
+    nixpkgs,
     flake-utils,
   }:
     flake-utils.lib.eachSystem [
@@ -28,32 +26,32 @@
     (system: let
       ## It’s much easier to read from a JSON file than to have JSON import from some other file, so we extract some
       ## configuration from the VS Code settings to avoid duplication.
-      vscodeSettings = nixpkgs-release.lib.importJSON ./.vscode/settings.json;
+      vscodeSettings = nixpkgs.lib.importJSON ./.vscode/settings.json;
       versions =
         vscodeSettings."haskell.toolchain"
         ## There are some things we want to pin that the VS Code Haskell extension doesn’t let us control.
         // {
-        hpack = "0.35.2";
-        ormolu = "0.7.2.0";
-      };
-      pkgs = import nixpkgs-haskellNix {
+          hpack = "0.36.0";
+          ormolu = "0.7.2.0";
+        };
+      pkgs = import nixpkgs {
         inherit system;
         inherit (haskellNix) config;
         overlays = [
           haskellNix.overlay
-          (import ./nix/dependencies.nix {inherit nixpkgs-release;})
+          (import ./nix/dependencies.nix)
         ];
       };
       unison-project = import ./nix/unison-project.nix {
-        inherit (nixpkgs-haskellNix) lib;
+        inherit (nixpkgs) lib;
         inherit (pkgs) haskell-nix;
       };
       haskell-nix-flake = import ./nix/haskell-nix-flake.nix {
         inherit pkgs unison-project versions;
-        inherit (nixpkgs-haskellNix) lib;
+        inherit (nixpkgs) lib;
       };
       renameAttrs = fn:
-        nixpkgs-haskellNix.lib.mapAttrs' (name: value: {
+        nixpkgs.lib.mapAttrs' (name: value: {
           inherit value;
           name = fn name;
         });
@@ -71,11 +69,10 @@
             all = pkgs.symlinkJoin {
               name = "all";
               paths = let
-                all-other-packages =
-                  builtins.attrValues (builtins.removeAttrs self.packages."${system}" [
-                    "all"
-                    "docker-ucm" # this package doesn’t produce a directory
-                  ]);
+                all-other-packages = builtins.attrValues (builtins.removeAttrs self.packages."${system}" [
+                  "all"
+                  "docker-ucm" # this package doesn’t produce a directory
+                ]);
                 devshell-inputs =
                   builtins.concatMap
                   (devShell: devShell.buildInputs ++ devShell.nativeBuildInputs)

@@ -35,7 +35,7 @@
           pkgs.gettext # for envsubst, used by unison-src/builtin-tests/interpreter-tests.sh
           pkgs.hpack
           pkgs.pkg-config
-          pkgs.stack-wrapped
+          pkgs.stack
         ];
       # workaround for https://gitlab.haskell.org/ghc/ghc/-/issues/11042
       shellHook = ''
@@ -44,8 +44,7 @@
       tools =
         (args.tools or {})
         // {
-          cabal = {version = versions.cabal;};
-          ormolu = {version = versions.ormolu;};
+          cabal.version = versions.cabal;
           haskell-language-server = {
             version = versions.hls;
             modules = [
@@ -64,6 +63,7 @@
               constraints: ormolu == ${versions.ormolu}
             '';
           };
+          ormolu.version = versions.ormolu;
         };
     };
 
