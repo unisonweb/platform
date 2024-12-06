@@ -20,6 +20,7 @@ import Unison.Cli.NamesUtils qualified as Cli
 import Unison.Cli.TypeCheck (computeTypecheckingEnvironment)
 import Unison.Cli.UniqueTypeGuidLookup qualified as Cli
 import Unison.Codebase qualified as Codebase
+import Unison.Codebase.Editor.HandleInput.RuntimeUtils (EvalMode (..))
 import Unison.Codebase.Editor.HandleInput.RuntimeUtils qualified as RuntimeUtils
 import Unison.Codebase.Editor.Output qualified as Output
 import Unison.Codebase.Editor.Slurp qualified as Slurp
@@ -150,8 +151,6 @@ loadUnisonFile sourceName text = do
         when (not (null cbs)) do
           Cli.respond (Output.CompilerBugs text suffixifiedPPE cbs)
         Cli.returnEarlyWithoutOutput
-
-data EvalMode = Sandboxed | Permissive | Native
 
 -- | Evaluate all watched expressions in a UnisonFile and return
 -- their results, keyed by the name of the watch variable. The tuple returned

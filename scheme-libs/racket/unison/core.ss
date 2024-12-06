@@ -31,14 +31,8 @@
   unison-tuple
   list->unison-tuple
 
-  freeze-bytevector!
-  freeze-vector!
-  freeze-subvector
-
   bytevector
   bytevector-append
-
-  current-microseconds
 
   decode-value
   describe-value
@@ -222,9 +216,6 @@
     [(? bytes?) (describe-bytes x)]
     [else
       (format "~a" x)]))
-
-(define (current-microseconds)
-  (fl->fx (* 1000 (current-inexact-milliseconds))))
 
 ; Simple macro to expand a syntactic sequence of comparisons into a
 ; short-circuiting nested comparison.
@@ -458,19 +449,6 @@
       ([acc empty-chunked-string])
       ([c (in-chunked-string-chunks s)])
     (f acc (string->chunked-string (m c)))))
-
-(define freeze-vector! unsafe-vector*->immutable-vector!)
-
-(define (freeze-subvector src off len)
-  (let ([dst (make-vector len)])
-    (let next ([i (fx1- len)])
-      (if (< i 0)
-        (begin
-          (freeze-vector! dst)
-          (sum 1 dst))
-        (begin
-          (vector-set! dst i (vector-ref src (+ off i)))
-          (next (fx1- i)))))))
 
 (define (write-exn:bug ex port mode)
   (when mode (write-string "<exn:bug " port))

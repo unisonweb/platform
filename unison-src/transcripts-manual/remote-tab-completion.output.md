@@ -2,7 +2,7 @@
 
 Note: this makes a network call to share to get completions
 
-```ucm
+``` ucm
 .> debug.tab-complete pull unison.pub
 
    unison.public

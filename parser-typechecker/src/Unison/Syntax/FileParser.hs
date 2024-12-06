@@ -54,7 +54,10 @@ file = do
   maybeNamespace :: Maybe Name.Name <-
     optional (reserved "namespace") >>= \case
       Nothing -> pure Nothing
-      Just _ -> Just . L.payload <$> (importWordyId <|> importSymbolyId)
+      Just _ -> do
+        namespace <- importWordyId <|> importSymbolyId
+        void (optional semi)
+        pure (Just (L.payload namespace))
   let maybeNamespaceVar = Name.toVar <$> maybeNamespace
 
   -- The file may optionally contain top-level imports,

@@ -84,7 +84,7 @@ test =
         [Doc.Eval "This one has extra delimiters\n"],
       t
         ( unlines
-            [ "```unison",
+            [ "``` unison",
               "You might think this is code, but it’s not",
               "```"
             ]
@@ -92,7 +92,7 @@ test =
         [Doc.CodeBlock "unison" "You might think this is code, but it’s not"],
       t
         ( unlines
-            [ "`````````unison",
+            [ "````````` unison",
               "This one has extra delimiters",
               "`````````"
             ]

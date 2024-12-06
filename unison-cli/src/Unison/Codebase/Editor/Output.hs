@@ -26,6 +26,7 @@ import Data.Time (UTCTime)
 import Network.URI (URI)
 import Servant.Client qualified as Servant (ClientError)
 import System.Console.Haskeline qualified as Completion
+import System.Exit (ExitCode)
 import U.Codebase.Branch.Diff (NameChanges)
 import U.Codebase.HashTags (CausalHash)
 import U.Codebase.Sqlite.Project qualified as Sqlite
@@ -416,14 +417,12 @@ data Output
   | FailedToFetchLatestReleaseOfBase
   | HappyCoding
   | ProjectHasNoReleases ProjectName
-  | UpdateLookingForDependents
-  | UpdateStartTypechecking
   | UpdateTypecheckingFailure
-  | UpdateTypecheckingSuccess
   | UpdateIncompleteConstructorSet UpdateOrUpgrade Name (Map ConstructorId Name) (Maybe Int)
   | UpgradeFailure !ProjectBranchName !ProjectBranchName !FilePath !NameSegment !NameSegment
   | UpgradeSuccess !NameSegment !NameSegment
   | MergeFailure !FilePath !MergeSourceAndTarget !ProjectBranchName
+  | MergeFailureWithMergetool !MergeSourceAndTarget !ProjectBranchName !Text !ExitCode
   | MergeSuccess !MergeSourceAndTarget
   | MergeSuccessFastForward !MergeSourceAndTarget
   | MergeConflictedAliases !MergeSourceOrTarget !(Defn (Name, Name) (Name, Name))
@@ -438,6 +437,9 @@ data Output
   | ConflictedDefn !Text {- what operation? -} !(Defn (Conflicted Name Referent) (Conflicted Name TypeReference))
   | IncoherentDeclDuringMerge !MergeSourceOrTarget !IncoherentDeclReason
   | IncoherentDeclDuringUpdate !IncoherentDeclReason
+  | -- | A literal output message. Use this if it's too cumbersome to create a new Output constructor, e.g. for
+    -- ephemeral progress messages that are just simple strings like "Loading branch..."
+    Literal !(P.Pretty P.ColorText)
 
 data MoreEntriesThanShown = MoreEntriesThanShown | AllEntriesShown
   deriving (Eq, Show)
@@ -494,10 +496,7 @@ type SourceFileContents = Text
 
 isFailure :: Output -> Bool
 isFailure o = case o of
-  UpdateLookingForDependents -> False
-  UpdateStartTypechecking -> False
   UpdateTypecheckingFailure {} -> True
-  UpdateTypecheckingSuccess {} -> False
   UpdateIncompleteConstructorSet {} -> True
   AmbiguousCloneLocal {} -> True
   AmbiguousCloneRemote {} -> True
@@ -663,6 +662,7 @@ isFailure o = case o of
   UpgradeFailure {} -> True
   UpgradeSuccess {} -> False
   MergeFailure {} -> True
+  MergeFailureWithMergetool {} -> True
   MergeSuccess {} -> False
   MergeSuccessFastForward {} -> False
   MergeConflictedAliases {} -> True
@@ -677,6 +677,7 @@ isFailure o = case o of
   ConflictedDefn {} -> True
   IncoherentDeclDuringMerge {} -> True
   IncoherentDeclDuringUpdate {} -> True
+  Literal _ -> False
 
 isNumberedFailure :: NumberedOutput -> Bool
 isNumberedFailure = \case

@@ -1,7 +1,7 @@
-```ucm:hide
+``` ucm :hide
 scratch/main> builtins.merge lib.builtins
 ```
-```unison:hide:all
+``` unison :hide:all
 List.adjacentPairs : [a] -> [(a, a)]
 List.adjacentPairs as =
   go xs acc =
@@ -94,7 +94,7 @@ List.takeWhile p xs =
       _ -> acc
   go xs []
 ```
-```ucm:hide
+``` ucm :hide
 scratch/main> add
 ```
 
@@ -112,7 +112,7 @@ scratch/main> help alias.many
 
 Let's try it!
 
-```ucm
+``` ucm
 scratch/main> alias.many List.adjacentPairs List.all List.any List.chunk List.chunksOf List.dropWhile List.first List.init List.intersperse List.isEmpty List.last List.replicate List.splitAt List.tail List.takeWhile mylib
 scratch/main> find-in mylib
 ```

@@ -41,6 +41,7 @@ module Unison.Names
     typesNamed,
     shadowing,
     shadowing1,
+    preferring,
     namesForReference,
     namesForReferent,
     shadowTerms,
@@ -210,16 +211,31 @@ restrictReferences refs Names {..} = Names terms' types'
     terms' = R.filterRan ((`Set.member` refs) . Referent.toReference) terms
     types' = R.filterRan (`Set.member` refs) types
 
--- | Prefer names in the first argument, falling back to names in the second.
--- This can be used to shadow names in the codebase with names in a unison file for instance:
--- e.g. @shadowing scratchFileNames codebaseNames@
+-- | Construct names from a left-biased map union of the domains of the input names. That is, for each distinct name,
+-- if it refers to *any* references in the left argument, use those (ignoring the right).
+--
+-- This is appropriate for shadowing names in the codebase with names in a Unison file, for instance:
+--
+-- @shadowing scratchFileNames codebaseNames@
 shadowing :: Names -> Names -> Names
 shadowing a b =
   Names (shadowing1 a.terms b.terms) (shadowing1 a.types b.types)
 
 shadowing1 :: (Ord a, Ord b) => Relation a b -> Relation a b -> Relation a b
-shadowing1 xs ys =
-  Relation.fromMultimap (Map.unionWith (\x _ -> x) (Relation.domain xs) (Relation.domain ys))
+shadowing1 =
+  Relation.unionDomainWith (\_ x _ -> x)
+
+-- | Construct names from a left-biased map union of the ranges of the input names. That is, for each distinct
+-- reference, if it is referred to by *any* names in the left argument, use those (ignoring the right).
+--
+-- This is appropriate for biasing a PPE towards picking names in the left argument.
+preferring :: Names -> Names -> Names
+preferring xs ys =
+  Names (preferring1 xs.terms ys.terms) (preferring1 xs.types ys.types)
+  where
+    preferring1 :: (Ord a, Ord b) => Relation a b -> Relation a b -> Relation a b
+    preferring1 =
+      Relation.unionRangeWith (\_ x _ -> x)
 
 -- | TODO: get this from database. For now it's a constant.
 numHashChars :: Int

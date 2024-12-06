@@ -1,12 +1,12 @@
 This transcript executes very slowly, because the compiler has an
 entire copy of base (and other stuff) within it.
 
-```ucm:hide
+``` ucm :hide
 scratch/main> builtins.merge
 scratch/main> pull.without-history unison.public.base.trunk base
 ```
 
-```unison
+``` unison
 stdOut = stdHandle StdOut
 
 print txt =
@@ -54,7 +54,7 @@ multiAddUp : '{IO,Exception} ()
 multiAddUp = repeat 35 '(printAddUp 3000000)
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> run singleAddUp
 scratch/main> run.native multiAddUp

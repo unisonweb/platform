@@ -42,9 +42,10 @@
   builtin-crypto.hash:termlink
   builtin-crypto.hmac:termlink
 
-  unison-POp-CACH
-  unison-POp-LOAD
-  unison-POp-LKUP
+  builtin-Value.load
+  builtin-Value.load:termlink
+  builtin-Code.cache_
+  builtin-Code.cache_:termlink
 
   ; some exports of internal machinery for use elsewhere
   reify-value
@@ -176,6 +177,13 @@
        (if (null? hints)
          (list def '#:local ln head body)
          (list def '#:local ln '#:hints hints head body)))]
+    [(unison-data _ t (list nm hs bd))
+     #:when (= t ref-schemedefn-defineval:tag)
+     (let-values
+       ([(head) (text->ident nm)]
+        [(def hints) (decode-hints (chunked-list->list hs))]
+        [(body) (decode-term bd)])
+       (list def '#:hints (cons 'value hints) (list head) body))]
     [(unison-data _ t (list nm bd))
      #:when (= t ref-schemedefn-alias:tag)
      (list 'define (text->ident nm) (decode-term bd))]
@@ -684,16 +692,31 @@
        "unison-termlink-derived?"
        tl)]))
 
+; Converts a link->code map into an appropriately sorted list
+; for code generation. It's necessary to topologically sort
+; the code so that values occur after the things they reference.
+(define (codemap->link-order defs)
+  (define input
+    (for/list ([(tl co) defs])
+      (unison-tuple
+        (termlink->reference tl)
+        (unison-code-rep co))))
+
+  (define result (topsort-code-refs (list->chunked-list input)))
+
+  (for/list ([r (in-chunked-list result)])
+    (reference->termlink r)))
+
 ; Given a list of termlink, code pairs, returns multiple lists
 ; of definitions and declarations. The lists are returned as
 ; multiple results, each one containing a particular type of
 ; definition.
 ;
-; This is the version for compiling to intermediate code.
+; This is the version for compiling to runtime code.
 (define (gen-codes:runtime arities defs)
   (for/lists (lndefs lndecs dfns)
-             ([(tl co) defs])
-    (gen-code:runtime arities tl co)))
+             ([tl (codemap->link-order defs)])
+    (gen-code:runtime arities tl (hash-ref defs tl))))
 
 ; Given a list of termlink, code pairs, returns multiple lists
 ; of definitions and declarations. The lists are returned as
@@ -703,8 +726,8 @@
 ; This is the version for compiling to intermediate code.
 (define (gen-codes:intermed arities defs)
   (for/lists (lndefs lndecs codefs codecls dfns)
-             ([(tl co) defs])
-      (gen-code:intermed arities tl co)))
+             ([tl (codemap->link-order defs)])
+      (gen-code:intermed arities tl (hash-ref defs tl))))
 
 (define (flatten ls)
   (cond
@@ -782,13 +805,7 @@
     (not (hash-has-key? runtime-module-type-map ln))))
 
 (define (resolve-builtin nm)
-  (dynamic-require
-    'unison/primops
-    nm
-    (lambda ()
-      (dynamic-require
-        'unison/simple-wrappers
-        nm))))
+  (dynamic-require 'unison/primops nm))
 
 (define (termlink->proc tl)
   (match tl
@@ -840,8 +857,6 @@
              unison/primops
              unison/primops-generated
              unison/builtin-generated
-             unison/simple-wrappers
-             unison/compound-wrappers
              ,@(if profile? '(profile profile/render-text) '()))
 
     ,@(typelink-defns-code tylinks)
@@ -893,8 +908,6 @@
               unison/primops
               unison/primops-generated
               unison/builtin-generated
-              unison/simple-wrappers
-              unison/compound-wrappers
               ,@(map (lambda (s) `(quote ,s)) reqs))
 
      (provide
@@ -1071,9 +1084,10 @@
         "dependency list"
         need)]))
 
-(define (unison-POp-CACH dfns0) (add-runtime-code #f dfns0))
+(define-unison-builtin (builtin-Code.cache_ dfns0)
+  (add-runtime-code #f dfns0))
 
-(define (unison-POp-LOAD v0)
+(define-unison-builtin (builtin-Value.load v0)
   (define val (unison-quote-val v0))
   (define deps
     (map reference->termlink
@@ -1086,14 +1100,12 @@
 
       (cond
         [(not (null? ndeps))
-         (sum 0 (list->chunked-list ndeps))]
+         (ref-either-left (list->chunked-list ndeps))]
         [else
          (define ldeps (filter need-code-loaded? hdeps))
          (define to-load (resolve-unloaded ldeps))
          (add-runtime-code-proc #f to-load)
-         (sum 1 (reify-value val))]))))
-
-(define (unison-POp-LKUP tl) (lookup-code tl))
+         (ref-either-right (reify-value val))]))))
 
 (define-unison-builtin (builtin-Code.lookup tl)
   (match (lookup-code tl)

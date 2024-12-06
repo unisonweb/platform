@@ -9,10 +9,9 @@
          file/gunzip
          file/gzip)
 
-(provide (prefix-out unison-FOp-Bytes.
-    (combine-out
-        zlib.compress
-        zlib.decompress)))
+(provide
+  zlib-deflate-bytes
+  zlib-inflate-bytes)
 
 
 (define (read-byte-only what i)

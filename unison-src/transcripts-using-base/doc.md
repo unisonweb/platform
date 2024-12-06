@@ -13,7 +13,7 @@ Unison documentation is written in Unison and has some neat features:
 
 Documentation blocks start with `{{` and end with a matching `}}`. You can introduce doc blocks anywhere you'd use an expression, and you can also have anonymous documentation blocks immediately before a top-level term or type.
 
-```unison
+``` unison
 name = {{Alice}}
 d1 = {{ Hello there {{name}}! }}
 
@@ -32,7 +32,7 @@ Notice that an anonymous documentation block `{{ ... }}` before a definition `Im
 
 You can preview what docs will look like when rendered to the console using the `display` or `docs` commands:
 
-```ucm
+``` ucm
 scratch/main> display d1
 scratch/main> docs ImportantConstant
 scratch/main> docs DayOfWeek
@@ -44,11 +44,11 @@ The `docs ImportantConstant` command will look for `ImportantConstant.doc` in th
 
 First, we'll load the `syntax.u` file which has examples of all the syntax:
 
-```ucm
+``` ucm
 scratch/main> load ./unison-src/transcripts-using-base/doc.md.files/syntax.u
 ```
 
-```ucm:hide
+``` ucm :hide
 scratch/main> add
 ```
 
@@ -56,7 +56,7 @@ Now we can review different portions of the guide.
 we'll show both the pretty-printed source using `view`
 and the rendered output using `display`:
 
-```ucm
+``` ucm
 scratch/main> view basicFormatting
 scratch/main> display basicFormatting
 scratch/main> view lists
@@ -73,7 +73,7 @@ scratch/main> display otherElements
 
 Lastly, it's common to build longer documents including subdocuments via `{{ subdoc }}`. We can stitch together the full syntax guide in this way:
 
-```ucm
+``` ucm
 scratch/main> view doc.guide
 scratch/main> display doc.guide
 ```

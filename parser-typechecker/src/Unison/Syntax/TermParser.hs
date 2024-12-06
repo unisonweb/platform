@@ -1243,22 +1243,20 @@ verifyRelativeName' name = do
 
 -- example:
 --   (x, y)   = foo
---   hd +: tl | hd < 10 = [1,2,3]
 --   stuff
 --
 -- desugars to:
 --
 --   match foo with
---     (x,y) -> match [1,2,3] with
---       hd +: tl | hd < 10 -> stuff
+--     (x,y) -> stuff
 --
 destructuringBind :: forall m v. (Monad m, Var v) => P v m (Ann, Term v Ann -> Term v Ann)
 destructuringBind = do
   -- We have to look ahead as far as the `=` to know if this is a bind or
   -- just an action, for instance:
-  --   Some 42
+  --   (Some 42)
   --   vs
-  --   Some 42 = List.head elems
+  --   (Some 42) = List.head elems
   (p, boundVars) <- P.try do
     (p, boundVars) <- parsePattern
     let boundVars' = snd <$> boundVars

@@ -10,7 +10,7 @@ primitives can be built, such as Futures, Run at most once initializer
 blocks, Queues, etc.
 
 
-```unison
+``` unison
 eitherCk : (a -> Boolean) -> Either e a -> Boolean
 eitherCk f = cases
   Left _ -> false
@@ -50,8 +50,7 @@ testMvars _ =
 
   runTest test
 ```
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> io.test testMvars
 ```
-

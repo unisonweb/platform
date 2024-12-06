@@ -30,6 +30,7 @@ import Servant.Client qualified as Servant
 import System.Console.ANSI qualified as ANSI
 import System.Console.Haskeline.Completion qualified as Completion
 import System.Directory (canonicalizePath, getHomeDirectory)
+import System.Exit (ExitCode (..))
 import Text.Pretty.Simple (pShowNoColor, pStringNoColor)
 import U.Codebase.Branch (NamespaceStats (..))
 import U.Codebase.Branch.Diff (NameChanges (..))
@@ -97,10 +98,7 @@ import Unison.Prelude
 import Unison.PrettyPrintEnv qualified as PPE
 import Unison.PrettyPrintEnv.Util qualified as PPE
 import Unison.PrettyPrintEnvDecl qualified as PPED
-import Unison.PrettyTerminal
-  ( clearCurrentLine,
-    putPretty',
-  )
+import Unison.PrettyTerminal (clearCurrentLine, putPretty')
 import Unison.PrintError
   ( prettyParseError,
     prettyResolutionFailures,
@@ -118,8 +116,7 @@ import Unison.Result qualified as Result
 import Unison.Server.Backend (ShallowListEntry (..), TypeEntry (..))
 import Unison.Server.Backend qualified as Backend
 import Unison.Server.SearchResultPrime qualified as SR'
-import Unison.Share.Sync qualified as Share
-import Unison.Share.Sync.Types (CodeserverTransportError (..))
+import Unison.Share.Sync.Types qualified as Share (CodeserverTransportError (..), GetCausalHashByPathError (..), PullError (..))
 import Unison.Sync.Types qualified as Share
 import Unison.Syntax.DeclPrinter qualified as DeclPrinter
 import Unison.Syntax.HashQualified qualified as HQ (toText, unsafeFromVar)
@@ -1939,9 +1936,6 @@ notifyUser dir = \case
         <> P.wrap "🎉 🥳 Happy coding!"
   ProjectHasNoReleases projectName ->
     pure . P.wrap $ prettyProjectName projectName <> "has no releases."
-  UpdateLookingForDependents -> pure . P.wrap $ "Okay, I'm searching the branch for code that needs to be updated..."
-  UpdateStartTypechecking -> pure . P.wrap $ "That's done. Now I'm making sure everything typechecks..."
-  UpdateTypecheckingSuccess -> pure . P.wrap $ "Everything typechecks, so I'm saving the results..."
   UpdateTypecheckingFailure ->
     pure . P.wrap $
       "Typechecking failed. I've updated your scratch file with the definitions that need fixing."
@@ -2031,6 +2025,49 @@ notifyUser dir = \case
             "to delete the temporary branch and switch back to"
               <> P.group (prettyProjectBranchName aliceAndBob.alice.branch <> ".")
         ]
+  MergeFailureWithMergetool aliceAndBob temp mergetool exitCode ->
+    case exitCode of
+      ExitSuccess ->
+        pure $
+          P.lines $
+            [ P.wrap $
+                "I couldn't automatically merge"
+                  <> prettyMergeSource aliceAndBob.bob
+                  <> "into"
+                  <> P.group (prettyProjectAndBranchName aliceAndBob.alice <> ",")
+                  <> "so I'm running your UCM_MERGETOOL environment variable as",
+              "",
+              P.indentN 2 (P.text mergetool),
+              "",
+              P.wrap "When you're done, you can run",
+              "",
+              P.indentN 2 (IP.makeExampleNoBackticks IP.mergeCommitInputPattern []),
+              "",
+              P.wrap $
+                "to merge your changes back into"
+                  <> prettyProjectBranchName aliceAndBob.alice.branch
+                  <> "and delete the temporary branch. Or, if you decide to cancel the merge instead, you can run",
+              "",
+              P.indentN 2 (IP.makeExampleNoBackticks IP.deleteBranch [prettySlashProjectBranchName temp]),
+              "",
+              P.wrap $
+                "to delete the temporary branch and switch back to"
+                  <> P.group (prettyProjectBranchName aliceAndBob.alice.branch <> ".")
+            ]
+      ExitFailure code ->
+        pure $
+          P.lines $
+            [ P.wrap $
+                "I couldn't automatically merge"
+                  <> prettyMergeSource aliceAndBob.bob
+                  <> "into"
+                  <> P.group (prettyProjectAndBranchName aliceAndBob.alice <> ",")
+                  <> "so I tried to run your UCM_MERGETOOL environment variable as",
+              "",
+              P.indentN 2 (P.text mergetool),
+              "",
+              P.wrap ("but it failed with exit code" <> P.group (P.num code <> "."))
+            ]
   MergeSuccess aliceAndBob ->
     pure . P.wrap $
       "I merged"
@@ -2220,6 +2257,7 @@ notifyUser dir = \case
                 <> IP.makeExample' IP.delete
                 <> "it. Then try the update again."
           ]
+  Literal message -> pure message
 
 prettyShareError :: ShareError -> Pretty
 prettyShareError =
@@ -2302,28 +2340,28 @@ prettyEntityValidationFailure = \case
       Share.NamespaceDiffType -> "namespace diff"
       Share.CausalType -> "causal"
 
-prettyTransportError :: CodeserverTransportError -> Pretty
+prettyTransportError :: Share.CodeserverTransportError -> Pretty
 prettyTransportError = \case
-  DecodeFailure msg resp ->
+  Share.DecodeFailure msg resp ->
     (P.lines . catMaybes)
       [ Just ("The server sent a response that we couldn't decode: " <> P.text msg),
         responseRequestId resp <&> \responseId -> P.newline <> "Request ID: " <> P.blue (P.text responseId)
       ]
-  Unauthenticated codeServerURL ->
+  Share.Unauthenticated codeServerURL ->
     P.wrap . P.lines $
       [ "Authentication with this code server (" <> P.string (Servant.showBaseUrl codeServerURL) <> ") is missing or expired.",
         "Please run " <> makeExample' IP.authLogin <> "."
       ]
-  PermissionDenied msg -> P.hang "Permission denied:" (P.text msg)
-  UnreachableCodeserver codeServerURL ->
+  Share.PermissionDenied msg -> P.hang "Permission denied:" (P.text msg)
+  Share.UnreachableCodeserver codeServerURL ->
     P.lines $
       [ P.wrap $ "Unable to reach the code server hosted at:" <> P.string (Servant.showBaseUrl codeServerURL),
         "",
         P.wrap "Please check your network, ensure you've provided the correct location, or try again later."
       ]
-  RateLimitExceeded -> "Rate limit exceeded, please try again later."
-  Timeout -> "The code server timed-out when responding to your request. Please try again later or report an issue if the problem persists."
-  UnexpectedResponse resp ->
+  Share.RateLimitExceeded -> "Rate limit exceeded, please try again later."
+  Share.Timeout -> "The code server timed-out when responding to your request. Please try again later or report an issue if the problem persists."
+  Share.UnexpectedResponse resp ->
     (P.lines . catMaybes)
       [ Just
           ( "The server sent a "

@@ -30,7 +30,6 @@
   unison/data-info
   unison/chunked-seq
   unison/primops
-  unison/builtin
   unison/primops-generated
   unison/builtin-generated)
 
@@ -68,12 +67,12 @@
   (let ([bs (grab-bytes port)])
     (match (builtin-Value.deserialize (bytes->chunked-bytes bs))
       [(unison-data _ t (list q))
-       (= t ref-either-right:tag)
+       #:when (= t ref-either-right:tag)
        (apply
          values
          (unison-tuple->list (reify-value (unison-quote-val q))))]
-      [else
-        (raise "unexpected input")])))
+      [val
+        (raise (format "unexpected input: ~a " (describe-value val)))])))
 
 (define (natural->bytes/variable n)
   (let rec ([i n] [acc '()])

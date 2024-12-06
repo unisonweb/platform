@@ -10,7 +10,9 @@ import Data.Map.Strict qualified as Map
 import EasyTest
 import Unison.Reference (Reference, Reference' (Builtin))
 import Unison.Runtime.ANF
-  ( SuperGroup (..),
+  ( Cacheability (..),
+    Code (..),
+    SuperGroup (..),
     lamLift,
     superNormalize,
   )
@@ -38,11 +40,12 @@ testEval0 :: [(Reference, SuperGroup Symbol)] -> SuperGroup Symbol -> Test ()
 testEval0 env main =
   ok << io do
     cc <- baseCCache False
-    _ <- cacheAdd ((mainRef, main) : env) cc
+    _ <- cacheAdd ((fmap . fmap) uncacheable $ (mainRef, main) : env) cc
     rtm <- readTVarIO (refTm cc)
     apply0 Nothing cc Nothing (rtm Map.! mainRef)
   where
     (<<) = flip (>>)
+    uncacheable sg = CodeRep sg Uncacheable
 
 multRec :: String
 multRec =

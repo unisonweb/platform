@@ -9,7 +9,7 @@ transcripts which contain less boilerplate.
 
 ## Usage
 
-```ucm:hide
+``` ucm :hide
 scratch/main> builtins.mergeio
 scratch/main> load unison-src/transcripts-using-base/base.u
 scratch/main> add
@@ -17,20 +17,20 @@ scratch/main> add
 
 The test shows that `hex (fromHex str) == str` as expected.
 
-```unison:hide
+``` unison :hide
 test> hex.tests.ex1 = checks let
          s = "3984af9b"
          [hex (fromHex s) == s]
 ```
 
-```ucm:hide
+``` ucm :hide
 scratch/main> test
 ```
 
 Lets do some basic testing of our test harness to make sure its
 working.
 
-```unison
+``` unison
 testAutoClean : '{io2.IO}[Result]
 testAutoClean _ =
   go: '{Stream Result, Exception, io2.IO, TempDirs} Text
@@ -49,7 +49,7 @@ testAutoClean _ =
          Left (Failure _ t _) -> results :+ (Fail t)
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> io.test testAutoClean
 ```

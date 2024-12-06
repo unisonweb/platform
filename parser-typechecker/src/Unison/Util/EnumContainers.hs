@@ -15,6 +15,7 @@ module Unison.Util.EnumContainers
     keysSet,
     restrictKeys,
     withoutKeys,
+    mapDifference,
     member,
     lookup,
     lookupWithDefault,
@@ -31,6 +32,7 @@ module Unison.Util.EnumContainers
 where
 
 import Data.Bifunctor
+import Data.Functor.Classes (Eq1, Ord1)
 import Data.IntMap.Strict qualified as IM
 import Data.IntSet qualified as IS
 import Data.Word (Word16, Word64)
@@ -59,7 +61,9 @@ newtype EnumMap k a = EM (IM.IntMap a)
     )
   deriving newtype
     ( Monoid,
-      Semigroup
+      Semigroup,
+      Eq1,
+      Ord1
     )
 
 newtype EnumSet k = ES IS.IntSet
@@ -117,6 +121,9 @@ restrictKeys (EM m) (ES s) = EM $ IM.restrictKeys m s
 
 withoutKeys :: (EnumKey k) => EnumMap k a -> EnumSet k -> EnumMap k a
 withoutKeys (EM m) (ES s) = EM $ IM.withoutKeys m s
+
+mapDifference :: (EnumKey k) => EnumMap k a -> EnumMap k b -> EnumMap k a
+mapDifference (EM l) (EM r) = EM $ IM.difference l r
 
 member :: (EnumKey k) => k -> EnumSet k -> Bool
 member e (ES s) = IS.member (keyToInt e) s

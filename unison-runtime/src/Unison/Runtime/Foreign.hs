@@ -22,8 +22,8 @@ where
 import Control.Concurrent (MVar, ThreadId)
 import Control.Concurrent.STM (TVar)
 import Crypto.Hash qualified as Hash
+import Data.Atomics qualified as Atomic
 import Data.IORef (IORef)
-import Data.Primitive (ByteArray, MutableArray, MutableByteArray)
 import Data.Tagged (Tagged (..))
 import Data.X509 qualified as X509
 import Network.Socket (Socket)
@@ -34,8 +34,8 @@ import System.IO (Handle)
 import System.Process (ProcessHandle)
 import Unison.Reference (Reference)
 import Unison.Referent (Referent)
-import Unison.Runtime.ANF (SuperGroup, Value)
-import Unison.Symbol (Symbol)
+import Unison.Runtime.ANF (Code, Value)
+import Unison.Runtime.Array
 import Unison.Type qualified as Ty
 import Unison.Util.Bytes (Bytes)
 import Unison.Util.Text (Text)
@@ -130,8 +130,8 @@ charClassCmp :: CharPattern -> CharPattern -> Ordering
 charClassCmp = compare
 {-# NOINLINE charClassCmp #-}
 
-codeEq :: SuperGroup Symbol -> SuperGroup Symbol -> Bool
-codeEq sg1 sg2 = sg1 == sg2
+codeEq :: Code -> Code -> Bool
+codeEq co1 co2 = co1 == co2
 {-# NOINLINE codeEq #-}
 
 tylEq :: Reference -> Reference -> Bool
@@ -256,12 +256,13 @@ instance BuiltinForeign FilePath where foreignRef = Tagged Ty.filePathRef
 
 instance BuiltinForeign TLS.Context where foreignRef = Tagged Ty.tlsRef
 
-instance BuiltinForeign (SuperGroup Symbol) where
-  foreignRef = Tagged Ty.codeRef
+instance BuiltinForeign Code where foreignRef = Tagged Ty.codeRef
 
 instance BuiltinForeign Value where foreignRef = Tagged Ty.valueRef
 
 instance BuiltinForeign TimeSpec where foreignRef = Tagged Ty.timeSpecRef
+
+instance BuiltinForeign (Atomic.Ticket a) where foreignRef = Tagged Ty.ticketRef
 
 data HashAlgorithm where
   -- Reference is a reference to the hash algorithm

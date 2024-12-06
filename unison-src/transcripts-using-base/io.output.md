@@ -9,20 +9,20 @@ You can skip the section which is just needed to make the transcript self-contai
 TempDirs/autoCleaned is an ability/hanlder which allows you to easily
 create a scratch directory which will automatically get cleaned up.
 
-```unison
+``` unison
 ```
 
 ## Basic File Functions
 
 ### Creating/Deleting/Renaming Directories
 
-Tests: createDirectory, 
-       isDirectory, 
-       fileExists, 
+Tests: createDirectory,
+       isDirectory,
+       fileExists,
        renameDirectory,
        deleteDirectory
 
-```unison
+``` unison
 testCreateRename : '{io2.IO} [Result]
 testCreateRename _ =
   test = 'let
@@ -47,28 +47,28 @@ testCreateRename _ =
   runTest test
 ```
 
-```ucm
+``` ucm
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
-    
+
       testCreateRename : '{IO} [Result]
 
 ```
-```ucm
+``` ucm
 .> add
 
   ⍟ I've added these definitions:
-  
+
     testCreateRename : '{IO} [Result]
 
 .> io.test testCreateRename
 
     New test results:
-  
+
   ◉ testCreateRename   create a foo directory
   ◉ testCreateRename   directory should exist
   ◉ testCreateRename   foo should no longer exist
@@ -76,9 +76,9 @@ testCreateRename _ =
   ◉ testCreateRename   bar should now exist
   ◉ testCreateRename   removeDirectory works recursively
   ◉ testCreateRename   removeDirectory works recursively
-  
+
   ✅ 7 test(s) passing
-  
+
   Tip: Use view testCreateRename to view the source of a test.
 
 ```
@@ -88,7 +88,7 @@ Tests: openFile
        closeFile
        isFileOpen
 
-```unison
+``` unison
 testOpenClose : '{io2.IO} [Result]
 testOpenClose _ =
   test = 'let
@@ -102,33 +102,33 @@ testOpenClose _ =
   runTest test
 ```
 
-```ucm
+``` ucm
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
-    
+
       testOpenClose : '{IO} [Result]
 
 ```
-```ucm
+``` ucm
 .> add
 
   ⍟ I've added these definitions:
-  
+
     testOpenClose : '{IO} [Result]
 
 .> io.test testOpenClose
 
     New test results:
-  
+
   ◉ testOpenClose   file should be open
   ◉ testOpenClose   file should be closed
-  
+
   ✅ 2 test(s) passing
-  
+
   Tip: Use view testOpenClose to view the source of a test.
 
 ```
@@ -142,7 +142,7 @@ Tests: openFile
        seekHandle
        getBytes
 
-```unison
+``` unison
 testSeek : '{io2.IO} [Result]
 testSeek _ =
   test = 'let
@@ -191,54 +191,54 @@ testAppend _ =
   runTest test
 ```
 
-```ucm
+``` ucm
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
-    
+
       testAppend : '{IO} [Result]
       testSeek   : '{IO} [Result]
 
 ```
-```ucm
+``` ucm
 .> add
 
   ⍟ I've added these definitions:
-  
+
     testAppend : '{IO} [Result]
     testSeek   : '{IO} [Result]
 
 .> io.test testSeek
 
     New test results:
-  
+
   ◉ testSeek   seeked
   ◉ testSeek   readable file should be seekable
   ◉ testSeek   shouldn't be the EOF
   ◉ testSeek   we should be at position 0
   ◉ testSeek   we should be at position 1
   ◉ testSeek   should be able to read our temporary file after seeking
-  
+
   ✅ 6 test(s) passing
-  
+
   Tip: Use view testSeek to view the source of a test.
 
 .> io.test testAppend
 
     New test results:
-  
+
   ◉ testAppend   should be able to read our temporary file
-  
+
   ✅ 1 test(s) passing
-  
+
   Tip: Use view testAppend to view the source of a test.
 
 ```
 ### SystemTime
-```unison
+``` unison
 testSystemTime : '{io2.IO} [Result]
 testSystemTime _ =
   test = 'let
@@ -248,32 +248,32 @@ testSystemTime _ =
   runTest test
 ```
 
-```ucm
+``` ucm
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
-    
+
       testSystemTime : '{IO} [Result]
 
 ```
-```ucm
+``` ucm
 .> add
 
   ⍟ I've added these definitions:
-  
+
     testSystemTime : '{IO} [Result]
 
 .> io.test testSystemTime
 
     New test results:
-  
+
   ◉ testSystemTime   systemTime should be sane
-  
+
   ✅ 1 test(s) passing
-  
+
   Tip: Use view testSystemTime to view the source of a test.
 
 ```

@@ -1,5 +1,6 @@
-:2:4:
+:2:1:
   |
 2 | DELETE /something/important
-  |    ^
-expecting end of input or spaces
+  | ^^^
+unexpected "DEL"
+expecting "  ", " <newline>", "--", "GET", end of input, or newline

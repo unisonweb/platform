@@ -88,6 +88,8 @@ module Unison.Util.Relation
     outerJoinRanMultimaps,
     union,
     unions,
+    unionDomainWith,
+    unionRangeWith,
 
     -- * Converting to other data structures
     toList,
@@ -229,6 +231,14 @@ union r s =
     { domain = M.unionWith S.union (domain r) (domain s),
       range = M.unionWith S.union (range r) (range s)
     }
+
+unionDomainWith :: (Ord a, Ord b) => (a -> Set b -> Set b -> Set b) -> Relation a b -> Relation a b -> Relation a b
+unionDomainWith f xs ys =
+  fromMultimap (Map.unionWithKey f (domain xs) (domain ys))
+
+unionRangeWith :: (Ord a, Ord b) => (b -> Set a -> Set a -> Set a) -> Relation a b -> Relation a b -> Relation a b
+unionRangeWith f xs ys =
+  swap (fromMultimap (Map.unionWithKey f (range xs) (range ys)))
 
 intersection :: (Ord a, Ord b) => Relation a b -> Relation a b -> Relation a b
 intersection r s =

@@ -7,10 +7,9 @@
             bytes->chunked-bytes
             chunked-bytes->bytes))
 
-(provide (prefix-out unison-FOp-Bytes.
-    (combine-out
-        gzip.compress
-        gzip.decompress)))
+(provide
+  gzip-bytes
+  gunzip-bytes)
 
 (define (gzip-bytes bytes)
     (let ([op1 (open-output-bytes)])
