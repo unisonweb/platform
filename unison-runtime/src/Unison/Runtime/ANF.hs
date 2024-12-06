@@ -1976,6 +1976,8 @@ anfBlock (Handle' h body) =
             (Indirect (), TApp (FVar vh) [v])
           )
       (ctx, (_, TVar v)) | floatableCtx ctx -> do
+        when (null hctx && null ctx) $
+          traceM "WARN: Potentially inlinable handle"
         pure (hctx <> ctx, (Indirect (), TApp (FVar vh) [v]))
       p@(_, _) ->
         internalBug $ "handle body should be a simple call: " ++ show p
