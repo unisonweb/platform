@@ -42,6 +42,7 @@ import Unison.UnisonFile (TypecheckedUnisonFile)
 import Unison.UnisonFile qualified as UF
 import Unison.UnisonFile.Names qualified as UF
 import Unison.Util.Defns (Defns (..))
+import Unison.Util.Monoid qualified as Monoid
 import Unison.Util.Recursion
 import Unison.Var qualified as Var
 
@@ -110,7 +111,7 @@ getTerm' mainName =
           mainToFile (MainTerm.BadType _ ty) = pure $ maybe NoTermWithThatName TermHasBadType ty
           mainToFile (MainTerm.Success hq tm typ) =
             let v = Var.named (HQ.toText hq)
-             in checkType typ \otyp ->
+             in checkType Nothing typ \otyp ->
                   pure (GetTermSuccess (v, tm, typ, otyp))
       getFromFile uf = do
         let components = join $ UF.topLevelComponents uf
@@ -118,21 +119,22 @@ getTerm' mainName =
         let mainComponent = filter ((\v -> Var.name v == HQ.toText mainName) . view _1) components
         case mainComponent of
           [(v, _, tm, ty)] ->
-            checkType ty \otyp ->
+            checkType (Just uf) ty \otyp ->
               let runMain = DD.forceTerm a a (Term.var a v)
                   v2 = Var.freshIn (Set.fromList [v]) v
                   a = ABT.annotation tm
                in pure (GetTermSuccess (v2, runMain, ty, otyp))
           _ -> getFromCodebase
-      checkType :: Type Symbol Ann -> (Type Symbol Ann -> Cli GetTermResult) -> Cli GetTermResult
-      checkType ty f = do
+      checkType :: Maybe (TypecheckedUnisonFile Symbol Ann) -> Type Symbol Ann -> (Type Symbol Ann -> Cli GetTermResult) -> Cli GetTermResult
+      checkType mayTuf ty f = do
         Cli.Env {codebase, runtime} <- ask
         case Typechecker.fitsScheme ty (Runtime.mainType runtime) of
           True -> do
-            typeLookup <-
+            tlCodebase <-
               Cli.runTransaction $
                 Codebase.typeLookupForDependencies codebase Defns {terms = Set.empty, types = Type.dependencies ty}
-            f $! synthesizeForce typeLookup ty
+            let tlTuf = Monoid.fromMaybe (fmap UF.typecheckedToTypeLookup mayTuf)
+            f $! synthesizeForce (tlTuf <> tlCodebase) ty
           False -> pure (TermHasBadType ty)
    in Cli.getLatestTypecheckedFile >>= \case
         Nothing -> getFromCodebase
