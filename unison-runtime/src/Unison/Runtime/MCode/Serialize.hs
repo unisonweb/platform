@@ -19,6 +19,7 @@ import Data.Word (Word64)
 import GHC.Exts (IsList (..))
 import Unison.Runtime.ANF (PackedTag (..))
 import Unison.Runtime.Array (PrimArray)
+import Unison.Runtime.Foreign.Function.Type (ForeignFunc)
 import Unison.Runtime.MCode hiding (MatchT)
 import Unison.Runtime.Serialize
 import Unison.Util.Text qualified as Util.Text
@@ -54,11 +55,11 @@ getComb =
       Lam <$> gInt <*> gInt <*> getSection
     CachedClosureT -> error "getComb: Unexpected serialized Cached Closure"
 
-getMForeignFunc :: (MonadGet m) => m MForeignFunc
+getMForeignFunc :: (MonadGet m) => m ForeignFunc
 getMForeignFunc = do
   toEnum <$> gInt
 
-putMForeignFunc :: (MonadPut m) => MForeignFunc -> m ()
+putMForeignFunc :: (MonadPut m) => ForeignFunc -> m ()
 putMForeignFunc = pInt . fromEnum
 
 data SectionT

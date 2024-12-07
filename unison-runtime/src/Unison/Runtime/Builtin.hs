@@ -20,6 +20,7 @@ module Unison.Runtime.Builtin
     unitValue,
     natValue,
     builtinForeignNames,
+    sandboxedForeignFuncs,
   )
 where
 
@@ -34,6 +35,7 @@ import Unison.Prelude hiding (Text, some)
 import Unison.Reference
 import Unison.Runtime.ANF as ANF
 import Unison.Runtime.Builtin.Types
+import Unison.Runtime.Foreign.Function.Type (ForeignFunc (..), foreignFuncBuiltinName)
 import Unison.Runtime.Stack (UnboxedTypeTag (..), Val (..), unboxedTypeTagToInt)
 import Unison.Runtime.Stack qualified as Closure
 import Unison.Symbol
@@ -1688,7 +1690,7 @@ builtinLookup =
       ]
       ++ foreignWrappers
 
-type FDecl v = State (Map ForeignFunc (Sandbox, SuperNormal v, Data.Text.Text))
+type FDecl v = State (Map ForeignFunc (Sandbox, SuperNormal v))
 
 -- Data type to determine whether a builtin should be tracked for
 -- sandboxing. Untracked means that it can be freely used, and Tracked
@@ -1699,14 +1701,13 @@ data Sandbox = Tracked | Untracked
 
 declareForeign ::
   Sandbox ->
-  Data.Text.Text ->
   ForeignOp ->
   ForeignFunc ->
   FDecl Symbol ()
-declareForeign sand name op func = do
+declareForeign sand op func = do
   modify $ \funcs ->
     let code = uncurry Lambda (op func)
-     in (Map.insert func (sand, code, name) funcs)
+     in (Map.insert func (sand, code) funcs)
 
 unitValue :: Val
 unitValue = BoxedVal $ Closure.Enum Ty.unitRef (PackedTag 0)
@@ -1716,376 +1717,376 @@ natValue w = NatVal w
 
 declareUdpForeigns :: FDecl Symbol ()
 declareUdpForeigns = do
-  declareForeign Tracked "IO.UDP.clientSocket.impl.v1" arg2ToEF IO_UDP_clientSocket_impl_v1
+  declareForeign Tracked arg2ToEF IO_UDP_clientSocket_impl_v1
 
-  declareForeign Tracked "IO.UDP.UDPSocket.recv.impl.v1" argToEF IO_UDP_UDPSocket_recv_impl_v1
+  declareForeign Tracked argToEF IO_UDP_UDPSocket_recv_impl_v1
 
-  declareForeign Tracked "IO.UDP.UDPSocket.send.impl.v1" arg2ToEF0 IO_UDP_UDPSocket_send_impl_v1
-  declareForeign Tracked "IO.UDP.UDPSocket.close.impl.v1" argToEF0 IO_UDP_UDPSocket_close_impl_v1
+  declareForeign Tracked arg2ToEF0 IO_UDP_UDPSocket_send_impl_v1
+  declareForeign Tracked argToEF0 IO_UDP_UDPSocket_close_impl_v1
 
-  declareForeign Tracked "IO.UDP.ListenSocket.close.impl.v1" argToEF0 IO_UDP_ListenSocket_close_impl_v1
+  declareForeign Tracked argToEF0 IO_UDP_ListenSocket_close_impl_v1
 
-  declareForeign Tracked "IO.UDP.UDPSocket.toText.impl.v1" (argNDirect 1) IO_UDP_UDPSocket_toText_impl_v1
+  declareForeign Tracked (argNDirect 1) IO_UDP_UDPSocket_toText_impl_v1
 
-  declareForeign Tracked "IO.UDP.serverSocket.impl.v1" arg2ToEF IO_UDP_serverSocket_impl_v1
+  declareForeign Tracked arg2ToEF IO_UDP_serverSocket_impl_v1
 
-  declareForeign Tracked "IO.UDP.ListenSocket.toText.impl.v1" (argNDirect 1) IO_UDP_ListenSocket_toText_impl_v1
+  declareForeign Tracked (argNDirect 1) IO_UDP_ListenSocket_toText_impl_v1
 
-  declareForeign Tracked "IO.UDP.ListenSocket.recvFrom.impl.v1" argToEFTup IO_UDP_ListenSocket_recvFrom_impl_v1
+  declareForeign Tracked argToEFTup IO_UDP_ListenSocket_recvFrom_impl_v1
 
-  declareForeign Tracked "IO.UDP.ClientSockAddr.toText.v1" (argNDirect 1) IO_UDP_ClientSockAddr_toText_v1
+  declareForeign Tracked (argNDirect 1) IO_UDP_ClientSockAddr_toText_v1
 
-  declareForeign Tracked "IO.UDP.ListenSocket.sendTo.impl.v1" arg3ToEF0 IO_UDP_ListenSocket_sendTo_impl_v1
+  declareForeign Tracked arg3ToEF0 IO_UDP_ListenSocket_sendTo_impl_v1
 
 declareForeigns :: FDecl Symbol ()
 declareForeigns = do
   declareUdpForeigns
-  declareForeign Tracked "IO.openFile.impl.v3" argIomrToEF IO_openFile_impl_v3
+  declareForeign Tracked argIomrToEF IO_openFile_impl_v3
 
-  declareForeign Tracked "IO.closeFile.impl.v3" argToEF0 IO_closeFile_impl_v3
-  declareForeign Tracked "IO.isFileEOF.impl.v3" argToEFBool IO_isFileEOF_impl_v3
-  declareForeign Tracked "IO.isFileOpen.impl.v3" argToEFBool IO_isFileOpen_impl_v3
-  declareForeign Tracked "IO.getEcho.impl.v1" argToEFBool IO_getEcho_impl_v1
-  declareForeign Tracked "IO.ready.impl.v1" argToEFBool IO_ready_impl_v1
-  declareForeign Tracked "IO.getChar.impl.v1" argToEFChar IO_getChar_impl_v1
-  declareForeign Tracked "IO.isSeekable.impl.v3" argToEFBool IO_isSeekable_impl_v3
+  declareForeign Tracked argToEF0 IO_closeFile_impl_v3
+  declareForeign Tracked argToEFBool IO_isFileEOF_impl_v3
+  declareForeign Tracked argToEFBool IO_isFileOpen_impl_v3
+  declareForeign Tracked argToEFBool IO_getEcho_impl_v1
+  declareForeign Tracked argToEFBool IO_ready_impl_v1
+  declareForeign Tracked argToEFChar IO_getChar_impl_v1
+  declareForeign Tracked argToEFBool IO_isSeekable_impl_v3
 
-  declareForeign Tracked "IO.seekHandle.impl.v3" seek'handle IO_seekHandle_impl_v3
+  declareForeign Tracked seek'handle IO_seekHandle_impl_v3
 
-  declareForeign Tracked "IO.handlePosition.impl.v3" argToEFNat IO_handlePosition_impl_v3
+  declareForeign Tracked argToEFNat IO_handlePosition_impl_v3
 
-  declareForeign Tracked "IO.getBuffering.impl.v3" get'buffering IO_getBuffering_impl_v3
+  declareForeign Tracked get'buffering IO_getBuffering_impl_v3
 
-  declareForeign Tracked "IO.setBuffering.impl.v3" set'buffering IO_setBuffering_impl_v3
+  declareForeign Tracked set'buffering IO_setBuffering_impl_v3
 
-  declareForeign Tracked "IO.setEcho.impl.v1" set'echo IO_setEcho_impl_v1
+  declareForeign Tracked set'echo IO_setEcho_impl_v1
 
-  declareForeign Tracked "IO.getLine.impl.v1" argToEF IO_getLine_impl_v1
+  declareForeign Tracked argToEF IO_getLine_impl_v1
 
-  declareForeign Tracked "IO.getBytes.impl.v3" arg2ToEF IO_getBytes_impl_v3
-  declareForeign Tracked "IO.getSomeBytes.impl.v1" arg2ToEF IO_getSomeBytes_impl_v1
-  declareForeign Tracked "IO.putBytes.impl.v3" arg2ToEF0 IO_putBytes_impl_v3
-  declareForeign Tracked "IO.systemTime.impl.v3" unitToEF IO_systemTime_impl_v3
+  declareForeign Tracked arg2ToEF IO_getBytes_impl_v3
+  declareForeign Tracked arg2ToEF IO_getSomeBytes_impl_v1
+  declareForeign Tracked arg2ToEF0 IO_putBytes_impl_v3
+  declareForeign Tracked unitToEF IO_systemTime_impl_v3
 
-  declareForeign Tracked "IO.systemTimeMicroseconds.v1" unitToR IO_systemTimeMicroseconds_v1
+  declareForeign Tracked unitToR IO_systemTimeMicroseconds_v1
 
-  declareForeign Tracked "Clock.internals.monotonic.v1" unitToEF Clock_internals_monotonic_v1
+  declareForeign Tracked unitToEF Clock_internals_monotonic_v1
 
-  declareForeign Tracked "Clock.internals.realtime.v1" unitToEF Clock_internals_realtime_v1
+  declareForeign Tracked unitToEF Clock_internals_realtime_v1
 
-  declareForeign Tracked "Clock.internals.processCPUTime.v1" unitToEF Clock_internals_processCPUTime_v1
+  declareForeign Tracked unitToEF Clock_internals_processCPUTime_v1
 
-  declareForeign Tracked "Clock.internals.threadCPUTime.v1" unitToEF Clock_internals_threadCPUTime_v1
+  declareForeign Tracked unitToEF Clock_internals_threadCPUTime_v1
 
-  declareForeign Tracked "Clock.internals.sec.v1" (argNDirect 1) Clock_internals_sec_v1
+  declareForeign Tracked (argNDirect 1) Clock_internals_sec_v1
 
   -- A TimeSpec that comes from getTime never has negative nanos,
   -- so we can safely cast to Nat
-  declareForeign Tracked "Clock.internals.nsec.v1" (argNDirect 1) Clock_internals_nsec_v1
+  declareForeign Tracked (argNDirect 1) Clock_internals_nsec_v1
 
-  declareForeign Tracked "Clock.internals.systemTimeZone.v1" time'zone Clock_internals_systemTimeZone_v1
+  declareForeign Tracked time'zone Clock_internals_systemTimeZone_v1
 
-  declareForeign Tracked "IO.getTempDirectory.impl.v3" unitToEF IO_getTempDirectory_impl_v3
+  declareForeign Tracked unitToEF IO_getTempDirectory_impl_v3
 
-  declareForeign Tracked "IO.createTempDirectory.impl.v3" argToEF IO_createTempDirectory_impl_v3
+  declareForeign Tracked argToEF IO_createTempDirectory_impl_v3
 
-  declareForeign Tracked "IO.getCurrentDirectory.impl.v3" unitToEF IO_getCurrentDirectory_impl_v3
+  declareForeign Tracked unitToEF IO_getCurrentDirectory_impl_v3
 
-  declareForeign Tracked "IO.setCurrentDirectory.impl.v3" argToEF0 IO_setCurrentDirectory_impl_v3
+  declareForeign Tracked argToEF0 IO_setCurrentDirectory_impl_v3
 
-  declareForeign Tracked "IO.fileExists.impl.v3" argToEFBool IO_fileExists_impl_v3
+  declareForeign Tracked argToEFBool IO_fileExists_impl_v3
 
-  declareForeign Tracked "IO.getEnv.impl.v1" argToEF IO_getEnv_impl_v1
+  declareForeign Tracked argToEF IO_getEnv_impl_v1
 
-  declareForeign Tracked "IO.getArgs.impl.v1" unitToEF IO_getArgs_impl_v1
+  declareForeign Tracked unitToEF IO_getArgs_impl_v1
 
-  declareForeign Tracked "IO.isDirectory.impl.v3" argToEFBool IO_isDirectory_impl_v3
+  declareForeign Tracked argToEFBool IO_isDirectory_impl_v3
 
-  declareForeign Tracked "IO.createDirectory.impl.v3" argToEF0 IO_createDirectory_impl_v3
+  declareForeign Tracked argToEF0 IO_createDirectory_impl_v3
 
-  declareForeign Tracked "IO.removeDirectory.impl.v3" argToEF0 IO_removeDirectory_impl_v3
+  declareForeign Tracked argToEF0 IO_removeDirectory_impl_v3
 
-  declareForeign Tracked "IO.renameDirectory.impl.v3" arg2ToEF0 IO_renameDirectory_impl_v3
+  declareForeign Tracked arg2ToEF0 IO_renameDirectory_impl_v3
 
-  declareForeign Tracked "IO.directoryContents.impl.v3" argToEF IO_directoryContents_impl_v3
+  declareForeign Tracked argToEF IO_directoryContents_impl_v3
 
-  declareForeign Tracked "IO.removeFile.impl.v3" argToEF0 IO_removeFile_impl_v3
+  declareForeign Tracked argToEF0 IO_removeFile_impl_v3
 
-  declareForeign Tracked "IO.renameFile.impl.v3" arg2ToEF0 IO_renameFile_impl_v3
+  declareForeign Tracked arg2ToEF0 IO_renameFile_impl_v3
 
-  declareForeign Tracked "IO.getFileTimestamp.impl.v3" argToEFNat IO_getFileTimestamp_impl_v3
+  declareForeign Tracked argToEFNat IO_getFileTimestamp_impl_v3
 
-  declareForeign Tracked "IO.getFileSize.impl.v3" argToEFNat IO_getFileSize_impl_v3
+  declareForeign Tracked argToEFNat IO_getFileSize_impl_v3
 
-  declareForeign Tracked "IO.serverSocket.impl.v3" maybeToEF IO_serverSocket_impl_v3
+  declareForeign Tracked maybeToEF IO_serverSocket_impl_v3
 
-  declareForeign Tracked "Socket.toText" (argNDirect 1) Socket_toText
+  declareForeign Tracked (argNDirect 1) Socket_toText
 
-  declareForeign Tracked "Handle.toText" (argNDirect 1) Handle_toText
+  declareForeign Tracked (argNDirect 1) Handle_toText
 
-  declareForeign Tracked "ThreadId.toText" (argNDirect 1) ThreadId_toText
+  declareForeign Tracked (argNDirect 1) ThreadId_toText
 
-  declareForeign Tracked "IO.socketPort.impl.v3" argToEFNat IO_socketPort_impl_v3
+  declareForeign Tracked argToEFNat IO_socketPort_impl_v3
 
-  declareForeign Tracked "IO.listen.impl.v3" argToEF0 IO_listen_impl_v3
+  declareForeign Tracked argToEF0 IO_listen_impl_v3
 
-  declareForeign Tracked "IO.clientSocket.impl.v3" arg2ToEF IO_clientSocket_impl_v3
+  declareForeign Tracked arg2ToEF IO_clientSocket_impl_v3
 
-  declareForeign Tracked "IO.closeSocket.impl.v3" argToEF0 IO_closeSocket_impl_v3
+  declareForeign Tracked argToEF0 IO_closeSocket_impl_v3
 
-  declareForeign Tracked "IO.socketAccept.impl.v3" argToEF IO_socketAccept_impl_v3
+  declareForeign Tracked argToEF IO_socketAccept_impl_v3
 
-  declareForeign Tracked "IO.socketSend.impl.v3" arg2ToEF0 IO_socketSend_impl_v3
+  declareForeign Tracked arg2ToEF0 IO_socketSend_impl_v3
 
-  declareForeign Tracked "IO.socketReceive.impl.v3" arg2ToEF IO_socketReceive_impl_v3
+  declareForeign Tracked arg2ToEF IO_socketReceive_impl_v3
 
-  declareForeign Tracked "IO.kill.impl.v3" argToEF0 IO_kill_impl_v3
+  declareForeign Tracked argToEF0 IO_kill_impl_v3
 
-  declareForeign Tracked "IO.delay.impl.v3" argToEFUnit IO_delay_impl_v3
+  declareForeign Tracked argToEFUnit IO_delay_impl_v3
 
-  declareForeign Tracked "IO.stdHandle" standard'handle IO_stdHandle
+  declareForeign Tracked standard'handle IO_stdHandle
 
-  declareForeign Tracked "IO.process.call" (argNDirect 2) IO_process_call
+  declareForeign Tracked (argNDirect 2) IO_process_call
 
-  declareForeign Tracked "IO.process.start" start'process IO_process_start
+  declareForeign Tracked start'process IO_process_start
 
-  declareForeign Tracked "IO.process.kill" argToUnit IO_process_kill
+  declareForeign Tracked argToUnit IO_process_kill
 
-  declareForeign Tracked "IO.process.wait" (argNDirect 1) IO_process_wait
+  declareForeign Tracked (argNDirect 1) IO_process_wait
 
-  declareForeign Tracked "IO.process.exitCode" argToMaybe IO_process_exitCode
-  declareForeign Tracked "MVar.new" (argNDirect 1) MVar_new
+  declareForeign Tracked argToMaybe IO_process_exitCode
+  declareForeign Tracked (argNDirect 1) MVar_new
 
-  declareForeign Tracked "MVar.newEmpty.v2" unitDirect MVar_newEmpty_v2
+  declareForeign Tracked unitDirect MVar_newEmpty_v2
 
-  declareForeign Tracked "MVar.take.impl.v3" argToEF MVar_take_impl_v3
+  declareForeign Tracked argToEF MVar_take_impl_v3
 
-  declareForeign Tracked "MVar.tryTake" argToMaybe MVar_tryTake
+  declareForeign Tracked argToMaybe MVar_tryTake
 
-  declareForeign Tracked "MVar.put.impl.v3" arg2ToEF0 MVar_put_impl_v3
+  declareForeign Tracked arg2ToEF0 MVar_put_impl_v3
 
-  declareForeign Tracked "MVar.tryPut.impl.v3" arg2ToEFBool MVar_tryPut_impl_v3
+  declareForeign Tracked arg2ToEFBool MVar_tryPut_impl_v3
 
-  declareForeign Tracked "MVar.swap.impl.v3" arg2ToEF MVar_swap_impl_v3
+  declareForeign Tracked arg2ToEF MVar_swap_impl_v3
 
-  declareForeign Tracked "MVar.isEmpty" (argNDirect 1) MVar_isEmpty
+  declareForeign Tracked (argNDirect 1) MVar_isEmpty
 
-  declareForeign Tracked "MVar.read.impl.v3" argToEF MVar_read_impl_v3
+  declareForeign Tracked argToEF MVar_read_impl_v3
 
-  declareForeign Tracked "MVar.tryRead.impl.v3" argToEFM MVar_tryRead_impl_v3
+  declareForeign Tracked argToEFM MVar_tryRead_impl_v3
 
-  declareForeign Untracked "Char.toText" (argNDirect 1) Char_toText
-  declareForeign Untracked "Text.repeat" (argNDirect 2) Text_repeat
-  declareForeign Untracked "Text.reverse" (argNDirect 1) Text_reverse
-  declareForeign Untracked "Text.toUppercase" (argNDirect 1) Text_toUppercase
-  declareForeign Untracked "Text.toLowercase" (argNDirect 1) Text_toLowercase
-  declareForeign Untracked "Text.toUtf8" (argNDirect 1) Text_toUtf8
-  declareForeign Untracked "Text.fromUtf8.impl.v3" argToEF Text_fromUtf8_impl_v3
-  declareForeign Tracked "Tls.ClientConfig.default" (argNDirect 2) Tls_ClientConfig_default
-  declareForeign Tracked "Tls.ServerConfig.default" (argNDirect 2) Tls_ServerConfig_default
-  declareForeign Tracked "Tls.ClientConfig.certificates.set" (argNDirect 2) Tls_ClientConfig_certificates_set
+  declareForeign Untracked (argNDirect 1) Char_toText
+  declareForeign Untracked (argNDirect 2) Text_repeat
+  declareForeign Untracked (argNDirect 1) Text_reverse
+  declareForeign Untracked (argNDirect 1) Text_toUppercase
+  declareForeign Untracked (argNDirect 1) Text_toLowercase
+  declareForeign Untracked (argNDirect 1) Text_toUtf8
+  declareForeign Untracked argToEF Text_fromUtf8_impl_v3
+  declareForeign Tracked (argNDirect 2) Tls_ClientConfig_default
+  declareForeign Tracked (argNDirect 2) Tls_ServerConfig_default
+  declareForeign Tracked (argNDirect 2) Tls_ClientConfig_certificates_set
 
-  declareForeign Tracked "Tls.ServerConfig.certificates.set" (argNDirect 2) Tls_ServerConfig_certificates_set
+  declareForeign Tracked (argNDirect 2) Tls_ServerConfig_certificates_set
 
-  declareForeign Tracked "TVar.new" (argNDirect 1) TVar_new
+  declareForeign Tracked (argNDirect 1) TVar_new
 
-  declareForeign Tracked "TVar.read" (argNDirect 1) TVar_read
-  declareForeign Tracked "TVar.write" arg2To0 TVar_write
-  declareForeign Tracked "TVar.newIO" (argNDirect 1) TVar_newIO
+  declareForeign Tracked (argNDirect 1) TVar_read
+  declareForeign Tracked arg2To0 TVar_write
+  declareForeign Tracked (argNDirect 1) TVar_newIO
 
-  declareForeign Tracked "TVar.readIO" (argNDirect 1) TVar_readIO
-  declareForeign Tracked "TVar.swap" (argNDirect 2) TVar_swap
-  declareForeign Tracked "STM.retry" unitDirect STM_retry
-  declareForeign Tracked "Promise.new" unitDirect Promise_new
+  declareForeign Tracked (argNDirect 1) TVar_readIO
+  declareForeign Tracked (argNDirect 2) TVar_swap
+  declareForeign Tracked unitDirect STM_retry
+  declareForeign Tracked unitDirect Promise_new
   -- the only exceptions from Promise.read are async and shouldn't be caught
-  declareForeign Tracked "Promise.read" (argNDirect 1) Promise_read
-  declareForeign Tracked "Promise.tryRead" argToMaybe Promise_tryRead
+  declareForeign Tracked (argNDirect 1) Promise_read
+  declareForeign Tracked argToMaybe Promise_tryRead
 
-  declareForeign Tracked "Promise.write" (argNDirect 2) Promise_write
-  declareForeign Tracked "Tls.newClient.impl.v3" arg2ToEF Tls_newClient_impl_v3
-  declareForeign Tracked "Tls.newServer.impl.v3" arg2ToEF Tls_newServer_impl_v3
-  declareForeign Tracked "Tls.handshake.impl.v3" argToEF0 Tls_handshake_impl_v3
-  declareForeign Tracked "Tls.send.impl.v3" arg2ToEF0 Tls_send_impl_v3
-  declareForeign Tracked "Tls.decodeCert.impl.v3" argToEF Tls_decodeCert_impl_v3
+  declareForeign Tracked (argNDirect 2) Promise_write
+  declareForeign Tracked arg2ToEF Tls_newClient_impl_v3
+  declareForeign Tracked arg2ToEF Tls_newServer_impl_v3
+  declareForeign Tracked argToEF0 Tls_handshake_impl_v3
+  declareForeign Tracked arg2ToEF0 Tls_send_impl_v3
+  declareForeign Tracked argToEF Tls_decodeCert_impl_v3
 
-  declareForeign Tracked "Tls.encodeCert" (argNDirect 1) Tls_encodeCert
+  declareForeign Tracked (argNDirect 1) Tls_encodeCert
 
-  declareForeign Tracked "Tls.decodePrivateKey" (argNDirect 1) Tls_decodePrivateKey
-  declareForeign Tracked "Tls.encodePrivateKey" (argNDirect 1) Tls_encodePrivateKey
+  declareForeign Tracked (argNDirect 1) Tls_decodePrivateKey
+  declareForeign Tracked (argNDirect 1) Tls_encodePrivateKey
 
-  declareForeign Tracked "Tls.receive.impl.v3" argToEF Tls_receive_impl_v3
+  declareForeign Tracked argToEF Tls_receive_impl_v3
 
-  declareForeign Tracked "Tls.terminate.impl.v3" argToEF0 Tls_terminate_impl_v3
-  declareForeign Untracked "Code.validateLinks" argToExnE Code_validateLinks
-  declareForeign Untracked "Code.dependencies" (argNDirect 1) Code_dependencies
-  declareForeign Untracked "Code.serialize" (argNDirect 1) Code_serialize
-  declareForeign Untracked "Code.deserialize" argToEither Code_deserialize
-  declareForeign Untracked "Code.display" (argNDirect 2) Code_display
-  declareForeign Untracked "Value.dependencies" (argNDirect 1) Value_dependencies
-  declareForeign Untracked "Value.serialize" (argNDirect 1) Value_serialize
-  declareForeign Untracked "Value.deserialize" argToEither Value_deserialize
+  declareForeign Tracked argToEF0 Tls_terminate_impl_v3
+  declareForeign Untracked argToExnE Code_validateLinks
+  declareForeign Untracked (argNDirect 1) Code_dependencies
+  declareForeign Untracked (argNDirect 1) Code_serialize
+  declareForeign Untracked argToEither Code_deserialize
+  declareForeign Untracked (argNDirect 2) Code_display
+  declareForeign Untracked (argNDirect 1) Value_dependencies
+  declareForeign Untracked (argNDirect 1) Value_serialize
+  declareForeign Untracked argToEither Value_deserialize
   -- Hashing functions
-  declareForeign Untracked "crypto.HashAlgorithm.Sha3_512" direct Crypto_HashAlgorithm_Sha3_512
-  declareForeign Untracked "crypto.HashAlgorithm.Sha3_256" direct Crypto_HashAlgorithm_Sha3_256
-  declareForeign Untracked "crypto.HashAlgorithm.Sha2_512" direct Crypto_HashAlgorithm_Sha2_512
-  declareForeign Untracked "crypto.HashAlgorithm.Sha2_256" direct Crypto_HashAlgorithm_Sha2_256
-  declareForeign Untracked "crypto.HashAlgorithm.Sha1" direct Crypto_HashAlgorithm_Sha1
-  declareForeign Untracked "crypto.HashAlgorithm.Blake2b_512" direct Crypto_HashAlgorithm_Blake2b_512
-  declareForeign Untracked "crypto.HashAlgorithm.Blake2b_256" direct Crypto_HashAlgorithm_Blake2b_256
-  declareForeign Untracked "crypto.HashAlgorithm.Blake2s_256" direct Crypto_HashAlgorithm_Blake2s_256
-  declareForeign Untracked "crypto.HashAlgorithm.Md5" direct Crypto_HashAlgorithm_Md5
+  declareForeign Untracked direct Crypto_HashAlgorithm_Sha3_512
+  declareForeign Untracked direct Crypto_HashAlgorithm_Sha3_256
+  declareForeign Untracked direct Crypto_HashAlgorithm_Sha2_512
+  declareForeign Untracked direct Crypto_HashAlgorithm_Sha2_256
+  declareForeign Untracked direct Crypto_HashAlgorithm_Sha1
+  declareForeign Untracked direct Crypto_HashAlgorithm_Blake2b_512
+  declareForeign Untracked direct Crypto_HashAlgorithm_Blake2b_256
+  declareForeign Untracked direct Crypto_HashAlgorithm_Blake2s_256
+  declareForeign Untracked direct Crypto_HashAlgorithm_Md5
 
-  declareForeign Untracked "crypto.hashBytes" (argNDirect 2) Crypto_hashBytes
-  declareForeign Untracked "crypto.hmacBytes" (argNDirect 3) Crypto_hmacBytes
+  declareForeign Untracked (argNDirect 2) Crypto_hashBytes
+  declareForeign Untracked (argNDirect 3) Crypto_hmacBytes
 
-  declareForeign Untracked "crypto.hash" crypto'hash Crypto_hash
-  declareForeign Untracked "crypto.hmac" crypto'hmac Crypto_hmac
-  declareForeign Untracked "crypto.Ed25519.sign.impl" arg3ToEF Crypto_Ed25519_sign_impl
+  declareForeign Untracked crypto'hash Crypto_hash
+  declareForeign Untracked crypto'hmac Crypto_hmac
+  declareForeign Untracked arg3ToEF Crypto_Ed25519_sign_impl
 
-  declareForeign Untracked "crypto.Ed25519.verify.impl" arg3ToEFBool Crypto_Ed25519_verify_impl
+  declareForeign Untracked arg3ToEFBool Crypto_Ed25519_verify_impl
 
-  declareForeign Untracked "crypto.Rsa.sign.impl" arg2ToEF Crypto_Rsa_sign_impl
+  declareForeign Untracked arg2ToEF Crypto_Rsa_sign_impl
 
-  declareForeign Untracked "crypto.Rsa.verify.impl" arg3ToEFBool Crypto_Rsa_verify_impl
+  declareForeign Untracked arg3ToEFBool Crypto_Rsa_verify_impl
 
-  declareForeign Untracked "Universal.murmurHash" murmur'hash Universal_murmurHash
-  declareForeign Tracked "IO.randomBytes" (argNDirect 1) IO_randomBytes
-  declareForeign Untracked "Bytes.zlib.compress" (argNDirect 1) Bytes_zlib_compress
-  declareForeign Untracked "Bytes.gzip.compress" (argNDirect 1) Bytes_gzip_compress
-  declareForeign Untracked "Bytes.zlib.decompress" argToEither Bytes_zlib_decompress
-  declareForeign Untracked "Bytes.gzip.decompress" argToEither Bytes_gzip_decompress
+  declareForeign Untracked murmur'hash Universal_murmurHash
+  declareForeign Tracked (argNDirect 1) IO_randomBytes
+  declareForeign Untracked (argNDirect 1) Bytes_zlib_compress
+  declareForeign Untracked (argNDirect 1) Bytes_gzip_compress
+  declareForeign Untracked argToEither Bytes_zlib_decompress
+  declareForeign Untracked argToEither Bytes_gzip_decompress
 
-  declareForeign Untracked "Bytes.toBase16" (argNDirect 1) Bytes_toBase16
-  declareForeign Untracked "Bytes.toBase32" (argNDirect 1) Bytes_toBase32
-  declareForeign Untracked "Bytes.toBase64" (argNDirect 1) Bytes_toBase64
-  declareForeign Untracked "Bytes.toBase64UrlUnpadded" (argNDirect 1) Bytes_toBase64UrlUnpadded
+  declareForeign Untracked (argNDirect 1) Bytes_toBase16
+  declareForeign Untracked (argNDirect 1) Bytes_toBase32
+  declareForeign Untracked (argNDirect 1) Bytes_toBase64
+  declareForeign Untracked (argNDirect 1) Bytes_toBase64UrlUnpadded
 
-  declareForeign Untracked "Bytes.fromBase16" argToEither Bytes_fromBase16
-  declareForeign Untracked "Bytes.fromBase32" argToEither Bytes_fromBase32
-  declareForeign Untracked "Bytes.fromBase64" argToEither Bytes_fromBase64
-  declareForeign Untracked "Bytes.fromBase64UrlUnpadded" argToEither Bytes_fromBase64UrlUnpadded
+  declareForeign Untracked argToEither Bytes_fromBase16
+  declareForeign Untracked argToEither Bytes_fromBase32
+  declareForeign Untracked argToEither Bytes_fromBase64
+  declareForeign Untracked argToEither Bytes_fromBase64UrlUnpadded
 
-  declareForeign Untracked "Bytes.decodeNat64be" argToMaybeNTup Bytes_decodeNat64be
-  declareForeign Untracked "Bytes.decodeNat64le" argToMaybeNTup Bytes_decodeNat64le
-  declareForeign Untracked "Bytes.decodeNat32be" argToMaybeNTup Bytes_decodeNat32be
-  declareForeign Untracked "Bytes.decodeNat32le" argToMaybeNTup Bytes_decodeNat32le
-  declareForeign Untracked "Bytes.decodeNat16be" argToMaybeNTup Bytes_decodeNat16be
-  declareForeign Untracked "Bytes.decodeNat16le" argToMaybeNTup Bytes_decodeNat16le
+  declareForeign Untracked argToMaybeNTup Bytes_decodeNat64be
+  declareForeign Untracked argToMaybeNTup Bytes_decodeNat64le
+  declareForeign Untracked argToMaybeNTup Bytes_decodeNat32be
+  declareForeign Untracked argToMaybeNTup Bytes_decodeNat32le
+  declareForeign Untracked argToMaybeNTup Bytes_decodeNat16be
+  declareForeign Untracked argToMaybeNTup Bytes_decodeNat16le
 
-  declareForeign Untracked "Bytes.encodeNat64be" (argNDirect 1) Bytes_encodeNat64be
-  declareForeign Untracked "Bytes.encodeNat64le" (argNDirect 1) Bytes_encodeNat64le
-  declareForeign Untracked "Bytes.encodeNat32be" (argNDirect 1) Bytes_encodeNat32be
-  declareForeign Untracked "Bytes.encodeNat32le" (argNDirect 1) Bytes_encodeNat32le
-  declareForeign Untracked "Bytes.encodeNat16be" (argNDirect 1) Bytes_encodeNat16be
-  declareForeign Untracked "Bytes.encodeNat16le" (argNDirect 1) Bytes_encodeNat16le
+  declareForeign Untracked (argNDirect 1) Bytes_encodeNat64be
+  declareForeign Untracked (argNDirect 1) Bytes_encodeNat64le
+  declareForeign Untracked (argNDirect 1) Bytes_encodeNat32be
+  declareForeign Untracked (argNDirect 1) Bytes_encodeNat32le
+  declareForeign Untracked (argNDirect 1) Bytes_encodeNat16be
+  declareForeign Untracked (argNDirect 1) Bytes_encodeNat16le
 
-  declareForeign Untracked "MutableArray.copyTo!" arg5ToExnUnit MutableArray_copyTo_force
+  declareForeign Untracked arg5ToExnUnit MutableArray_copyTo_force
 
-  declareForeign Untracked "MutableByteArray.copyTo!" arg5ToExnUnit MutableByteArray_copyTo_force
+  declareForeign Untracked arg5ToExnUnit MutableByteArray_copyTo_force
 
-  declareForeign Untracked "ImmutableArray.copyTo!" arg5ToExnUnit ImmutableArray_copyTo_force
+  declareForeign Untracked arg5ToExnUnit ImmutableArray_copyTo_force
 
-  declareForeign Untracked "ImmutableArray.size" (argNDirect 1) ImmutableArray_size
-  declareForeign Untracked "MutableArray.size" (argNDirect 1) MutableArray_size
-  declareForeign Untracked "ImmutableByteArray.size" (argNDirect 1) ImmutableByteArray_size
-  declareForeign Untracked "MutableByteArray.size" (argNDirect 1) MutableByteArray_size
+  declareForeign Untracked (argNDirect 1) ImmutableArray_size
+  declareForeign Untracked (argNDirect 1) MutableArray_size
+  declareForeign Untracked (argNDirect 1) ImmutableByteArray_size
+  declareForeign Untracked (argNDirect 1) MutableByteArray_size
 
-  declareForeign Untracked "ImmutableByteArray.copyTo!" arg5ToExnUnit ImmutableByteArray_copyTo_force
+  declareForeign Untracked arg5ToExnUnit ImmutableByteArray_copyTo_force
 
-  declareForeign Untracked "MutableArray.read" arg2ToExn MutableArray_read
-  declareForeign Untracked "MutableByteArray.read8" arg2ToExn MutableByteArray_read8
-  declareForeign Untracked "MutableByteArray.read16be" arg2ToExn MutableByteArray_read16be
-  declareForeign Untracked "MutableByteArray.read24be" arg2ToExn MutableByteArray_read24be
-  declareForeign Untracked "MutableByteArray.read32be" arg2ToExn MutableByteArray_read32be
-  declareForeign Untracked "MutableByteArray.read40be" arg2ToExn MutableByteArray_read40be
-  declareForeign Untracked "MutableByteArray.read64be" arg2ToExn MutableByteArray_read64be
+  declareForeign Untracked arg2ToExn MutableArray_read
+  declareForeign Untracked arg2ToExn MutableByteArray_read8
+  declareForeign Untracked arg2ToExn MutableByteArray_read16be
+  declareForeign Untracked arg2ToExn MutableByteArray_read24be
+  declareForeign Untracked arg2ToExn MutableByteArray_read32be
+  declareForeign Untracked arg2ToExn MutableByteArray_read40be
+  declareForeign Untracked arg2ToExn MutableByteArray_read64be
 
-  declareForeign Untracked "MutableArray.write" arg3ToExnUnit MutableArray_write
-  declareForeign Untracked "MutableByteArray.write8" arg3ToExnUnit MutableByteArray_write8
-  declareForeign Untracked "MutableByteArray.write16be" arg3ToExnUnit MutableByteArray_write16be
-  declareForeign Untracked "MutableByteArray.write32be" arg3ToExnUnit MutableByteArray_write32be
-  declareForeign Untracked "MutableByteArray.write64be" arg3ToExnUnit MutableByteArray_write64be
+  declareForeign Untracked arg3ToExnUnit MutableArray_write
+  declareForeign Untracked arg3ToExnUnit MutableByteArray_write8
+  declareForeign Untracked arg3ToExnUnit MutableByteArray_write16be
+  declareForeign Untracked arg3ToExnUnit MutableByteArray_write32be
+  declareForeign Untracked arg3ToExnUnit MutableByteArray_write64be
 
-  declareForeign Untracked "ImmutableArray.read" arg2ToExn ImmutableArray_read
-  declareForeign Untracked "ImmutableByteArray.read8" arg2ToExn ImmutableByteArray_read8
-  declareForeign Untracked "ImmutableByteArray.read16be" arg2ToExn ImmutableByteArray_read16be
-  declareForeign Untracked "ImmutableByteArray.read24be" arg2ToExn ImmutableByteArray_read24be
-  declareForeign Untracked "ImmutableByteArray.read32be" arg2ToExn ImmutableByteArray_read32be
-  declareForeign Untracked "ImmutableByteArray.read40be" arg2ToExn ImmutableByteArray_read40be
-  declareForeign Untracked "ImmutableByteArray.read64be" arg2ToExn ImmutableByteArray_read64be
+  declareForeign Untracked arg2ToExn ImmutableArray_read
+  declareForeign Untracked arg2ToExn ImmutableByteArray_read8
+  declareForeign Untracked arg2ToExn ImmutableByteArray_read16be
+  declareForeign Untracked arg2ToExn ImmutableByteArray_read24be
+  declareForeign Untracked arg2ToExn ImmutableByteArray_read32be
+  declareForeign Untracked arg2ToExn ImmutableByteArray_read40be
+  declareForeign Untracked arg2ToExn ImmutableByteArray_read64be
 
-  declareForeign Untracked "MutableByteArray.freeze!" (argNDirect 1) MutableByteArray_freeze_force
-  declareForeign Untracked "MutableArray.freeze!" (argNDirect 1) MutableArray_freeze_force
+  declareForeign Untracked (argNDirect 1) MutableByteArray_freeze_force
+  declareForeign Untracked (argNDirect 1) MutableArray_freeze_force
 
-  declareForeign Untracked "MutableByteArray.freeze" arg3ToExn MutableByteArray_freeze
-  declareForeign Untracked "MutableArray.freeze" arg3ToExn MutableArray_freeze
+  declareForeign Untracked arg3ToExn MutableByteArray_freeze
+  declareForeign Untracked arg3ToExn MutableArray_freeze
 
-  declareForeign Untracked "MutableByteArray.length" (argNDirect 1) MutableByteArray_length
+  declareForeign Untracked (argNDirect 1) MutableByteArray_length
 
-  declareForeign Untracked "ImmutableByteArray.length" (argNDirect 1) ImmutableByteArray_length
+  declareForeign Untracked (argNDirect 1) ImmutableByteArray_length
 
-  declareForeign Tracked "IO.array" (argNDirect 1) IO_array
-  declareForeign Tracked "IO.arrayOf" (argNDirect 2) IO_arrayOf
-  declareForeign Tracked "IO.bytearray" (argNDirect 1) IO_bytearray
-  declareForeign Tracked "IO.bytearrayOf" (argNDirect 2) IO_bytearrayOf
+  declareForeign Tracked (argNDirect 1) IO_array
+  declareForeign Tracked (argNDirect 2) IO_arrayOf
+  declareForeign Tracked (argNDirect 1) IO_bytearray
+  declareForeign Tracked (argNDirect 2) IO_bytearrayOf
 
-  declareForeign Untracked "Scope.array" (argNDirect 1) Scope_array
-  declareForeign Untracked "Scope.arrayOf" (argNDirect 2) Scope_arrayOf
-  declareForeign Untracked "Scope.bytearray" (argNDirect 1) Scope_bytearray
-  declareForeign Untracked "Scope.bytearrayOf" (argNDirect 2) Scope_bytearrayOf
+  declareForeign Untracked (argNDirect 1) Scope_array
+  declareForeign Untracked (argNDirect 2) Scope_arrayOf
+  declareForeign Untracked (argNDirect 1) Scope_bytearray
+  declareForeign Untracked (argNDirect 2) Scope_bytearrayOf
 
-  declareForeign Untracked "Text.patterns.literal" (argNDirect 1) Text_patterns_literal
-  declareForeign Untracked "Text.patterns.digit" direct Text_patterns_digit
-  declareForeign Untracked "Text.patterns.letter" direct Text_patterns_letter
-  declareForeign Untracked "Text.patterns.space" direct Text_patterns_space
-  declareForeign Untracked "Text.patterns.punctuation" direct Text_patterns_punctuation
-  declareForeign Untracked "Text.patterns.anyChar" direct Text_patterns_anyChar
-  declareForeign Untracked "Text.patterns.eof" direct Text_patterns_eof
-  declareForeign Untracked "Text.patterns.charRange" (argNDirect 2) Text_patterns_charRange
-  declareForeign Untracked "Text.patterns.notCharRange" (argNDirect 2) Text_patterns_notCharRange
-  declareForeign Untracked "Text.patterns.charIn" (argNDirect 1) Text_patterns_charIn
-  declareForeign Untracked "Text.patterns.notCharIn" (argNDirect 1) Text_patterns_notCharIn
-  declareForeign Untracked "Pattern.many" (argNDirect 1) Pattern_many
-  declareForeign Untracked "Pattern.many.corrected" (argNDirect 1) Pattern_many_corrected
-  declareForeign Untracked "Pattern.capture" (argNDirect 1) Pattern_capture
-  declareForeign Untracked "Pattern.captureAs" (argNDirect 2) Pattern_captureAs
-  declareForeign Untracked "Pattern.join" (argNDirect 1) Pattern_join
-  declareForeign Untracked "Pattern.or" (argNDirect 2) Pattern_or
-  declareForeign Untracked "Pattern.replicate" (argNDirect 3) Pattern_replicate
+  declareForeign Untracked (argNDirect 1) Text_patterns_literal
+  declareForeign Untracked direct Text_patterns_digit
+  declareForeign Untracked direct Text_patterns_letter
+  declareForeign Untracked direct Text_patterns_space
+  declareForeign Untracked direct Text_patterns_punctuation
+  declareForeign Untracked direct Text_patterns_anyChar
+  declareForeign Untracked direct Text_patterns_eof
+  declareForeign Untracked (argNDirect 2) Text_patterns_charRange
+  declareForeign Untracked (argNDirect 2) Text_patterns_notCharRange
+  declareForeign Untracked (argNDirect 1) Text_patterns_charIn
+  declareForeign Untracked (argNDirect 1) Text_patterns_notCharIn
+  declareForeign Untracked (argNDirect 1) Pattern_many
+  declareForeign Untracked (argNDirect 1) Pattern_many_corrected
+  declareForeign Untracked (argNDirect 1) Pattern_capture
+  declareForeign Untracked (argNDirect 2) Pattern_captureAs
+  declareForeign Untracked (argNDirect 1) Pattern_join
+  declareForeign Untracked (argNDirect 2) Pattern_or
+  declareForeign Untracked (argNDirect 3) Pattern_replicate
 
-  declareForeign Untracked "Pattern.run" arg2ToMaybeTup Pattern_run
+  declareForeign Untracked arg2ToMaybeTup Pattern_run
 
-  declareForeign Untracked "Pattern.isMatch" (argNDirect 2) Pattern_isMatch
+  declareForeign Untracked (argNDirect 2) Pattern_isMatch
 
-  declareForeign Untracked "Char.Class.any" direct Char_Class_any
-  declareForeign Untracked "Char.Class.not" (argNDirect 1) Char_Class_not
-  declareForeign Untracked "Char.Class.and" (argNDirect 2) Char_Class_and
-  declareForeign Untracked "Char.Class.or" (argNDirect 2) Char_Class_or
-  declareForeign Untracked "Char.Class.range" (argNDirect 2) Char_Class_range
-  declareForeign Untracked "Char.Class.anyOf" (argNDirect 1) Char_Class_anyOf
-  declareForeign Untracked "Char.Class.alphanumeric" direct Char_Class_alphanumeric
-  declareForeign Untracked "Char.Class.upper" direct Char_Class_upper
-  declareForeign Untracked "Char.Class.lower" direct Char_Class_lower
-  declareForeign Untracked "Char.Class.whitespace" direct Char_Class_whitespace
-  declareForeign Untracked "Char.Class.control" direct Char_Class_control
-  declareForeign Untracked "Char.Class.printable" direct Char_Class_printable
-  declareForeign Untracked "Char.Class.mark" direct Char_Class_mark
-  declareForeign Untracked "Char.Class.number" direct Char_Class_number
-  declareForeign Untracked "Char.Class.punctuation" direct Char_Class_punctuation
-  declareForeign Untracked "Char.Class.symbol" direct Char_Class_symbol
-  declareForeign Untracked "Char.Class.separator" direct Char_Class_separator
-  declareForeign Untracked "Char.Class.letter" direct Char_Class_letter
-  declareForeign Untracked "Char.Class.is" (argNDirect 2) Char_Class_is
-  declareForeign Untracked "Text.patterns.char" (argNDirect 1) Text_patterns_char
+  declareForeign Untracked direct Char_Class_any
+  declareForeign Untracked (argNDirect 1) Char_Class_not
+  declareForeign Untracked (argNDirect 2) Char_Class_and
+  declareForeign Untracked (argNDirect 2) Char_Class_or
+  declareForeign Untracked (argNDirect 2) Char_Class_range
+  declareForeign Untracked (argNDirect 1) Char_Class_anyOf
+  declareForeign Untracked direct Char_Class_alphanumeric
+  declareForeign Untracked direct Char_Class_upper
+  declareForeign Untracked direct Char_Class_lower
+  declareForeign Untracked direct Char_Class_whitespace
+  declareForeign Untracked direct Char_Class_control
+  declareForeign Untracked direct Char_Class_printable
+  declareForeign Untracked direct Char_Class_mark
+  declareForeign Untracked direct Char_Class_number
+  declareForeign Untracked direct Char_Class_punctuation
+  declareForeign Untracked direct Char_Class_symbol
+  declareForeign Untracked direct Char_Class_separator
+  declareForeign Untracked direct Char_Class_letter
+  declareForeign Untracked (argNDirect 2) Char_Class_is
+  declareForeign Untracked (argNDirect 1) Text_patterns_char
 
-foreignDeclResults :: (Map ForeignFunc (Sandbox, SuperNormal Symbol, Data.Text.Text))
+foreignDeclResults :: (Map ForeignFunc (Sandbox, SuperNormal Symbol))
 foreignDeclResults =
   execState declareForeigns mempty
 
 foreignWrappers :: [(Data.Text.Text, (Sandbox, SuperNormal Symbol))]
 foreignWrappers =
-  Map.elems foreignDeclResults
-    <&> \(sand, code, name) -> (name, (sand, code))
+  Map.toList foreignDeclResults
+    <&> \(ff, (sand, code)) -> (foreignFuncBuiltinName ff, (sand, code))
 
 numberedTermLookup :: EnumMap Word64 (SuperNormal Symbol)
 numberedTermLookup =
@@ -2099,8 +2100,12 @@ builtinTermBackref :: EnumMap Word64 Reference
 builtinTermBackref =
   mapFromList . zip [1 ..] . Map.keys $ builtinLookup
 
-builtinForeignNames :: Map ANF.ForeignFunc Data.Text.Text
-builtinForeignNames = foreignDeclResults <&> \(_, _, n) -> n
+builtinForeignNames :: Map ForeignFunc Data.Text.Text
+builtinForeignNames =
+  foreignDeclResults
+    & Map.keys
+    & map (\f -> (f, foreignFuncBuiltinName f))
+    & Map.fromList
 
 -- Bootstrapping for sandbox check. The eventual map will be one with
 -- associations `r -> s` where `s` is all the 'sensitive' base
@@ -2121,3 +2126,8 @@ builtinArities =
 builtinInlineInfo :: Map Reference (Int, ANormal Symbol)
 builtinInlineInfo =
   ANF.buildInlineMap $ fmap (Rec [] . snd) builtinLookup
+
+sandboxedForeignFuncs :: Set ForeignFunc
+sandboxedForeignFuncs =
+  Map.keysSet $
+    Map.filter (\(sb, _) -> sb == Tracked) foreignDeclResults

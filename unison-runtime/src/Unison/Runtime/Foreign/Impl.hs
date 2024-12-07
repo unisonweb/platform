@@ -135,6 +135,7 @@ import Unison.Runtime.Exception (die)
 import Unison.Runtime.Foreign hiding (Failure)
 import Unison.Runtime.Foreign qualified as F
 import Unison.Runtime.Foreign.Function (ForeignConvention (..))
+import Unison.Runtime.Foreign.Function.Type (ForeignFunc (..))
 import Unison.Runtime.MCode
 import Unison.Runtime.Stack
 import Unison.Symbol
@@ -152,7 +153,7 @@ import Unison.Util.Text qualified as Util.Text
 import Unison.Util.Text.Pattern qualified as TPat
 import UnliftIO qualified
 
-foreignCall :: MForeignFunc -> Args -> Stack -> IO Stack
+foreignCall :: ForeignFunc -> Args -> Stack -> IO Stack
 foreignCall = \case
   IO_UDP_clientSocket_impl_v1 -> mkForeignIOF $ \(host :: Util.Text.Text, port :: Util.Text.Text) ->
     let hostStr = Util.Text.toString host
