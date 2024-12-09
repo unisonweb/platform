@@ -52,11 +52,11 @@ If the name stays the same, the churn is even prevented if the type is updated a
 scratch/main> names A
 
   Type
-  Hash:  #uj8oalgadr
+  Hash:  #j743idicb1
   Names: A
 
   Term
-  Hash:   #uj8oalgadr#0
+  Hash:   #j743idicb1#0
   Names:  A.A
 ```
 
@@ -88,11 +88,11 @@ scratch/main> update
 scratch/main> names A
 
   Type
-  Hash:  #ufo5tuc7ho
+  Hash:  #186m0i6upt
   Names: A
 
   Term
-  Hash:   #ufo5tuc7ho#0
+  Hash:   #186m0i6upt#0
   Names:  A.A
 ```
 
@@ -126,10 +126,10 @@ scratch/main> update
 scratch/main> names A
 
   Type
-  Hash:  #uj8oalgadr
+  Hash:  #j743idicb1
   Names: A
 
   Term
-  Hash:   #uj8oalgadr#0
+  Hash:   #j743idicb1#0
   Names:  A.A
 ```

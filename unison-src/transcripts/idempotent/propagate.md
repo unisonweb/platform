@@ -38,13 +38,13 @@ scratch/main> add
 
 scratch/main> find.verbose
 
-  1. -- #uj8oalgadr2f52qloufah6t8vsvbc76oqijkotek87vooih7aqu44k20hrs34kartusapghp4jmfv6g1409peklv3r6a527qpk52soo
+  1. -- #j743idicb1sf7udts85812agaml4rkfi3iss6lstvmvgufibd40blq5qtmoh9ndrtkvkaqkurn7npgc61ob8j2louj04j8slkppsl90
      type Foo
      
-  2. -- #uj8oalgadr2f52qloufah6t8vsvbc76oqijkotek87vooih7aqu44k20hrs34kartusapghp4jmfv6g1409peklv3r6a527qpk52soo#0
+  2. -- #j743idicb1sf7udts85812agaml4rkfi3iss6lstvmvgufibd40blq5qtmoh9ndrtkvkaqkurn7npgc61ob8j2louj04j8slkppsl90#0
      Foo.Foo : Foo
      
-  3. -- #j6hbm1gc2ak4f46b6705q90ld4bmhoi8etq2q45j081i9jgn95fvk3p6tjg67e7sm0021035i8qikmk4p6k845l5d00u26cos5731to
+  3. -- #sd7apvqbpk3vl2aassq4gcckovohqrs05ne1g9ol0fb6gd227bp388osj7bg40kttt2o9f1kit9avlb94ep8q1ho3g284ursrplb4l0
      fooToInt : Foo -> Int
      
 

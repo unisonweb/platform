@@ -27,6 +27,6 @@ scratch/main> add
 scratch/main> names term1
 
   Term
-  Hash:   #8hum58rlih
+  Hash:   #42m1ui9g56
   Names:  term1 term2
 ```
