@@ -81,7 +81,7 @@ rule1 f x =
     term x + 1 ==> Nat.increment x
     term a -> f a ==> f
 
-type Optional2 a = Some2 a | None2
+type Optional2 a = None2 | Some2 a
 
 rule2 x = @rewrite signature Optional ==> Optional2
 ```
@@ -111,7 +111,7 @@ rule1 f x =
     term x + 1 ==> Nat.increment x
     term a -> f a ==> f
 
-type Optional2 a = Some2 a | None2
+type Optional2 a = None2 | Some2 a
 
 rule2 x = @rewrite signature Optional ==> Optional2
 ```
