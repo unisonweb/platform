@@ -591,8 +591,9 @@ exec !_ !denv !_activeThreads !stk !k _ (Seq as) = do
   stk <- bump stk
   pokeS stk $ Sq.fromList l
   pure (denv, stk, k)
-exec !_env !denv !_activeThreads !stk !k _ (ForeignCall _ func args) =
-  (denv,,k) <$> foreignCall func args stk
+exec !_env !denv !_activeThreads !stk !k _ (ForeignCall _ func args) = do
+  stk <- xStackIOToIO $ foreignCall func args (unpackXStack stk)
+  pure (denv, stk, k)
 exec !env !denv !activeThreads !stk !k _ (Fork i)
   | sandboxed env = die "attempted to use sandboxed operation: fork"
   | otherwise = do
