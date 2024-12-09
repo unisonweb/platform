@@ -96,7 +96,7 @@ scratch/main> history Bar
   Note: The most recent namespace hash is immediately below this
         message.
 
-  ⊙ 1. #o7vuviel4c
+  ⊙ 1. #hk3a3lsc2e
 
     + Adds / updates:
     
@@ -106,7 +106,7 @@ scratch/main> history Bar
     
       T.T
 
-  □ 2. #c5cggiaumo (start of history)
+  □ 2. #vqc50q3b3v (start of history)
 ```
 
 ## Happy Path - Just term

@@ -70,16 +70,16 @@ scratch/main> view Foo
 
 scratch/main> find.verbose
 
-  1. -- #b509v3eg4kehsg29g6pvrogeb71ue32nm2fj9284n4i7lprsr7u9a7g6s695d09du0fsfti6rrsk1s62q5thpr1jjkqb3us3s0lrd60
+  1. -- #oebc8v8v9lob5bnq7go1pjhfjbtnh8dmfhontua90t3mji0cl91t1dqaece9quofrk1vsbq6g0ukfigoi0vmvc01v8roceppejlgbs8
      type Foo
      
-  2. -- #36rn6jqt1k5jccb3c7vagp3jam74dngr92kgcntqhs6dbkua54verfert2i6hsku6uitt9s2jvt1msric0tgemal52d5apav6akn25o
+  2. -- #gl18p1lnbeari67ohdt9n46usnvsl59a6up1lhd9r808pqb7tt5edsf65o98bqcvb529mfm7q631ciuv2t5nqnde1i7b9t5mlu1drto
      Foo.Bar : Nat -> Foo
      
-  3. -- #b509v3eg4kehsg29g6pvrogeb71ue32nm2fj9284n4i7lprsr7u9a7g6s695d09du0fsfti6rrsk1s62q5thpr1jjkqb3us3s0lrd60#0
+  3. -- #oebc8v8v9lob5bnq7go1pjhfjbtnh8dmfhontua90t3mji0cl91t1dqaece9quofrk1vsbq6g0ukfigoi0vmvc01v8roceppejlgbs8#0
      Foo.internal.Bar : Nat -> Foo
      
-  4. -- #204frdcl0iid1ujkkfbkc6b3v7cgqp56h1q3duc46i5md6qb4m6am1fqbceb335u87l05gkdnaa7fjn4alj1diukgme63e41lh072l8
+  4. -- #td96hudai64mf0qgtusc70ehv98krs10jghdipjluc6cp4j8ac65msrt3tji18enpm2tm8d8h2qcf3parke19g7s17ipkd925m3061g
      makeFoo : Nat -> Foo
      
 ```

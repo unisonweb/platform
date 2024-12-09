@@ -31,9 +31,10 @@ unique type T a
   Loading changes detected in scratch.u.
 
   Kind mismatch arising from
-        3 |   | StarStar (a Nat)
+        2 |   = Star a
     
-    a doesn't expect an argument; however, it is applied to Nat.
+    The arrow type (->) expects arguments of kind Type; however,
+    it is applied to a which has kind: Type -> Type.
 ```
 
 ## Kinds are inferred by decl component
