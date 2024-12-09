@@ -238,7 +238,7 @@ main version = do
               Right (Right (v, rf, combIx, sto))
                 | not vmatch -> mismatchMsg
                 | otherwise ->
-                    withArgs args (RTI.runStandalone sto combIx) >>= \case
+                    withArgs args (RTI.runStandalone False sto combIx) >>= \case
                       Left err -> exitError err
                       Right () -> pure ()
                 where

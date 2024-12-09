@@ -120,6 +120,7 @@ import Unison.Runtime.MCode
     emitComb,
     emptyRNs,
     resolveCombs,
+    sanitizeCombs,
   )
 import Unison.Runtime.MCode.Serialize
 import Unison.Runtime.Machine
@@ -1255,9 +1256,9 @@ tryM =
     hRE (PE _ e) = pure $ Just e
     hRE (BU _ _ _) = pure $ Just "impossible"
 
-runStandalone :: StoredCache -> CombIx -> IO (Either (Pretty ColorText) ())
-runStandalone sc init =
-  restoreCache sc >>= executeMainComb init
+runStandalone :: Bool -> StoredCache -> CombIx -> IO (Either (Pretty ColorText) ())
+runStandalone sandboxed sc init =
+  restoreCache sandboxed sc >>= executeMainComb init
 
 -- | A version of the Code Cache designed to be serialized to disk as
 -- standalone bytecode.
@@ -1319,10 +1320,10 @@ tabulateErrors errs =
       : P.wrap "The following errors occured while decompiling:"
       : (listErrors errs)
 
-restoreCache :: StoredCache -> IO CCache
-restoreCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
+restoreCache :: Bool -> StoredCache -> IO CCache
+restoreCache sandboxed (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
   cc <-
-    CCache builtinForeigns False debugText
+    CCache sandboxed debugText
       <$> newTVarIO srcCombs
       <*> newTVarIO combs
       <*> newTVarIO (crs <> builtinTermBackref)
@@ -1336,6 +1337,7 @@ restoreCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
       <*> newTVarIO (sbs <> baseSandboxInfo)
   let (unresolvedCacheableCombs, unresolvedNonCacheableCombs) =
         srcCombs
+          & sanitizeCombs sandboxed sandboxedForeignFuncs
           & absurdCombs
           & EC.mapToList
           & foldMap
@@ -1369,6 +1371,7 @@ restoreCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
     combs :: EnumMap Word64 (RCombs Val)
     combs =
       srcCombs
+        & sanitizeCombs sandboxed sandboxedForeignFuncs
         & absurdCombs
         & resolveCombs Nothing
 

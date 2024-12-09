@@ -8,9 +8,7 @@
 {-# LANGUAGE ViewPatterns #-}
 
 module Unison.Runtime.Foreign.Function
-  ( ForeignFunc (..),
-    ForeignConvention (..),
-    mkForeign,
+  ( ForeignConvention (..),
   )
 where
 
@@ -24,7 +22,6 @@ import Data.IORef (IORef)
 import Data.Sequence qualified as Sq
 import Data.Time.Clock.POSIX (POSIXTime)
 import Data.Word (Word16, Word32, Word64, Word8)
-import GHC.Base (IO (..))
 import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Network.Socket (Socket)
 import Network.UDP (UDPSocket)
@@ -35,7 +32,6 @@ import Unison.Runtime.ANF (Code, PackedTag (..), Value, internalBug)
 import Unison.Runtime.Array qualified as PA
 import Unison.Runtime.Exception
 import Unison.Runtime.Foreign
-import Unison.Runtime.MCode
 import Unison.Runtime.Stack
 import Unison.Type
   ( iarrayRef,
@@ -53,46 +49,11 @@ import Unison.Util.Bytes (Bytes)
 import Unison.Util.RefPromise (Promise)
 import Unison.Util.Text (Text, pack, unpack)
 
--- Foreign functions operating on stacks
-data ForeignFunc where
-  FF ::
-    (XStack -> Args -> IO a) ->
-    (XStack -> r -> IOStack) ->
-    (a -> IO r) ->
-    ForeignFunc
-
-instance Show ForeignFunc where
-  show _ = "ForeignFunc"
-
-instance Eq ForeignFunc where
-  _ == _ = internalBug "Eq ForeignFunc"
-
-instance Ord ForeignFunc where
-  compare _ _ = internalBug "Ord ForeignFunc"
-
 class ForeignConvention a where
   readForeign ::
     [Int] -> Stack -> IO ([Int], a)
   writeForeign ::
     Stack -> a -> IO Stack
-
-mkForeign ::
-  forall a r.
-  (ForeignConvention a, ForeignConvention r) =>
-  (a -> IO r) ->
-  ForeignFunc
-mkForeign ev = FF readArgs doWrite ev
-  where
-    doWrite :: XStack -> r -> IOStack
-    doWrite stk a = case writeForeign (packXStack stk) a of
-      (IO f) -> \state -> case f state of
-        (# state', stk #) -> (# state', unpackXStack stk #)
-    readArgs (packXStack -> stk) (argsToLists -> args) =
-      readForeign args stk >>= \case
-        ([], a) -> pure a
-        _ ->
-          internalBug
-            "mkForeign: too many arguments for foreign function"
 
 instance ForeignConvention Int where
   readForeign (i : args) stk = (args,) <$> peekOffI stk i
