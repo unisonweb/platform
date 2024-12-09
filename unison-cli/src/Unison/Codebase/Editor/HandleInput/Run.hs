@@ -56,7 +56,9 @@ handleRun native main args = do
   let pped = PPED.makePPED (PPE.hqNamer 10 namesWithFileDefinitions) (PPE.suffixifyByHash namesWithFileDefinitions)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   let mode | native = Native | otherwise = Permissive
-  (_, xs) <- evalUnisonFile mode suffixifiedPPE unisonFile args
+  (_, xs) <-
+    evalUnisonFile mode suffixifiedPPE unisonFile args & onLeftM \err ->
+      Cli.returnEarly (Output.EvaluationFailure err)
   mainRes :: Term Symbol () <-
     case lookup magicMainWatcherString (map bonk (Map.toList xs)) of
       Nothing ->
