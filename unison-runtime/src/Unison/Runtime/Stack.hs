@@ -286,6 +286,11 @@ data GClosure comb
   deriving stock (Show, Functor, Foldable, Traversable)
 {- ORMOLU_ENABLE -}
 
+-- Singleton black hole value to avoid allocation.
+blackHole :: Closure
+blackHole = Closure GBlackHole
+{-# NOINLINE blackHole #-}
+
 pattern PAp :: CombIx -> GCombInfo (RComb Val) -> Seg -> Closure
 pattern PAp cix comb seg = Closure (GPAp cix comb seg)
 
@@ -302,7 +307,9 @@ pattern Captured k a seg = Closure (GCaptured k a seg)
 
 pattern Foreign x = Closure (GForeign x)
 
-pattern BlackHole = Closure GBlackHole
+pattern BlackHole <- Closure GBlackHole
+  where
+    BlackHole = blackHole
 
 pattern UnboxedTypeTag t <- Closure (GUnboxedTypeTag t)
   where
