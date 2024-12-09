@@ -2125,10 +2125,8 @@ codeValidate tml cc = do
       ntys = M.fromList $ zip (S.toList ntys0) [fty ..]
       rty = ntys <> rty0
   ftm <- readTVarIO (freshTm cc)
-  rtm0 <- readTVarIO (refTm cc)
-  let rs = fst <$> tml
-      rtm = rtm0 `M.withoutKeys` S.fromList rs
-      rns = RN (refLookup "ty" rty) (refLookup "tm" rtm) (const Nothing)
+  rtm <- readTVarIO (refTm cc)
+  let rns = RN (refLookup "ty" rty) (refLookup "tm" rtm) (const Nothing)
       combinate (n, (r, g)) = evaluate $ emitCombs rns r n g
   (Nothing <$ traverse_ combinate (zip [ftm ..] tml))
     `catch` \(CE cs perr) ->
