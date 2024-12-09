@@ -730,9 +730,16 @@ data GBranch comb
       !(M.Map Text (GSection comb))
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
+branchToEnumMap :: GBranch comb -> Maybe ((GSection comb), EnumMap Word64 (GSection comb))
+branchToEnumMap = \case
+  (Test1 k t d) -> Just (d, EC.mapSingleton k t)
+  (Test2 k1 s1 k2 s2 d) -> Just (d, EC.mapFromList [(k1, s1), (k2, s2)])
+  (TestW d m) -> Just (d, m)
+  _ -> Nothing
+
 -- Convenience patterns for matches used in the algorithms below.
 pattern MatchW :: Int -> (GSection comb) -> EnumMap Word64 (GSection comb) -> (GSection comb)
-pattern MatchW i d cs <- Match i (TestW d cs)
+pattern MatchW i d cs <- Match i (branchToEnumMap -> Just (d, cs))
   where
     MatchW i d cs = Match i (mkBranch d cs)
 
@@ -741,7 +748,7 @@ pattern MatchT i d cs = Match i (TestT d cs)
 
 pattern NMatchW ::
   Maybe Reference -> Int -> (GSection comb) -> EnumMap Word64 (GSection comb) -> (GSection comb)
-pattern NMatchW r i d cs <- NMatch r i (TestW d cs)
+pattern NMatchW r i d cs <- NMatch r i (branchToEnumMap -> Just (d, cs))
   where
     NMatchW r i d cs = NMatch r i $ mkBranch d cs
 
