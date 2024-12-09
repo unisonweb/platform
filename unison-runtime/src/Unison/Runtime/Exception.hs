@@ -1,4 +1,10 @@
-module Unison.Runtime.Exception where
+module Unison.Runtime.Exception
+  ( RuntimeExn (..),
+    die,
+    dieP,
+    exn,
+  )
+where
 
 import Control.Exception
 import Data.String (fromString)
@@ -17,9 +23,12 @@ instance Exception RuntimeExn
 
 die :: (HasCallStack) => String -> IO a
 die = throwIO . PE callStack . P.lit . fromString
+{-# INLINE die #-}
 
 dieP :: (HasCallStack) => P.Pretty P.ColorText -> IO a
 dieP = throwIO . PE callStack
+{-# INLINE dieP #-}
 
 exn :: (HasCallStack) => String -> a
 exn = throw . PE callStack . P.lit . fromString
+{-# INLINE exn #-}
