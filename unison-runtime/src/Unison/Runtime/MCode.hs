@@ -38,7 +38,7 @@ module Unison.Runtime.MCode
     emitCombs,
     emitComb,
     resolveCombs,
-    sanitizeCombs,
+    sanitizeCombsOfForeignFuncs,
     absurdCombs,
     emptyRNs,
     argsToLists,
@@ -1808,8 +1808,9 @@ prettyArgs :: Args -> ShowS
 prettyArgs ZArgs = showString "ZArgs"
 prettyArgs v = showParen True $ shows v
 
-sanitizeCombs :: Bool -> (Set ForeignFunc) -> EnumMap Word64 (EnumMap Word64 (GComb Void CombIx)) -> EnumMap Word64 (EnumMap Word64 (GComb Void CombIx))
-sanitizeCombs sanitize sandboxedForeigns m
+-- | If running in a sandboxed environment, replace all restricted foreign functions with an error.
+sanitizeCombsOfForeignFuncs :: Bool -> (Set ForeignFunc) -> EnumMap Word64 (EnumMap Word64 (GComb Void CombIx)) -> EnumMap Word64 (EnumMap Word64 (GComb Void CombIx))
+sanitizeCombsOfForeignFuncs sanitize sandboxedForeigns m
   | sanitize = (fmap . fmap) (sanitizeComb sandboxedForeigns) m
   | otherwise = m
 

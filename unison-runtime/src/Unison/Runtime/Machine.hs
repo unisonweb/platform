@@ -196,7 +196,7 @@ baseCCache sandboxed = do
     combs :: EnumMap Word64 MCombs
     combs =
       srcCombs
-        & sanitizeCombs sandboxed sandboxedForeignFuncs
+        & sanitizeCombsOfForeignFuncs sandboxed sandboxedForeignFuncs
         & absurdCombs
         & resolveCombs Nothing
 
@@ -2232,7 +2232,7 @@ cacheAdd0 ntys0 termSuperGroups sands cc = do
     (unresolvedNewCombs, unresolvedCacheableCombs, unresolvedNonCacheableCombs, updatedCombs) <- stateTVar (combs cc) \oldCombs ->
       let unresolvedNewCombs :: EnumMap Word64 (GCombs any CombIx)
           unresolvedNewCombs =
-            absurdCombs . sanitizeCombs (sandboxed cc) sandboxedForeignFuncs . mapFromList $ zipWith combinate [ntm ..] rgs
+            absurdCombs . sanitizeCombsOfForeignFuncs (sandboxed cc) sandboxedForeignFuncs . mapFromList $ zipWith combinate [ntm ..] rgs
           (unresolvedCacheableCombs, unresolvedNonCacheableCombs) =
             EC.mapToList unresolvedNewCombs & foldMap \(w, gcombs) ->
               if EC.member w newCacheableCombs

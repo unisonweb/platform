@@ -120,7 +120,7 @@ import Unison.Runtime.MCode
     emitComb,
     emptyRNs,
     resolveCombs,
-    sanitizeCombs,
+    sanitizeCombsOfForeignFuncs,
   )
 import Unison.Runtime.MCode.Serialize
 import Unison.Runtime.Machine
@@ -1337,7 +1337,7 @@ restoreCache sandboxed (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs
       <*> newTVarIO (sbs <> baseSandboxInfo)
   let (unresolvedCacheableCombs, unresolvedNonCacheableCombs) =
         srcCombs
-          & sanitizeCombs sandboxed sandboxedForeignFuncs
+          & sanitizeCombsOfForeignFuncs sandboxed sandboxedForeignFuncs
           & absurdCombs
           & EC.mapToList
           & foldMap
@@ -1371,7 +1371,7 @@ restoreCache sandboxed (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs
     combs :: EnumMap Word64 (RCombs Val)
     combs =
       srcCombs
-        & sanitizeCombs sandboxed sandboxedForeignFuncs
+        & sanitizeCombsOfForeignFuncs sandboxed sandboxedForeignFuncs
         & absurdCombs
         & resolveCombs Nothing
 
