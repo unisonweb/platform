@@ -179,7 +179,7 @@ import UnliftIO qualified
 foreignCall :: ForeignFunc -> Args -> XStack -> IOXStack
 foreignCall !ff !args !xstk =
   stackIOToIOX $ foreignCallHelper ff args (packXStack xstk)
-{-# INLINE foreignCall #-}
+{-# NOINLINE foreignCall #-}
 
 foreignCallHelper :: ForeignFunc -> Args -> Stack -> IO Stack
 foreignCallHelper = \case

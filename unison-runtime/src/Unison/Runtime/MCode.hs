@@ -285,6 +285,7 @@ argsToLists = \case
   VArgR i l -> take l [i ..]
   VArgN us -> primArrayToList us
   VArgV _ -> internalBug "argsToLists: DArgV"
+{-# INLINEABLE argsToLists #-}
 
 countArgs :: Args -> Int
 countArgs ZArgs = 0
@@ -293,6 +294,7 @@ countArgs (VArg2 {}) = 2
 countArgs (VArgR _ l) = l
 countArgs (VArgN us) = sizeofPrimArray us
 countArgs (VArgV {}) = internalBug "countArgs: DArgV"
+{-# INLINEABLE countArgs #-}
 
 data UPrim1
   = -- integral
