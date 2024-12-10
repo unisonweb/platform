@@ -6,6 +6,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE UnboxedTuples #-}
 
 module Unison.Runtime.Interface
   ( startRuntime,
@@ -858,8 +859,8 @@ prepareEvaluation ppe tm ctx = do
       Just r -> r
       Nothing -> error "prepareEvaluation: could not remap main ref"
 
-watchHook :: IORef Val -> Stack -> IO ()
-watchHook r stk = peek stk >>= writeIORef r
+watchHook :: IORef Val -> XStack -> IO ()
+watchHook r xstk = peek (packXStack xstk) >>= writeIORef r
 
 backReferenceTm ::
   EnumMap Word64 Reference ->

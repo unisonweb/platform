@@ -1,5 +1,8 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE UnboxedTuples #-}
 
 module Unison.Runtime.Stack
   ( K (..),
@@ -27,6 +30,16 @@ module Unison.Runtime.Stack
     Augment (..),
     Dump (..),
     Stack (..),
+    XStack,
+    pattern XStack,
+    packXStack,
+    unpackXStack,
+    IOStack,
+    apX,
+    fpX,
+    spX,
+    ustkX,
+    bstkX,
     Off,
     SZ,
     FP,
@@ -127,18 +140,21 @@ module Unison.Runtime.Stack
     intTypeTag,
     charTypeTag,
     floatTypeTag,
+    hasNoAllocations,
   )
 where
 
 import Control.Monad.Primitive
 import Data.Char qualified as Char
 import Data.IORef (IORef)
-import Data.Kind (Constraint)
 import Data.Primitive (sizeOf)
 import Data.Primitive.ByteArray qualified as BA
 import Data.Tagged (Tagged (..))
 import Data.Word
+import GHC.Base
 import GHC.Exts as L (IsList (..))
+import Language.Haskell.TH qualified as TH
+import Test.Inspection qualified as TI
 import Unison.Prelude
 import Unison.Reference (Reference)
 import Unison.Runtime.ANF (PackedTag)
@@ -189,7 +205,7 @@ type DebugCallStack = (() :: Constraint)
 #endif
 {- ORMOLU_ENABLE -}
 
-newtype Callback = Hook (Stack -> IO ())
+newtype Callback = Hook (XStack -> IO ())
 
 instance Eq Callback where _ == _ = True
 
@@ -270,6 +286,11 @@ data GClosure comb
   deriving stock (Show, Functor, Foldable, Traversable)
 {- ORMOLU_ENABLE -}
 
+-- Singleton black hole value to avoid allocation.
+blackHole :: Closure
+blackHole = Closure GBlackHole
+{-# NOINLINE blackHole #-}
+
 pattern PAp :: CombIx -> GCombInfo (RComb Val) -> Seg -> Closure
 pattern PAp cix comb seg = Closure (GPAp cix comb seg)
 
@@ -286,7 +307,9 @@ pattern Captured k a seg = Closure (GCaptured k a seg)
 
 pattern Foreign x = Closure (GForeign x)
 
-pattern BlackHole = Closure GBlackHole
+pattern BlackHole <- Closure GBlackHole
+  where
+    BlackHole = blackHole
 
 pattern UnboxedTypeTag t <- Closure (GUnboxedTypeTag t)
   where
@@ -619,6 +642,26 @@ data Stack = Stack
     ustk :: {-# UNPACK #-} !(MutableByteArray (PrimState IO)),
     bstk :: {-# UNPACK #-} !(MutableArray (PrimState IO) Closure)
   }
+
+-- Unboxed representation of the Stack, used to force GHC optimizations in a few spots.
+type XStack = (# Int#, Int#, Int#, MutableByteArray# (PrimState IO), MutableArray# (PrimState IO) Closure #)
+
+type IOStack = State# RealWorld -> (# State# RealWorld, XStack #)
+
+pattern XStack :: Int# -> Int# -> Int# -> MutableByteArray# RealWorld -> MutableArray# RealWorld Closure -> Stack
+pattern XStack {apX, fpX, spX, ustkX, bstkX} = Stack (I# apX) (I# fpX) (I# spX) (MutableByteArray ustkX) (MutableArray bstkX)
+
+{-# COMPLETE XStack #-}
+
+{-# INLINE XStack #-}
+
+packXStack :: XStack -> Stack
+packXStack (# ap, fp, sp, ustk, bstk #) = Stack {ap = I# ap, fp = I# fp, sp = I# sp, ustk = MutableByteArray ustk, bstk = MutableArray bstk}
+{-# INLINE packXStack #-}
+
+unpackXStack :: Stack -> XStack
+unpackXStack (Stack (I# ap) (I# fp) (I# sp) (MutableByteArray ustk) (MutableArray bstk)) = (# ap, fp, sp, ustk, bstk #)
+{-# INLINE unpackXStack #-}
 
 instance Show Stack where
   show (Stack ap fp sp _ _) =
@@ -1212,3 +1255,6 @@ contTermRefs f (Mark _ _ m k) =
 contTermRefs f (Push _ _ (CIx r _ _) _ _ k) =
   f r <> contTermRefs f k
 contTermRefs _ _ = mempty
+
+hasNoAllocations :: TH.Name -> TI.Obligation
+hasNoAllocations n = TI.mkObligation n TI.NoAllocation

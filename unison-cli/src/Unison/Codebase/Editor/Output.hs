@@ -417,10 +417,7 @@ data Output
   | FailedToFetchLatestReleaseOfBase
   | HappyCoding
   | ProjectHasNoReleases ProjectName
-  | UpdateLookingForDependents
-  | UpdateStartTypechecking
   | UpdateTypecheckingFailure
-  | UpdateTypecheckingSuccess
   | UpdateIncompleteConstructorSet UpdateOrUpgrade Name (Map ConstructorId Name) (Maybe Int)
   | UpgradeFailure !ProjectBranchName !ProjectBranchName !FilePath !NameSegment !NameSegment
   | UpgradeSuccess !NameSegment !NameSegment
@@ -499,10 +496,7 @@ type SourceFileContents = Text
 
 isFailure :: Output -> Bool
 isFailure o = case o of
-  UpdateLookingForDependents -> False
-  UpdateStartTypechecking -> False
   UpdateTypecheckingFailure {} -> True
-  UpdateTypecheckingSuccess {} -> False
   UpdateIncompleteConstructorSet {} -> True
   AmbiguousCloneLocal {} -> True
   AmbiguousCloneRemote {} -> True

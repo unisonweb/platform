@@ -1,7 +1,9 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -22,6 +24,7 @@ import Data.IORef (IORef)
 import Data.Sequence qualified as Sq
 import Data.Time.Clock.POSIX (POSIXTime)
 import Data.Word (Word16, Word32, Word64, Word8)
+import GHC.Base (IO (..))
 import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Network.Socket (Socket)
 import Network.UDP (UDPSocket)
@@ -53,8 +56,8 @@ import Unison.Util.Text (Text, pack, unpack)
 -- Foreign functions operating on stacks
 data ForeignFunc where
   FF ::
-    (Stack -> Args -> IO a) ->
-    (Stack -> r -> IO Stack) ->
+    (XStack -> Args -> IO a) ->
+    (XStack -> r -> IOStack) ->
     (a -> IO r) ->
     ForeignFunc
 
@@ -74,12 +77,17 @@ class ForeignConvention a where
     Stack -> a -> IO Stack
 
 mkForeign ::
+  forall a r.
   (ForeignConvention a, ForeignConvention r) =>
   (a -> IO r) ->
   ForeignFunc
-mkForeign ev = FF readArgs writeForeign ev
+mkForeign ev = FF readArgs doWrite ev
   where
-    readArgs stk (argsToLists -> args) =
+    doWrite :: XStack -> r -> IOStack
+    doWrite stk a = case writeForeign (packXStack stk) a of
+      (IO f) -> \state -> case f state of
+        (# state', stk #) -> (# state', unpackXStack stk #)
+    readArgs (packXStack -> stk) (argsToLists -> args) =
       readForeign args stk >>= \case
         ([], a) -> pure a
         _ ->

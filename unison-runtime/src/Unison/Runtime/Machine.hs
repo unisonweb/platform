@@ -1,8 +1,30 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE UnboxedTuples #-}
 
-module Unison.Runtime.Machine where
+module Unison.Runtime.Machine
+  ( ActiveThreads,
+    CCache (..),
+    Combs,
+    Tracer (..),
+    apply0,
+    baseCCache,
+    cacheAdd,
+    cacheAdd0,
+    eval0,
+    expandSandbox,
+    preEvalTopLevelConstants,
+    refLookup,
+    refNumTm,
+    refNumsTm,
+    refNumsTy,
+    reifyValue,
+    resolveSection,
+  )
+where
 
 import Control.Concurrent (ThreadId)
 import Control.Concurrent.STM as STM
@@ -21,7 +43,9 @@ import Data.Set qualified as Set
 import Data.Text qualified as DTx
 import Data.Text.IO qualified as Tx
 import Data.Traversable
+import GHC.Base (IO (..))
 import GHC.Conc as STM (unsafeIOToSTM)
+import GHC.Stack
 import Unison.Builtin.Decls (exceptionRef, ioFailureRef)
 import Unison.Builtin.Decls qualified as Rf
 import Unison.ConstructorReference qualified as CR
@@ -49,7 +73,7 @@ import Unison.Runtime.ANF as ANF
 import Unison.Runtime.ANF qualified as ANF
 import Unison.Runtime.Array as PA
 import Unison.Runtime.Builtin
-import Unison.Runtime.Exception
+import Unison.Runtime.Exception (RuntimeExn (..))
 import Unison.Runtime.Foreign
 import Unison.Runtime.Foreign.Function
 import Unison.Runtime.MCode
@@ -62,6 +86,7 @@ import Unison.Util.Bytes qualified as By
 import Unison.Util.EnumContainers as EC
 import Unison.Util.Monoid qualified as Monoid
 import Unison.Util.Pretty (toPlainUnbroken)
+import Unison.Util.Pretty qualified as P
 import Unison.Util.Text qualified as Util.Text
 import UnliftIO qualified
 import UnliftIO.Concurrent qualified as UnliftIO
@@ -70,6 +95,10 @@ import UnliftIO.Concurrent qualified as UnliftIO
 #ifdef STACK_CHECK
 import Unison.Debug qualified as Debug
 import System.IO.Unsafe (unsafePerformIO)
+#endif
+
+#ifdef OPT_CHECK
+import Test.Inspection qualified as TI
 #endif
 {- ORMOLU_ENABLE -}
 
@@ -138,15 +167,6 @@ refNumTm cc r =
     (M.lookup r -> Just w) -> pure w
     _ -> die $ "refNumTm: unknown reference: " ++ show r
 
-refNumTy :: CCache -> Reference -> IO Word64
-refNumTy cc r =
-  refNumsTy cc >>= \case
-    (M.lookup r -> Just w) -> pure w
-    _ -> die $ "refNumTy: unknown reference: " ++ show r
-
-refNumTy' :: CCache -> Reference -> IO (Maybe Word64)
-refNumTy' cc r = M.lookup r <$> refNumsTy cc
-
 baseCCache :: Bool -> IO CCache
 baseCCache sandboxed = do
   CCache ffuncs sandboxed noTrace
@@ -187,13 +207,6 @@ info ctx x = infos ctx (show x)
 infos :: String -> String -> IO ()
 infos ctx s = putStrLn $ ctx ++ ": " ++ s
 
-stk'info :: Stack -> IO ()
-stk'info s@(Stack _ _ sp _ _) = do
-  let prn i
-        | i < 0 = return ()
-        | otherwise = bpeekOff s i >>= print >> prn (i - 1)
-  prn sp
-
 -- Entry point for evaluating a section
 eval0 :: CCache -> ActiveThreads -> MSection -> IO ()
 eval0 !env !activeThreads !co = do
@@ -230,7 +243,7 @@ topDEnv _ _ _ = (mempty, id)
 -- This is the entry point actually used in the interactive
 -- environment currently.
 apply0 ::
-  Maybe (Stack -> IO ()) ->
+  Maybe (XStack -> IO ()) ->
   CCache ->
   ActiveThreads ->
   Word64 ->
@@ -252,7 +265,7 @@ apply0 !callback !env !threadTracker !i = do
     -- if it's cached, we can just finish
     CachedVal _ val -> bump stk >>= \stk -> poke stk val
   where
-    k0 = maybe KE (CB . Hook) callback
+    k0 = fromMaybe KE (callback <&> \cb -> CB . Hook $ \stk -> cb stk)
 
 -- Apply helper currently used for forking. Creates the new stacks
 -- necessary to evaluate a closure with the provided information.
@@ -266,34 +279,10 @@ apply1 callback env threadTracker clo = do
   stk <- alloc
   apply env mempty threadTracker stk k0 True ZArgs $ clo
   where
-    k0 = CB $ Hook callback
-
--- Entry point for evaluating a saved continuation.
---
--- The continuation must be from an evaluation context expecting a
--- unit value.
-jump0 ::
-  (Stack -> IO ()) ->
-  CCache ->
-  ActiveThreads ->
-  Closure ->
-  IO ()
-jump0 !callback !env !activeThreads !clo = do
-  stk <- alloc
-  cmbs <- readTVarIO $ combs env
-  (denv, kf) <-
-    topDEnv cmbs <$> readTVarIO (refTy env) <*> readTVarIO (refTm env)
-  stk <- bump stk
-  bpoke stk (Enum Rf.unitRef TT.unitTag)
-  jump env denv activeThreads stk (kf k0) (VArg1 0) clo
-  where
-    k0 = CB (Hook callback)
+    k0 = CB $ Hook (\stk -> callback $ packXStack stk)
 
 unitValue :: Closure
 unitValue = Enum Rf.unitRef TT.unitTag
-
-lookupDenv :: Word64 -> DEnv -> Val
-lookupDenv p denv = fromMaybe (BoxedVal BlackHole) $ EC.lookup p denv
 
 litToVal :: MLit -> Val
 litToVal = \case
@@ -538,7 +527,8 @@ exec !_ !denv !_activeThreads !stk !k _ (BPrim2 CMPU i j) = do
 exec !_ !_ !_activeThreads !stk !k r (BPrim2 THRO i j) = do
   name <- peekOffBi @Util.Text.Text stk i
   x <- peekOff stk j
-  throwIO (BU (traceK r k) (Util.Text.toText name) x)
+  () <- throwIO (BU (traceK r k) (Util.Text.toText name) x)
+  error "throwIO should never return"
 exec !env !denv !_activeThreads !stk !k _ (BPrim2 TRCE i j)
   | sandboxed env = die "attempted to use sandboxed operation: trace"
   | otherwise = do
@@ -596,9 +586,11 @@ exec !_ !denv !_activeThreads !stk !k _ (Seq as) = do
   pokeS stk $ Sq.fromList l
   pure (denv, stk, k)
 exec !env !denv !_activeThreads !stk !k _ (ForeignCall _ w args)
-  | Just (FF arg res ev) <- EC.lookup w (foreignFuncs env) =
-      (denv,,k)
-        <$> (arg stk args >>= ev >>= res stk)
+  | Just (FF arg res ev) <- EC.lookup w (foreignFuncs env) = do
+      let xStack = unpackXStack stk
+      r <- arg (unpackXStack stk) args >>= ev
+      IO $ \s -> case res xStack r s of
+        (# s, xstk #) -> (# s, (denv, packXStack xstk, k) #)
   | otherwise =
       die $ "reference to unknown foreign function: " ++ show w
 exec !env !denv !activeThreads !stk !k _ (Fork i)
@@ -665,14 +657,6 @@ encodeExn stk exc = do
               (Rf.threadKilledFailureRef, disp ie, boxedVal unitValue)
           | otherwise = (Rf.miscFailureRef, disp exn, boxedVal unitValue)
 
-numValue :: Maybe Reference -> Val -> IO Word64
-numValue _ (UnboxedVal v _) = pure (fromIntegral @Int @Word64 v)
-numValue mr clo =
-  die $
-    "numValue: bad closure: "
-      ++ show clo
-      ++ maybe "" (\r -> "\nexpected type: " ++ show r) mr
-
 -- | Evaluate a section
 eval ::
   CCache ->
@@ -710,7 +694,7 @@ eval !env !denv !activeThreads !stk !k r (RMatch i pu br) = do
       (ANF.rawTag -> e, ANF.rawTag -> t)
         | Just ebs <- EC.lookup e br ->
             eval env denv activeThreads stk k r $ selectBranch t ebs
-        | otherwise -> unhandledErr "eval" env e
+        | otherwise -> unhandledAbilityRequest
 eval !env !denv !activeThreads !stk !k _ (Yield args)
   | asize stk > 0,
     VArg1 i <- args =
@@ -742,6 +726,9 @@ eval !env !denv !activeThreads !stk !k r (Ins i nx) = do
 eval !_ !_ !_ !_activeThreads !_ _ Exit = pure ()
 eval !_ !_ !_ !_activeThreads !_ _ (Die s) = die s
 {-# NOINLINE eval #-}
+
+unhandledAbilityRequest :: (HasCallStack) => IO a
+unhandledAbilityRequest = error . show . PE callStack . P.lit . fromString $ "eval: unhandled ability request"
 
 forkEval :: CCache -> ActiveThreads -> Val -> IO ThreadId
 forkEval env activeThreads clo =
@@ -1058,13 +1045,6 @@ closeArgs mode !stk !seg args = augSeg mode stk seg as
             | l > 0 = Just $ ArgR 0 l
             | otherwise = Nothing
           l = fsize stk - i
-
-peekForeign :: Stack -> Int -> IO a
-peekForeign stk i =
-  bpeekOff stk i >>= \case
-    Foreign x -> pure $ unwrapForeign x
-    _ -> die "bad foreign argument"
-{-# INLINE peekForeign #-}
 
 uprim1 :: Stack -> UPrim1 -> Int -> IO Stack
 uprim1 !stk DECI !i = do
@@ -1970,7 +1950,7 @@ yield !env !denv !activeThreads !stk !k = leap denv k
       stk <- restoreFrame stk fsz asz
       stk <- ensure stk f
       eval env denv activeThreads stk k ref nx
-    leap _ (CB (Hook f)) = f stk
+    leap _ (CB (Hook f)) = f (unpackXStack stk)
     leap _ KE = pure ()
 {-# INLINE yield #-}
 
@@ -2038,17 +2018,6 @@ splitCont !denv !stk !k !p =
       return (BoxedVal $ Captured ck asz seg, denv, stk, k)
 {-# INLINE splitCont #-}
 
-discardCont ::
-  DEnv ->
-  Stack ->
-  K ->
-  Word64 ->
-  IO (DEnv, Stack, K)
-discardCont denv stk k p =
-  splitCont denv stk k p
-    <&> \(_, denv, stk, k) -> (denv, stk, k)
-{-# INLINE discardCont #-}
-
 resolve :: CCache -> DEnv -> Stack -> MRef -> IO Val
 resolve _ _ _ (Env cix mcomb) = pure $ mCombVal cix mcomb
 resolve _ _ stk (Stk i) = peekOff stk i
@@ -2079,9 +2048,6 @@ resolveSection cc section = do
 
 dummyRef :: Reference
 dummyRef = Builtin (DTx.pack "dummy")
-
-reserveIds :: Word64 -> TVar Word64 -> IO Word64
-reserveIds n free = atomically . stateTVar free $ \i -> (i, i + n)
 
 updateMap :: (Semigroup s) => s -> TVar s -> STM s
 updateMap new0 r = do
@@ -2161,7 +2127,7 @@ codeValidate tml cc = do
   ftm <- readTVarIO (freshTm cc)
   rtm0 <- readTVarIO (refTm cc)
   let rs = fst <$> tml
-      rtm = rtm0 `M.withoutKeys` S.fromList rs
+      rtm = rtm0 `M.union` M.fromList (zip rs [ftm ..])
       rns = RN (refLookup "ty" rty) (refLookup "tm" rtm) (const Nothing)
       combinate (n, (r, g)) = evaluate $ emitCombs rns r n g
   (Nothing <$ traverse_ combinate (zip [ftm ..] tml))
@@ -2282,8 +2248,8 @@ preEvalTopLevelConstants cacheableCombs newCombs cc = do
   activeThreads <- Just <$> UnliftIO.newIORef mempty
   evaluatedCacheableCombsVar <- newTVarIO mempty
   for_ (EC.mapToList cacheableCombs) \(w, _) -> do
-    let hook stk = do
-          val <- peek stk
+    let hook xstk = do
+          val <- peek (packXStack xstk)
           atomically $ do
             modifyTVar evaluatedCacheableCombsVar $ EC.mapInsert w (EC.mapSingleton 0 $ CachedVal w val)
     apply0 (Just hook) cc activeThreads w
@@ -2714,3 +2680,45 @@ arrayCmp cmpVal l r =
     go i
       | i < 0 = EQ
       | otherwise = cmpVal (PA.indexArray l i) (PA.indexArray r i) <> go (i - 1)
+
+die :: (HasCallStack) => String -> IO a
+die s = do
+  void . throwIO . PE callStack . P.lit . fromString $ s
+  -- This is unreachable, but we need it to fix some quirks in GHC's
+  -- worker/wrapper optimization, specifically, it seems that when throwIO's polymorphic return
+  -- value is specialized to a type like 'Stack' which we want GHC to unbox, it will sometimes
+  -- fail to unbox it, possibly because it can't unbox it when it's strictly a type application.
+  -- For whatever reason, this seems to fix it while still allowing us to throw exceptions in IO
+  -- like we prefer.
+  error "unreachable"
+{-# INLINE die #-}
+
+{- ORMOLU_DISABLE -}
+#ifdef OPT_CHECK
+-- Assert that we don't allocate any 'Stack' objects in 'eval', since we expect GHC to always
+-- trigger the worker/wrapper optimization and unbox it fully, and if it fails to do so, we want to
+-- know about it.
+--
+-- Note: this must remain in this module, it can't be moved to a testing module, this is a requirement of the inspection
+-- testing library.
+--
+-- Note: We _must_ check 'eval0' instead of 'eval' here because if you simply check 'eval', you'll be
+-- testing the 'wrapper' part of the worker/wrapper, which will always mention the 'Stack' object as part of its
+-- unwrapping, and since there's  no way to refer to the generated wrapper directly, we instead refer to 'eval0'
+-- which allocates its own stack to pass in, meaning it's one level above the wrapper, and GHC should always detect that
+-- it can call the worker directly without using the wrapper.
+-- See: https://github.com/nomeata/inspection-testing/issues/50 for more information.
+--
+-- If this test starts failing, here are some things you can check.
+--
+-- 1. Are 'Stack's being passed to dynamic functions? If so, try changing those functions to take an 'XStack' instead,
+--    and manually unpack/pack the 'Stack' where necessary.
+-- 2. Are there calls to 'die' or 'throwIO' or something similar in which a fully polymorphic type variable is being
+--    specialized to 'Stack'? Sometimes this trips up the optimization, you can try using an 'error' instead, or even
+--    following the 'throwIO' with a useless call to @error "unreachable"@, this seems to help for some reason.
+--    See this page for more info on precise exceptions: https://gitlab.haskell.org/ghc/ghc/-/wikis/exceptions/precise-exceptions
+--
+-- Best of luck!
+TI.inspect $ 'eval0 `TI.hasNoType` ''Stack
+#endif
+{- ORMOLU_ENABLE -}
