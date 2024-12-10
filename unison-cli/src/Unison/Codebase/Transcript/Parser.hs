@@ -145,13 +145,13 @@ nonNewlineSpaces = void $ P.takeWhileP Nothing (\ch -> ch == ' ' || ch == '\t')
 
 formatHidden :: Hidden -> Maybe Text
 formatHidden = \case
-  HideAll -> pure ":hide:all"
+  HideAll -> pure ":hide-all"
   HideOutput -> pure ":hide"
   Shown -> Nothing
 
 hidden :: P Hidden
 hidden =
-  (HideAll <$ word ":hide:all")
+  (HideAll <$ word ":hide-all")
     <|> (HideOutput <$ word ":hide")
     <|> pure Shown
 

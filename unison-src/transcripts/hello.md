@@ -52,9 +52,9 @@ This works for `ucm` blocks as well.
 scratch/main> rename.term x answerToUltimateQuestionOfLife
 ```
 
-Doing `unison :hide:all` hides the block altogether, both input and output - this is useful for doing behind-the-scenes control of `ucm`'s state.
+Doing `unison :hide-all` hides the block altogether, both input and output - this is useful for doing behind-the-scenes control of `ucm`'s state.
 
-``` unison :hide:all
+``` unison :hide-all
 > [: you won't see me :]
 ```
 

@@ -1,7 +1,7 @@
 ``` ucm :hide
 scratch/main> builtins.merge lib.builtins
 ```
-``` unison :hide:all
+``` unison :hide-all
 List.adjacentPairs : [a] -> [(a, a)]
 List.adjacentPairs as =
   go xs acc =
