@@ -7,22 +7,20 @@
   };
 
   inputs = {
+    flake-utils.url = "github:numtide/flake-utils";
     haskellNix.url = "github:input-output-hk/haskell.nix";
     nixpkgs.follows = "haskellNix/nixpkgs-2405";
-    flake-utils.url = "github:numtide/flake-utils";
+    systems.follows = "flake-utils/systems";
   };
 
   outputs = {
-    self,
+    flake-utils,
     haskellNix,
     nixpkgs,
-    flake-utils,
+    self,
+    systems,
   }:
-    flake-utils.lib.eachSystem [
-      "x86_64-linux"
-      "x86_64-darwin"
-      "aarch64-darwin"
-    ]
+    flake-utils.lib.eachSystem (import systems)
     (system: let
       ## It’s much easier to read from a JSON file than to have JSON import from some other file, so we extract some
       ## configuration from the VS Code settings to avoid duplication.
