@@ -675,7 +675,7 @@ printLetBinding :: (MonadPretty v m) => AmbientContext -> (v, Term3 v PrintAnnot
 printLetBinding context (v, binding) =
   if Var.isAction v
     then pretty0 context binding
-    else renderPrettyBinding <$> prettyBinding0' context (HQ.unsafeFromVar v) binding
+    else renderPrettyBinding <$> prettyBinding0' context (HQ.unsafeFromVar (Var.reset v)) binding
 
 prettyPattern ::
   forall v loc.
@@ -1317,7 +1317,7 @@ printAnnotate n tm =
       Set.fromList [n | v <- ABT.allVars tm, n <- varToName v]
     usedTypeNames =
       Set.fromList [n | Ann' _ ty <- ABT.subterms tm, v <- ABT.allVars ty, n <- varToName v]
-    varToName v = toList (Name.parseText (Var.name v))
+    varToName = toList . Name.parseText . Var.name . Var.reset
     go :: (Ord v) => Term2 v at ap v b -> Term2 v () () v b
     go = extraMap' id (const ()) (const ())
 
@@ -2213,7 +2213,7 @@ avoidShadowing tm (PrettyPrintEnv terms types) =
            in (HQ'.NameOnly fullName, HQ'.NameOnly resuffixifiedName)
     tweak _ p = p
     varToName :: (Var v) => v -> [Name]
-    varToName = toList . Name.parseText . Var.name
+    varToName = toList . Name.parseText . Var.name . Var.reset
 
 isLeaf :: Term2 vt at ap v a -> Bool
 isLeaf (Var' {}) = True
