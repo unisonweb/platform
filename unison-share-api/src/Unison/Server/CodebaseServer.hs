@@ -461,8 +461,8 @@ startServer env opts rt codebase onStart = do
   let baseUrl = BaseUrl (fromMaybe "http://127.0.0.1" (host opts)) token
   let settings =
         defaultSettings
-          & maybe (setPort 5858) setPort (port opts)
-          & maybe (setHost $ fromString "127.0.0.1") (setHost . fromString) (host opts)
+          & setPort (fromMaybe 5858 $ port opts)
+          & (setHost . fromString) (fromMaybe "127.0.0.1" $ host opts)
   let app' = app env rt codebase envUI token (allowCorsHost opts)
   case port opts of
     Nothing -> withPort settings baseUrl app' 5858
