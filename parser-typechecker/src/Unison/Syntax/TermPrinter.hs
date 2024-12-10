@@ -209,8 +209,7 @@ pretty0
       blockContext = bc,
       infixContext = ic,
       imports = im,
-      docContext = doc,
-      elideUnit = elideUnit
+      docContext = doc
     }
   term =
     specialCases term \case
@@ -360,7 +359,7 @@ pretty0
                       ]
       LetBlock bs e ->
         let (im', uses) = calcImports im term
-         in printLet elideUnit bc bs e im' uses
+         in printLet a {imports = im'} bc bs e uses
       -- Some matches are rendered as a destructuring bind, like
       --   match foo with (a,b) -> blah
       -- becomes
@@ -641,29 +640,6 @@ pretty0
       sepList' f sep xs = fold . intersperse sep <$> traverse f xs
       varList = runIdentity . sepList' (Identity . PP.text . Var.name) PP.softbreak
 
-      printLet ::
-        Bool -> -- elideUnit
-        BlockContext ->
-        [(v, Term3 v PrintAnnotation)] ->
-        Term3 v PrintAnnotation ->
-        Imports ->
-        [Pretty SyntaxText] ->
-        m (Pretty SyntaxText)
-      printLet elideUnit sc bs e im uses = do
-        bs <- traverse printBinding bs
-        body <- body e
-        pure . paren (sc /= Block && p >= Top) . letIntro $ PP.lines (uses <> bs <> body)
-        where
-          body (Constructor' (ConstructorReference DD.UnitRef 0)) | elideUnit = pure []
-          body e = (: []) <$> pretty0 (ac Annotation Normal im doc) e
-          printBinding (v, binding) =
-            if Var.isAction v
-              then pretty0 (ac Bottom Normal im doc) binding
-              else renderPrettyBinding <$> prettyBinding0' (ac Bottom Normal im doc) (HQ.unsafeFromVar v) binding
-          letIntro = case sc of
-            Block -> id
-            Normal -> \x -> fmt S.ControlKeyword "let" `PP.hang` x
-
       nonForcePred :: Term3 v PrintAnnotation -> Bool
       nonForcePred = \case
         Constructor' (ConstructorReference DD.DocRef _) -> False
@@ -671,6 +647,35 @@ pretty0
 
       nonUnitArgPred :: (Var v) => v -> Bool
       nonUnitArgPred v = Var.name v /= "()"
+
+printLet ::
+  (MonadPretty v m) =>
+  AmbientContext ->
+  BlockContext ->
+  [(v, Term3 v PrintAnnotation)] ->
+  Term3 v PrintAnnotation ->
+  [Pretty SyntaxText] ->
+  m (Pretty SyntaxText)
+printLet context sc bs e uses = do
+  bs <- traverse (printLetBinding bindingContext) bs
+  body <- body e
+  pure . paren (sc /= Block && context.precedence >= Top) . letIntro $ PP.lines (uses <> bs <> body)
+  where
+    bindingContext :: AmbientContext
+    bindingContext =
+      ac Bottom Normal context.imports context.docContext
+    body = \case
+      Constructor' (ConstructorReference DD.UnitRef 0) | context.elideUnit -> pure []
+      e -> List.singleton <$> pretty0 (ac Annotation Normal context.imports context.docContext) e
+    letIntro = case sc of
+      Block -> id
+      Normal -> (fmt S.ControlKeyword "let" `PP.hang`)
+
+printLetBinding :: (MonadPretty v m) => AmbientContext -> (v, Term3 v PrintAnnotation) -> m (Pretty SyntaxText)
+printLetBinding context (v, binding) =
+  if Var.isAction v
+    then pretty0 context binding
+    else renderPrettyBinding <$> prettyBinding0' context (HQ.unsafeFromVar v) binding
 
 prettyPattern ::
   forall v loc.
