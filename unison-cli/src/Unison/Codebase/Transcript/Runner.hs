@@ -210,18 +210,19 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
         liftIO $ writeIORef hasErrors True
         liftIO (liftA2 (,) (readIORef allowErrors) (readIORef expectFailure)) >>= \case
           (False, False) -> liftIO . dieWithMsg $ Pretty.toPlain terminalWidth msg
-          (True, True) ->
-            transcriptFailure
-              out
-              ( Text.pack . Pretty.toPlain terminalWidth $
-                  Pretty.lines
-                    [ "The stanza above marked with `:error :bug` is now failing with",
-                      Pretty.border 2 msg,
-                      "so you can remove `:bug` and close any appropriate Github issues. If the error message is \
-                      \different from the expected error message, open a new issue and reference it in this transcript."
-                    ]
-              )
-              Nothing
+          (True, True) -> do
+            appendFailingStanza
+            fixedBug out $
+              Text.unlines
+                [ "The stanza above marked with `:error :bug` is now failing with",
+                  "",
+                  "```",
+                  Text.pack $ Pretty.toPlain terminalWidth msg,
+                  "```",
+                  "",
+                  "so you can remove `:bug` and close any appropriate Github issues. If the error message is different \
+                  \from the expected error message, open a new issue and reference it in this transcript."
+                ]
           (_, _) -> pure ()
 
       apiRequest :: APIRequest -> IO [APIRequest]
@@ -467,12 +468,10 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
               "The transcript was expecting an error in the stanza above, but did not encounter one."
               Nothing
           (False, True, False) -> do
-            appendFailingStanza
-            transcriptFailure
+            fixedBug
               out
               "The stanza above with `:bug` is now passing! You can remove `:bug` and close any appropriate Github \
               \issues."
-              Nothing
           (_, _, _) -> pure ()
 
   authenticatedHTTPClient <- AuthN.newAuthenticatedHTTPClient tokenProvider ucmVersion
@@ -526,6 +525,22 @@ transcriptFailure out heading mbody = do
                   CMark.Node Nothing CMark.PARAGRAPH [CMark.Node Nothing (CMark.TEXT heading) []]
                 ]
               <> foldr ((:) . CMarkCodeBlock Nothing "") [] mbody
+        )
+
+fixedBug :: IORef (Seq Stanza) -> Text -> IO b
+fixedBug out body = do
+  texts <- readIORef out
+  -- `CMark.commonmarkToNode` returns a @DOCUMENT@, which won’t be rendered inside another document, so we strip the
+  -- outer `CMark.Node`.
+  let CMark.Node _ _DOCUMENT bodyNodes = CMark.commonmarkToNode [CMark.optNormalize] body
+  UnliftIO.throwIO . RunFailure $
+    texts
+      <> Seq.fromList
+        ( Left
+            <$> [ CMark.Node Nothing CMark.PARAGRAPH [CMark.Node Nothing (CMark.TEXT "🎉") []],
+                  CMark.Node Nothing (CMark.HEADING 2) [CMark.Node Nothing (CMark.TEXT "You fixed a bug!") []]
+                ]
+              <> bodyNodes
         )
 
 data Error
