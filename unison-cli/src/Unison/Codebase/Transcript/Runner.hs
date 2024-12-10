@@ -214,11 +214,12 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
             transcriptFailure
               out
               ( Text.pack . Pretty.toPlain terminalWidth $
-                  "The stanza above previously had an incorrect successful result, but now fails with"
-                    <> "\n"
-                    <> Pretty.border 2 msg
-                    <> "\n"
-                    <> "if this is the expected result, remove `:bug`, otherwise remove `:error`."
+                  Pretty.lines
+                    [ "The stanza above marked with `:error :bug` is now failing with",
+                      Pretty.border 2 msg,
+                      "so you can remove `:bug` and close any appropriate Github issues. If the error message is \
+                      \different from the expected error message, open a new issue and reference it in this transcript."
+                    ]
               )
               Nothing
           (_, _) -> pure ()
@@ -467,7 +468,11 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
               Nothing
           (False, True, False) -> do
             appendFailingStanza
-            transcriptFailure out "The stanza above is now passing! Please remove `:bug` from it." Nothing
+            transcriptFailure
+              out
+              "The stanza above with `:bug` is now passing! You can remove `:bug` and close any appropriate Github \
+              \issues."
+              Nothing
           (_, _, _) -> pure ()
 
   authenticatedHTTPClient <- AuthN.newAuthenticatedHTTPClient tokenProvider ucmVersion
