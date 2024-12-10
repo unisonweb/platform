@@ -2127,7 +2127,7 @@ codeValidate tml cc = do
   ftm <- readTVarIO (freshTm cc)
   rtm0 <- readTVarIO (refTm cc)
   let rs = fst <$> tml
-      rtm = rtm0 `M.withoutKeys` S.fromList rs
+      rtm = rtm0 `M.union` M.fromList (zip rs [ftm ..])
       rns = RN (refLookup "ty" rty) (refLookup "tm" rtm) (const Nothing)
       combinate (n, (r, g)) = evaluate $ emitCombs rns r n g
   (Nothing <$ traverse_ combinate (zip [ftm ..] tml))
