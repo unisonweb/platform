@@ -176,11 +176,18 @@ import Unison.Util.Text qualified as Util.Text
 import Unison.Util.Text.Pattern qualified as TPat
 import UnliftIO qualified
 
+-- foreignCall is explicitly NOINLINE'd because it's a _huge_ chunk of code and negatively affects code caching.
+-- Because we're not inlining it, we need a wrapper using an explicitly unboxed Stack so we don't block the
+-- worker-wrapper optimizations in the main eval loop.
+-- It looks dump to accept an unboxed stack and then immediately box it up, but GHC is sufficiently smart to
+-- unbox all of 'foreignCallHelper' when we write it this way, but it's way less work to use the regular lifted stack
+-- in its implementation.
+{-# NOINLINE foreignCall #-}
 foreignCall :: ForeignFunc -> Args -> XStack -> IOXStack
 foreignCall !ff !args !xstk =
   stackIOToIOX $ foreignCallHelper ff args (packXStack xstk)
-{-# NOINLINE foreignCall #-}
 
+{-# INLINE foreignCallHelper #-}
 foreignCallHelper :: ForeignFunc -> Args -> Stack -> IO Stack
 foreignCallHelper = \case
   IO_UDP_clientSocket_impl_v1 -> mkForeignIOF $ \(host :: Util.Text.Text, port :: Util.Text.Text) ->
@@ -878,19 +885,20 @@ foreignCallHelper = \case
     exitDecode ExitSuccess = 0
     exitDecode (ExitFailure n) = n
 
-    mkHashAlgorithm :: forall alg. (Hash.HashAlgorithm alg) => Data.Text.Text -> alg -> Args -> Stack -> IO Stack
-    mkHashAlgorithm txt alg =
-      let algoRef = Builtin ("crypto.HashAlgorithm." <> txt)
-       in mkForeign $ \() -> pure (HashAlgorithm algoRef alg)
-
     catchAll :: (MonadCatch m, MonadIO m, NFData a) => m a -> m (Either Util.Text.Text a)
     catchAll e = do
       e <- Exception.tryAnyDeep e
       pure $ case e of
         Left se -> Left (Util.Text.pack (show se))
         Right a -> Right a
-{-# INLINE foreignCallHelper #-}
 
+{-# INLINE mkHashAlgorithm #-}
+mkHashAlgorithm :: forall alg. (Hash.HashAlgorithm alg) => Data.Text.Text -> alg -> Args -> Stack -> IO Stack
+mkHashAlgorithm txt alg =
+  let algoRef = Builtin ("crypto.HashAlgorithm." <> txt)
+   in mkForeign $ \() -> pure (HashAlgorithm algoRef alg)
+
+{-# INLINE mkForeign #-}
 mkForeign :: (ForeignConvention a, ForeignConvention b) => (a -> IO b) -> Args -> Stack -> IO Stack
 mkForeign !f !args !stk = do
   args <- decodeArgs args stk
@@ -904,8 +912,8 @@ mkForeign !f !args !stk = do
         _ ->
           error
             "mkForeign: too many arguments for foreign function"
-{-# INLINE mkForeign #-}
 
+{-# INLINE mkForeignIOF #-}
 mkForeignIOF ::
   (ForeignConvention a, ForeignConvention r) =>
   (a -> IO r) ->
@@ -919,8 +927,8 @@ mkForeignIOF f = mkForeign $ \a -> tryIOE (f a)
     handleIOE :: Either IOException a -> Either (F.Failure Val) a
     handleIOE (Left e) = Left $ F.Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue
     handleIOE (Right a) = Right a
-{-# INLINE mkForeignIOF #-}
 
+{-# INLINE mkForeignTls #-}
 mkForeignTls ::
   forall a r.
   (ForeignConvention a, ForeignConvention r) =>
@@ -938,8 +946,8 @@ mkForeignTls f = mkForeign $ \a -> fmap flatten (tryIO2 (tryIO1 (f a)))
     flatten (Left e) = Left (F.Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue)
     flatten (Right (Left e)) = Left (F.Failure Ty.tlsFailureRef (Util.Text.pack (show e)) unitValue)
     flatten (Right (Right a)) = Right a
-{-# INLINE mkForeignTls #-}
 
+{-# INLINE mkForeignTlsE #-}
 mkForeignTlsE ::
   forall a r.
   (ForeignConvention a, ForeignConvention r) =>
@@ -958,11 +966,10 @@ mkForeignTlsE f = mkForeign $ \a -> fmap flatten (tryIO2 (tryIO1 (f a)))
     flatten (Right (Left e)) = Left (F.Failure Ty.tlsFailureRef (Util.Text.pack (show e)) unitValue)
     flatten (Right (Right (Left e))) = Left e
     flatten (Right (Right (Right a))) = Right a
-{-# INLINE mkForeignTlsE #-}
 
+{-# INLINE unsafeSTMToIO #-}
 unsafeSTMToIO :: STM.STM a -> IO a
 unsafeSTMToIO (STM.STM m) = IO m
-{-# INLINE unsafeSTMToIO #-}
 
 signEd25519Wrapper ::
   (Bytes.Bytes, Bytes.Bytes, Bytes.Bytes) -> Either Failure Bytes.Bytes
@@ -1598,7 +1605,7 @@ instance ForeignConvention IOMode where
   {-# INLINE writeForeign #-}
 
 instance ForeignConvention () where
-  readForeign args !_ = pure (args, ())
+  readForeign !args !_ = pure (args, ())
   {-# INLINE readForeign #-}
   writeForeign !stk !_ = pure stk
   {-# INLINE writeForeign #-}
@@ -1639,7 +1646,7 @@ instance
   ) =>
   ForeignConvention (a, b, c)
   where
-  readForeign args !stk = do
+  readForeign !args !stk = do
     (args, a) <- readForeign args stk
     (args, b) <- readForeign args stk
     (args, c) <- readForeign args stk
