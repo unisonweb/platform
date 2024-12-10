@@ -91,18 +91,8 @@ in
     defaultPackage = haskell-nix-flake.packages."unison-cli-main:exe:unison";
 
     devShells = let
-      mkDevShell = pkg:
-        shellFor {
-          packages = _hpkgs: [pkg];
-          ## Enabling Hoogle causes us to rebuild GHC.
-          withHoogle = false;
-        };
+      mkDevShell = pkg: shellFor {packages = _hpkgs: [pkg];};
     in
-      {
-        local = shellFor {
-          packages = _hpkgs: builtins.attrValues localPackages;
-          withHoogle = false;
-        };
-      }
+      {local = shellFor {packages = _hpkgs: builtins.attrValues localPackages;};}
       // pkgs.lib.mapAttrs (_name: mkDevShell) localPackages;
   }
