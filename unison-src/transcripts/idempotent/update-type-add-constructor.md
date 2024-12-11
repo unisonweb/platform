@@ -56,17 +56,17 @@ scratch/main> update
 
 scratch/main> view Foo
 
-  type Foo = Bar Nat | Baz Nat Nat
+  type Foo = Baz Nat Nat | Bar Nat
 
 scratch/main> find.verbose
 
-  1. -- #2sffq4apsq1cts53njcunj63fa8ohov4eqn77q14s77ajicajh4g28sq5s5ai33f2k6oh6o67aarnlpu7u7s4la07ag2er33epalsog
+  1. -- #id3p6do8f7ssln9npa3gs3c2i8uors25ffts92pr4nsh9k9bn3no50e4d1b053c2d0vei64pbtcpdld9gk6drsvptnpfqr6tp8v4qh0
      type Foo
      
-  2. -- #2sffq4apsq1cts53njcunj63fa8ohov4eqn77q14s77ajicajh4g28sq5s5ai33f2k6oh6o67aarnlpu7u7s4la07ag2er33epalsog#0
+  2. -- #id3p6do8f7ssln9npa3gs3c2i8uors25ffts92pr4nsh9k9bn3no50e4d1b053c2d0vei64pbtcpdld9gk6drsvptnpfqr6tp8v4qh0#1
      Foo.Bar : Nat -> Foo
      
-  3. -- #2sffq4apsq1cts53njcunj63fa8ohov4eqn77q14s77ajicajh4g28sq5s5ai33f2k6oh6o67aarnlpu7u7s4la07ag2er33epalsog#1
+  3. -- #id3p6do8f7ssln9npa3gs3c2i8uors25ffts92pr4nsh9k9bn3no50e4d1b053c2d0vei64pbtcpdld9gk6drsvptnpfqr6tp8v4qh0#0
      Foo.Baz : Nat -> Nat -> Foo
      
 ```

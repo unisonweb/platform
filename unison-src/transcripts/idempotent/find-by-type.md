@@ -48,7 +48,7 @@ scratch/main> find : Text
   I couldn't find exact type matches, resorting to fuzzy
   matching...
 
-  1. bar : Text -> A
-  2. baz : A -> Text
+  1. baz : A -> Text
+  2. bar : Text -> A
   3. A.A : Text -> A
 ```

@@ -75,38 +75,25 @@ declarations = do
 data UnresolvedModifier
   = UnresolvedModifier'Structural
   | UnresolvedModifier'UniqueWithGuid !Text
-  | -- The Text here is a random GUID that we *may not end up using*, as in the case when we instead have a GUID to
-    -- reuse (which we will discover soon, once we parse this unique type's name and pass it into the `uniqueTypeGuid`
-    -- function in the parser environment).
-    --
-    -- However, we generate this GUID anyway for backwards-compatibility with *transcripts*. Since the GUID we assign
-    -- is a function of the current source location in the parser state, if we generate it later (after moving a few
-    -- tokens ahead to the type's name), then we'll get a different value.
-    --
-    -- This is only done to make the transcript diff smaller and easier to review, as the PR that adds this GUID-reuse
-    -- feature ought not to change any hashes. However, at any point after it lands in trunk, this Text could be
-    -- removed from this constructor, the generation of these GUIDs could be delayed until we actually need them, and
-    -- the transcripts could all be re-generated.
-    UnresolvedModifier'UniqueWithoutGuid !Text
+  | UnresolvedModifier'UniqueWithoutGuid
 
 resolveUnresolvedModifier :: (Monad m, Var v) => L.Token UnresolvedModifier -> v -> P v m (L.Token DD.Modifier)
 resolveUnresolvedModifier unresolvedModifier var =
   case L.payload unresolvedModifier of
     UnresolvedModifier'Structural -> pure (DD.Structural <$ unresolvedModifier)
     UnresolvedModifier'UniqueWithGuid guid -> pure (DD.Unique guid <$ unresolvedModifier)
-    UnresolvedModifier'UniqueWithoutGuid guid0 -> do
-      unique <- resolveUniqueModifier var guid0
+    UnresolvedModifier'UniqueWithoutGuid -> do
+      unique <- resolveUniqueModifier var
       pure $ unique <$ unresolvedModifier
 
-resolveUniqueModifier :: (Monad m, Var v) => v -> Text -> P v m DD.Modifier
-resolveUniqueModifier var guid0 = do
-  ParsingEnv {uniqueTypeGuid} <- ask
-  guid <- fromMaybe guid0 <$> lift (lift (uniqueTypeGuid (Name.unsafeParseVar var)))
-  pure $ DD.Unique guid
-
-defaultUniqueModifier :: (Monad m, Var v) => v -> P v m DD.Modifier
-defaultUniqueModifier var =
-  uniqueName 32 >>= resolveUniqueModifier var
+resolveUniqueModifier :: (Monad m, Var v) => v -> P v m DD.Modifier
+resolveUniqueModifier var = do
+  env <- ask
+  guid <-
+    lift (lift (env.uniqueTypeGuid (Name.unsafeParseVar var))) >>= \case
+      Nothing -> uniqueName 32
+      Just guid -> pure guid
+  pure (DD.Unique guid)
 
 -- unique[someguid] type Blah = ...
 modifier :: (Monad m, Var v) => P v m (Maybe (L.Token UnresolvedModifier))
@@ -116,9 +103,7 @@ modifier = do
     unique = do
       tok <- openBlockWith "unique"
       optional (openBlockWith "[" *> importWordyId <* closeBlock) >>= \case
-        Nothing -> do
-          guid <- uniqueName 32
-          pure (UnresolvedModifier'UniqueWithoutGuid guid <$ tok)
+        Nothing -> pure (UnresolvedModifier'UniqueWithoutGuid <$ tok)
         Just guid -> pure (UnresolvedModifier'UniqueWithGuid (Name.toText (L.payload guid)) <$ tok)
     structural = do
       tok <- openBlockWith "structural"
@@ -196,7 +181,7 @@ dataDeclaration maybeUnresolvedModifier = do
   _ <- closeBlock
   case maybeUnresolvedModifier of
     Nothing -> do
-      modifier <- defaultUniqueModifier (L.payload name)
+      modifier <- resolveUniqueModifier (L.payload name)
       -- ann spanning the whole Decl.
       let declSpanAnn = ann typeToken <> closingAnn
       pure
@@ -234,7 +219,7 @@ effectDeclaration maybeUnresolvedModifier = do
 
   case maybeUnresolvedModifier of
     Nothing -> do
-      modifier <- defaultUniqueModifier (L.payload name)
+      modifier <- resolveUniqueModifier (L.payload name)
       -- ann spanning the whole ability declaration.
       let abilitySpanAnn = ann abilityToken <> closingAnn
       pure
