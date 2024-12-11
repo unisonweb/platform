@@ -33,6 +33,7 @@ module Unison.UnisonFile
     nonEmpty,
     termSignatureExternalLabeledDependencies,
     topLevelComponents,
+    typecheckedToTypeLookup,
     typecheckedUnisonFile,
     Unison.UnisonFile.rewrite,
     prepareRewrite,
@@ -365,6 +366,15 @@ declsToTypeLookup uf =
     mempty
     (wrangle (dataDeclarations uf))
     (wrangle (effectDeclarations uf))
+  where
+    wrangle = Map.fromList . Map.elems
+
+typecheckedToTypeLookup :: TypecheckedUnisonFile v a -> TL.TypeLookup v a
+typecheckedToTypeLookup tuf =
+  TL.TypeLookup
+    mempty
+    (wrangle (dataDeclarations' tuf))
+    (wrangle (effectDeclarations' tuf))
   where
     wrangle = Map.fromList . Map.elems
 
