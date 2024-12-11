@@ -13,6 +13,7 @@ module Unison.Syntax.TermParser
   )
 where
 
+import Control.Comonad.Trans.Cofree (CofreeF ((:<)))
 import Control.Monad.Reader (asks, local)
 import Data.Bitraversable (bitraverse)
 import Data.Char qualified as Char
@@ -607,7 +608,7 @@ doc2Block = do
   let docAnn = Ann startDoc endDoc
   (docAnn,) . docUntitledSection (gann docAnn) <$> traverse foldTop docContents
   where
-    foldTop = cataM \(a :<< top) -> docTop a =<< bitraverse (cataM \(a :<< leaf) -> docLeaf a leaf) pure top
+    foldTop = cataM \(a :< top) -> docTop a =<< bitraverse (cataM \(a :< leaf) -> docLeaf a leaf) pure top
 
     gann :: (Annotated a) => a -> Ann
     gann = Ann.GeneratedFrom . ann

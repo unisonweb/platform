@@ -8,12 +8,13 @@ module Unison.Util.Recursion
     cataM,
     para,
     Fix (..),
-    Cofree' (..),
   )
 where
 
 import Control.Arrow ((&&&))
 import Control.Comonad.Cofree (Cofree ((:<)))
+import Control.Comonad.Trans.Cofree (CofreeF)
+import Control.Comonad.Trans.Cofree qualified as CofreeF
 import Control.Monad ((<=<))
 
 type Algebra f a = f a -> a
@@ -46,12 +47,9 @@ instance (Functor f) => Recursive (Fix f) f where
   embed = Fix
   project (Fix f) = f
 
-data Cofree' f a x = a :<< f x
-  deriving (Foldable, Functor, Traversable)
-
 -- |
 --
 --  __NB__: `Cofree` from “free” is lazy, so this instance is technically partial.
-instance (Functor f) => Recursive (Cofree f a) (Cofree' f a) where
-  embed (a :<< fco) = a :< fco
-  project (a :< fco) = a :<< fco
+instance (Functor f) => Recursive (Cofree f a) (CofreeF f a) where
+  embed (a CofreeF.:< fco) = a :< fco
+  project (a :< fco) = a CofreeF.:< fco
