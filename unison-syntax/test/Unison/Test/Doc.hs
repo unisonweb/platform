@@ -1,5 +1,6 @@
 module Unison.Test.Doc (test) where
 
+import Control.Comonad.Trans.Cofree (CofreeF ((:<)))
 import Data.Bifunctor (first)
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Text (Text)
@@ -137,7 +138,7 @@ t s expected =
       (crash . P.errorBundlePretty)
       ( \actual ->
           let expected' = Doc.UntitledSection $ embed <$> expected
-              actual' = cata (\(_ :<< top) -> embed $ first (cata \(_ :<< leaf) -> embed leaf) top) <$> actual
+              actual' = cata (\(_ :< top) -> embed $ first (cata \(_ :< leaf) -> embed leaf) top) <$> actual
            in if actual' == expected'
                 then ok
                 else do
