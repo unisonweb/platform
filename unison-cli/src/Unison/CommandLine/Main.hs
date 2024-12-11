@@ -91,26 +91,25 @@ getUserInput codebase authHTTPClient pp currentProjectRoot numberedArgs =
       line <- Line.getInputLine fullPrompt
       case line of
         Nothing -> pure QuitI
-        Just l -> case words l of
-          [] -> go
-          ws -> do
-            liftIO (parseInput codebase pp currentProjectRoot numberedArgs IP.patternMap ws) >>= \case
-              Left msg -> do
-                -- We still add history that failed to parse so the user can easily reload
-                -- the input and fix it.
-                Line.modifyHistory $ Line.addHistoryUnlessConsecutiveDupe $ l
-                liftIO $ putPrettyLn msg
-                go
-              Right Nothing -> do
-                -- Ctrl-c or some input cancel, re-run the prompt
-                go
-              Right (Just (expandedArgs, i)) -> do
-                let expandedArgs' = IP.unifyArgument <$> expandedArgs
-                    expandedArgsStr = unwords expandedArgs'
-                when (expandedArgs' /= ws) $ do
-                  liftIO . putStrLn $ fullPrompt <> expandedArgsStr
-                Line.modifyHistory $ Line.addHistoryUnlessConsecutiveDupe $ expandedArgsStr
-                pure i
+        Just l -> do
+          liftIO (parseInput codebase pp currentProjectRoot numberedArgs IP.patternMap l) >>= \case
+            Left msg -> do
+              -- We still add history that failed to parse so the user can easily reload
+              -- the input and fix it.
+              Line.modifyHistory $ Line.addHistoryUnlessConsecutiveDupe $ l
+              liftIO $ putPrettyLn msg
+              go
+            Right Nothing -> do
+              -- Ctrl-c or some input cancel, re-run the prompt
+              go
+            Right (Just (command, expandedArgs, i)) -> do
+              expandedArgs' <- either (const $ fail "meh") pure $ traverse IP.unifyArgument expandedArgs
+              let expandedArgsStr = unwords $ command : expandedArgs'
+              -- This uses `words` for some sloppy whitespace normalization
+              when (words expandedArgsStr /= words l) $ do
+                liftIO . putStrLn $ fullPrompt <> expandedArgsStr
+              Line.modifyHistory $ Line.addHistoryUnlessConsecutiveDupe $ expandedArgsStr
+              pure i
     settings :: Line.Settings IO
     settings =
       Line.Settings

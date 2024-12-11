@@ -35,7 +35,7 @@ myproject/main> add
     dependent      : Nat
     sub.dependency : Nat
 
-myproject/main> branch /new
+myproject/main> branch "/new"
 
   Done. I've created the new branch based off of main.
 

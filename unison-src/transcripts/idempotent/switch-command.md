@@ -53,13 +53,13 @@ forward slash (which makes it unambiguous).
 ``` ucm
 scratch/main> switch foo
 
-scratch/main> switch foo/topic
+scratch/main> switch "foo/topic"
 
 foo/main> switch topic
 
-foo/main> switch /topic
+foo/main> switch "/topic"
 
-foo/main> switch bar/
+foo/main> switch "bar/"
 ```
 
 It's an error to try to switch to something ambiguous.
@@ -79,20 +79,20 @@ foo/main> switch bar
 It's an error to try to switch to something that doesn't exist, of course.
 
 ``` ucm :error
-scratch/main> switch foo/no-such-branch
+scratch/main> switch "foo/no-such-branch"
 
   foo/no-such-branch does not exist.
 ```
 
 ``` ucm :error
-scratch/main> switch no-such-project
+scratch/main> switch "no-such-project"
 
   Neither project no-such-project nor branch /no-such-project
   exists.
 ```
 
 ``` ucm :error
-foo/main> switch no-such-project-or-branch
+foo/main> switch "no-such-project-or-branch"
 
   Neither project no-such-project-or-branch nor branch
   /no-such-project-or-branch exists.

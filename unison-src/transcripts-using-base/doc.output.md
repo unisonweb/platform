@@ -72,7 +72,7 @@ The `docs ImportantConstant` command will look for `ImportantConstant.doc` in th
 First, we'll load the `syntax.u` file which has examples of all the syntax:
 
 ``` ucm
-scratch/main> load ./unison-src/transcripts-using-base/doc.md.files/syntax.u
+scratch/main> load "./unison-src/transcripts-using-base/doc.md.files/syntax.u"
 
   Loading changes detected in
   ./unison-src/transcripts-using-base/doc.md.files/syntax.u.

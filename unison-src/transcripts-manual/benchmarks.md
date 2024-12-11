@@ -41,56 +41,56 @@ scratch/main> run prepare
 ## Benchmarks
 
 ``` ucm
-scratch/main> load unison-src/transcripts-manual/benchmarks/each.u
+scratch/main> load "unison-src/transcripts-manual/benchmarks/each.u"
 scratch/main> run main
 ```
 
 ``` ucm
-scratch/main> load unison-src/transcripts-manual/benchmarks/listmap.u
+scratch/main> load "unison-src/transcripts-manual/benchmarks/listmap.u"
 scratch/main> run main
 ```
 
 ``` ucm
-scratch/main> load unison-src/transcripts-manual/benchmarks/listfilter.u
+scratch/main> load "unison-src/transcripts-manual/benchmarks/listfilter.u"
 scratch/main> run main
 ```
 
 ``` ucm
-scratch/main> load unison-src/transcripts-manual/benchmarks/random.u
+scratch/main> load "unison-src/transcripts-manual/benchmarks/random.u"
 scratch/main> run main
 ```
 
 ``` ucm
-scratch/main> load unison-src/transcripts-manual/benchmarks/simpleloop.u
+scratch/main> load "unison-src/transcripts-manual/benchmarks/simpleloop.u"
 scratch/main> run main
 ```
 
 ``` ucm
-scratch/main> load unison-src/transcripts-manual/benchmarks/fibonacci.u
+scratch/main> load "unison-src/transcripts-manual/benchmarks/fibonacci.u"
 scratch/main> run main
 ```
 
 ``` ucm
-scratch/main> load unison-src/transcripts-manual/benchmarks/map.u
+scratch/main> load "unison-src/transcripts-manual/benchmarks/map.u"
 scratch/main> run main
 ```
 
 ``` ucm
-scratch/main> load unison-src/transcripts-manual/benchmarks/natmap.u
+scratch/main> load "unison-src/transcripts-manual/benchmarks/natmap.u"
 scratch/main> run main
 ```
 
 ``` ucm
-scratch/main> load unison-src/transcripts-manual/benchmarks/stm.u
+scratch/main> load "unison-src/transcripts-manual/benchmarks/stm.u"
 scratch/main> run main
 ```
 
 ``` ucm
-scratch/main> load unison-src/transcripts-manual/benchmarks/tmap.u
+scratch/main> load "unison-src/transcripts-manual/benchmarks/tmap.u"
 scratch/main> run main
 ```
 
 ``` ucm
-scratch/main> load unison-src/transcripts-manual/benchmarks/array-sort.u
+scratch/main> load "unison-src/transcripts-manual/benchmarks/array-sort.u"
 scratch/main> run main
 ```

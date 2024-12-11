@@ -45,7 +45,7 @@ scratch/b1> debug.alias.term.force .x .fslkdjflskdjflksjdf
 ```
 
 ``` ucm
-scratch/main> diff.namespace /b1: /b2:
+scratch/main> diff.namespace "/b1:" "/b2:"
 
   Resolved name conflicts:
 
@@ -105,7 +105,7 @@ scratch/ns1> alias.term helloWorld helloWorld2
 
   Done.
 
-scratch/ns1> branch /ns2
+scratch/ns1> branch "/ns2"
 
   Done. I've created the ns2 branch based off of ns1.
 
@@ -116,7 +116,7 @@ scratch/ns1> branch /ns2
 Here's what we've done so far:
 
 ``` ucm :error
-scratch/main> diff.namespace .nothing /ns1:
+scratch/main> diff.namespace .nothing "/ns1:"
 
   ⚠️
 
@@ -124,7 +124,7 @@ scratch/main> diff.namespace .nothing /ns1:
 ```
 
 ``` ucm :error
-scratch/main> diff.namespace /ns1: /ns2:
+scratch/main> diff.namespace "/ns1:" "/ns2:"
 
   The namespaces are identical.
 ```
@@ -170,7 +170,7 @@ scratch/ns2> update
 
   Done.
 
-scratch/main> diff.namespace /ns1: /ns2:
+scratch/main> diff.namespace "/ns1:" "/ns2:"
 
   Resolved name conflicts:
 
@@ -223,7 +223,7 @@ scratch/ns2> alias.term X.x X'.x
 
   Done.
 
-scratch/main> diff.namespace /ns1: /ns2:
+scratch/main> diff.namespace "/ns1:" "/ns2:"
 
   Resolved name conflicts:
 
@@ -281,7 +281,7 @@ scratch/ns2> alias.term A'.A A''.A
 
   Done.
 
-scratch/ns2> branch /ns3
+scratch/ns2> branch "/ns3"
 
   Done. I've created the ns3 branch based off of ns2.
 
@@ -303,7 +303,7 @@ scratch/ns2> delete.term.verbose fromJust'
   Tip: You can use `undo` or use a hash from `reflog` to undo
        this change.
 
-scratch/main> diff.namespace /ns3: /ns2:
+scratch/main> diff.namespace "/ns3:" "/ns2:"
 
   Name changes:
 
@@ -324,7 +324,7 @@ scratch/ns3> update
 
   Done.
 
-scratch/main> diff.namespace /ns2: /ns3:
+scratch/main> diff.namespace "/ns2:" "/ns3:"
 
   Updates:
 
@@ -360,14 +360,14 @@ scratch/nsx> add
     b            : Nat
     forconflicts : Nat
 
-scratch/nsx> branch /nsy
+scratch/nsx> branch "/nsy"
 
   Done. I've created the nsy branch based off of nsx.
 
   Tip: To merge your work back into the nsx branch, first
        `switch /nsx` then `merge /nsy`.
 
-scratch/nsx> branch /nsz
+scratch/nsx> branch "/nsz"
 
   Done. I've created the nsz branch based off of nsx.
 
@@ -408,7 +408,7 @@ scratch/nsz> update
 
   Done.
 
-scratch/nsy> branch /nsw
+scratch/nsy> branch "/nsw"
 
   Done. I've created the nsw branch based off of nsy.
 
@@ -425,7 +425,7 @@ scratch/nsw> debug.alias.term.force .forconflicts .b
 ```
 
 ``` ucm
-scratch/main> diff.namespace /nsx: /nsw:
+scratch/main> diff.namespace "/nsx:" "/nsw:"
 
   New name conflicts:
 

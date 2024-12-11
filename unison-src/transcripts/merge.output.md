@@ -64,7 +64,7 @@ scratch/bob> add
 Merge result:
 
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -133,7 +133,7 @@ scratch/bob> add
 Merge result:
 
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -216,7 +216,7 @@ scratch/bob> add
 Merge result:
 
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -321,7 +321,7 @@ scratch/bob> display foo
 Merge result:
 
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -435,7 +435,7 @@ scratch/bob> display foo
 Merge result:
 
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -520,7 +520,7 @@ scratch/bob> delete.term foo
 Merge result:
 
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -660,7 +660,7 @@ scratch/main> branch bob
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /bob`.
 
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   😶
 
@@ -709,7 +709,7 @@ scratch/alice> add
 
     foo : Text
 
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   😶
 
@@ -758,7 +758,7 @@ scratch/bob> add
 
     foo : Text
 
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   I fast-forward merged scratch/bob into scratch/alice.
 ```
@@ -777,7 +777,7 @@ scratch/main> branch topic
   Tip: To merge your work back into the main branch, first
        `switch /main` then `merge /topic`.
 
-scratch/main> merge /topic
+scratch/main> merge "/topic"
 
   😶
 
@@ -839,7 +839,7 @@ scratch/bob> add
 
     bar : Text
 
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -930,7 +930,7 @@ scratch/bob> update
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -1032,7 +1032,7 @@ scratch/bob> update
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -1137,7 +1137,7 @@ scratch/bob> update
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -1220,7 +1220,7 @@ scratch/bob> move.term Foo.Qux Foo.BobQux
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -1790,7 +1790,7 @@ scratch/bob> update
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -1963,7 +1963,7 @@ scratch/bob> add
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -2029,7 +2029,7 @@ scratch/bob> add
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -2094,7 +2094,7 @@ scratch/bob> add
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -2147,7 +2147,7 @@ scratch/alice> delete.term Foo.Bar
 Bob's branch:
 
 ``` ucm :hide
-scratch/main> branch /bob
+scratch/main> branch "/bob"
 ```
 
 ``` unison :hide
@@ -2160,7 +2160,7 @@ scratch/bob> add
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -2227,7 +2227,7 @@ scratch/bob> add
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -2341,7 +2341,7 @@ scratch/bob> add
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -2490,7 +2490,7 @@ scratch/bob> add
 Now we merge:
 
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -2615,7 +2615,7 @@ scratch/bob> add
 ```
 
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -2871,7 +2871,7 @@ When we try to merge Bob into Alice, we should see both versions of `baz`, with 
 the underlying namespace.
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -3043,7 +3043,7 @@ scratch/carol> add
     a : ##Nat
     b : ##Nat
 
-scratch/bob> merge /alice
+scratch/bob> merge "/alice"
 
   Loading branches...
 
@@ -3059,7 +3059,7 @@ scratch/bob> merge /alice
 
   I merged scratch/alice into scratch/bob.
 
-scratch/carol> merge /bob
+scratch/carol> merge "/bob"
 
   Loading branches...
 
@@ -3213,7 +3213,7 @@ scratch/alice> update
 ```
 
 ``` ucm
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -3293,7 +3293,7 @@ scratch/bob> move.term Foo.Lca Foo.Bob
 ```
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 
@@ -3340,6 +3340,7 @@ type Bar
 ```
 
 ``` ucm
+scratch/merge-bob-into-alice> 
 ```
 
 ``` unison
@@ -3492,7 +3493,7 @@ scratch/bob> update
 Note Bob's `hello` references `foo` (Alice's name), not `bar` (Bob's name).
 
 ``` ucm :error
-scratch/alice> merge /bob
+scratch/alice> merge "/bob"
 
   Loading branches...
 

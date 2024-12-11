@@ -6,6 +6,7 @@ module Unison.Syntax.Lexer.Unison
     Pos (..),
     Lexeme (..),
     lexer,
+    lexer',
     preParse,
     escapeChars,
     debugFilePreParse,
@@ -242,9 +243,20 @@ showErrorFancy = \case
         GT -> "greater than "
   P.ErrorCustom a -> P.showErrorComponent a
 
+lexer' :: String -> String -> Either (EP.ParseErrorBundle String (Token Err)) [Token Lexeme]
+lexer' scope = flip S.evalState env0 . P.runParserT (lexemes eof) scope
+  where
+    eof :: P [Token Lexeme]
+    eof = P.try do
+      p <- P.eof >> posP
+      n <- maybe 0 (const 1) <$> S.gets opening
+      l <- S.gets layout
+      pure $ replicate (length l + n) (Token Close p p)
+    env0 = initialEnv scope
+
 lexer :: String -> String -> [Token Lexeme]
 lexer scope rem =
-  case flip S.evalState env0 $ P.runParserT (lexemes eof) scope rem of
+  case lexer' scope rem of
     Left e ->
       let errsWithSourcePos =
             fst $
@@ -282,12 +294,6 @@ lexer scope rem =
        in errsWithSourcePos >>= errorToTokens
     Right ts -> postLex $ Token (Open scope) topLeftCorner topLeftCorner : ts
   where
-    eof :: P [Token Lexeme]
-    eof = P.try do
-      p <- P.eof >> posP
-      n <- maybe 0 (const 1) <$> S.gets opening
-      l <- S.gets layout
-      pure $ replicate (length l + n) (Token Close p p)
     errorItemToString :: EP.ErrorItem Char -> String
     errorItemToString = \case
       (P.Tokens ts) -> Foldable.toList ts
@@ -295,7 +301,6 @@ lexer scope rem =
       (P.EndOfInput) -> "end of input"
     customErrs es = [Err <$> e | P.ErrorCustom e <- toList es]
     toPos (P.SourcePos _ line col) = Pos (P.unPos line) (P.unPos col)
-    env0 = initialEnv scope
 
 -- | hacky postprocessing pass to do some cleanup of stuff that's annoying to
 -- fix without adding more state to the lexer:

@@ -1,5 +1,5 @@
 ``` ucm :error
-test/main> pull @aryairani/test-almost-empty/main lib.base_latest
+test/main> pull "@aryairani/test-almost-empty/main" lib.base_latest
 
   The use of `pull` to install libraries is now deprecated.
   Going forward, you can use
@@ -10,7 +10,7 @@ test/main> pull @aryairani/test-almost-empty/main lib.base_latest
   I installed @aryairani/test-almost-empty/main as
   aryairani_test_almost_empty_main.
 
-test/main> pull @aryairani/test-almost-empty/main a.b
+test/main> pull "@aryairani/test-almost-empty/main" a.b
 
   ⚠️
 
@@ -22,13 +22,13 @@ test/main> pull @aryairani/test-almost-empty/main a.b
 
   You can run `help pull` for more information on using `pull`.
 
-test/main> pull @aryairani/test-almost-empty/main a
+test/main> pull "@aryairani/test-almost-empty/main" a
 
   I think you want to merge @aryairani/test-almost-empty/main
   into the a branch, but it doesn't exist. If you want, you can
   create it with `branch.empty a`, and then `pull` again.
 
-test/main> pull @aryairani/test-almost-empty/main .a
+test/main> pull "@aryairani/test-almost-empty/main" .a
 
   ⚠️
 
