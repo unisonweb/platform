@@ -1,6 +1,6 @@
 Since this code block is expecting an error, we still hide it. It seems unusual to want to hide an error, but maybe it’s just too verbose or something. This follows the author’s intent.
 
-``` ucm :hide:error
+``` ucm :hide :error
 scratch/main> help pull
 
 scratch/main> not.a.command

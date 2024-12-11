@@ -1,6 +1,6 @@
 Since this code block is expecting an error, we still hide it. It seems unusual to want to hide an error, but maybe it’s just too verbose or something. This follows the author’s intent.
 
-``` unison :hide:error
+``` unison :hide :error
 x + x +
 ```
 
