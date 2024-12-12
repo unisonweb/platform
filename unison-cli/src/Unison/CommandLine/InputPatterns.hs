@@ -227,7 +227,6 @@ import Unison.Server.Backend (ShallowListEntry (..))
 import Unison.Server.Backend qualified as Backend
 import Unison.Server.SearchResult (SearchResult)
 import Unison.Server.SearchResult qualified as SR
-import Unison.ShortHash (ShortHash)
 import Unison.Syntax.HashQualified qualified as HQ (parseText, toText)
 import Unison.Syntax.Name qualified as Name (parseTextEither, toText)
 import Unison.Syntax.NameSegment qualified as NameSegment
@@ -575,59 +574,45 @@ handleBranchRelativePathArg =
           Nothing -> pure $ BranchPathInCurrentProject branch Path.absoluteEmpty
       otherNumArg -> Left $ wrongStructuredArgument "a branch id" otherNumArg
 
-hqNameToHQ' :: HQ.HashQualified Name -> HQ'.HashOrHQ Name
-hqNameToHQ' = \case
-  HQ.HashOnly hash -> Left hash
-  HQ.NameOnly name -> pure $ HQ'.NameOnly name
-  HQ.HashQualified name hash -> pure $ HQ'.HashQualified name hash
-
-hqNameToSplit :: HQ.HashQualified Name -> Either ShortHash Path.HQSplit
-hqNameToSplit = \case
-  HQ.HashOnly hash -> Left hash
-  HQ.NameOnly name -> pure . fmap HQ'.NameOnly $ Path.splitFromName name
-  HQ.HashQualified name hash -> pure . fmap (`HQ'.HashQualified` hash) $ Path.splitFromName name
-
-hq'NameToSplit :: HQ'.HashQualified Name -> Path.HQSplit
-hq'NameToSplit = \case
-  HQ'.NameOnly name -> HQ'.NameOnly <$> Path.splitFromName name
-  HQ'.HashQualified name hash -> flip HQ'.HashQualified hash <$> Path.splitFromName name
-
 handleHashQualified'NameArg :: I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashQualified Name)
 handleHashQualified'NameArg =
   either
     (first P.text . Path.parseHQName)
     \case
       SA.Name name -> pure $ HQ'.fromName name
-      hq@(SA.HashQualified name) -> first (const $ expectedButActually "a name" hq "a hash") $ hqNameToHQ' name
+      hq@(SA.HashQualified name) -> first (const $ expectedButActually "a name" hq "a hash") $ HQ'.fromHQ name
       SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure hqname
       SA.HashQualifiedWithBranchPrefix (BranchAtPath prefix) hqname ->
         pure $ Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname
       SA.ShallowListEntry prefix entry ->
         pure . fmap (Path.prefixNameIfRel prefix) $ shallowListEntryToHQ' entry
       sr@(SA.SearchResult mpath result) ->
-        first (const $ expectedButActually "a name" sr "a hash") . hqNameToHQ' $ searchResultToHQ mpath result
+        first (const $ expectedButActually "a name" sr "a hash") . HQ'.fromHQ $ searchResultToHQ mpath result
       otherNumArg -> Left $ wrongStructuredArgument "a name" otherNumArg
 
-handleHashQualifiedSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) Path.HQSplit
+handleHashQualifiedSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashQualified Path.Split)
 handleHashQualifiedSplitArg =
   either
     (first P.text . Path.parseHQSplit)
     \case
       n@(SA.Name name) ->
-        bitraverse
-          ( \case
-              Path.AbsolutePath' _ -> Left $ expectedButActually "a relative name" n "an absolute name"
-              Path.RelativePath' p -> pure $ Path.unrelative p
-          )
-          (pure . HQ'.fromName)
+        fmap HQ'.fromName
+          . bitraverse
+            ( \case
+                Path.AbsolutePath' _ -> Left $ expectedButActually "a relative name" n "an absolute name"
+                Path.RelativePath' p -> pure $ Path.unrelative p
+            )
+            pure
           $ Path.parentOfName name
-      hq@(SA.HashQualified name) -> first (const $ expectedButActually "a name" hq "a hash") $ hqNameToSplit name
-      SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure $ hq'NameToSplit hqname
+      hq@(SA.HashQualified name) ->
+        first (const $ expectedButActually "a name" hq "a hash") . HQ'.fromHQ $ Path.splitFromName <$> name
+      SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure $ Path.splitFromName <$> hqname
       SA.HashQualifiedWithBranchPrefix (BranchAtPath prefix) hqname ->
-        pure . hq'NameToSplit $ Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname
-      SA.ShallowListEntry _ entry -> pure . hq'NameToSplit $ shallowListEntryToHQ' entry
+        pure $ Path.splitFromName . Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname
+      SA.ShallowListEntry _ entry -> pure $ Path.splitFromName <$> shallowListEntryToHQ' entry
       sr@(SA.SearchResult mpath result) ->
-        first (const $ expectedButActually "a name" sr "a hash") . hqNameToSplit $ searchResultToHQ mpath result
+        first (const $ expectedButActually "a name" sr "a hash") . HQ'.fromHQ $
+          Path.splitFromName <$> searchResultToHQ mpath result
       otherNumArg -> Left $ wrongStructuredArgument "a relative name" otherNumArg
 
 handleShortCausalHashArg :: I.Argument -> Either (P.Pretty CT.ColorText) ShortCausalHash
@@ -644,13 +629,13 @@ handleHashOrHQNameArg =
   either
     (first P.text . Path.parseHashOrHQName)
     \case
-      SA.HashQualified name -> pure $ hqNameToHQ' name
+      SA.HashQualified name -> pure $ HQ'.fromHQ name
       SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure $ pure hqname
       SA.HashQualifiedWithBranchPrefix (BranchAtPath prefix) hqname ->
         pure $ pure (Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname)
       SA.ShallowListEntry prefix entry ->
         pure . pure . fmap (Path.prefixNameIfRel prefix) $ shallowListEntryToHQ' entry
-      SA.SearchResult mpath result -> pure . hqNameToHQ' $ searchResultToHQ mpath result
+      SA.SearchResult mpath result -> pure . HQ'.fromHQ $ searchResultToHQ mpath result
       otherNumArg -> Left $ wrongStructuredArgument "a hash or name" otherNumArg
 
 handleRelativeNameSegmentArg :: I.Argument -> Either (P.Pretty CT.ColorText) NameSegment

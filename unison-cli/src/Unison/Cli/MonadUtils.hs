@@ -9,7 +9,6 @@ module Unison.Cli.MonadUtils
     resolvePath,
     resolvePath',
     resolvePath'ToAbsolute,
-    resolveHQName,
     resolveName,
 
     -- * Project and branch resolution
@@ -181,12 +180,6 @@ resolvePath' path' = do
 resolvePath'ToAbsolute :: Path' -> Cli Path.Absolute
 resolvePath'ToAbsolute path' = do
   view PP.absPath_ <$> resolvePath' path'
-
--- | Resolve a path split, per the current path.
-resolveHQName :: HQ'.HashQualified Name -> Cli (PP.ProjectPath, HQ'.HashQualified NameSegment.NameSegment)
-resolveHQName hq =
-  let (path, seg) = Path.parentOfName $ HQ'.toName hq
-   in (,seg <$ hq) <$> resolvePath' path
 
 -- | Resolve a path split, per the current path.
 resolveName :: Name -> Cli (PP.ProjectPath, NameSegment.NameSegment)
@@ -463,18 +456,18 @@ updateProjectBranchRoot_ projectBranch reason f = do
 ------------------------------------------------------------------------------------------------------------------------
 -- Getting terms
 
-getTermsAt :: (PP.ProjectPath, HQ'.HQSegment) -> Cli (Set Referent)
-getTermsAt (pp, hqSeg) = do
-  rootBranch0 <- getBranch0FromProjectPath pp
-  pure (BranchUtil.getTerm (mempty, hqSeg) rootBranch0)
+getTermsAt :: HQ'.HashQualified (PP.ProjectPath, NameSegment.NameSegment) -> Cli (Set Referent)
+getTermsAt hq =
+  let (pp, seg) = HQ'.toName hq
+   in BranchUtil.getTerm ((mempty, seg) <$ hq) <$> getBranch0FromProjectPath pp
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Getting types
 
-getTypesAt :: (PP.ProjectPath, HQ'.HQSegment) -> Cli (Set TypeReference)
-getTypesAt (pp, hqSeg) = do
-  rootBranch0 <- getBranch0FromProjectPath pp
-  pure (BranchUtil.getType (mempty, hqSeg) rootBranch0)
+getTypesAt :: HQ'.HashQualified (PP.ProjectPath, NameSegment.NameSegment) -> Cli (Set TypeReference)
+getTypesAt hq =
+  let (pp, seg) = HQ'.toName hq
+   in BranchUtil.getType ((mempty, seg) <$ hq) <$> getBranch0FromProjectPath pp
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Getting patches

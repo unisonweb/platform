@@ -25,7 +25,7 @@ import Unison.Codebase.Branch (Branch, Branch0)
 import Unison.Codebase.Branch qualified as Branch
 import Unison.Codebase.Path (Path)
 import Unison.Codebase.Path qualified as Path
-import Unison.HashQualifiedPrime (HashQualified (HashQualified, NameOnly))
+import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.NameSegment (NameSegment)
 import Unison.Names (Names)
 import Unison.Names qualified as Names
@@ -47,21 +47,21 @@ fromNames names0 = Branch.stepManyAt (typeActions <> termActions) Branch.empty
     doTerm (n, r) = makeAddTermName (Path.splitFromName n) r
     doType (n, r) = makeAddTypeName (Path.splitFromName n) r
 
-getTerm :: Path.HQSplit -> Branch0 m -> Set Referent
-getTerm (p, hq) b = case hq of
-  NameOnly n -> Star2.lookupD1 n terms
-  HashQualified n sh -> filter sh $ Star2.lookupD1 n terms
+getTerm :: HQ'.HashQualified Path.Split -> Branch0 m -> Set Referent
+getTerm hq b = case hq of
+  HQ'.NameOnly (p, n) -> Star2.lookupD1 n $ terms p
+  HQ'.HashQualified (p, n) sh -> filter sh . Star2.lookupD1 n $ terms p
   where
     filter sh = Set.filter (SH.isPrefixOf sh . Referent.toShortHash)
-    terms = (Branch.getAt0 p b) ^. Branch.terms
+    terms p = (Branch.getAt0 p b) ^. Branch.terms
 
-getType :: Path.HQSplit -> Branch0 m -> Set Reference.TypeReference
-getType (p, hq) b = case hq of
-  NameOnly n -> Star2.lookupD1 n types
-  HashQualified n sh -> filter sh $ Star2.lookupD1 n types
+getType :: HQ'.HashQualified Path.Split -> Branch0 m -> Set Reference.TypeReference
+getType hq b = case hq of
+  HQ'.NameOnly (p, n) -> Star2.lookupD1 n $ types p
+  HQ'.HashQualified (p, n) sh -> filter sh . Star2.lookupD1 n $ types p
   where
     filter sh = Set.filter (SH.isPrefixOf sh . Reference.toShortHash)
-    types = (Branch.getAt0 p b) ^. Branch.types
+    types p = (Branch.getAt0 p b) ^. Branch.types
 
 getBranch :: Path.Split -> Branch0 m -> Maybe (Branch m)
 getBranch (p, seg) b = case Path.toList p of

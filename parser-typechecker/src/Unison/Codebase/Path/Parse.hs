@@ -36,8 +36,7 @@ import Unison.Syntax.ShortHash qualified as ShortHash
 -- Path parsing functions
 
 parsePath :: String -> Either Text Path
-parsePath =
-  runParser pathP
+parsePath = runParser pathP
 
 parsePath' :: String -> Either Text Path'
 parsePath' = \case
@@ -46,26 +45,22 @@ parsePath' = \case
   path -> fromName' <$> parseName path
 
 parseSplit :: String -> Either Text Split
-parseSplit =
-  runParser splitP
+parseSplit = runParser splitP
 
 parseName :: String -> Either Text Name
-parseName =
-  runParser splitP'
+parseName = runParser splitP'
 
 parseHashOrHQName :: String -> Either Text (HQ'.HashOrHQ Name)
-parseHashOrHQName =
-  runParser shortHashOrHqSplitP'
+parseHashOrHQName = runParser shortHashOrHQNameP'
 
-parseHQSplit :: String -> Either Text HQSplit
+parseHQSplit :: String -> Either Text (HQ'.HashQualified Split)
 parseHQSplit s =
-  parseHQName s >>= \hq ->
-    let name = HQ'.toName hq
-     in if Name.isAbsolute name
-          then Left $ "Sorry, you can't use an absolute name like " <> Text.pack s <> " here."
-          else
-            let h :| t = Name.reverseSegments name
-             in pure (fromList $ reverse t, h <$ hq)
+  parseHQName s >>= traverse \name ->
+    if Name.isAbsolute name
+      then Left $ "Sorry, you can't use an absolute name like " <> Text.pack s <> " here."
+      else
+        let h :| t = Name.reverseSegments name
+         in pure (fromList $ reverse t, h)
 
 parseHQName :: String -> Either Text (HQ'.HashQualified Name)
 parseHQName = runParser hqNameP
@@ -94,8 +89,8 @@ splitP = splitFromName <$> P.withParsecT (fmap NameSegment.renderParseErr) Name.
 splitP' :: Parsec (Lexer.Token Text) [Char] Name
 splitP' = P.withParsecT (fmap NameSegment.renderParseErr) Name.nameP
 
-shortHashOrHqSplitP' :: Parsec (Lexer.Token Text) [Char] (HQ'.HashOrHQ Name)
-shortHashOrHqSplitP' = Left <$> ShortHash.shortHashP <|> Right <$> hqNameP
+shortHashOrHQNameP' :: Parsec (Lexer.Token Text) [Char] (HQ'.HashOrHQ Name)
+shortHashOrHQNameP' = Left <$> ShortHash.shortHashP <|> Right <$> hqNameP
 
 hqNameP :: Parsec (Lexer.Token Text) [Char] (HQ'.HashQualified Name)
 hqNameP = do

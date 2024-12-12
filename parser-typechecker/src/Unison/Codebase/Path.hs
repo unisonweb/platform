@@ -32,8 +32,6 @@ module Unison.Codebase.Path
     maybePrefixName,
     prefixNameIfRel,
     unprefixName,
-    HQSplit,
-    HQSplitAbsolute,
     AbsSplit,
     Split,
     ancestors,
@@ -64,7 +62,7 @@ module Unison.Codebase.Path
     relToText,
     unsplit,
     unsplitAbsolute,
-    nameFromHQSplit,
+    nameFromSplit,
     splitFromName,
 
     -- * things that could be replaced with `Cons` instances
@@ -86,7 +84,6 @@ import Data.Sequence (Seq ((:<|), (:|>)))
 import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
 import GHC.Exts qualified as GHC
-import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.Name (Name)
 import Unison.Name qualified as Name
 import Unison.NameSegment (NameSegment)
@@ -166,21 +163,14 @@ unsplit :: Split -> Path
 unsplit (Path p, a) = Path (p :|> a)
 
 unsplitAbsolute :: (Absolute, NameSegment) -> Absolute
-unsplitAbsolute =
-  coerce unsplit
+unsplitAbsolute = coerce unsplit
 
-nameFromHQSplit :: HQSplit -> HQ'.HashQualified Name
-nameFromHQSplit hqs =
-  let (segs, hqseg) = first (reverse . toList) hqs
-   in Name.fromReverseSegments . (:| segs) <$> hqseg
+nameFromSplit :: Split -> Name
+nameFromSplit = Name.fromReverseSegments . uncurry (flip (:|)) . first (reverse . toList)
 
 type AbsSplit = (Absolute, NameSegment)
 
 type Split = (Path, NameSegment)
-
-type HQSplit = (Path, HQ'.HQSegment)
-
-type HQSplitAbsolute = (Absolute, HQ'.HQSegment)
 
 -- | examples:
 --   unprefix .foo.bar .blah == .blah (absolute paths left alone)
@@ -518,8 +508,8 @@ instance Resolve Path' Path' Path' where
   resolve (AbsolutePath' a) (RelativePath' r) = AbsolutePath' (resolve a r)
   resolve (RelativePath' r1) (RelativePath' r2) = RelativePath' (resolve r1 r2)
 
-instance Resolve Absolute HQSplit HQSplitAbsolute where
-  resolve l (r, hq) = (resolve l (Relative r), hq)
+instance Resolve Absolute Split AbsSplit where
+  resolve l (r, n) = (resolve l (Relative r), n)
 
 instance Resolve Absolute Path' Absolute where
   resolve _ (AbsolutePath' a) = a

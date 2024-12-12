@@ -141,7 +141,7 @@ data Input
     NamesI IsGlobal (HQ.HashQualified Name)
   | AliasTermI !Bool (HQ'.HashOrHQ Name) Name -- bool = force?
   | AliasTypeI !Bool (HQ'.HashOrHQ Name) Name -- bool = force?
-  | AliasManyI [Path.HQSplit] Path'
+  | AliasManyI [HQ'.HashQualified Path.Split] Path'
   | MoveAllI Path.Path' Path.Path'
   | MoveTermI (HQ'.HashQualified Name) Name
   | MoveTypeI (HQ'.HashQualified Name) Name

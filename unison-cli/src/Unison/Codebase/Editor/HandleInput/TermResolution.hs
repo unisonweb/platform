@@ -10,7 +10,7 @@ where
 
 import Control.Monad.Reader (ask)
 import Control.Monad.Trans (liftIO)
-import Data.Maybe (catMaybes, fromJust)
+import Data.Maybe (catMaybes)
 import Data.Set (fromList, toList)
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
@@ -73,7 +73,7 @@ resolveTerm name = do
   let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   case lookupTerm name names of
-    [] -> Cli.returnEarly . TermNotFound . fromJust $ HQ'.fromHQ name
+    [] -> Cli.returnEarly . either TermNotFound' TermNotFound $ HQ'.fromHQ name
     [rf] -> pure rf
     rfs -> Cli.returnEarly . TermAmbiguous suffixifiedPPE name $ fromList rfs
 
@@ -83,7 +83,7 @@ resolveCon name = do
   let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   case lookupCon name names of
-    ([], _) -> Cli.returnEarly . TermNotFound . fromJust $ HQ'.fromHQ name
+    ([], _) -> Cli.returnEarly . either TermNotFound' TermNotFound $ HQ'.fromHQ name
     ([co], _) -> pure co
     (_, rfts) -> Cli.returnEarly . TermAmbiguous suffixifiedPPE name $ fromList rfts
 
@@ -93,7 +93,7 @@ resolveTermRef name = do
   let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   case lookupTermRefs name names of
-    ([], _) -> Cli.returnEarly . TermNotFound . fromJust $ HQ'.fromHQ name
+    ([], _) -> Cli.returnEarly . either TermNotFound' TermNotFound $ HQ'.fromHQ name
     ([rf], _) -> pure rf
     (_, rfts) -> Cli.returnEarly . TermAmbiguous suffixifiedPPE name $ fromList rfts
 

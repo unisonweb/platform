@@ -1,6 +1,5 @@
 module Unison.Codebase.Editor.HandleInput.MoveTerm (doMoveTerm, moveTermSteps) where
 
-import Control.Lens (_1, _2)
 import Data.Set qualified as Set
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
@@ -17,7 +16,7 @@ import Unison.Prelude
 
 moveTermSteps :: HQ'.HashQualified Name -> Name -> Cli [(Path.Absolute, Branch0 m -> Branch0 m)]
 moveTermSteps src' dest' = do
-  src <- Cli.resolveHQName src'
+  src <- traverse Cli.resolveName src'
   srcTerms <- Cli.getTermsAt src
   case Set.toList srcTerms of
     [] -> pure []
@@ -26,14 +25,13 @@ moveTermSteps src' dest' = do
       Cli.returnEarly (Output.DeleteNameAmbiguous hqLength src' srcTerms Set.empty)
     [srcTerm] -> do
       dest <- Cli.resolveName dest'
-      destTerms <- Cli.getTermsAt (HQ'.NameOnly <$> dest)
+      destTerms <- Cli.getTermsAt $ HQ'.NameOnly dest
       when (not (Set.null destTerms)) do
         Cli.returnEarly (Output.TermAlreadyExists dest' destTerms)
-      let p = src & _1 %~ view PP.absPath_
       pure
         [ -- Mitchell: throwing away any hash-qualification here seems wrong!
-          BranchUtil.makeDeleteTermName (over _2 HQ'.toName p) srcTerm,
-          BranchUtil.makeAddTermName (over _1 (view PP.absPath_) dest) srcTerm
+          BranchUtil.makeDeleteTermName (first (view PP.absPath_) $ HQ'.toName src) srcTerm,
+          BranchUtil.makeAddTermName (first (view PP.absPath_) dest) srcTerm
         ]
 
 doMoveTerm :: HQ'.HashQualified Name -> Name -> Text -> Cli ()
