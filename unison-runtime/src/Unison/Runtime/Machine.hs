@@ -209,7 +209,7 @@ infos ctx s = putStrLn $ ctx ++ ": " ++ s
 
 -- Entry point for evaluating a section
 eval0 :: CCache -> ActiveThreads -> MSection -> IO ()
-eval0 !env !activeThreads !co = do
+eval0 env !activeThreads !co = do
   stk <- alloc
   cmbs <- readTVarIO $ combs env
   (denv, k) <-
@@ -248,7 +248,7 @@ apply0 ::
   ActiveThreads ->
   Word64 ->
   IO ()
-apply0 !callback !env !threadTracker !i = do
+apply0 !callback env !threadTracker !i = do
   stk <- alloc
   cmbrs <- readTVarIO $ combRefs env
   cmbs <- readTVarIO $ combs env
@@ -328,33 +328,33 @@ exec ::
   IO (DEnv, Stack, K)
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
-exec !_ !_ !_ !stk !_ !_ instr
+exec _ !_ !_ !stk !_ !_ instr
   | debugger stk "exec" instr = undefined
 #endif
 {- ORMOLU_ENABLE -}
-exec !_ !denv !_activeThreads !stk !k _ (Info tx) = do
+exec _ !denv !_activeThreads !stk !k _ (Info tx) = do
   info tx stk
   info tx k
   pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (Name r args) = do
+exec env !denv !_activeThreads !stk !k _ (Name r args) = do
   v <- resolve env denv stk r
   stk <- name stk args v
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (SetDyn p i) = do
+exec _ !denv !_activeThreads !stk !k _ (SetDyn p i) = do
   val <- peekOff stk i
   pure (EC.mapInsert p val denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (Capture p) = do
+exec _ !denv !_activeThreads !stk !k _ (Capture p) = do
   (cap, denv, stk, k) <- splitCont denv stk k p
   stk <- bump stk
   poke stk cap
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (UPrim1 op i) = do
+exec _ !denv !_activeThreads !stk !k _ (UPrim1 op i) = do
   stk <- uprim1 stk op i
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (UPrim2 op i j) = do
+exec _ !denv !_activeThreads !stk !k _ (UPrim2 op i j) = do
   stk <- uprim2 stk op i j
   pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (BPrim1 MISS i)
+exec env !denv !_activeThreads !stk !k _ (BPrim1 MISS i)
   | sandboxed env = die "attempted to use sandboxed operation: isMissing"
   | otherwise = do
       clink <- bpeekOff stk i
@@ -365,7 +365,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 MISS i)
       stk <- bump stk
       pokeBool stk $ (link `M.member` m)
       pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (BPrim1 CACH i)
+exec env !denv !_activeThreads !stk !k _ (BPrim1 CACH i)
   | sandboxed env = die "attempted to use sandboxed operation: cache"
   | otherwise = do
       arg <- peekOffS stk i
@@ -376,7 +376,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 CACH i)
         stk
         (Sq.fromList $ boxedVal . Foreign . Wrap Rf.termLinkRef . Ref <$> unknown)
       pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (BPrim1 CVLD i)
+exec env !denv !_activeThreads !stk !k _ (BPrim1 CVLD i)
   | sandboxed env = die "attempted to use sandboxed operation: validate"
   | otherwise = do
       arg <- peekOffS stk i
@@ -394,7 +394,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 CVLD i)
           stk <- bump stk
           pokeTag stk 1
           pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (BPrim1 LKUP i)
+exec env !denv !_activeThreads !stk !k _ (BPrim1 LKUP i)
   | sandboxed env = die "attempted to use sandboxed operation: lookup"
   | otherwise = do
       clink <- bpeekOff stk i
@@ -423,7 +423,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 LKUP i)
           stk <- bump stk
           stk <$ pokeTag stk 1
       pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (BPrim1 TLTT i) = do
+exec _ !denv !_activeThreads !stk !k _ (BPrim1 TLTT i) = do
   clink <- bpeekOff stk i
   let shortHash = case unwrapForeign $ marshalToForeign clink of
         Ref r -> toShortHash r
@@ -432,7 +432,7 @@ exec !_ !denv !_activeThreads !stk !k _ (BPrim1 TLTT i) = do
   stk <- bump stk
   pokeBi stk sh
   pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (BPrim1 LOAD i)
+exec env !denv !_activeThreads !stk !k _ (BPrim1 LOAD i)
   | sandboxed env = die "attempted to use sandboxed operation: load"
   | otherwise = do
       v <- peekOffBi stk i
@@ -447,13 +447,13 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 LOAD i)
           pokeOff stk 1 x
           pokeTag stk 1
       pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (BPrim1 VALU i) = do
+exec env !denv !_activeThreads !stk !k _ (BPrim1 VALU i) = do
   m <- readTVarIO (tagRefs env)
   c <- peekOff stk i
   stk <- bump stk
   pokeBi stk =<< reflectValue m c
   pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (BPrim1 DBTX i)
+exec env !denv !_activeThreads !stk !k _ (BPrim1 DBTX i)
   | sandboxed env =
       die "attempted to use sandboxed operation: Debug.toText"
   | otherwise = do
@@ -470,7 +470,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 DBTX i)
           stk <- bump stk
           stk <$ pokeTag stk 2
       pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (BPrim1 SDBL i)
+exec env !denv !_activeThreads !stk !k _ (BPrim1 SDBL i)
   | sandboxed env =
       die "attempted to use sandboxed operation: sandboxLinks"
   | otherwise = do
@@ -478,10 +478,10 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim1 SDBL i)
       stk <- bump stk
       pokeS stk . encodeSandboxListResult =<< sandboxList env tl
       pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (BPrim1 op i) = do
+exec _ !denv !_activeThreads !stk !k _ (BPrim1 op i) = do
   stk <- bprim1 stk op i
   pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (BPrim2 SDBX i j) = do
+exec env !denv !_activeThreads !stk !k _ (BPrim2 SDBX i j) = do
   s <- peekOffS stk i
   c <- bpeekOff stk j
   l <- decodeSandboxArgument s
@@ -489,7 +489,7 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim2 SDBX i j) = do
   stk <- bump stk
   pokeBool stk $ b
   pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (BPrim2 SDBV i j)
+exec env !denv !_activeThreads !stk !k _ (BPrim2 SDBV i j)
   | sandboxed env =
       die "attempted to use sandboxed operation: Value.validateSandboxed"
   | otherwise = do
@@ -500,36 +500,36 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim2 SDBV i j)
       stk <- bump stk
       bpoke stk $ encodeSandboxResult res
       pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (BPrim2 EQLU i j) = do
+exec _ !denv !_activeThreads !stk !k _ (BPrim2 EQLU i j) = do
   x <- peekOff stk i
   y <- peekOff stk j
   stk <- bump stk
   pokeBool stk $ universalEq (==) x y
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (BPrim2 LEQU i j) = do
+exec _ !denv !_activeThreads !stk !k _ (BPrim2 LEQU i j) = do
   x <- peekOff stk i
   y <- peekOff stk j
   stk <- bump stk
   pokeBool stk $ (universalCompare compare x y) /= GT
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (BPrim2 LESU i j) = do
+exec _ !denv !_activeThreads !stk !k _ (BPrim2 LESU i j) = do
   x <- peekOff stk i
   y <- peekOff stk j
   stk <- bump stk
   pokeBool stk $ (universalCompare compare x y) == LT
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (BPrim2 CMPU i j) = do
+exec _ !denv !_activeThreads !stk !k _ (BPrim2 CMPU i j) = do
   x <- peekOff stk i
   y <- peekOff stk j
   stk <- bump stk
   pokeI stk . pred . fromEnum $ universalCompare compare x y
   pure (denv, stk, k)
-exec !_ !_ !_activeThreads !stk !k r (BPrim2 THRO i j) = do
+exec _ !_ !_activeThreads !stk !k r (BPrim2 THRO i j) = do
   name <- peekOffBi @Util.Text.Text stk i
   x <- peekOff stk j
   () <- throwIO (BU (traceK r k) (Util.Text.toText name) x)
   error "throwIO should never return"
-exec !env !denv !_activeThreads !stk !k _ (BPrim2 TRCE i j)
+exec env !denv !_activeThreads !stk !k _ (BPrim2 TRCE i j)
   | sandboxed env = die "attempted to use sandboxed operation: trace"
   | otherwise = do
       tx <- peekOffBi stk i
@@ -548,10 +548,10 @@ exec !env !denv !_activeThreads !stk !k _ (BPrim2 TRCE i j)
           putStrLn "partial decompilation:\n"
           putStrLn pre
       pure (denv, stk, k)
-exec !_ !denv !_trackThreads !stk !k _ (BPrim2 op i j) = do
+exec _ !denv !_trackThreads !stk !k _ (BPrim2 op i j) = do
   stk <- bprim2 stk op i j
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (RefCAS refI ticketI valI) = do
+exec _ !denv !_activeThreads !stk !k _ (RefCAS refI ticketI valI) = do
   (ref :: IORef Val) <- peekOffBi stk refI
   -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
   -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
@@ -562,30 +562,30 @@ exec !_ !denv !_activeThreads !stk !k _ (RefCAS refI ticketI valI) = do
   stk <- bump stk
   pokeBool stk r
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (Pack r t args) = do
+exec _ !denv !_activeThreads !stk !k _ (Pack r t args) = do
   clo <- buildData stk r t args
   stk <- bump stk
   bpoke stk clo
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (Print i) = do
+exec _ !denv !_activeThreads !stk !k _ (Print i) = do
   t <- peekOffBi stk i
   Tx.putStrLn (Util.Text.toText t)
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (Lit ml) = do
+exec _ !denv !_activeThreads !stk !k _ (Lit ml) = do
   stk <- bump stk
   poke stk $ litToVal ml
   pure (denv, stk, k)
-exec !_ !denv !_activeThreads !stk !k _ (Reset ps) = do
+exec _ !denv !_activeThreads !stk !k _ (Reset ps) = do
   (stk, a) <- saveArgs stk
   pure (denv, stk, Mark a ps clos k)
   where
     clos = EC.restrictKeys denv ps
-exec !_ !denv !_activeThreads !stk !k _ (Seq as) = do
+exec _ !denv !_activeThreads !stk !k _ (Seq as) = do
   l <- closureArgs stk as
   stk <- bump stk
   pokeS stk $ Sq.fromList l
   pure (denv, stk, k)
-exec !env !denv !_activeThreads !stk !k _ (ForeignCall _ w args)
+exec env !denv !_activeThreads !stk !k _ (ForeignCall _ w args)
   | Just (FF arg res ev) <- EC.lookup w (foreignFuncs env) = do
       let xStack = unpackXStack stk
       r <- arg (unpackXStack stk) args >>= ev
@@ -593,21 +593,21 @@ exec !env !denv !_activeThreads !stk !k _ (ForeignCall _ w args)
         (# s, xstk #) -> (# s, (denv, packXStack xstk, k) #)
   | otherwise =
       die $ "reference to unknown foreign function: " ++ show w
-exec !env !denv !activeThreads !stk !k _ (Fork i)
+exec env !denv !activeThreads !stk !k _ (Fork i)
   | sandboxed env = die "attempted to use sandboxed operation: fork"
   | otherwise = do
       tid <- forkEval env activeThreads =<< peekOff stk i
       stk <- bump stk
       bpoke stk . Foreign . Wrap Rf.threadIdRef $ tid
       pure (denv, stk, k)
-exec !env !denv !activeThreads !stk !k _ (Atomically i)
+exec env !denv !activeThreads !stk !k _ (Atomically i)
   | sandboxed env = die $ "attempted to use sandboxed operation: atomically"
   | otherwise = do
       v <- peekOff stk i
       stk <- bump stk
       atomicEval env activeThreads (poke stk) v
       pure (denv, stk, k)
-exec !env !denv !activeThreads !stk !k _ (TryForce i)
+exec env !denv !activeThreads !stk !k _ (TryForce i)
   | sandboxed env = die $ "attempted to use sandboxed operation: tryForce"
   | otherwise = do
       v <- peekOff stk i
@@ -669,24 +669,24 @@ eval ::
   IO ()
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
-eval !_ !_ !_ !stk !_ !_ section
+eval _ !_ !_ !stk !_ !_ section
   | debugger stk "eval" section = undefined
 #endif
 {- ORMOLU_ENABLE -}
-eval !env !denv !activeThreads !stk !k r (Match i (TestT df cs)) = do
+eval env !denv !activeThreads !stk !k r (Match i (TestT df cs)) = do
   t <- peekOffBi stk i
   eval env denv activeThreads stk k r $ selectTextBranch t df cs
-eval !env !denv !activeThreads !stk !k r (Match i br) = do
+eval env !denv !activeThreads !stk !k r (Match i br) = do
   n <- peekOffN stk i
   eval env denv activeThreads stk k r $ selectBranch n br
-eval !env !denv !activeThreads !stk !k r (DMatch mr i br) = do
+eval env !denv !activeThreads !stk !k r (DMatch mr i br) = do
   (t, stk) <- dumpDataNoTag mr stk =<< peekOff stk i
   eval env denv activeThreads stk k r $
     selectBranch (maskTags t) br
-eval !env !denv !activeThreads !stk !k r (NMatch _mr i br) = do
+eval env !denv !activeThreads !stk !k r (NMatch _mr i br) = do
   n <- peekOffN stk i
   eval env denv activeThreads stk k r $ selectBranch n br
-eval !env !denv !activeThreads !stk !k r (RMatch i pu br) = do
+eval env !denv !activeThreads !stk !k r (RMatch i pu br) = do
   (t, stk) <- dumpDataNoTag Nothing stk =<< peekOff stk i
   if t == PackedTag 0
     then eval env denv activeThreads stk k r pu
@@ -695,7 +695,7 @@ eval !env !denv !activeThreads !stk !k r (RMatch i pu br) = do
         | Just ebs <- EC.lookup e br ->
             eval env denv activeThreads stk k r $ selectBranch t ebs
         | otherwise -> unhandledAbilityRequest
-eval !env !denv !activeThreads !stk !k _ (Yield args)
+eval env !denv !activeThreads !stk !k _ (Yield args)
   | asize stk > 0,
     VArg1 i <- args =
       peekOff stk i >>= apply env denv activeThreads stk k False ZArgs
@@ -703,14 +703,14 @@ eval !env !denv !activeThreads !stk !k _ (Yield args)
       stk <- moveArgs stk args
       stk <- frameArgs stk
       yield env denv activeThreads stk k
-eval !env !denv !activeThreads !stk !k _ (App ck r args) =
+eval env !denv !activeThreads !stk !k _ (App ck r args) =
   resolve env denv stk r
     >>= apply env denv activeThreads stk k ck args
-eval !env !denv !activeThreads !stk !k _ (Call ck combIx rcomb args) =
+eval env !denv !activeThreads !stk !k _ (Call ck combIx rcomb args) =
   enter env denv activeThreads stk k (combRef combIx) ck args rcomb
-eval !env !denv !activeThreads !stk !k _ (Jump i args) =
+eval env !denv !activeThreads !stk !k _ (Jump i args) =
   bpeekOff stk i >>= jump env denv activeThreads stk k args
-eval !env !denv !activeThreads !stk !k r (Let nw cix f sect) = do
+eval env !denv !activeThreads !stk !k r (Let nw cix f sect) = do
   (stk, fsz, asz) <- saveFrame stk
   eval
     env
@@ -720,11 +720,11 @@ eval !env !denv !activeThreads !stk !k r (Let nw cix f sect) = do
     (Push fsz asz cix f sect k)
     r
     nw
-eval !env !denv !activeThreads !stk !k r (Ins i nx) = do
+eval env !denv !activeThreads !stk !k r (Ins i nx) = do
   (denv, stk, k) <- exec env denv activeThreads stk k r i
   eval env denv activeThreads stk k r nx
-eval !_ !_ !_ !_activeThreads !_ _ Exit = pure ()
-eval !_ !_ !_ !_activeThreads !_ _ (Die s) = die s
+eval _ !_ !_ !_activeThreads !_ _ Exit = pure ()
+eval _ !_ !_ !_activeThreads !_ _ (Die s) = die s
 {-# NOINLINE eval #-}
 
 unhandledAbilityRequest :: (HasCallStack) => IO a
@@ -779,7 +779,7 @@ enter ::
   Args ->
   MComb ->
   IO ()
-enter !env !denv !activeThreads !stk !k !cref !sck !args = \case
+enter env !denv !activeThreads !stk !k !cref !sck !args = \case
   (RComb (Lam a f entry)) -> do
     -- check for stack check _skip_
     stk <- if sck then pure stk else ensure stk f
@@ -817,11 +817,11 @@ apply ::
   IO ()
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
-apply !_env !_denv !_activeThreads !stk !_k !_ck !args !val
+apply _env !_denv !_activeThreads !stk !_k !_ck !args !val
   | debugger stk "apply" (args, val) = undefined
 #endif
 {- ORMOLU_ENABLE -}
-apply !env !denv !activeThreads !stk !k !ck !args !val =
+apply env !denv !activeThreads !stk !k !ck !args !val =
   case val of
     BoxedVal (PAp cix@(CIx combRef _ _) comb seg) ->
       case comb of
@@ -862,7 +862,7 @@ jump ::
   Args ->
   Closure ->
   IO ()
-jump !env !denv !activeThreads !stk !k !args clo = case clo of
+jump env !denv !activeThreads !stk !k !args clo = case clo of
   Captured sk0 a seg -> do
     let (p, sk) = adjust sk0
     seg <- closeArgs K stk seg args
@@ -894,7 +894,7 @@ repush ::
   K ->
   K ->
   IO ()
-repush !env !activeThreads !stk = go
+repush env !activeThreads !stk = go
   where
     go !denv KE !k = yield env denv activeThreads stk k
     go !denv (Mark a ps cs sk) !k = go denv' sk $ Mark a ps cs' k
@@ -1936,7 +1936,7 @@ yield ::
   Stack ->
   K ->
   IO ()
-yield !env !denv !activeThreads !stk !k = leap denv k
+yield env !denv !activeThreads !stk !k = leap denv k
   where
     leap !denv0 (Mark a ps cs k) = do
       let denv = cs <> EC.withoutKeys denv0 ps
