@@ -18,9 +18,11 @@ import Control.Lens (unsnoc)
 import Control.Monad.State (evalState)
 import Control.Monad.State qualified as State
 import Data.Char (isPrint)
+import Data.Foldable qualified as Foldable
 import Data.List
 import Data.List qualified as List
 import Data.Map qualified as Map
+import Data.Sequence qualified as Seq
 import Data.Set qualified as Set
 import Data.Text (unpack)
 import Data.Text qualified as Text
@@ -408,8 +410,7 @@ pretty0
     where
       goNormal prec tm = pretty0 (ac prec Normal im doc) tm
       specialCases term go = do
-        doc <- prettyDoc2 a term
-        case doc of
+        prettyDoc2 a term >>= \case
           Just d -> pure d
           Nothing -> notDoc go
         where
@@ -652,14 +653,14 @@ printLet ::
   (MonadPretty v m) =>
   AmbientContext ->
   BlockContext ->
-  [(v, Term3 v PrintAnnotation)] ->
+  [LetBindings v (Term3 v PrintAnnotation)] ->
   Term3 v PrintAnnotation ->
   [Pretty SyntaxText] ->
   m (Pretty SyntaxText)
 printLet context sc bs e uses = do
-  bs <- traverse (printLetBinding bindingContext) bs
+  bs <- traverse (printLetBindings bindingContext) bs
   body <- body e
-  pure . paren (sc /= Block && context.precedence >= Top) . letIntro $ PP.lines (uses <> bs <> body)
+  pure . paren (sc /= Block && context.precedence >= Top) . letIntro $ PP.lines (uses <> concat bs <> body)
   where
     bindingContext :: AmbientContext
     bindingContext =
@@ -671,11 +672,24 @@ printLet context sc bs e uses = do
       Block -> id
       Normal -> (fmt S.ControlKeyword "let" `PP.hang`)
 
+printLetBindings ::
+  (MonadPretty v m) =>
+  AmbientContext ->
+  LetBindings v (Term3 v PrintAnnotation) ->
+  m [Pretty SyntaxText]
+printLetBindings context = \case
+  LetBindings bindings -> traverse (printLetBinding context) bindings
+  LetrecBindings bindings -> traverse (printLetrecBinding context) bindings
+
 printLetBinding :: (MonadPretty v m) => AmbientContext -> (v, Term3 v PrintAnnotation) -> m (Pretty SyntaxText)
 printLetBinding context (v, binding) =
   if Var.isAction v
     then pretty0 context binding
     else renderPrettyBinding <$> prettyBinding0' context (HQ.unsafeFromVar (Var.reset v)) binding
+
+printLetrecBinding :: (MonadPretty v m) => AmbientContext -> (v, Term3 v PrintAnnotation) -> m (Pretty SyntaxText)
+printLetrecBinding context (v, binding) =
+  renderPrettyBinding <$> prettyBinding0' context (HQ.unsafeFromVar (Var.reset v)) binding
 
 prettyPattern ::
   forall v loc.
@@ -1568,14 +1582,18 @@ allInSubBlock tm p s i =
 -- statement, need to be emitted also by this function, otherwise the `use`
 -- statement may come out at an enclosing scope instead.
 immediateChildBlockTerms ::
-  (Var vt, Var v) => Term2 vt at ap v a -> [Term2 vt at ap v a]
+  forall a ap at v vt. (Var vt, Var v) => Term2 vt at ap v a -> [Term2 vt at ap v a]
 immediateChildBlockTerms = \case
   LetBlock bs e -> concatMap doLet bs ++ handleDelay e
   _ -> []
   where
     handleDelay (Delay' b) | isLet b = [b]
     handleDelay _ = []
-    doLet (v, Ann' tm _) = doLet (v, tm)
+    doLet :: LetBindings v (Term2 vt at ap v a) -> [Term2 vt at ap v a]
+    doLet = \case
+      LetBindings bindings -> concatMap doLet2 bindings
+      LetrecBindings bindings -> concatMap doLet2 bindings
+    doLet2 (v, Ann' tm _) = doLet2 (v, tm)
     -- we don't consider 'body' to be a place we can insert a `use`
     -- clause unless it's already a let block. This avoids silliness like:
     --   x = 1 + 1
@@ -1583,8 +1601,8 @@ immediateChildBlockTerms = \case
     --   x =
     --    use Nat +
     --    1 + 1
-    doLet (v, LamsNamedOpt' _ body) = [body | not (Var.isAction v), isLet body]
-    doLet t = error (show t) []
+    doLet2 (v, LamsNamedOpt' _ body) = [body | not (Var.isAction v), isLet body]
+    doLet2 t = error (show t) []
 
 isSoftHangable :: (Var v) => Term2 vt at ap v a -> Bool
 -- isSoftHangable (Delay' d) = isLet d || isSoftHangable d || case d of
@@ -1643,42 +1661,131 @@ isBlock tm =
     Delay' _ -> True
     _ -> False
 
+-- A `LetBindings` is either:
+--
+
+-- * A list of nonrecusrive lets (e.g. let x = ... in let y = ... in let z = ... in ...), where each binding is in
+
+--   scope for all subsequent bindings.
+--
+--   In made-up syntax:
+--
+--     let
+--       x = ...
+--     in
+--       let
+--         y = ...
+--       in
+--         let
+--           z = ...
+--         in
+--           body
+--
+
+-- * A single letrec's bindings, where each binding is in scope for all subsequent bindings.
+
+--
+--   In made-up syntax:
+--
+--     letrec
+--       x = ...
+--       y = ...
+--       z = ...
+--     in
+--       body
+data LetBindings v term
+  = LetBindings [(v, term)]
+  | LetrecBindings [(v, term)]
+
+-- | A group of let bindings (with all bound variables cached at the top level for efficiency).
+--
+-- The sequence has an invariant: no two `LetBindings` in a row (that would be a single `LetBindings`).
+--
+-- For example, the bindings
+--
+--   a = ...
+--   b = ...
+--   c = ...
+--   d = ...
+--   e = ...
+--   f = ...
+--   body
+--
+-- might be two lets `a` and `b`, followed by a letrec `c` and `d`, followed by a different letrec `e`, `f`:
+--
+--   let
+--     a = ...
+--   in
+--     let
+--       b = ...
+--     in
+--       letrec
+--         c = ...
+--         d = ...
+--       in
+--         letrec
+--           e = ...
+--           f = ...
+--         in
+--           body
+data LetBindingsGroups v term
+  = LetBindingsGroups (Set v) (Seq (LetBindings v term))
+
+instance (Ord v) => Semigroup (LetBindingsGroups v term) where
+  LetBindingsGroups vs1 bs1 <> LetBindingsGroups vs2 bs2 =
+    LetBindingsGroups (Set.union vs1 vs2) (bs1 <> bs2)
+
+letBindingsToLetBindingsGroups :: (Ord v) => [(v, term)] -> LetBindingsGroups v term
+letBindingsToLetBindingsGroups bindings =
+  LetBindingsGroups (Set.fromList (map fst bindings)) (Seq.singleton (LetBindings bindings))
+
+letrecBindingsToLetBindingsGroups :: (Ord v) => [(v, term)] -> LetBindingsGroups v term
+letrecBindingsToLetBindingsGroups bindings =
+  LetBindingsGroups (Set.fromList (map fst bindings)) (Seq.singleton (LetrecBindings bindings))
+
 pattern LetBlock ::
   (Ord v) =>
-  [(v, Term2 vt at ap v a)] ->
+  [LetBindings v (Term2 vt at ap v a)] ->
   Term2 vt at ap v a ->
   Term2 vt at ap v a
-pattern LetBlock bindings body <- (unLetBlock -> Just (bindings, body))
+pattern LetBlock bindings body <-
+  (unLetBlock -> Just (LetBindingsGroups _ (Foldable.toList @Seq -> bindings), body))
 
 -- Collects nested let/let rec blocks into one minimally nested block.
 -- Handy because `let` and `let rec` blocks get rendered the same way.
 -- We preserve nesting when the inner block shadows definitions in the
 -- outer block.
 unLetBlock ::
+  forall a ap at v vt.
   (Ord v) =>
   Term2 vt at ap v a ->
-  Maybe ([(v, Term2 vt at ap v a)], Term2 vt at ap v a)
-unLetBlock t = rec t
+  Maybe (LetBindingsGroups v (Term2 vt at ap v a), Term2 vt at ap v a)
+unLetBlock = rec
   where
-    dontIntersect v1s v2s =
-      all (`Set.notMember` v2set) (fst <$> v1s)
-      where
-        v2set = Set.fromList (fst <$> v2s)
+    dontIntersect :: LetBindingsGroups v term -> LetBindingsGroups v term -> Bool
+    dontIntersect (LetBindingsGroups xs _) (LetBindingsGroups ys _) =
+      Set.disjoint xs ys
+
+    rec :: Term2 vt at ap v a -> Maybe (LetBindingsGroups v (Term2 vt at ap v a), Term2 vt at ap v a)
     rec t = case unLetRecNamed t of
       Nothing -> nonrec t
-      Just (_isTop, bindings, body) -> case rec body of
-        Just (innerBindings, innerBody)
-          | dontIntersect bindings innerBindings ->
-              Just (bindings ++ innerBindings, innerBody)
-        _ -> Just (bindings, body)
-    nonrec t = case unLet t of
-      Nothing -> Nothing
-      Just (bindings0, body) ->
-        let bindings = [(v, b) | (_, v, b) <- bindings0]
+      Just (_isTop, bindings0, body) ->
+        let bindings = letrecBindingsToLetBindingsGroups bindings0
          in case rec body of
               Just (innerBindings, innerBody)
                 | dontIntersect bindings innerBindings ->
-                    Just (bindings ++ innerBindings, innerBody)
+                    Just (bindings <> innerBindings, innerBody)
+              _ -> Just (bindings, body)
+
+    nonrec :: Term2 vt at ap v a -> Maybe (LetBindingsGroups v (Term2 vt at ap v a), Term2 vt at ap v a)
+    nonrec t = case unLet t of
+      Nothing -> Nothing
+      Just (bindings0, body) ->
+        let bindings = letBindingsToLetBindingsGroups [(v, b) | (_, v, b) <- bindings0]
+         in case rec body of
+              Just (innerBindings, innerBody)
+                | dontIntersect bindings innerBindings ->
+                    Just (bindings <> innerBindings, innerBody)
               _ -> Just (bindings, body)
 
 pattern LamsNamedMatch' ::
