@@ -34,6 +34,7 @@
           pkgs.cachix
           pkgs.gettext # for envsubst, used by unison-src/builtin-tests/interpreter-tests.sh
           pkgs.hpack
+          pkgs.jq
           pkgs.pkg-config
           pkgs.stack
         ];
