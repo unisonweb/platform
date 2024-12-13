@@ -6,7 +6,6 @@ module Unison.Cli.MonadUtils
     getCurrentProjectName,
     getCurrentProjectBranchName,
     getCurrentProjectPath,
-    resolvePath,
     resolvePath',
     resolvePath'ToAbsolute,
     resolveSplit',
@@ -163,12 +162,6 @@ getCurrentProjectBranchName :: Cli ProjectBranchName
 getCurrentProjectBranchName = do
   view (#branch . #name) <$> getCurrentProjectPath
 
--- | Resolve a @Path@ (interpreted as relative) to a @Path.Absolute@, per the current path.
-resolvePath :: Path -> Cli PP.ProjectPath
-resolvePath path = do
-  pp <- getCurrentProjectPath
-  pure $ pp & PP.absPath_ %~ \p -> Path.resolve p path
-
 -- | Resolve a @Path'@ to a @Path.Absolute@, per the current path.
 resolvePath' :: Path' -> Cli PP.ProjectPath
 resolvePath' path' = do
@@ -299,9 +292,9 @@ getMaybeBranch0FromProjectPath pp =
   fmap Branch.head <$> getMaybeBranchFromProjectPath pp
 
 -- | Get the branch at a relative path, or return early if there's no such branch.
-expectBranchAtPath :: Path -> Cli (Branch IO)
+expectBranchAtPath :: Path.Relative -> Cli (Branch IO)
 expectBranchAtPath =
-  expectBranchAtPath' . RelativePath' . Path.Relative
+  expectBranchAtPath' . RelativePath'
 
 -- | Get the branch at an absolute or relative path, or return early if there's no such branch.
 expectBranchAtPath' :: Path' -> Cli (Branch IO)

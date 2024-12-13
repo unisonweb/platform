@@ -194,8 +194,8 @@ data Input
   | ShowProjectReflogI (Maybe ProjectName)
   | ShowProjectBranchReflogI (Maybe (ProjectAndBranch (Maybe ProjectName) ProjectBranchName))
   | UpdateBuiltinsI
-  | MergeBuiltinsI (Maybe Path)
-  | MergeIOBuiltinsI (Maybe Path)
+  | MergeBuiltinsI (Maybe Path.Relative)
+  | MergeIOBuiltinsI (Maybe Path.Relative)
   | ListDependenciesI (HQ.HashQualified Name)
   | ListDependentsI (HQ.HashQualified Name)
   | -- | List all external dependencies of a given namespace, or the current namespace if
@@ -322,7 +322,7 @@ data DeleteTarget
   = DeleteTarget'TermOrType DeleteOutput [HQ'.HashQualified (Path.Split Path')]
   | DeleteTarget'Term DeleteOutput [HQ'.HashQualified (Path.Split Path')]
   | DeleteTarget'Type DeleteOutput [HQ'.HashQualified (Path.Split Path')]
-  | DeleteTarget'Namespace Insistence (Maybe (Path.Split Path))
+  | DeleteTarget'Namespace Insistence (Maybe (Path.Split Path.Relative))
   | DeleteTarget'ProjectBranch (ProjectAndBranch (Maybe ProjectName) ProjectBranchName)
   | DeleteTarget'Project ProjectName
   deriving stock (Eq, Show)

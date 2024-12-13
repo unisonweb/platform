@@ -19,12 +19,10 @@ import Unison.Codebase.Branch qualified as Branch
 import Unison.Codebase.Branch.Names qualified as Branch
 import Unison.Codebase.Editor.Input
 import Unison.Codebase.Editor.Output
-import Unison.Codebase.Path (Path)
 import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.ProjectPath qualified as ProjectPath
 import Unison.LabeledDependency (LabeledDependency)
 import Unison.LabeledDependency qualified as LD
-import Unison.NameSegment qualified as NameSegment
 import Unison.Names (Names)
 import Unison.Names qualified as Names
 import Unison.Prelude
@@ -33,7 +31,7 @@ import Unison.PrettyPrintEnvDecl.Names qualified as PPED
 import Unison.Referent qualified as Referent
 import Unison.Sqlite qualified as Sqlite
 
-handleDeleteNamespace :: Input -> Insistence -> Maybe (Path, NameSegment.NameSegment) -> Cli ()
+handleDeleteNamespace :: Input -> Insistence -> Maybe (Path.Split Path.Relative) -> Cli ()
 handleDeleteNamespace input insistence = \case
   Nothing -> do
     loopState <- State.get
@@ -65,7 +63,7 @@ handleDeleteNamespace input insistence = \case
           let ppeDecl = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
           Cli.respondNumbered $ CantDeleteNamespace ppeDecl endangerments
           Cli.returnEarlyWithoutOutput
-    parentPathAbs <- Cli.resolvePath parentPath
+    parentPathAbs <- Cli.resolvePath' $ Path.RelativePath' parentPath
     let description = commandName <> " " <> into @Text (parentPathAbs & ProjectPath.absPath_ %~ (`Path.descend` childName))
     -- We have to modify the parent in order to also wipe out the history at the
     -- child.

@@ -643,7 +643,7 @@ loop e = do
               let srcb = BranchUtil.fromNames Builtin.names
               currentPath <- Cli.getCurrentPath
               let destPath = case opath of
-                    Just path -> Path.resolve currentPath (Path.Relative path)
+                    Just path -> Path.resolve currentPath path
                     Nothing -> Path.descend currentPath NameSegment.builtinSegment
               pp <- set PP.absPath_ destPath <$> Cli.getCurrentProjectPath
               _ <- Cli.updateAtM description pp \destb ->
@@ -671,7 +671,7 @@ loop e = do
               let srcb = BranchUtil.fromNames names0
               currentPath <- Cli.getCurrentPath
               let destPath = case opath of
-                    Just path -> Path.resolve currentPath (Path.Relative path)
+                    Just path -> Path.resolve currentPath path
                     Nothing -> Path.descend currentPath NameSegment.builtinSegment
               pp <- set PP.absPath_ destPath <$> Cli.getCurrentProjectPath
               _ <- Cli.updateAtM description pp \destb ->
@@ -938,9 +938,9 @@ inputDescription input =
       pure (if native then "io.test.native.all" else "io.test.all")
     UpdateBuiltinsI -> pure "builtins.update"
     MergeBuiltinsI Nothing -> pure "builtins.merge"
-    MergeBuiltinsI (Just path) -> ("builtins.merge " <>) <$> p path
+    MergeBuiltinsI (Just path) -> fmap ("builtins.merge " <>) . p' $ Path.RelativePath' path
     MergeIOBuiltinsI Nothing -> pure "builtins.mergeio"
-    MergeIOBuiltinsI (Just path) -> ("builtins.mergeio " <>) <$> p path
+    MergeIOBuiltinsI (Just path) -> fmap ("builtins.mergeio " <>) . p' $ Path.RelativePath' path
     MakeStandaloneI out nm -> pure ("compile " <> Text.pack out <> " " <> HQ.toText nm)
     ExecuteSchemeI nm args ->
       pure $ "run.native " <> Text.unwords (HQ.toText nm : fmap Text.pack args)
@@ -1032,14 +1032,12 @@ inputDescription input =
     UpgradeI {} -> wat
     VersionI -> wat
   where
-    p :: Path -> Cli Text
-    p = fmap (into @Text) . Cli.resolvePath
     p' :: Path' -> Cli Text
     p' = fmap (into @Text) . Cli.resolvePath'
     brp :: BranchRelativePath -> Cli Text
     brp = fmap (into @Text) . ProjectUtils.resolveBranchRelativePath
-    ops :: Maybe (Path.Split Path) -> Cli Text
-    ops = maybe (pure ".") ps
+    ops :: Maybe (Path.Split Path.Relative) -> Cli Text
+    ops = maybe (pure ".") (ps' . first Path.RelativePath')
     wat = error $ show input ++ " is not expected to alter the branch"
     hhqs' :: HQ'.HashOrHQ (Path.Split Path') -> Cli Text
     hhqs' = either (pure . SH.toText) hqs'
@@ -1047,7 +1045,6 @@ inputDescription input =
     hqs' = pure . HQ'.toTextWith (Path.toText . Path.unsplit)
     hqs = hqs' . fmap (first $ Path.RelativePath' . Path.Relative)
     ps' = p' . Path.unsplit
-    ps = p . Path.unsplit
     bid2 :: BranchId2 -> Cli Text
     bid2 = \case
       Left sch -> pure $ into @Text sch

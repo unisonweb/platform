@@ -470,9 +470,9 @@ handleNewPath =
     (const . Left $ "can’t use a numbered argument for a new namespace")
 
 -- | When only a relative name is allowed.
-handleSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) (Path.Split Path)
+handleSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) (Path.Split Path.Relative)
 handleSplitArg =
-  either
+  fmap (first Path.Relative) . either
     (first P.text . Path.parseSplit)
     \case
       SA.Name name | Name.isRelative name -> pure $ Path.splitFromName name
@@ -722,7 +722,7 @@ mergeBuiltins =
     "Adds the builtins (excluding `io` and misc) to the specified namespace. Defaults to `builtin.`"
     \case
       [] -> pure . Input.MergeBuiltinsI $ Nothing
-      [p] -> Input.MergeBuiltinsI . Just <$> handlePathArg p
+      [p] -> Input.MergeBuiltinsI . pure . Path.Relative <$> handlePathArg p
       args -> wrongArgsLength "no more than one argument" args
 
 mergeIOBuiltins :: InputPattern
@@ -735,7 +735,7 @@ mergeIOBuiltins =
     "Adds all the builtins, including `io` and misc., to the specified namespace. Defaults to `builtin.`"
     \case
       [] -> pure . Input.MergeIOBuiltinsI $ Nothing
-      [p] -> Input.MergeIOBuiltinsI . Just <$> handlePathArg p
+      [p] -> Input.MergeIOBuiltinsI . pure . Path.Relative <$> handlePathArg p
       args -> wrongArgsLength "no more than one argument" args
 
 updateBuiltins :: InputPattern
@@ -1581,7 +1581,7 @@ deleteNamespaceForce =
 deleteNamespaceParser :: Input.Insistence -> I.Arguments -> Either (P.Pretty CT.ColorText) Input
 deleteNamespaceParser insistence = \case
   [Left "."] -> first fromString . pure $ Input.DeleteI (DeleteTarget'Namespace insistence Nothing)
-  [p] -> Input.DeleteI . DeleteTarget'Namespace insistence <$> (Just <$> handleSplitArg p)
+  [p] -> Input.DeleteI . DeleteTarget'Namespace insistence . pure <$> handleSplitArg p
   args -> wrongArgsLength "exactly one argument" args
 
 renameBranch :: InputPattern
