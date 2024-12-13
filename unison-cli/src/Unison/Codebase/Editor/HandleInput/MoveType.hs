@@ -8,15 +8,16 @@ import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Branch (Branch0)
 import Unison.Codebase.BranchUtil qualified as BranchUtil
 import Unison.Codebase.Editor.Output qualified as Output
+import Unison.Codebase.Path (Path')
 import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.ProjectPath qualified as PP
 import Unison.HashQualifiedPrime qualified as HQ'
-import Unison.Name (Name)
 import Unison.Prelude
 
-moveTypeSteps :: HQ'.HashQualified Name -> Name -> Cli [(Path.Absolute, Branch0 m -> Branch0 m)]
+moveTypeSteps ::
+  HQ'.HashQualified (Path.Split Path') -> Path.Split Path' -> Cli [(Path.Absolute, Branch0 m -> Branch0 m)]
 moveTypeSteps src' dest' = do
-  src <- traverse Cli.resolveName src'
+  src <- traverse Cli.resolveSplit' src'
   srcTypes <- Cli.getTypesAt src
   case Set.toList srcTypes of
     [] -> pure []
@@ -24,7 +25,7 @@ moveTypeSteps src' dest' = do
       hqLength <- Cli.runTransaction Codebase.hashLength
       Cli.returnEarly (Output.DeleteNameAmbiguous hqLength src' Set.empty srcTypes)
     [srcType] -> do
-      dest <- Cli.resolveName dest'
+      dest <- Cli.resolveSplit' dest'
       destTypes <- Cli.getTypesAt $ HQ'.NameOnly dest
       when (not (Set.null destTypes)) do
         Cli.returnEarly (Output.TypeAlreadyExists dest' destTypes)
@@ -34,7 +35,7 @@ moveTypeSteps src' dest' = do
           BranchUtil.makeAddTypeName (first (view PP.absPath_) dest) srcType
         ]
 
-doMoveType :: HQ'.HashQualified Name -> Name -> Text -> Cli ()
+doMoveType :: HQ'.HashQualified (Path.Split Path') -> Path.Split Path' -> Text -> Cli ()
 doMoveType src' dest' description = do
   steps <- moveTypeSteps src' dest'
   when (null steps) do

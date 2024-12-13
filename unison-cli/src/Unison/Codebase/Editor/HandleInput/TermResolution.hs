@@ -17,6 +17,7 @@ import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.NamesUtils qualified as Cli
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Editor.Output (Output (..))
+import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.Runtime qualified as Runtime
 import Unison.ConstructorReference
 import Unison.HashQualified qualified as HQ
@@ -73,7 +74,7 @@ resolveTerm name = do
   let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   case lookupTerm name names of
-    [] -> Cli.returnEarly . either TermNotFound' TermNotFound $ HQ'.fromHQ name
+    [] -> Cli.returnEarly . either TermNotFound' (TermNotFound . fmap Path.parentOfName) $ HQ'.fromHQ name
     [rf] -> pure rf
     rfs -> Cli.returnEarly . TermAmbiguous suffixifiedPPE name $ fromList rfs
 
@@ -83,7 +84,7 @@ resolveCon name = do
   let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   case lookupCon name names of
-    ([], _) -> Cli.returnEarly . either TermNotFound' TermNotFound $ HQ'.fromHQ name
+    ([], _) -> Cli.returnEarly . either TermNotFound' (TermNotFound . fmap Path.parentOfName) $ HQ'.fromHQ name
     ([co], _) -> pure co
     (_, rfts) -> Cli.returnEarly . TermAmbiguous suffixifiedPPE name $ fromList rfts
 
@@ -93,7 +94,7 @@ resolveTermRef name = do
   let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
   case lookupTermRefs name names of
-    ([], _) -> Cli.returnEarly . either TermNotFound' TermNotFound $ HQ'.fromHQ name
+    ([], _) -> Cli.returnEarly . either TermNotFound' (TermNotFound . fmap Path.parentOfName) $ HQ'.fromHQ name
     ([rf], _) -> pure rf
     (_, rfts) -> Cli.returnEarly . TermAmbiguous suffixifiedPPE name $ fromList rfts
 

@@ -211,9 +211,9 @@ handleUpdate input optionalPatch requestedNames = do
         Nothing -> "update.nopatch"
         Just p ->
           p
-            & Path.fromName'
+            & Path.unsplit
             & Path.resolve @_ @_ @Path.Absolute currentPathAbs
-            & tShow
+            & Path.toText
   void $ Cli.updateAt description ppRoot (const projectRootBranchWithPropagatedPatch)
   let codebaseAndFileNames = UF.addNamesFromTypeCheckedUnisonFile (Slurp.originalFile sr) (Branch.toNames $ Branch.head projectRootBranchWithPropagatedPatch)
   let pped = PPED.makePPED (PPE.hqNamer 10 codebaseAndFileNames) (PPE.suffixifyByHash codebaseAndFileNames)

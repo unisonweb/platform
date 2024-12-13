@@ -457,10 +457,10 @@ handlePath'Arg =
       otherArgType ->
         bimap (const $ wrongStructuredArgument "a path" otherArgType) Path.fromName' . handleNameArg $ pure otherArgType
 
-handleNewName :: I.Argument -> Either (P.Pretty CT.ColorText) Name
+handleNewName :: I.Argument -> Either (P.Pretty CT.ColorText) (Path.Split Path')
 handleNewName =
   either
-    (first P.text . Path.parseName)
+    (first P.text . Path.parseSplit')
     (const . Left $ "can’t use a numbered argument for a new name")
 
 handleNewPath :: I.Argument -> Either (P.Pretty CT.ColorText) Path'
@@ -478,6 +478,9 @@ handleSplitArg =
       SA.Name name | Name.isRelative name -> pure $ Path.splitFromName name
       SA.NameWithBranchPrefix _ name | Name.isRelative name -> pure $ Path.splitFromName name
       otherNumArg -> Left $ wrongStructuredArgument "a relative name" otherNumArg
+
+handleSplit'Arg :: I.Argument -> Either (P.Pretty CT.ColorText) (Path.Split Path')
+handleSplit'Arg = fmap Path.parentOfName . handleNameArg
 
 handleProjectBranchNameArg :: I.Argument -> Either (P.Pretty CT.ColorText) ProjectBranchName
 handleProjectBranchNameArg =
@@ -574,20 +577,22 @@ handleBranchRelativePathArg =
           Nothing -> pure $ BranchPathInCurrentProject branch Path.root
       otherNumArg -> Left $ wrongStructuredArgument "a branch id" otherNumArg
 
-handleHashQualified'NameArg :: I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashQualified Name)
-handleHashQualified'NameArg =
+handleHashQualifiedSplit'Arg :: I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashQualified (Path.Split Path'))
+handleHashQualifiedSplit'Arg =
   either
-    (first P.text . Path.parseHQName)
+    (first P.text . Path.parseHQSplit')
     \case
-      SA.Name name -> pure $ HQ'.fromName name
-      hq@(SA.HashQualified name) -> first (const $ expectedButActually "a name" hq "a hash") $ HQ'.fromHQ name
-      SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure hqname
+      SA.Name name -> pure $ HQ'.fromName $ Path.parentOfName name
+      hq@(SA.HashQualified name) ->
+        bimap (const $ expectedButActually "a name" hq "a hash") (Path.parentOfName <$>) $ HQ'.fromHQ name
+      SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure $ Path.parentOfName <$> hqname
       SA.HashQualifiedWithBranchPrefix (BranchAtPath prefix) hqname ->
-        pure $ Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname
+        pure $ Path.parentOfName . Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname
       SA.ShallowListEntry prefix entry ->
-        pure . fmap (Path.prefixNameIfRel prefix) $ shallowListEntryToHQ' entry
+        pure $ Path.parentOfName . Path.prefixNameIfRel prefix <$> shallowListEntryToHQ' entry
       sr@(SA.SearchResult mpath result) ->
-        first (const $ expectedButActually "a name" sr "a hash") . HQ'.fromHQ $ searchResultToHQ mpath result
+        bimap (const $ expectedButActually "a name" sr "a hash") (Path.parentOfName <$>) . HQ'.fromHQ $
+          searchResultToHQ mpath result
       otherNumArg -> Left $ wrongStructuredArgument "a name" otherNumArg
 
 handleHashQualifiedSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashQualified (Path.Split Path))
@@ -623,19 +628,19 @@ handleShortCausalHashArg =
       SA.Namespace hash -> pure $ SCH.fromFullHash hash
       otherNumArg -> Left $ wrongStructuredArgument "a causal hash" otherNumArg
 
-handleHashOrHQNameArg ::
-  I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashOrHQ Name)
-handleHashOrHQNameArg =
+handleHashOrHQSplit'Arg ::
+  I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashOrHQ (Path.Split Path'))
+handleHashOrHQSplit'Arg =
   either
-    (first P.text . Path.parseHashOrHQName)
+    (first P.text . Path.parseHashOrHQSplit')
     \case
-      SA.HashQualified name -> pure $ HQ'.fromHQ name
-      SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure $ pure hqname
+      SA.HashQualified name -> pure . HQ'.fromHQ $ Path.parentOfName <$> name
+      SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure . pure $ Path.parentOfName <$> hqname
       SA.HashQualifiedWithBranchPrefix (BranchAtPath prefix) hqname ->
-        pure $ pure (Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname)
+        pure . pure $ Path.parentOfName . Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname
       SA.ShallowListEntry prefix entry ->
-        pure . pure . fmap (Path.prefixNameIfRel prefix) $ shallowListEntryToHQ' entry
-      SA.SearchResult mpath result -> pure . HQ'.fromHQ $ searchResultToHQ mpath result
+        pure . pure $ Path.parentOfName . Path.prefixNameIfRel prefix <$> shallowListEntryToHQ' entry
+      SA.SearchResult mpath result -> pure . HQ'.fromHQ $ Path.parentOfName <$> searchResultToHQ mpath result
       otherNumArg -> Left $ wrongStructuredArgument "a hash or name" otherNumArg
 
 handleRelativeNameSegmentArg :: I.Argument -> Either (P.Pretty CT.ColorText) NameSegment
@@ -905,7 +910,7 @@ updateOld =
     )
     \case
       patchStr : ws ->
-        Input.UpdateI . Input.UsePatch <$> handleNameArg patchStr <*> fmap Set.fromList (traverse handleNameArg ws)
+        Input.UpdateI . Input.UsePatch <$> handleSplit'Arg patchStr <*> fmap Set.fromList (traverse handleNameArg ws)
       [] -> Right $ Input.UpdateI Input.DefaultPatch mempty
 
 previewUpdate :: InputPattern
@@ -1283,7 +1288,7 @@ renameTerm =
     ]
     "`move.term foo bar` renames `foo` to `bar`."
     \case
-      [oldName, newName] -> Input.MoveTermI <$> handleHashQualified'NameArg oldName <*> handleNewName newName
+      [oldName, newName] -> Input.MoveTermI <$> handleHashQualifiedSplit'Arg oldName <*> handleNewName newName
       _ -> Left $ P.wrap "`rename.term` takes two arguments, like `rename.term oldname newname`."
 
 moveAll :: InputPattern
@@ -1311,11 +1316,12 @@ renameType =
     ]
     "`move.type foo bar` renames `foo` to `bar`."
     \case
-      [oldName, newName] -> Input.MoveTypeI <$> handleHashQualified'NameArg oldName <*> handleNewName newName
+      [oldName, newName] -> Input.MoveTypeI <$> handleHashQualifiedSplit'Arg oldName <*> handleNewName newName
       _ ->
         Left $ P.wrap "`rename.type` takes two arguments, like `rename.type oldname newname`."
 
-deleteGen :: Maybe String -> ArgumentType -> String -> ([HQ'.HashQualified Name] -> DeleteTarget) -> InputPattern
+deleteGen ::
+  Maybe String -> ArgumentType -> String -> ([HQ'.HashQualified (Path.Split Path')] -> DeleteTarget) -> InputPattern
 deleteGen suffix queryCompletionArg target mkTarget =
   let cmd = maybe "delete" ("delete." <>) suffix
       info =
@@ -1354,7 +1360,7 @@ deleteGen suffix queryCompletionArg target mkTarget =
         info
         \case
           [] -> Left $ P.wrap warning
-          queries -> Input.DeleteI . mkTarget <$> traverse handleHashQualified'NameArg queries
+          queries -> Input.DeleteI . mkTarget <$> traverse handleHashQualifiedSplit'Arg queries
 
 delete :: InputPattern
 delete = deleteGen Nothing exactDefinitionTypeOrTermQueryArg "term or type" (DeleteTarget'TermOrType DeleteOutput'NoDiff)
@@ -1423,7 +1429,7 @@ aliasTerm =
       args = [("term to alias", Required, exactDefinitionTermQueryArg), ("alias name", Required, newNameArg)],
       help = "`alias.term foo bar` introduces `bar` with the same definition as `foo`.",
       parse = \case
-        [oldName, newName] -> Input.AliasTermI False <$> handleHashOrHQNameArg oldName <*> handleNameArg newName
+        [oldName, newName] -> Input.AliasTermI False <$> handleHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
         _ -> Left $ P.wrap "`alias.term` takes two arguments, like `alias.term oldname newname`."
     }
 
@@ -1436,7 +1442,7 @@ debugAliasTermForce =
       args = [("term to alias", Required, exactDefinitionTermQueryArg), ("alias name", Required, newNameArg)],
       help = "`debug.alias.term.force foo bar` introduces `bar` with the same definition as `foo`.",
       parse = \case
-        [oldName, newName] -> Input.AliasTermI True <$> handleHashOrHQNameArg oldName <*> handleNameArg newName
+        [oldName, newName] -> Input.AliasTermI True <$> handleHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
         _ ->
           Left $
             P.wrap "`debug.alias.term.force` takes two arguments, like `debug.alias.term.force oldname newname`."
@@ -1451,7 +1457,7 @@ aliasType =
     [("type to alias", Required, exactDefinitionTypeQueryArg), ("alias name", Required, newNameArg)]
     "`alias.type Foo Bar` introduces `Bar` with the same definition as `Foo`."
     \case
-      [oldName, newName] -> Input.AliasTypeI False <$> handleHashOrHQNameArg oldName <*> handleNameArg newName
+      [oldName, newName] -> Input.AliasTypeI False <$> handleHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
       _ -> Left $ P.wrap "`alias.type` takes two arguments, like `alias.type oldname newname`."
 
 debugAliasTypeForce :: InputPattern
@@ -1463,7 +1469,7 @@ debugAliasTypeForce =
       args = [("type to alias", Required, exactDefinitionTypeQueryArg), ("alias name", Required, newNameArg)],
       help = "`debug.alias.type.force Foo Bar` introduces `Bar` with the same definition as `Foo`.",
       parse = \case
-        [oldName, newName] -> Input.AliasTypeI True <$> handleHashOrHQNameArg oldName <*> handleNameArg newName
+        [oldName, newName] -> Input.AliasTypeI True <$> handleHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
         _ ->
           Left $
             P.wrap "`debug.alias.type.force` takes two arguments, like `debug.alias.type.force oldname newname`."

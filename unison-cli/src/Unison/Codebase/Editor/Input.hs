@@ -58,7 +58,7 @@ type Source = Text -- "id x = x\nconst a b = a"
 
 type SourceName = Text -- "foo.u" or "buffer 7"
 
-type PatchPath = Name
+type PatchPath = Path.Split Path'
 
 data OptionalPatch = NoPatch | DefaultPatch | UsePatch PatchPath
   deriving (Eq, Ord, Show)
@@ -139,12 +139,12 @@ data Input
     -- > names .foo.bar#asdflkjsdf
     -- > names #sdflkjsdfhsdf
     NamesI IsGlobal (HQ.HashQualified Name)
-  | AliasTermI !Bool (HQ'.HashOrHQ Name) Name -- bool = force?
-  | AliasTypeI !Bool (HQ'.HashOrHQ Name) Name -- bool = force?
+  | AliasTermI !Bool (HQ'.HashOrHQ (Path.Split Path')) (Path.Split Path') -- bool = force?
+  | AliasTypeI !Bool (HQ'.HashOrHQ (Path.Split Path')) (Path.Split Path') -- bool = force?
   | AliasManyI [HQ'.HashQualified (Path.Split Path)] Path'
   | MoveAllI Path.Path' Path.Path'
-  | MoveTermI (HQ'.HashQualified Name) Name
-  | MoveTypeI (HQ'.HashQualified Name) Name
+  | MoveTermI (HQ'.HashQualified (Path.Split Path')) (Path.Split Path')
+  | MoveTypeI (HQ'.HashQualified (Path.Split Path')) (Path.Split Path')
   | MoveBranchI Path.Path' Path.Path'
   | -- delete = unname
     DeleteI DeleteTarget
@@ -319,9 +319,9 @@ data DeleteOutput
   deriving stock (Eq, Show)
 
 data DeleteTarget
-  = DeleteTarget'TermOrType DeleteOutput [HQ'.HashQualified Name]
-  | DeleteTarget'Term DeleteOutput [HQ'.HashQualified Name]
-  | DeleteTarget'Type DeleteOutput [HQ'.HashQualified Name]
+  = DeleteTarget'TermOrType DeleteOutput [HQ'.HashQualified (Path.Split Path')]
+  | DeleteTarget'Term DeleteOutput [HQ'.HashQualified (Path.Split Path')]
+  | DeleteTarget'Type DeleteOutput [HQ'.HashQualified (Path.Split Path')]
   | DeleteTarget'Namespace Insistence (Maybe (Path.Split Path))
   | DeleteTarget'ProjectBranch (ProjectAndBranch (Maybe ProjectName) ProjectBranchName)
   | DeleteTarget'Project ProjectName

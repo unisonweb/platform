@@ -267,8 +267,8 @@ parseLaxPath'Query txt =
     Left _err -> (Path.currentPath, txt)
     Right (name, rest) ->
       if take 1 rest == "."
-        then (Path.fromName' name, Text.empty)
-        else NameSegment.toEscapedText <$> Path.parentOfName name
+        then (Path.unsplit name, Text.empty)
+        else NameSegment.toEscapedText <$> name
 
 -- | Completes a namespace argument by prefix-matching against the query.
 prefixCompleteNamespace ::

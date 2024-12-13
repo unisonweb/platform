@@ -3,10 +3,10 @@ module Unison.Codebase.Path.Parse
     parsePath,
     parsePath',
     parseSplit,
-    parseName,
+    parseSplit',
     parseHQSplit,
-    parseHQName,
-    parseHashOrHQName,
+    parseHQSplit',
+    parseHashOrHQSplit',
 
     -- * Path parsers
     pathP,
@@ -16,7 +16,6 @@ module Unison.Codebase.Path.Parse
   )
 where
 
-import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Text qualified as Text
 import Text.Megaparsec (Parsec)
 import Text.Megaparsec qualified as P
@@ -24,8 +23,6 @@ import Text.Megaparsec.Char qualified as P (char)
 import Text.Megaparsec.Internal qualified as P (withParsecT)
 import Unison.Codebase.Path
 import Unison.HashQualifiedPrime qualified as HQ'
-import Unison.Name (Name)
-import Unison.Name qualified as Name
 import Unison.Prelude hiding (empty, toList)
 import Unison.Syntax.Lexer qualified as Lexer
 import Unison.Syntax.Name qualified as Name
@@ -42,28 +39,25 @@ parsePath' :: String -> Either Text Path'
 parsePath' = \case
   "" -> Right currentPath
   "." -> Right root'
-  path -> fromName' <$> parseName path
+  path -> unsplit <$> parseSplit' path
 
 parseSplit :: String -> Either Text (Split Path)
 parseSplit = runParser splitP
 
-parseName :: String -> Either Text Name
-parseName = runParser splitP'
+parseSplit' :: String -> Either Text (Split Path')
+parseSplit' = runParser splitP'
 
-parseHashOrHQName :: String -> Either Text (HQ'.HashOrHQ Name)
-parseHashOrHQName = runParser shortHashOrHQNameP'
+parseHashOrHQSplit' :: String -> Either Text (HQ'.HashOrHQ (Split Path'))
+parseHashOrHQSplit' = runParser shortHashOrHQSplitP'
 
 parseHQSplit :: String -> Either Text (HQ'.HashQualified (Split Path))
 parseHQSplit s =
-  parseHQName s >>= traverse \name ->
-    if Name.isAbsolute name
-      then Left $ "Sorry, you can't use an absolute name like " <> Text.pack s <> " here."
-      else
-        let h :| t = Name.reverseSegments name
-         in pure (fromList $ reverse t, h)
+  parseHQSplit' s >>= traverse \(path, seg) -> case path of
+    RelativePath' (Relative p) -> pure (p, seg)
+    AbsolutePath' (Absolute _) -> Left $ "Sorry, you can't use an absolute name like " <> Text.pack s <> " here."
 
-parseHQName :: String -> Either Text (HQ'.HashQualified Name)
-parseHQName = runParser hqNameP
+parseHQSplit' :: String -> Either Text (HQ'.HashQualified (Split Path'))
+parseHQSplit' = runParser hqSplitP'
 
 runParser :: Parsec (Lexer.Token Text) [Char] a -> String -> Either Text a
 runParser p =
@@ -78,7 +72,7 @@ pathP = (unsplit <$> splitP) <|> pure mempty
 pathP' :: Parsec (Lexer.Token Text) [Char] Path'
 pathP' =
   asum
-    [ fromName' <$> splitP',
+    [ unsplit <$> splitP',
       P.char '.' $> root',
       pure currentPath
     ]
@@ -86,15 +80,15 @@ pathP' =
 splitP :: Parsec (Lexer.Token Text) [Char] (Split Path)
 splitP = splitFromName <$> P.withParsecT (fmap NameSegment.renderParseErr) Name.relativeNameP
 
-splitP' :: Parsec (Lexer.Token Text) [Char] Name
-splitP' = P.withParsecT (fmap NameSegment.renderParseErr) Name.nameP
+splitP' :: Parsec (Lexer.Token Text) [Char] (Split Path')
+splitP' = parentOfName <$> P.withParsecT (fmap NameSegment.renderParseErr) Name.nameP
 
-shortHashOrHQNameP' :: Parsec (Lexer.Token Text) [Char] (HQ'.HashOrHQ Name)
-shortHashOrHQNameP' = Left <$> ShortHash.shortHashP <|> Right <$> hqNameP
+shortHashOrHQSplitP' :: Parsec (Lexer.Token Text) [Char] (HQ'.HashOrHQ (Split Path'))
+shortHashOrHQSplitP' = Left <$> ShortHash.shortHashP <|> Right <$> hqSplitP'
 
-hqNameP :: Parsec (Lexer.Token Text) [Char] (HQ'.HashQualified Name)
-hqNameP = do
-  name <- splitP'
+hqSplitP' :: Parsec (Lexer.Token Text) [Char] (HQ'.HashQualified (Split Path'))
+hqSplitP' = do
+  split <- splitP'
   P.optional (P.withParsecT (fmap ("invalid hash: " <>)) ShortHash.shortHashP) <&> \case
-    Nothing -> HQ'.fromName name
-    Just hash -> HQ'.HashQualified name hash
+    Nothing -> HQ'.fromName split
+    Just hash -> HQ'.HashQualified split hash

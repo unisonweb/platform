@@ -9,7 +9,7 @@ module Unison.Cli.MonadUtils
     resolvePath,
     resolvePath',
     resolvePath'ToAbsolute,
-    resolveName,
+    resolveSplit',
 
     -- * Project and branch resolution
     getCurrentProjectAndBranch,
@@ -87,7 +87,6 @@ import Control.Monad.Reader (ask)
 import Control.Monad.State
 import Data.Bitraversable (bitraverse)
 import Data.Foldable
-import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Set qualified as Set
 import U.Codebase.Branch qualified as V2 (Branch)
 import U.Codebase.Branch qualified as V2Branch
@@ -115,7 +114,6 @@ import Unison.Codebase.ShortCausalHash (ShortCausalHash)
 import Unison.Codebase.ShortCausalHash qualified as SCH
 import Unison.HashQualified qualified as HQ
 import Unison.HashQualifiedPrime qualified as HQ'
-import Unison.Name (Name)
 import Unison.Name qualified as Name
 import Unison.NameSegment qualified as NameSegment
 import Unison.Names (Names)
@@ -182,8 +180,8 @@ resolvePath'ToAbsolute path' = do
   view PP.absPath_ <$> resolvePath' path'
 
 -- | Resolve a path split, per the current path.
-resolveName :: Name -> Cli (Path.Split ProjectPath)
-resolveName = bitraverse resolvePath' pure . Path.parentOfName
+resolveSplit' :: Path.Split Path' -> Cli (Path.Split ProjectPath)
+resolveSplit' = bitraverse resolvePath' pure
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Branch resolution
@@ -472,18 +470,18 @@ getTypesAt hq =
 -- Getting patches
 
 -- | The default patch path.
-defaultPatchPath :: Name
-defaultPatchPath = Name.fromReverseSegments $ NameSegment.defaultPatchSegment :| []
+defaultPatchPath :: Path.Split Path'
+defaultPatchPath = (Path.currentPath, NameSegment.defaultPatchSegment)
 
 -- | Get the patch at a path, or the empty patch if there's no such patch.
-getPatchAt :: Name -> Cli Patch
+getPatchAt :: Path.Split Path' -> Cli Patch
 getPatchAt path =
   getMaybePatchAt path <&> fromMaybe Patch.empty
 
 -- | Get the patch at a path.
-getMaybePatchAt :: Name -> Cli (Maybe Patch)
+getMaybePatchAt :: Path.Split Path' -> Cli (Maybe Patch)
 getMaybePatchAt path0 = do
-  (pp, name) <- resolveName path0
+  (pp, name) <- resolveSplit' path0
   branch <- getBranch0FromProjectPath pp
   liftIO (Branch.getMaybePatch name branch)
 

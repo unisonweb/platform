@@ -164,8 +164,8 @@ longestPathPrefix a b =
   List.splitOnLongestCommonPrefix (toList a) (toList b)
     & \(a, b, c) -> (fromList a, fromList b, fromList c)
 
-toAbsoluteSplit :: Absolute -> Name -> Split Absolute
-toAbsoluteSplit a = first (resolve a) . parentOfName
+toAbsoluteSplit :: Absolute -> Split Path' -> Split Absolute
+toAbsoluteSplit = first . resolve
 
 root :: Absolute
 root = Absolute mempty
