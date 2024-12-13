@@ -40,8 +40,8 @@ parsePath = runParser pathP
 
 parsePath' :: String -> Either Text Path'
 parsePath' = \case
-  "" -> Right relativeEmpty'
-  "." -> Right absoluteEmpty'
+  "" -> Right currentPath
+  "." -> Right root'
   path -> fromName' <$> parseName path
 
 parseSplit :: String -> Either Text (Split Path)
@@ -73,14 +73,14 @@ runParser p =
 -- Path parsers
 
 pathP :: Parsec (Lexer.Token Text) [Char] Path
-pathP = (unsplit <$> splitP) <|> pure empty
+pathP = (unsplit <$> splitP) <|> pure mempty
 
 pathP' :: Parsec (Lexer.Token Text) [Char] Path'
 pathP' =
   asum
     [ fromName' <$> splitP',
-      P.char '.' $> absoluteEmpty',
-      pure relativeEmpty'
+      P.char '.' $> root',
+      pure currentPath
     ]
 
 splitP :: Parsec (Lexer.Token Text) [Char] (Split Path)

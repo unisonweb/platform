@@ -5,9 +5,7 @@ module Unison.Codebase.Editor.HandleInput.DeleteNamespace
 where
 
 import Control.Lens hiding (from)
-import Control.Lens qualified as Lens
 import Control.Monad.State qualified as State
-import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Set.NonEmpty (NESet)
@@ -26,7 +24,6 @@ import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.ProjectPath qualified as ProjectPath
 import Unison.LabeledDependency (LabeledDependency)
 import Unison.LabeledDependency qualified as LD
-import Unison.Name qualified as Name
 import Unison.NameSegment qualified as NameSegment
 import Unison.Names (Names)
 import Unison.Names qualified as Names
@@ -50,7 +47,7 @@ handleDeleteNamespace input insistence = \case
     branch <- Cli.expectBranchAtPath (Path.unsplit p)
     let toDelete =
           Names.prefix0
-            (Name.fromReverseSegments $ childName :| reverse (toList $ Path.toSeq parentPath))
+            (Path.nameFromSplit (parentPath, childName))
             (Branch.toNames (Branch.head branch))
     afterDelete <- do
       currentBranch <- Cli.getCurrentProjectRoot0
@@ -69,7 +66,7 @@ handleDeleteNamespace input insistence = \case
           Cli.respondNumbered $ CantDeleteNamespace ppeDecl endangerments
           Cli.returnEarlyWithoutOutput
     parentPathAbs <- Cli.resolvePath parentPath
-    let description = commandName <> " " <> into @Text (parentPathAbs & ProjectPath.absPath_ %~ (`Lens.snoc` childName))
+    let description = commandName <> " " <> into @Text (parentPathAbs & ProjectPath.absPath_ %~ (`Path.descend` childName))
     -- We have to modify the parent in order to also wipe out the history at the
     -- child.
     Cli.updateAt description parentPathAbs (Branch.modifyAt (Path.singleton childName) \_ -> Branch.empty)

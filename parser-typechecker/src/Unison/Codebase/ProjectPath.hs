@@ -64,11 +64,11 @@ instance From (ProjectPathG () ProjectBranchName) Text where
 type ProjectPath = ProjectPathG Project ProjectBranch
 
 projectBranchRoot :: ProjectAndBranch Project ProjectBranch -> ProjectPath
-projectBranchRoot (ProjectAndBranch proj branch) = ProjectPath proj branch Path.absoluteEmpty
+projectBranchRoot (ProjectAndBranch proj branch) = ProjectPath proj branch Path.root
 
 -- | Discard any path within the project and get the project's root
 toRoot :: ProjectPath -> ProjectPath
-toRoot (ProjectPath proj branch _) = ProjectPath proj branch Path.absoluteEmpty
+toRoot (ProjectPath proj branch _) = ProjectPath proj branch Path.root
 
 fromProjectAndBranch :: ProjectAndBranch Project ProjectBranch -> Path.Absolute -> ProjectPath
 fromProjectAndBranch (ProjectAndBranch proj branch) path = ProjectPath proj branch path
@@ -95,7 +95,7 @@ instance Bitraversable ProjectPathG where
 
 toText :: ProjectPathG Project ProjectBranch -> Text
 toText (ProjectPath proj branch path) =
-  into @Text (proj ^. #name) <> "/" <> into @Text (branch ^. #name) <> ":" <> Path.absToText path
+  into @Text (proj ^. #name) <> "/" <> into @Text (branch ^. #name) <> ":" <> Path.toText path
 
 absPath_ :: Lens' (ProjectPathG p b) Path.Absolute
 absPath_ = lens absPath set

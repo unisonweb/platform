@@ -104,7 +104,7 @@ serveTermSummary ::
 serveTermSummary codebase referent mayName root relativeTo mayWidth = do
   let shortHash = Referent.toShortHash referent
   let displayName = maybe (HQ.HashOnly shortHash) HQ.NameOnly mayName
-  let relativeToPath = fromMaybe Path.empty relativeTo
+  let relativeToPath = fromMaybe mempty relativeTo
   let termReference = Referent.toReference referent
   let v2Referent = Cv.referent1to2 referent
 

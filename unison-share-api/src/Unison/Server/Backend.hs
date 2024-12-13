@@ -588,12 +588,12 @@ lsBranch codebase b0 = do
 --           name cat.dog     becomes .cat.dog
 fixupNamesRelative :: Path.Absolute -> Names -> Names
 fixupNamesRelative root names =
-  case Path.toName $ Path.unabsolute root of
+  case Path.toName root of
     Nothing -> names
     Just prefix -> Names.map (fixName prefix) names
   where
     fixName prefix n =
-      if root == Path.absoluteEmpty
+      if Path.isRoot root
         then n
         else fromMaybe (Name.makeAbsolute n) (Name.stripNamePrefix prefix n)
 

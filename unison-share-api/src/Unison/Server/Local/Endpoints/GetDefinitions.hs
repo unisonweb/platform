@@ -121,7 +121,7 @@ serveDefinitions rt codebase root relativePath hqns width suff =
     hqns
       & foldMapM
         ( Local.prettyDefinitionsForHQName
-            (fromMaybe Path.empty relativePath)
+            (fromMaybe mempty relativePath)
             rootCausalHash
             width
             (fromMaybe (Suffixify True) suff)

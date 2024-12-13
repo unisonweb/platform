@@ -44,7 +44,7 @@ printWriteRemoteNamespace projectAndBranch = into @Text projectAndBranch
 
 maybePrintPath :: Path -> Text
 maybePrintPath path =
-  if path == Path.empty
+  if path == mempty
     then mempty
     else "." <> Path.toText path
 

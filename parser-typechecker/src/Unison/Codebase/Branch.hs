@@ -38,7 +38,6 @@ module Unison.Codebase.Branch
     children,
     nonEmptyChildren,
     deepEdits',
-    toList0,
     namespaceStats,
 
     -- * step
@@ -131,7 +130,7 @@ import Unison.Codebase.Causal (Causal)
 import Unison.Codebase.Causal qualified as Causal
 import Unison.Codebase.Patch (Patch)
 import Unison.Codebase.Patch qualified as Patch
-import Unison.Codebase.Path (Path (..))
+import Unison.Codebase.Path (Path)
 import Unison.Codebase.Path qualified as Path
 import Unison.Hashing.V2 qualified as Hashing (ContentAddressable (contentHash))
 import Unison.Hashing.V2.Convert qualified as H
@@ -254,21 +253,9 @@ discardHistory :: (Applicative m) => Branch m -> Branch m
 discardHistory b =
   one (discardHistory0 (head b))
 
--- `before b1 b2` is true if `b2` incorporates all of `b1`
+-- | `before b1 b2` is true if `b2` incorporates all of `b1`
 before :: (Monad m) => Branch m -> Branch m -> m Bool
 before (Branch b1) (Branch b2) = Causal.before b1 b2
-
--- | what does this do? —AI
-toList0 :: Branch0 m -> [(Path, Branch0 m)]
-toList0 = go Path.empty
-  where
-    go p b =
-      (p, b)
-        : ( Map.toList (b ^. children)
-              >>= ( \(seg, cb) ->
-                      go (Path.snoc p seg) (head cb)
-                  )
-          )
 
 -- returns `Nothing` if no Branch at `path` or if Branch is empty at `path`
 getAt ::
@@ -540,8 +527,7 @@ batchUpdatesM (toList -> actions) curBranch = foldM execActions curBranch (group
         (seg :< rest, action) -> Map.singleton seg [(rest, action)]
         _ -> error "groupByNextSegment called on current path, which shouldn't happen."
     pathLocation :: Path -> ActionLocation
-    pathLocation (Path Empty) = HereActions
-    pathLocation _ = ChildActions
+    pathLocation p = if p == mempty then HereActions else ChildActions
 
 -- todo: consider inlining these into Actions2
 addTermName :: Referent -> NameSegment -> Branch0 m -> Branch0 m

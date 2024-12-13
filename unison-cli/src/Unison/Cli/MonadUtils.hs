@@ -194,8 +194,7 @@ resolveAbsBranchId :: Input.AbsBranchId -> Cli (Branch IO)
 resolveAbsBranchId = \case
   Input.BranchAtSCH hash -> resolveShortCausalHash hash
   Input.BranchAtPath absPath -> do
-    pp <- resolvePath' (Path' (Left absPath))
-    getBranchFromProjectPath pp
+    getBranchFromProjectPath <=< resolvePath' $ AbsolutePath' absPath
   Input.BranchAtProjectPath pp -> getBranchFromProjectPath pp
 
 -- | V2 version of 'resolveAbsBranchId2'.
@@ -304,7 +303,7 @@ getMaybeBranch0FromProjectPath pp =
 -- | Get the branch at a relative path, or return early if there's no such branch.
 expectBranchAtPath :: Path -> Cli (Branch IO)
 expectBranchAtPath =
-  expectBranchAtPath' . Path' . Right . Path.Relative
+  expectBranchAtPath' . RelativePath' . Path.Relative
 
 -- | Get the branch at an absolute or relative path, or return early if there's no such branch.
 expectBranchAtPath' :: Path' -> Cli (Branch IO)
@@ -318,9 +317,9 @@ expectBranch0AtPath' =
   fmap Branch.head . expectBranchAtPath'
 
 -- | Get the branch0 at a relative path, or return early if there's no such branch.
-expectBranch0AtPath :: Path -> Cli (Branch0 IO)
+expectBranch0AtPath :: Path.Relative -> Cli (Branch0 IO)
 expectBranch0AtPath =
-  expectBranch0AtPath' . Path' . Right . Path.Relative
+  expectBranch0AtPath' . RelativePath'
 
 -- | Assert that there's "no branch" at an absolute or relative path, or return early if there is one, where "no branch"
 -- means either there's actually no branch, or there is a branch whose head is empty (i.e. it may have a history, but no

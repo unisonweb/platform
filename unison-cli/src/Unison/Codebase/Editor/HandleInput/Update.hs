@@ -205,7 +205,7 @@ handleUpdate input optionalPatch requestedNames = do
     Nothing -> pure updatedProjectRootBranch
     Just (updatedPatch, _, _) -> do
       -- Propagate the patch to the whole project.
-      let scopePath = Path.empty
+      let scopePath = mempty
       propagatePatch updatedPatch scopePath updatedProjectRootBranch
   let description = case patchPath of
         Nothing -> "update.nopatch"

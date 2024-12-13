@@ -57,7 +57,7 @@ inferNamesRoot :: Path -> Branch Sqlite.Transaction -> Sqlite.Transaction (Maybe
 inferNamesRoot p b
   | Just match <- findBaseProject p = pure $ Just match
   | Just depRoot <- findDepRoot p = pure $ Just depRoot
-  | otherwise = getLast <$> execWriterT (runReaderT (go p b) Path.empty)
+  | otherwise = getLast <$> execWriterT (runReaderT (go p b) mempty)
   where
     findBaseProject :: Path -> Maybe Path
     findBaseProject
@@ -77,7 +77,7 @@ inferNamesRoot p b
             Nothing -> pure ()
             Just childCausal -> do
               childBranch <- lift . lift $ Causal.value childCausal
-              local (Cons.|> nextChild) (go pathRemainder childBranch)
+              local (`Path.descend` nextChild) (go pathRemainder childBranch)
 
 -- | If the provided path is within a lib dir (or a transitive lib) find the dependency
 -- we're in.

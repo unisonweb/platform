@@ -275,7 +275,7 @@ matchCompletions (CompletionTree tree) txt =
     matchSegments xs (currentMatches :< subtreeMap) =
       case xs of
         [] ->
-          let current = currentMatches <&> (\(name, def) -> (Path.empty, name, def))
+          let current = currentMatches <&> (\(name, def) -> (mempty, name, def))
            in (current <> mkDefMatches subtreeMap)
         [prefix] ->
           Map.dropWhileAntitone (< prefix) subtreeMap

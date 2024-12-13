@@ -91,12 +91,12 @@ typeDefinitionOptions = genericDefinitionOptions False True
 namespaceOptions :: OptionFetcher
 namespaceOptions _codebase _projCtx searchBranch0 = do
   let intoPath' :: Path -> Path'
-      intoPath' = Path' . Right . Path.Relative
+      intoPath' = Path.RelativePath' . Path.Relative
   searchBranch0
     & Branch.deepPaths
-    & Set.delete (Path.empty {- The current path just renders as an empty string which isn't a valid arg -})
+    & Set.delete mempty {- The current path just renders as an empty string which isn't a valid arg -}
     & Set.toList
-    & map (Path.toText' . intoPath')
+    & map (Path.toText . intoPath')
     & pure
 
 -- | Lists all dependencies of the current project.

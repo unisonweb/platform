@@ -55,14 +55,14 @@ handleEditNamespace outputLoc paths0 = do
   -- as if the empty path (which there is no syntax for, heh) was supplied.
   let paths =
         if null paths0
-          then [Path.empty]
+          then [mempty]
           else paths0
 
   -- Make a names object that contains the union of all names in the supplied paths (each prefixed with the associated
   -- path of course). Special case: if the path is the empty path, then ignore `lib`.
   let allNamesToEdit =
         List.nubOrd paths & foldMap \path ->
-          let branch = (if path == Path.empty then Branch.withoutLib else id) (Branch.getAt0 path currentBranch)
+          let branch = (if path == mempty then Branch.withoutLib else id) (Branch.getAt0 path currentBranch)
               names = Branch.toNames branch
            in case Path.toName path of
                 Nothing -> names

@@ -309,10 +309,10 @@ instance ToCapture (Capture "namespace" Path.Path) where
       "E.g. base.List"
 
 instance ToJSON Path.Path where
-  toJSON p = Aeson.String (tShow p)
+  toJSON p = Aeson.String (Path.toText p)
 
 instance ToJSON Path.Absolute where
-  toJSON p = Aeson.String (tShow p)
+  toJSON p = Aeson.String (Path.toText p)
 
 instance ToSchema Path.Path where
   declareNamedSchema _ = declareNamedSchema (Proxy @Text)

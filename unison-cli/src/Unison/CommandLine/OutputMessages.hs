@@ -179,7 +179,7 @@ notifyNumbered = \case
               undoTip
             ]
       )
-      (showDiffNamespace ShowNumbers ppe (absPathToBranchId Path.absoluteEmpty) (absPathToBranchId Path.absoluteEmpty) diff)
+      (showDiffNamespace ShowNumbers ppe (absPathToBranchId Path.root) (absPathToBranchId Path.root) diff)
   ShowDiffAfterDeleteBranch bAbs ppe diff ->
     first
       ( \p ->
@@ -191,12 +191,12 @@ notifyNumbered = \case
       )
       (showDiffNamespace ShowNumbers ppe (absPathToBranchId bAbs) (absPathToBranchId bAbs) diff)
   ShowDiffAfterModifyBranch b' _ _ (OBD.isEmpty -> True) ->
-    (P.wrap $ "Nothing changed in" <> prettyPath' b' <> ".", mempty)
+    (P.wrap $ "Nothing changed in" <> prettyPath b' <> ".", mempty)
   ShowDiffAfterModifyBranch b' bAbs ppe diff ->
     first
       ( \p ->
           P.lines
-            [ P.wrap $ "Here's what changed in" <> prettyPath' b' <> ":",
+            [ P.wrap $ "Here's what changed in" <> prettyPath b' <> ":",
               "",
               p,
               "",
@@ -239,13 +239,13 @@ notifyNumbered = \case
                 "Here's what's changed in "
                   <> prettyNamespaceKey dest'
                   <> "after applying the patch at "
-                  <> P.group (prettyPath' patchPath' <> ":"),
+                  <> P.group (prettyPath patchPath' <> ":"),
               "",
               p,
               "",
               tip $
                 "You can use "
-                  <> IP.makeExample IP.todo [prettyPath' patchPath', prettyNamespaceKey dest']
+                  <> IP.makeExample IP.todo [prettyPath patchPath', prettyNamespaceKey dest']
                   <> "to see if this generated any work to do in this namespace"
                   <> "and "
                   <> IP.makeExample' IP.test
@@ -271,15 +271,15 @@ notifyNumbered = \case
   ShowDiffAfterUndo ppe diffOutput ->
     first
       (\p -> P.lines ["Here are the changes I undid", "", p])
-      (showDiffNamespace ShowNumbers ppe (absPathToBranchId Path.absoluteEmpty) (absPathToBranchId Path.absoluteEmpty) diffOutput)
+      (showDiffNamespace ShowNumbers ppe (absPathToBranchId Path.root) (absPathToBranchId Path.root) diffOutput)
   ShowDiffAfterPull dest' destAbs ppe diff ->
     if OBD.isEmpty diff
-      then ("✅  Looks like " <> prettyPath' dest' <> " is up to date.", mempty)
+      then ("✅  Looks like " <> prettyPath dest' <> " is up to date.", mempty)
       else
         first
           ( \p ->
               P.lines
-                [ P.wrap $ "Here's what's changed in " <> prettyPath' dest' <> "after the pull:",
+                [ P.wrap $ "Here's what's changed in " <> prettyPath dest' <> "after the pull:",
                   "",
                   p,
                   "",
@@ -303,7 +303,7 @@ notifyNumbered = \case
                   <> "values for"
                   <> prettyName (Name.fromSegment authorNS)
                   <> "under"
-                  <> P.group (prettyPath' authorPath' <> ".")
+                  <> P.group (prettyPath authorPath' <> ".")
             ]
       )
       (showDiffNamespace ShowNumbers ppe (absPathToBranchId bAbs) (absPathToBranchId bAbs) diff)
@@ -613,38 +613,38 @@ notifyUser dir = \case
   LoadPullRequest baseNS headNS basePath headPath mergedPath squashedPath ->
     pure $
       P.lines
-        [ P.wrap $ "I checked out" <> prettyReadRemoteNamespaceWith absurd baseNS <> "to" <> P.group (prettyPath' basePath <> "."),
-          P.wrap $ "I checked out" <> prettyReadRemoteNamespaceWith absurd headNS <> "to" <> P.group (prettyPath' headPath <> "."),
+        [ P.wrap $ "I checked out" <> prettyReadRemoteNamespaceWith absurd baseNS <> "to" <> P.group (prettyPath basePath <> "."),
+          P.wrap $ "I checked out" <> prettyReadRemoteNamespaceWith absurd headNS <> "to" <> P.group (prettyPath headPath <> "."),
           "",
-          P.wrap $ "The merged result is in" <> P.group (prettyPath' mergedPath <> "."),
-          P.wrap $ "The (squashed) merged result is in" <> P.group (prettyPath' squashedPath <> "."),
+          P.wrap $ "The merged result is in" <> P.group (prettyPath mergedPath <> "."),
+          P.wrap $ "The (squashed) merged result is in" <> P.group (prettyPath squashedPath <> "."),
           P.wrap $
             "Use"
               <> IP.makeExample
                 IP.diffNamespace
-                [prettyPath' basePath, prettyPath' mergedPath]
+                [prettyPath basePath, prettyPath mergedPath]
               <> "or"
               <> IP.makeExample
                 IP.diffNamespace
-                [prettyPath' basePath, prettyPath' squashedPath]
+                [prettyPath basePath, prettyPath squashedPath]
               <> "to see what's been updated.",
           P.wrap $
             "Use"
               <> IP.makeExample
                 IP.todo
-                [ prettyPath' (snoc mergedPath NameSegment.defaultPatchSegment),
-                  prettyPath' mergedPath
+                [ prettyPath (Path.descend mergedPath NameSegment.defaultPatchSegment),
+                  prettyPath mergedPath
                 ]
               <> "to see what work is remaining for the merge.",
           P.wrap $
             "Use"
               <> IP.makeExample
                 IP.push
-                [prettyReadRemoteNamespaceWith absurd baseNS, prettyPath' mergedPath]
+                [prettyReadRemoteNamespaceWith absurd baseNS, prettyPath mergedPath]
               <> "or"
               <> IP.makeExample
                 IP.push
-                [prettyReadRemoteNamespaceWith absurd baseNS, prettyPath' squashedPath]
+                [prettyReadRemoteNamespaceWith absurd baseNS, prettyPath squashedPath]
               <> "to push the changes."
         ]
   LoadedDefinitionsToSourceFile fp numDefinitions ->
@@ -721,7 +721,7 @@ notifyUser dir = \case
   TypeNotFound _ ->
     pure . P.warnCallout $ "I don't know about that type."
   MoveNothingFound p ->
-    pure . P.warnCallout $ "There is no term, type, or namespace at " <> prettyPath' p <> "."
+    pure . P.warnCallout $ "There is no term, type, or namespace at " <> prettyPath p <> "."
   TermAlreadyExists _ _ ->
     pure . P.warnCallout $ "A term by that name already exists."
   TypeAlreadyExists _ _ ->
@@ -793,15 +793,15 @@ notifyUser dir = \case
   BadNamespace msg path ->
     pure . P.warnCallout $ "Invalid namespace " <> P.blue (P.string path) <> ", " <> P.string msg
   BranchNotFound b ->
-    pure . P.warnCallout $ "The namespace " <> P.blue (P.shown b) <> " doesn't exist."
+    pure . P.warnCallout $ "The namespace " <> prettyPath b <> " doesn't exist."
   EmptyLooseCodePush b ->
-    pure . P.warnCallout $ "The namespace " <> P.blue (P.shown b) <> " is empty. There is nothing to push."
+    pure . P.warnCallout $ "The namespace " <> prettyPath b <> " is empty. There is nothing to push."
   EmptyProjectBranchPush projectAndBranch ->
     pure . P.warnCallout . P.wrap $
       prettyProjectAndBranchName projectAndBranch <> "is empty. There is nothing to push."
   CreatedNewBranch path ->
     pure $
-      "☝️  The namespace " <> prettyAbsolute path <> " is empty."
+      "☝️  The namespace " <> prettyPath path <> " is empty."
   -- RenameOutput rootPath oldName newName r -> do
   --   nameChange "rename" "renamed" oldName newName r
   -- AliasOutput rootPath existingName newName r -> do
@@ -848,7 +848,7 @@ notifyUser dir = \case
       ]
   MovedOverExistingBranch dest' ->
     pure . P.warnCallout . P.lines $
-      [ P.wrap $ "A branch existed at the destination:" <> prettyPath' dest' <> "so I over-wrote it.",
+      [ P.wrap $ "A branch existed at the destination:" <> prettyPath dest' <> "so I over-wrote it.",
         "",
         undoTip
       ]
@@ -1120,7 +1120,7 @@ notifyUser dir = \case
     pure . P.fatalCallout . P.lines $
       [ P.wrap $
           "I couldn't understand the RemoteMapping that's set for"
-            <> prettyAbsolute p
+            <> prettyPath p
             <> "in .unisonConfig",
         P.wrap $
           "The value I found was"
@@ -1141,7 +1141,7 @@ notifyUser dir = \case
   NotImplemented -> pure $ P.wrap "That's not implemented yet. Sorry! 😬"
   BranchAlreadyExists p ->
     pure . P.wrap $
-      "The namespace" <> prettyPath' p <> "already exists."
+      "The namespace" <> prettyPath p <> "already exists."
   LabeledReferenceNotFound hq ->
     pure . P.callout "\129300" . P.wrap . P.syntaxToColor $
       "Sorry, I couldn't find anything named" <> prettyHashQualified hq <> "."
@@ -1613,7 +1613,7 @@ notifyUser dir = \case
             ( "Done. I've created the"
                 <> prettyProjectAndBranchName projectAndBranch
                 <> "branch from the namespace"
-                <> prettyAbsolute path
+                <> prettyPath path
             )
             <> "."
       CreatedProjectBranchFrom'Nothingness ->

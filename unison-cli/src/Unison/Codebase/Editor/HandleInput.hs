@@ -208,7 +208,7 @@ loop e = do
                     P.lines
                       [ "The API information is as follows:",
                         P.newline,
-                        P.indentN 2 (P.hiBlue ("UI: " <> Pretty.text (Server.urlFor (Server.ProjectBranchUI (PP.toProjectAndBranch . PP.toNames $ pp) Path.absoluteEmpty Nothing) baseUrl))),
+                        P.indentN 2 (P.hiBlue ("UI: " <> Pretty.text (Server.urlFor (Server.ProjectBranchUI (PP.toProjectAndBranch . PP.toNames $ pp) Path.root Nothing) baseUrl))),
                         P.newline,
                         P.indentN 2 (P.hiBlue ("API: " <> Pretty.text (Server.urlFor Server.Api baseUrl)))
                       ]
@@ -329,8 +329,7 @@ loop e = do
               Cli.cd (path ^. PP.absPath_)
             UpI -> do
               path0 <- Cli.getCurrentPath
-              whenJust (unsnoc path0) \(path, _) ->
-                Cli.cd path
+              whenJust (Path.ascend path0) Cli.cd
             PopBranchI -> do
               success <- Cli.popd
               when (not success) (Cli.respond StartOfCurrentPathHistory)
@@ -650,7 +649,7 @@ loop e = do
               currentPath <- Cli.getCurrentPath
               let destPath = case opath of
                     Just path -> Path.resolve currentPath (Path.Relative path)
-                    Nothing -> currentPath `snoc` NameSegment.builtinSegment
+                    Nothing -> Path.descend currentPath NameSegment.builtinSegment
               pp <- set PP.absPath_ destPath <$> Cli.getCurrentProjectPath
               _ <- Cli.updateAtM description pp \destb ->
                 liftIO (Branch.merge'' (Codebase.lca codebase) Branch.RegularMerge srcb destb)
@@ -678,7 +677,7 @@ loop e = do
               currentPath <- Cli.getCurrentPath
               let destPath = case opath of
                     Just path -> Path.resolve currentPath (Path.Relative path)
-                    Nothing -> currentPath `snoc` NameSegment.builtinSegment
+                    Nothing -> Path.descend currentPath NameSegment.builtinSegment
               pp <- set PP.absPath_ destPath <$> Cli.getCurrentProjectPath
               _ <- Cli.updateAtM description pp \destb ->
                 liftIO (Branch.merge'' (Codebase.lca codebase) Branch.RegularMerge srcb destb)
@@ -1051,7 +1050,7 @@ inputDescription input =
     hhqs' = either (pure . SH.toText) hqs'
     hqs' :: HQ'.HashQualified Name -> Cli Text
     hqs' = pure . HQ'.toTextWith Name.toText
-    hqs = hqs' . fmap (Name.fromReverseSegments . uncurry (flip (Nel.:|)) . first (reverse . toList . Path.toSeq))
+    hqs = hqs' . fmap Path.nameFromSplit
     ps' = p' . Path.fromName'
     ps = p . Path.unsplit
     bid2 :: BranchId2 -> Cli Text
@@ -1245,7 +1244,7 @@ confirmedCommand i = do
 
 -- return `name` and `name.<everything>...`
 _searchBranchPrefix :: Branch m -> Name -> [SearchResult]
-_searchBranchPrefix b n = case Path.unsnoc (Path.fromName n) of
+_searchBranchPrefix b n = case Path.split (Path.fromName n) of
   Nothing -> []
   Just (init, last) -> case Branch.getAt init b of
     Nothing -> []
@@ -1382,8 +1381,7 @@ checkDeletes typesTermsTuples doutput inputs = do
         let resolvedSplit = (pp.absPath, ns)
         return
           ( resolvedSplit,
-            Name.fromReverseSegments . uncurry (flip (Nel.:|)) $
-              first (reverse . toList . Path.toSeq . Path.unabsolute) resolvedSplit,
+            Name.makeRelative $ Path.nameFromSplit resolvedSplit,
             hq ^. _2,
             hq ^. _3
           )

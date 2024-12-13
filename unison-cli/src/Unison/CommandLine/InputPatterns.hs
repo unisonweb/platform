@@ -168,7 +168,7 @@ import U.Codebase.Sqlite.Project qualified as Sqlite
 import U.Codebase.Sqlite.Queries qualified as Queries
 import Unison.Auth.HTTPClient (AuthenticatedHttpClient)
 import Unison.Cli.Pretty
-  ( prettyPath',
+  ( prettyPath,
     prettyProjectAndBranchName,
     prettyProjectBranchName,
     prettyProjectName,
@@ -554,8 +554,8 @@ handleBranchId2Arg =
         pure . pure . UnqualifiedPath . Path.fromName' $ Path.prefixNameIfRel (Path.AbsolutePath' prefix) name
       SA.ProjectBranch (ProjectAndBranch mproject branch) ->
         case mproject of
-          Just proj -> pure . pure $ QualifiedBranchPath proj branch Path.absoluteEmpty
-          Nothing -> pure . pure $ BranchPathInCurrentProject branch Path.absoluteEmpty
+          Just proj -> pure . pure $ QualifiedBranchPath proj branch Path.root
+          Nothing -> pure . pure $ BranchPathInCurrentProject branch Path.root
       otherNumArg -> Left $ wrongStructuredArgument "a branch id" otherNumArg
 
 handleBranchRelativePathArg :: I.Argument -> Either (P.Pretty P.ColorText) BranchRelativePath
@@ -570,8 +570,8 @@ handleBranchRelativePathArg =
         pure . UnqualifiedPath . Path.fromName' $ Path.prefixNameIfRel (Path.AbsolutePath' prefix) name
       SA.ProjectBranch (ProjectAndBranch mproject branch) ->
         case mproject of
-          Just proj -> pure $ QualifiedBranchPath proj branch Path.absoluteEmpty
-          Nothing -> pure $ BranchPathInCurrentProject branch Path.absoluteEmpty
+          Just proj -> pure $ QualifiedBranchPath proj branch Path.root
+          Nothing -> pure $ BranchPathInCurrentProject branch Path.root
       otherNumArg -> Left $ wrongStructuredArgument "a branch id" otherNumArg
 
 handleHashQualified'NameArg :: I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashQualified Name)
@@ -1041,7 +1041,7 @@ ui =
       args = [("definition to load", Optional, namespaceOrDefinitionArg)],
       help = P.wrap "`ui` opens the Local UI in the default browser.",
       parse = \case
-        [] -> pure $ Input.UiI Path.relativeEmpty'
+        [] -> pure $ Input.UiI Path.currentPath
         [path] -> Input.UiI <$> handlePath'Arg path
         args -> wrongArgsLength "no more than one argument" args
     }
@@ -1101,7 +1101,7 @@ sfind =
   InputPattern "rewrite.find" ["sfind"] I.Visible [("rewrite-rule definition", Required, definitionQueryArg)] msg parse
   where
     parse = \case
-      [q] -> Input.StructuredFindI (Input.FindLocal Path.relativeEmpty') <$> handleHashQualifiedNameArg q
+      [q] -> Input.StructuredFindI (Input.FindLocal Path.currentPath) <$> handleHashQualifiedNameArg q
       args -> wrongArgsLength "exactly one argument" args
     msg =
       P.lines
@@ -1159,10 +1159,10 @@ sfindReplace =
         ]
 
 find :: InputPattern
-find = find' "find" (Input.FindLocal Path.relativeEmpty')
+find = find' "find" (Input.FindLocal Path.currentPath)
 
 findAll :: InputPattern
-findAll = find' "find.all" (Input.FindLocalAndDeps Path.relativeEmpty')
+findAll = find' "find.all" (Input.FindLocalAndDeps Path.currentPath)
 
 findGlobal :: InputPattern
 findGlobal = find' "debug.find.global" Input.FindGlobal
@@ -1243,7 +1243,7 @@ findShallow =
         ]
     )
     ( fmap Input.FindShallowI . \case
-        [] -> pure Path.relativeEmpty'
+        [] -> pure Path.currentPath
         [path] -> handlePath'Arg path
         args -> wrongArgsLength "no more than one argument" args
     )
@@ -1258,7 +1258,7 @@ findVerbose =
     ( "`find.verbose` searches for definitions like `find`, but includes hashes "
         <> "and aliases in the results."
     )
-    (pure . Input.FindI True (Input.FindLocal Path.relativeEmpty') . fmap unifyArgument)
+    (pure . Input.FindI True (Input.FindLocal Path.currentPath) . fmap unifyArgument)
 
 findVerboseAll :: InputPattern
 findVerboseAll =
@@ -1270,7 +1270,7 @@ findVerboseAll =
     ( "`find.all.verbose` searches for definitions like `find.all`, but includes hashes "
         <> "and aliases in the results."
     )
-    (pure . Input.FindI True (Input.FindLocalAndDeps Path.relativeEmpty') . fmap unifyArgument)
+    (pure . Input.FindI True (Input.FindLocalAndDeps Path.currentPath) . fmap unifyArgument)
 
 renameTerm :: InputPattern
 renameTerm =
@@ -1808,7 +1808,7 @@ pullImpl name aliases pullMode addendum = do
                         RemoteRepo.ReadShare'ProjectBranch (These sourceProject (ProjectBranchNameOrLatestRelease'Name sourceBranch)) ->
                           prettyProjectAndBranchName (ProjectAndBranch sourceProject sourceBranch)
                       <> " into the "
-                      <> prettyPath' path
+                      <> prettyPath path
                       <> " namespace, but the "
                       <> makeExample' pull
                       <> " command only supports merging into the top level of a local project branch."
@@ -2847,13 +2847,13 @@ test =
                 False
                 Input.TestInput
                   { includeLibNamespace = False,
-                    path,
+                    path = Path.Relative path,
                     showFailures = True,
                     showSuccesses = True
                   }
           )
           . \case
-            [] -> pure Path.empty
+            [] -> pure mempty
             [pathString] -> handlePathArg pathString
             args -> wrongArgsLength "no more than one argument" args
     }
@@ -2879,13 +2879,13 @@ testNative =
                 True
                 Input.TestInput
                   { includeLibNamespace = False,
-                    path,
+                    path = Path.Relative path,
                     showFailures = True,
                     showSuccesses = True
                   }
           )
           . \case
-            [] -> pure Path.empty
+            [] -> pure mempty
             [pathString] -> handlePathArg pathString
             args -> wrongArgsLength "no more than one argument" args
     }
@@ -2904,7 +2904,7 @@ testAll =
             False
             Input.TestInput
               { includeLibNamespace = True,
-                path = Path.empty,
+                path = mempty,
                 showFailures = True,
                 showSuccesses = True
               }
@@ -2924,7 +2924,7 @@ testAllNative =
             True
             Input.TestInput
               { includeLibNamespace = True,
-                path = Path.empty,
+                path = mempty,
                 showFailures = True,
                 showSuccesses = True
               }
@@ -4076,10 +4076,10 @@ branchRelativePathSuggestions config inputStr codebase _httpClient pp = do
                     Queries.loadAllProjectBranchesBeginningWith projectId (into @Text <$> mbranch)
           pure (map (projectBranchToCompletionWithSep projectName) branches)
       BranchRelativePath.PathRelativeToCurrentBranch absPath -> Codebase.runTransaction codebase do
-        map prefixPathSep <$> prefixCompleteNamespace (Text.unpack . Path.toText' $ Path.AbsolutePath' absPath) pp
+        map prefixPathSep <$> prefixCompleteNamespace (Text.unpack $ Path.toText absPath) pp
       BranchRelativePath.IncompletePath projStuff mpath -> do
         Codebase.runTransaction codebase do
-          map (addBranchPrefix projStuff) <$> prefixCompleteNamespace (maybe "" (Text.unpack . Path.toText' . Path.AbsolutePath') mpath) pp
+          map (addBranchPrefix projStuff) <$> prefixCompleteNamespace (maybe "" (Text.unpack . Path.toText) mpath) pp
   where
     projectBranchToCompletionWithSep :: ProjectName -> (ProjectBranchId, ProjectBranchName) -> Completion
     projectBranchToCompletionWithSep projectName (_, branchName) =

@@ -66,16 +66,15 @@ instance From BranchRelativePath Text where
         Text.Builder.char '/'
           <> Text.Builder.text (into @Text branch)
           <> Text.Builder.char ':'
-          <> Text.Builder.text (Path.absToText path)
+          <> Text.Builder.text (Path.toText path)
     QualifiedBranchPath proj branch path ->
       Text.Builder.run $
         Text.Builder.text (into @Text proj)
           <> Text.Builder.char '/'
           <> Text.Builder.text (into @Text branch)
           <> Text.Builder.char ':'
-          <> Text.Builder.text (Path.absToText path)
-    UnqualifiedPath path ->
-      Path.toText' path
+          <> Text.Builder.text (Path.toText path)
+    UnqualifiedPath path -> Path.toText path
 
 data IncrementalBranchRelativePath
   = -- | no dots, slashes, or colons, so could be a project name or a single path segment
@@ -186,10 +185,10 @@ incrementalBranchRelativePathParser =
     brPath :: Megaparsec.Parsec Void Text Path.Absolute
     brPath = do
       offset <- Megaparsec.getOffset
-      path' >>= \(Path.Path' inner) -> case inner of
-        Left _ -> failureAt offset "Branch qualified paths don't require a leading '.'"
+      path' >>= \case
+        Path.AbsolutePath' _ -> failureAt offset "Branch qualified paths don't require a leading '.'"
         -- Branch relative paths are written as relative paths, but are always absolute to the branch root
-        Right (Path.Relative x) -> pure $ Path.Absolute x
+        Path.RelativePath' (Path.Relative x) -> pure $ Path.Absolute x
     path' = Megaparsec.try do
       offset <- Megaparsec.getOffset
       pathStr <- Megaparsec.takeRest
@@ -230,12 +229,12 @@ branchRelativePathParser =
     IncompletePath projStuff mpath ->
       case projStuff of
         Left (ProjectAndBranch projName branchName) ->
-          pure $ QualifiedBranchPath projName branchName (fromMaybe Path.absoluteEmpty mpath)
+          pure $ QualifiedBranchPath projName branchName (fromMaybe Path.root mpath)
         Right branch ->
-          pure $ BranchPathInCurrentProject branch (fromMaybe Path.absoluteEmpty mpath)
+          pure $ BranchPathInCurrentProject branch (fromMaybe Path.root mpath)
 
 toText :: BranchRelativePath -> Text
 toText = \case
   BranchPathInCurrentProject pbName path -> ProjectPath () pbName path & into @Text
   QualifiedBranchPath projName pbName path -> ProjectPath projName pbName path & into @Text
-  UnqualifiedPath path' -> Path.toText' path'
+  UnqualifiedPath path' -> Path.toText path'

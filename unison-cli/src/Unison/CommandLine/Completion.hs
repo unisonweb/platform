@@ -21,7 +21,6 @@ module Unison.CommandLine.Completion
 where
 
 import Control.Lens
-import Control.Lens qualified as Lens
 import Data.Aeson qualified as Aeson
 import Data.List (isPrefixOf)
 import Data.List qualified as List
@@ -152,7 +151,7 @@ completeWithinNamespace compTypes query ppCtx = do
       & fmap
         ( \(ty, isFinished, match) ->
             ( isFinished,
-              Text.unpack (dotifyNamespace ty (Path.toText' (queryPathPrefix Lens.:> NameSegment match)))
+              Text.unpack (dotifyNamespace ty (Path.toText (Path.descend queryPathPrefix $ NameSegment match)))
             )
         )
       & filter (\(_isFinished, match) -> List.isPrefixOf query match)
@@ -187,7 +186,7 @@ completeWithinNamespace compTypes query ppCtx = do
                     & fmap
                       ( \(ty, isFinished, match) ->
                           ( isFinished,
-                            Text.unpack (dotifyNamespace ty (Path.toText' (queryPathPrefix Lens.:> suffix Lens.:> NameSegment match)))
+                            Text.unpack (dotifyNamespace ty (Path.toText (Path.descend (Path.descend queryPathPrefix suffix) $ NameSegment match)))
                           )
                       )
                     & filter (\(_isFinished, match) -> List.isPrefixOf query match)
@@ -265,7 +264,7 @@ completeWithinNamespace compTypes query ppCtx = do
 parseLaxPath'Query :: Text -> (Path.Path', Text)
 parseLaxPath'Query txt =
   case P.runParser ((,) <$> Path.splitP' <*> P.takeRest) "" (Text.unpack txt) of
-    Left _err -> (Path.relativeEmpty', txt)
+    Left _err -> (Path.currentPath, txt)
     Right (name, rest) ->
       if take 1 rest == "."
         then (Path.fromName' name, Text.empty)
@@ -376,7 +375,7 @@ shareCompletion completionTypes authHTTPClient str =
         let (path, pathSuffix) =
               case unsnoc path0 of
                 Just (path, pathSuffix) -> (Path.fromList path, NameSegment.toEscapedText pathSuffix)
-                Nothing -> (Path.empty, "")
+                Nothing -> (mempty, "")
         NamespaceListing {namespaceListingChildren} <- MaybeT $ fetchShareNamespaceInfo authHTTPClient (NameSegment.toEscapedText userHandle) path
         namespaceListingChildren
           & fmap

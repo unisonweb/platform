@@ -14,7 +14,7 @@ import Unison.Prelude
 handleMoveAll :: Bool -> Path.Path' -> Path.Path' -> Text -> Cli ()
 handleMoveAll hasConfirmed src' dest' description = do
   moveBranchFunc <- moveBranchFunc hasConfirmed src' dest'
-  moveTermTypeSteps <- case (,) <$> Path.toName' src' <*> Path.toName' dest' of
+  moveTermTypeSteps <- case (,) <$> Path.toName src' <*> Path.toName dest' of
     Nothing -> pure []
     Just (HQ'.NameOnly -> src, dest) -> do
       termSteps <- moveTermSteps src dest
