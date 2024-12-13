@@ -1325,111 +1325,81 @@ class ForeignConvention a where
 instance ForeignConvention Int where
   readForeign (i : args) !stk = (args,) <$> peekOffI stk i
   readForeign [] !_ = foreignCCError "Int"
-  {-# INLINE readForeign #-}
   writeForeign !stk !i = do
     stk <- bump stk
     stk <$ pokeI stk i
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Word64 where
   readForeign (i : args) !stk = (args,) <$> peekOffN stk i
   readForeign [] !_ = foreignCCError "Word64"
-  {-# INLINE readForeign #-}
   writeForeign !stk !n = do
     stk <- bump stk
     stk <$ pokeN stk n
-  {-# INLINE writeForeign #-}
 
 -- We don't have a clear mapping from these types to Unison types, most are just mapped to Nats.
 
 instance ForeignConvention Word8 where
   readForeign = readForeignAs (fromIntegral :: Word64 -> Word8)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (fromIntegral :: Word8 -> Word64)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Word16 where
   readForeign = readForeignAs (fromIntegral :: Word64 -> Word16)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (fromIntegral :: Word16 -> Word64)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Word32 where
   readForeign = readForeignAs (fromIntegral :: Word64 -> Word32)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (fromIntegral :: Word32 -> Word64)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Char where
   readForeign (i : args) !stk = (args,) <$> peekOffC stk i
   readForeign [] !_ = foreignCCError "Char"
-  {-# INLINE readForeign #-}
   writeForeign !stk !ch = do
     stk <- bump stk
     stk <$ pokeC stk ch
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Val where
   readForeign (i : args) !stk = (args,) <$> peekOff stk i
   readForeign [] !_ = foreignCCError "Val"
-  {-# INLINE readForeign #-}
   writeForeign !stk !v = do
     stk <- bump stk
     stk <$ (poke stk =<< evaluate v)
-  {-# INLINE writeForeign #-}
 
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
 instance ForeignConvention Closure where
   readForeign (i : args) !stk = (args,) <$> bpeekOff stk i
   readForeign [] !_ = foreignCCError "Closure"
-  {-# INLINE readForeign #-}
   writeForeign !stk !c = do
     stk <- bump stk
     stk <$ (bpoke stk =<< evaluate c)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Text where
   readForeign = readForeignBuiltin
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignBuiltin
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Unison.Util.Bytes.Bytes where
   readForeign = readForeignBuiltin
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignBuiltin
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Socket where
   readForeign = readForeignBuiltin
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignBuiltin
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention UDPSocket where
   readForeign = readForeignBuiltin
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignBuiltin
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention ThreadId where
   readForeign = readForeignBuiltin
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignBuiltin
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Handle where
   readForeign = readForeignBuiltin
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignBuiltin
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention POSIXTime where
   readForeign = readForeignAs (fromIntegral :: Int -> POSIXTime)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (round :: POSIXTime -> Int)
-  {-# INLINE writeForeign #-}
 
 instance (ForeignConvention a) => ForeignConvention (Maybe a) where
   readForeign (i : args) !stk =
@@ -1438,7 +1408,6 @@ instance (ForeignConvention a) => ForeignConvention (Maybe a) where
       1 -> fmap Just <$> readForeign args stk
       _ -> foreignCCError "Maybe"
   readForeign [] !_ = foreignCCError "Maybe"
-  {-# INLINE readForeign #-}
 
   writeForeign !stk Nothing = do
     stk <- bump stk
@@ -1447,7 +1416,6 @@ instance (ForeignConvention a) => ForeignConvention (Maybe a) where
     stk <- writeForeign stk x
     stk <- bump stk
     stk <$ pokeTag stk 1
-  {-# INLINE writeForeign #-}
 
 instance
   (ForeignConvention a, ForeignConvention b) =>
@@ -1459,7 +1427,6 @@ instance
       1 -> readForeignAs Right args stk
       _ -> foreignCCError "Either"
   readForeign !_ !_ = foreignCCError "Either"
-  {-# INLINE readForeign #-}
 
   writeForeign !stk !(Left a) = do
     stk <- writeForeign stk a
@@ -1469,7 +1436,6 @@ instance
     stk <- writeForeign stk b
     stk <- bump stk
     stk <$ pokeTag stk 1
-  {-# INLINE writeForeign #-}
 
 ioeDecode :: Int -> IOErrorType
 ioeDecode 0 = AlreadyExists
@@ -1497,10 +1463,8 @@ instance ForeignConvention IOException where
   readForeign = readForeignAs (bld . ioeDecode)
     where
       bld t = IOError Nothing t "" "" Nothing Nothing
-  {-# INLINE readForeign #-}
 
   writeForeign = writeForeignAs (ioeEncode . ioe_type)
-  {-# INLINE writeForeign #-}
 
 readForeignAs ::
   (ForeignConvention a) =>
@@ -1509,7 +1473,6 @@ readForeignAs ::
   Stack ->
   IO ([Int], b)
 readForeignAs !f !args !stk = fmap f <$> readForeign args stk
-{-# INLINE readForeignAs #-}
 
 writeForeignAs ::
   (ForeignConvention b) =>
@@ -1518,7 +1481,6 @@ writeForeignAs ::
   a ->
   IO Stack
 writeForeignAs !f !stk !x = writeForeign stk (f x)
-{-# INLINE writeForeignAs #-}
 
 readForeignEnum ::
   (Enum a) =>
@@ -1526,7 +1488,6 @@ readForeignEnum ::
   Stack ->
   IO ([Int], a)
 readForeignEnum = readForeignAs toEnum
-{-# INLINE readForeignEnum #-}
 
 writeForeignEnum ::
   (Enum a) =>
@@ -1534,7 +1495,6 @@ writeForeignEnum ::
   a ->
   IO Stack
 writeForeignEnum = writeForeignAs fromEnum
-{-# INLINE writeForeignEnum #-}
 
 readForeignBuiltin ::
   (BuiltinForeign b) =>
@@ -1542,7 +1502,6 @@ readForeignBuiltin ::
   Stack ->
   IO ([Int], b)
 readForeignBuiltin = readForeignAs (unwrapBuiltin . marshalToForeign)
-{-# INLINE readForeignBuiltin #-}
 
 writeForeignBuiltin ::
   (BuiltinForeign b) =>
@@ -1550,7 +1509,6 @@ writeForeignBuiltin ::
   b ->
   IO Stack
 writeForeignBuiltin = writeForeignAs (Foreign . wrapBuiltin)
-{-# INLINE writeForeignBuiltin #-}
 
 writeTypeLink ::
   Stack ->
@@ -1569,48 +1527,36 @@ readTypelink = readForeignAs (unwrapForeign . marshalToForeign)
 instance ForeignConvention Double where
   readForeign (i : args) !stk = (args,) <$> peekOffD stk i
   readForeign !_ !_ = foreignCCError "Double"
-  {-# INLINE readForeign #-}
   writeForeign !stk !d =
     bump stk >>= \(!stk) -> do
       pokeD stk d
       pure stk
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Bool where
   readForeign (i : args) !stk = do
     b <- peekOffBool stk i
     pure (args, b)
   readForeign !_ !_ = foreignCCError "Bool"
-  {-# INLINE readForeign #-}
   writeForeign !stk !b = do
     stk <- bump stk
     pokeBool stk b
     pure stk
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention String where
   readForeign = readForeignAs unpack
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs pack
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention SeekMode where
   readForeign = readForeignEnum
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignEnum
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention IOMode where
   readForeign = readForeignEnum
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignEnum
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention () where
   readForeign !args !_ = pure (args, ())
-  {-# INLINE readForeign #-}
   writeForeign !stk !_ = pure stk
-  {-# INLINE writeForeign #-}
 
 instance
   (ForeignConvention a, ForeignConvention b) =>
@@ -1620,12 +1566,10 @@ instance
     (args, a) <- readForeign args stk
     (args, b) <- readForeign args stk
     pure (args, (a, b))
-  {-# INLINE readForeign #-}
 
   writeForeign !stk (x, y) = do
     stk <- writeForeign stk y
     writeForeign stk x
-  {-# INLINE writeForeign #-}
 
 instance (ForeignConvention a) => ForeignConvention (F.Failure a) where
   readForeign !args !stk = do
@@ -1633,13 +1577,11 @@ instance (ForeignConvention a) => ForeignConvention (F.Failure a) where
     (args, message) <- readForeign args stk
     (args, any) <- readForeign args stk
     pure (args, F.Failure typeref message any)
-  {-# INLINE readForeign #-}
 
   writeForeign !stk (F.Failure typeref message any) = do
     stk <- writeForeign stk any
     stk <- writeForeign stk message
     writeTypeLink stk typeref
-  {-# INLINE writeForeign #-}
 
 instance
   ( ForeignConvention a,
@@ -1653,13 +1595,11 @@ instance
     (args, b) <- readForeign args stk
     (args, c) <- readForeign args stk
     pure (args, (a, b, c))
-  {-# INLINE readForeign #-}
 
   writeForeign !stk (a, b, c) = do
     stk <- writeForeign stk c
     stk <- writeForeign stk b
     writeForeign stk a
-  {-# INLINE writeForeign #-}
 
 instance
   ( ForeignConvention a,
@@ -1675,14 +1615,12 @@ instance
     (args, c) <- readForeign args stk
     (args, d) <- readForeign args stk
     pure (args, (a, b, c, d))
-  {-# INLINE readForeign #-}
 
   writeForeign !stk (a, b, c, d) = do
     stk <- writeForeign stk d
     stk <- writeForeign stk c
     stk <- writeForeign stk b
     writeForeign stk a
-  {-# INLINE writeForeign #-}
 
 instance
   ( ForeignConvention a,
@@ -1700,7 +1638,6 @@ instance
     (args, d) <- readForeign args stk
     (args, e) <- readForeign args stk
     pure (args, (a, b, c, d, e))
-  {-# INLINE readForeign #-}
 
   writeForeign !stk (a, b, c, d, e) = do
     stk <- writeForeign stk e
@@ -1708,7 +1645,6 @@ instance
     stk <- writeForeign stk c
     stk <- writeForeign stk b
     writeForeign stk a
-  {-# INLINE writeForeign #-}
 
 no'buf, line'buf, block'buf, sblock'buf :: Word64
 no'buf = fromIntegral Ty.bufferModeNoBufferingId
@@ -1730,7 +1666,6 @@ instance ForeignConvention BufferMode where
             foreignCCError $
               "BufferMode (unknown tag: " <> show t <> ")"
   readForeign !_ !_ = foreignCCError $ "BufferMode (empty stack)"
-  {-# INLINE readForeign #-}
 
   writeForeign !stk !bm =
     bump stk >>= \(stk) ->
@@ -1742,7 +1677,6 @@ instance ForeignConvention BufferMode where
           pokeI stk n
           stk <- bump stk
           stk <$ pokeN stk sblock'buf
-  {-# INLINE writeForeign #-}
 
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
@@ -1750,11 +1684,9 @@ instance {-# OVERLAPPING #-} ForeignConvention [Val] where
   readForeign (i : args) !stk =
     (args,) . toList <$> peekOffS stk i
   readForeign !_ !_ = foreignCCError "[Val]"
-  {-# INLINE readForeign #-}
   writeForeign !stk !l = do
     stk <- bump stk
     stk <$ pokeS stk (Sq.fromList l)
-  {-# INLINE writeForeign #-}
 
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
@@ -1762,95 +1694,65 @@ instance {-# OVERLAPPING #-} ForeignConvention [Closure] where
   readForeign (i : args) !stk =
     (args,) . fmap getBoxedVal . toList <$> peekOffS stk i
   readForeign !_ !_ = foreignCCError "[Closure]"
-  {-# INLINE readForeign #-}
   writeForeign !stk !l = do
     stk <- bump stk
     stk <$ pokeS stk (Sq.fromList . fmap BoxedVal $ l)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention [Foreign] where
   readForeign = readForeignAs (fmap marshalToForeign)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (fmap Foreign)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention (MVar Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (Foreign . Wrap mvarRef)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention (TVar Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (Foreign . Wrap tvarRef)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention (IORef Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (Foreign . Wrap refRef)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention (Ticket Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (Foreign . Wrap ticketRef)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention (Promise Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (Foreign . Wrap promiseRef)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Code where
   readForeign = readForeignBuiltin
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignBuiltin
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Value where
   readForeign = readForeignBuiltin
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignBuiltin
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention Foreign where
   readForeign = readForeignAs marshalToForeign
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs Foreign
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention (PA.MutableArray s Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (Foreign . Wrap marrayRef)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention (PA.MutableByteArray s) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (Foreign . Wrap mbytearrayRef)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention (PA.Array Val) where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (Foreign . Wrap iarrayRef)
-  {-# INLINE writeForeign #-}
 
 instance ForeignConvention PA.ByteArray where
   readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignAs (Foreign . Wrap ibytearrayRef)
-  {-# INLINE writeForeign #-}
 
 instance {-# OVERLAPPABLE #-} (BuiltinForeign b) => ForeignConvention b where
   readForeign = readForeignBuiltin
-  {-# INLINE readForeign #-}
   writeForeign = writeForeignBuiltin
-  {-# INLINE writeForeign #-}
 
 fromUnisonPair :: (BuiltinForeign a, BuiltinForeign b) => Closure -> (a, b)
 fromUnisonPair (DataC _ _ [BoxedVal x, BoxedVal (DataC _ _ [BoxedVal y, BoxedVal _unit])]) =
@@ -1878,7 +1780,6 @@ instance {-# OVERLAPPABLE #-} (BuiltinForeign a, BuiltinForeign b) => ForeignCon
       . toList
       <$> peekOffS stk i
   readForeign !_ !_ = foreignCCError "[(a,b)]"
-  {-# INLINE readForeign #-}
 
   writeForeign !stk !l = do
     stk <- bump stk
@@ -1891,11 +1792,9 @@ instance {-# OVERLAPPABLE #-} (BuiltinForeign b) => ForeignConvention [b] where
       . toList
       <$> peekOffS stk i
   readForeign !_ !_ = foreignCCError "[b]"
-  {-# INLINE readForeign #-}
   writeForeign !stk !l = do
     stk <- bump stk
     stk <$ pokeS stk (boxedVal . Foreign . wrapBuiltin <$> Sq.fromList l)
-  {-# INLINE writeForeign #-}
 
 foreignCCError :: String -> IO a
 foreignCCError nm =
