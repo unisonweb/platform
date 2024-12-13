@@ -1323,8 +1323,8 @@ class ForeignConvention a where
     Stack -> a -> IO Stack
 
 instance ForeignConvention Int where
-  readForeign !(i : args) !stk = (args,) <$> peekOffI stk i
-  readForeign ![] !_ = foreignCCError "Int"
+  readForeign (i : args) !stk = (args,) <$> peekOffI stk i
+  readForeign [] !_ = foreignCCError "Int"
   {-# INLINE readForeign #-}
   writeForeign !stk !i = do
     stk <- bump stk
@@ -1332,8 +1332,8 @@ instance ForeignConvention Int where
   {-# INLINE writeForeign #-}
 
 instance ForeignConvention Word64 where
-  readForeign !(i : args) !stk = (args,) <$> peekOffN stk i
-  readForeign ![] !_ = foreignCCError "Word64"
+  readForeign (i : args) !stk = (args,) <$> peekOffN stk i
+  readForeign [] !_ = foreignCCError "Word64"
   {-# INLINE readForeign #-}
   writeForeign !stk !n = do
     stk <- bump stk
@@ -1361,8 +1361,8 @@ instance ForeignConvention Word32 where
   {-# INLINE writeForeign #-}
 
 instance ForeignConvention Char where
-  readForeign !(i : args) !stk = (args,) <$> peekOffC stk i
-  readForeign ![] !_ = foreignCCError "Char"
+  readForeign (i : args) !stk = (args,) <$> peekOffC stk i
+  readForeign [] !_ = foreignCCError "Char"
   {-# INLINE readForeign #-}
   writeForeign !stk !ch = do
     stk <- bump stk
@@ -1370,8 +1370,8 @@ instance ForeignConvention Char where
   {-# INLINE writeForeign #-}
 
 instance ForeignConvention Val where
-  readForeign !(i : args) !stk = (args,) <$> peekOff stk i
-  readForeign ![] !_ = foreignCCError "Val"
+  readForeign (i : args) !stk = (args,) <$> peekOff stk i
+  readForeign [] !_ = foreignCCError "Val"
   {-# INLINE readForeign #-}
   writeForeign !stk !v = do
     stk <- bump stk
@@ -1381,8 +1381,8 @@ instance ForeignConvention Val where
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
 instance ForeignConvention Closure where
-  readForeign !(i : args) !stk = (args,) <$> bpeekOff stk i
-  readForeign ![] !_ = foreignCCError "Closure"
+  readForeign (i : args) !stk = (args,) <$> bpeekOff stk i
+  readForeign [] !_ = foreignCCError "Closure"
   {-# INLINE readForeign #-}
   writeForeign !stk !c = do
     stk <- bump stk
@@ -1432,18 +1432,18 @@ instance ForeignConvention POSIXTime where
   {-# INLINE writeForeign #-}
 
 instance (ForeignConvention a) => ForeignConvention (Maybe a) where
-  readForeign !(i : args) !stk =
+  readForeign (i : args) !stk =
     upeekOff stk i >>= \case
       0 -> pure (args, Nothing)
       1 -> fmap Just <$> readForeign args stk
       _ -> foreignCCError "Maybe"
-  readForeign ![] !_ = foreignCCError "Maybe"
+  readForeign [] !_ = foreignCCError "Maybe"
   {-# INLINE readForeign #-}
 
-  writeForeign !stk !Nothing = do
+  writeForeign !stk Nothing = do
     stk <- bump stk
     stk <$ pokeTag stk 0
-  writeForeign !stk !(Just x) = do
+  writeForeign !stk (Just x) = do
     stk <- writeForeign stk x
     stk <- bump stk
     stk <$ pokeTag stk 1
@@ -1453,7 +1453,7 @@ instance
   (ForeignConvention a, ForeignConvention b) =>
   ForeignConvention (Either a b)
   where
-  readForeign !(i : args) !stk =
+  readForeign (i : args) !stk =
     peekTagOff stk i >>= \case
       0 -> readForeignAs Left args stk
       1 -> readForeignAs Right args stk
@@ -1567,7 +1567,7 @@ readTypelink = readForeignAs (unwrapForeign . marshalToForeign)
 {-# INLINE readTypelink #-}
 
 instance ForeignConvention Double where
-  readForeign !(i : args) !stk = (args,) <$> peekOffD stk i
+  readForeign (i : args) !stk = (args,) <$> peekOffD stk i
   readForeign !_ !_ = foreignCCError "Double"
   {-# INLINE readForeign #-}
   writeForeign !stk !d =
@@ -1577,7 +1577,7 @@ instance ForeignConvention Double where
   {-# INLINE writeForeign #-}
 
 instance ForeignConvention Bool where
-  readForeign !(i : args) !stk = do
+  readForeign (i : args) !stk = do
     b <- peekOffBool stk i
     pure (args, b)
   readForeign !_ !_ = foreignCCError "Bool"
@@ -1622,7 +1622,7 @@ instance
     pure (args, (a, b))
   {-# INLINE readForeign #-}
 
-  writeForeign !stk !(x, y) = do
+  writeForeign !stk (x, y) = do
     stk <- writeForeign stk y
     writeForeign stk x
   {-# INLINE writeForeign #-}
@@ -1635,7 +1635,7 @@ instance (ForeignConvention a) => ForeignConvention (F.Failure a) where
     pure (args, F.Failure typeref message any)
   {-# INLINE readForeign #-}
 
-  writeForeign !stk !(F.Failure typeref message any) = do
+  writeForeign !stk (F.Failure typeref message any) = do
     stk <- writeForeign stk any
     stk <- writeForeign stk message
     writeTypeLink stk typeref
@@ -1655,7 +1655,7 @@ instance
     pure (args, (a, b, c))
   {-# INLINE readForeign #-}
 
-  writeForeign !stk !(a, b, c) = do
+  writeForeign !stk (a, b, c) = do
     stk <- writeForeign stk c
     stk <- writeForeign stk b
     writeForeign stk a
@@ -1677,7 +1677,7 @@ instance
     pure (args, (a, b, c, d))
   {-# INLINE readForeign #-}
 
-  writeForeign !stk !(a, b, c, d) = do
+  writeForeign !stk (a, b, c, d) = do
     stk <- writeForeign stk d
     stk <- writeForeign stk c
     stk <- writeForeign stk b
@@ -1702,7 +1702,7 @@ instance
     pure (args, (a, b, c, d, e))
   {-# INLINE readForeign #-}
 
-  writeForeign !stk !(a, b, c, d, e) = do
+  writeForeign !stk (a, b, c, d, e) = do
     stk <- writeForeign stk e
     stk <- writeForeign stk d
     stk <- writeForeign stk c
@@ -1717,7 +1717,7 @@ block'buf = fromIntegral Ty.bufferModeBlockBufferingId
 sblock'buf = fromIntegral Ty.bufferModeSizedBlockBufferingId
 
 instance ForeignConvention BufferMode where
-  readForeign !(i : args) !stk =
+  readForeign (i : args) !stk =
     peekOffN stk i >>= \case
       t
         | t == no'buf -> pure (args, NoBuffering)
@@ -1733,7 +1733,7 @@ instance ForeignConvention BufferMode where
   {-# INLINE readForeign #-}
 
   writeForeign !stk !bm =
-    bump stk >>= \(!stk) ->
+    bump stk >>= \(stk) ->
       case bm of
         NoBuffering -> stk <$ pokeN stk no'buf
         LineBuffering -> stk <$ pokeN stk line'buf
@@ -1747,7 +1747,7 @@ instance ForeignConvention BufferMode where
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
 instance {-# OVERLAPPING #-} ForeignConvention [Val] where
-  readForeign !(i : args) !stk =
+  readForeign (i : args) !stk =
     (args,) . toList <$> peekOffS stk i
   readForeign !_ !_ = foreignCCError "[Val]"
   {-# INLINE readForeign #-}
@@ -1759,7 +1759,7 @@ instance {-# OVERLAPPING #-} ForeignConvention [Val] where
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
 instance {-# OVERLAPPING #-} ForeignConvention [Closure] where
-  readForeign !(i : args) !stk =
+  readForeign (i : args) !stk =
     (args,) . fmap getBoxedVal . toList <$> peekOffS stk i
   readForeign !_ !_ = foreignCCError "[Closure]"
   {-# INLINE readForeign #-}
@@ -1872,7 +1872,7 @@ unwrapForeignClosure :: Closure -> a
 unwrapForeignClosure = unwrapForeign . marshalToForeign
 
 instance {-# OVERLAPPABLE #-} (BuiltinForeign a, BuiltinForeign b) => ForeignConvention [(a, b)] where
-  readForeign !(i : args) !stk =
+  readForeign (i : args) !stk =
     (args,)
       . fmap (fromUnisonPair . getBoxedVal)
       . toList
@@ -1885,7 +1885,7 @@ instance {-# OVERLAPPABLE #-} (BuiltinForeign a, BuiltinForeign b) => ForeignCon
     stk <$ pokeS stk (boxedVal . toUnisonPair <$> Sq.fromList l)
 
 instance {-# OVERLAPPABLE #-} (BuiltinForeign b) => ForeignConvention [b] where
-  readForeign !(i : args) !stk =
+  readForeign (i : args) !stk =
     (args,)
       . fmap (unwrapForeignClosure . getBoxedVal)
       . toList
