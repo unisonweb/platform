@@ -460,13 +460,13 @@ loop e = do
                   Branch0 IO ->
                   Branch0 IO ->
                   Path.Absolute ->
-                  ([HQ'.HashQualified Path.Split], [(Path.Absolute, Branch0 m -> Branch0 m)]) ->
-                  HQ'.HashQualified Path.Split ->
-                  ([HQ'.HashQualified Path.Split], [(Path.Absolute, Branch0 m -> Branch0 m)])
+                  ([HQ'.HashQualified (Path.Split Path)], [(Path.Absolute, Branch0 m -> Branch0 m)]) ->
+                  HQ'.HashQualified (Path.Split Path) ->
+                  ([HQ'.HashQualified (Path.Split Path)], [(Path.Absolute, Branch0 m -> Branch0 m)])
                 go root0 currentBranch0 dest (missingSrcs, actions) hqsrc =
-                  let proposedDest :: Path.AbsSplit
+                  let proposedDest :: Path.Split Path.Absolute
                       proposedDest = HQ'.toName hqProposedDest
-                      hqProposedDest :: HQ'.HashQualified Path.AbsSplit
+                      hqProposedDest :: HQ'.HashQualified (Path.Split Path.Absolute)
                       hqProposedDest = Path.resolve dest <$> hqsrc
                       -- `Nothing` if src doesn't exist
                       doType :: Maybe [(Path.Absolute, Branch0 m -> Branch0 m)]
@@ -494,7 +494,7 @@ loop e = do
                         (Nothing, Just as) -> (missingSrcs, actions ++ as)
                         (Just as1, Just as2) -> (missingSrcs, actions ++ as1 ++ as2)
 
-                fixupOutput :: HQ'.HashQualified Path.Split -> HQ.HashQualified Name
+                fixupOutput :: HQ'.HashQualified (Path.Split Path) -> HQ.HashQualified Name
                 fixupOutput = HQ'.toHQ . fmap Path.nameFromSplit
             NamesI global query -> do
               hqLength <- Cli.runTransaction Codebase.hashLength
@@ -1044,7 +1044,7 @@ inputDescription input =
     p' = fmap (into @Text) . Cli.resolvePath'
     brp :: BranchRelativePath -> Cli Text
     brp = fmap (into @Text) . ProjectUtils.resolveBranchRelativePath
-    ops :: Maybe Path.Split -> Cli Text
+    ops :: Maybe (Path.Split Path) -> Cli Text
     ops = maybe (pure ".") ps
     wat = error $ show input ++ " is not expected to alter the branch"
     hhqs' :: HQ'.HashOrHQ Name -> Cli Text
@@ -1346,8 +1346,8 @@ doCompile profile native output main = do
 delete ::
   Input ->
   DeleteOutput ->
-  (HQ'.HashQualified Path.AbsSplit -> Cli (Set Referent)) -> -- compute matching terms
-  (HQ'.HashQualified Path.AbsSplit -> Cli (Set Reference)) -> -- compute matching types
+  (HQ'.HashQualified (Path.Split Path.Absolute) -> Cli (Set Referent)) -> -- compute matching terms
+  (HQ'.HashQualified (Path.Split Path.Absolute) -> Cli (Set Reference)) -> -- compute matching types
   [HQ'.HashQualified Name] -> -- targets for deletion
   Cli ()
 delete input doutput getTerms getTypes hqs' = do
@@ -1376,7 +1376,7 @@ checkDeletes :: [(HQ'.HashQualified Name, Set Reference, Set Referent)] -> Delet
 checkDeletes typesTermsTuples doutput inputs = do
   let toSplitName ::
         (HQ'.HashQualified Name, Set Reference, Set Referent) ->
-        Cli (Path.AbsSplit, Name, Set Reference, Set Referent)
+        Cli (Path.Split Path.Absolute, Name, Set Reference, Set Referent)
       toSplitName hq = do
         (pp, ns) <- Cli.resolveName (HQ'.toName $ hq ^. _1)
         let resolvedSplit = (pp.absPath, ns)

@@ -267,7 +267,7 @@ typecheckedUnisonFileToBranchUpdates abort getConstructors tuf = do
                   ]
             else []
 
-    splitVar :: Symbol -> Path.Split
+    splitVar :: Symbol -> Path.Split Path
     splitVar = Path.splitFromName . Name.unsafeParseVar
 
 -- | get references from `names` that have the same names as in `defns`

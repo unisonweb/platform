@@ -44,7 +44,7 @@ parsePath' = \case
   "." -> Right absoluteEmpty'
   path -> fromName' <$> parseName path
 
-parseSplit :: String -> Either Text Split
+parseSplit :: String -> Either Text (Split Path)
 parseSplit = runParser splitP
 
 parseName :: String -> Either Text Name
@@ -53,7 +53,7 @@ parseName = runParser splitP'
 parseHashOrHQName :: String -> Either Text (HQ'.HashOrHQ Name)
 parseHashOrHQName = runParser shortHashOrHQNameP'
 
-parseHQSplit :: String -> Either Text (HQ'.HashQualified Split)
+parseHQSplit :: String -> Either Text (HQ'.HashQualified (Split Path))
 parseHQSplit s =
   parseHQName s >>= traverse \name ->
     if Name.isAbsolute name
@@ -83,7 +83,7 @@ pathP' =
       pure relativeEmpty'
     ]
 
-splitP :: Parsec (Lexer.Token Text) [Char] Split
+splitP :: Parsec (Lexer.Token Text) [Char] (Split Path)
 splitP = splitFromName <$> P.withParsecT (fmap NameSegment.renderParseErr) Name.relativeNameP
 
 splitP' :: Parsec (Lexer.Token Text) [Char] Name

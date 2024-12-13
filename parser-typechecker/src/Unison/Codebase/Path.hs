@@ -32,7 +32,6 @@ module Unison.Codebase.Path
     maybePrefixName,
     prefixNameIfRel,
     unprefixName,
-    AbsSplit,
     Split,
     ancestors,
 
@@ -159,18 +158,16 @@ instance Show Absolute where
 instance Show Relative where
   show = Text.unpack . relToText
 
-unsplit :: Split -> Path
+unsplit :: Split Path -> Path
 unsplit (Path p, a) = Path (p :|> a)
 
-unsplitAbsolute :: (Absolute, NameSegment) -> Absolute
+unsplitAbsolute :: Split Absolute -> Absolute
 unsplitAbsolute = coerce unsplit
 
-nameFromSplit :: Split -> Name
+nameFromSplit :: Split Path -> Name
 nameFromSplit = Name.fromReverseSegments . uncurry (flip (:|)) . first (reverse . toList)
 
-type AbsSplit = (Absolute, NameSegment)
-
-type Split = (Path, NameSegment)
+type Split path = (path, NameSegment)
 
 -- | examples:
 --   unprefix .foo.bar .blah == .blah (absolute paths left alone)
@@ -214,7 +211,7 @@ longestPathPrefix a b =
   List.splitOnLongestCommonPrefix (toList a) (toList b)
     & \(a, b, c) -> (fromList a, fromList b, fromList c)
 
-toAbsoluteSplit :: Absolute -> Name -> (Absolute, NameSegment)
+toAbsoluteSplit :: Absolute -> Name -> Split Absolute
 toAbsoluteSplit a = first (resolve a) . parentOfName
 
 absoluteEmpty :: Absolute
@@ -250,7 +247,7 @@ ancestors (Absolute (Path segments)) = Absolute . Path <$> Seq.inits segments
 --
 -- >>> splitFromName "foo"
 -- (,foo)
-splitFromName :: Name -> Split
+splitFromName :: Name -> Split Path
 splitFromName name = case Name.reverseSegments name of
   h :| t -> (fromList $ reverse t, h)
 
@@ -286,7 +283,7 @@ cons = Lens.cons
 snoc :: Path -> NameSegment -> Path
 snoc = Lens.snoc
 
-unsnoc :: Path -> Maybe (Path, NameSegment)
+unsnoc :: Path -> Maybe (Split Path)
 unsnoc = Lens.unsnoc
 
 uncons :: Path -> Maybe (NameSegment, Path)
@@ -304,7 +301,7 @@ uncons = Lens.uncons
 fromName :: Name -> Path
 fromName = fromList . List.NonEmpty.toList . Name.segments
 
-parentOfName :: Name -> (Path', NameSegment)
+parentOfName :: Name -> Split Path'
 parentOfName name =
   let h :| t = Name.reverseSegments name
       path = fromList $ reverse t
@@ -467,7 +464,7 @@ instance Snoc Absolute Absolute NameSegment NameSegment where
 instance Snoc Path Path NameSegment NameSegment where
   _Snoc = prism (uncurry snoc) unsnoc
     where
-      unsnoc :: Path -> Either Path (Path, NameSegment)
+      unsnoc :: Path -> Either Path (Split Path)
       unsnoc = \case
         Path (s Seq.:|> a) -> Right (Path s, a)
         e -> Left e
@@ -508,8 +505,8 @@ instance Resolve Path' Path' Path' where
   resolve (AbsolutePath' a) (RelativePath' r) = AbsolutePath' (resolve a r)
   resolve (RelativePath' r1) (RelativePath' r2) = RelativePath' (resolve r1 r2)
 
-instance Resolve Absolute Split AbsSplit where
-  resolve l (r, n) = (resolve l (Relative r), n)
+instance Resolve Absolute (Split Path) (Split Absolute) where
+  resolve l r = first (resolve l) r
 
 instance Resolve Absolute Path' Absolute where
   resolve _ (AbsolutePath' a) = a

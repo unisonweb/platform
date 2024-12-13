@@ -182,7 +182,7 @@ resolvePath'ToAbsolute path' = do
   view PP.absPath_ <$> resolvePath' path'
 
 -- | Resolve a path split, per the current path.
-resolveName :: Name -> Cli (PP.ProjectPath, NameSegment.NameSegment)
+resolveName :: Name -> Cli (Path.Split ProjectPath)
 resolveName = bitraverse resolvePath' pure . Path.parentOfName
 
 ------------------------------------------------------------------------------------------------------------------------
@@ -456,7 +456,7 @@ updateProjectBranchRoot_ projectBranch reason f = do
 ------------------------------------------------------------------------------------------------------------------------
 -- Getting terms
 
-getTermsAt :: HQ'.HashQualified (PP.ProjectPath, NameSegment.NameSegment) -> Cli (Set Referent)
+getTermsAt :: HQ'.HashQualified (Path.Split ProjectPath) -> Cli (Set Referent)
 getTermsAt hq =
   let (pp, seg) = HQ'.toName hq
    in BranchUtil.getTerm ((mempty, seg) <$ hq) <$> getBranch0FromProjectPath pp
@@ -464,7 +464,7 @@ getTermsAt hq =
 ------------------------------------------------------------------------------------------------------------------------
 -- Getting types
 
-getTypesAt :: HQ'.HashQualified (PP.ProjectPath, NameSegment.NameSegment) -> Cli (Set TypeReference)
+getTypesAt :: HQ'.HashQualified (Path.Split ProjectPath) -> Cli (Set TypeReference)
 getTypesAt hq =
   let (pp, seg) = HQ'.toName hq
    in BranchUtil.getType ((mempty, seg) <$ hq) <$> getBranch0FromProjectPath pp

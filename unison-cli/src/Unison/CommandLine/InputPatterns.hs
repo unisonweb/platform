@@ -470,7 +470,7 @@ handleNewPath =
     (const . Left $ "can’t use a numbered argument for a new namespace")
 
 -- | When only a relative name is allowed.
-handleSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) Path.Split
+handleSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) (Path.Split Path)
 handleSplitArg =
   either
     (first P.text . Path.parseSplit)
@@ -590,7 +590,7 @@ handleHashQualified'NameArg =
         first (const $ expectedButActually "a name" sr "a hash") . HQ'.fromHQ $ searchResultToHQ mpath result
       otherNumArg -> Left $ wrongStructuredArgument "a name" otherNumArg
 
-handleHashQualifiedSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashQualified Path.Split)
+handleHashQualifiedSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashQualified (Path.Split Path))
 handleHashQualifiedSplitArg =
   either
     (first P.text . Path.parseHQSplit)

@@ -141,7 +141,7 @@ data Input
     NamesI IsGlobal (HQ.HashQualified Name)
   | AliasTermI !Bool (HQ'.HashOrHQ Name) Name -- bool = force?
   | AliasTypeI !Bool (HQ'.HashOrHQ Name) Name -- bool = force?
-  | AliasManyI [HQ'.HashQualified Path.Split] Path'
+  | AliasManyI [HQ'.HashQualified (Path.Split Path)] Path'
   | MoveAllI Path.Path' Path.Path'
   | MoveTermI (HQ'.HashQualified Name) Name
   | MoveTypeI (HQ'.HashQualified Name) Name
@@ -322,7 +322,7 @@ data DeleteTarget
   = DeleteTarget'TermOrType DeleteOutput [HQ'.HashQualified Name]
   | DeleteTarget'Term DeleteOutput [HQ'.HashQualified Name]
   | DeleteTarget'Type DeleteOutput [HQ'.HashQualified Name]
-  | DeleteTarget'Namespace Insistence (Maybe Path.Split)
+  | DeleteTarget'Namespace Insistence (Maybe (Path.Split Path))
   | DeleteTarget'ProjectBranch (ProjectAndBranch (Maybe ProjectName) ProjectBranchName)
   | DeleteTarget'Project ProjectName
   deriving stock (Eq, Show)
