@@ -4,7 +4,6 @@ module Unison.Codebase.Editor.HandleInput.DeleteNamespace
   )
 where
 
-import Control.Lens hiding (from)
 import Control.Monad.State qualified as State
 import Data.Map qualified as Map
 import Data.Set qualified as Set
@@ -20,7 +19,6 @@ import Unison.Codebase.Branch.Names qualified as Branch
 import Unison.Codebase.Editor.Input
 import Unison.Codebase.Editor.Output
 import Unison.Codebase.Path qualified as Path
-import Unison.Codebase.ProjectPath qualified as ProjectPath
 import Unison.LabeledDependency (LabeledDependency)
 import Unison.LabeledDependency qualified as LD
 import Unison.Names (Names)
@@ -64,7 +62,7 @@ handleDeleteNamespace input insistence = \case
           Cli.respondNumbered $ CantDeleteNamespace ppeDecl endangerments
           Cli.returnEarlyWithoutOutput
     parentPathAbs <- Cli.resolvePath' $ Path.RelativePath' parentPath
-    let description = commandName <> " " <> into @Text (parentPathAbs & ProjectPath.absPath_ %~ (`Path.descend` childName))
+    let description = commandName <> " " <> into @Text (Path.descend parentPathAbs childName)
     -- We have to modify the parent in order to also wipe out the history at the
     -- child.
     Cli.updateAt description parentPathAbs (Branch.modifyAt (Path.singleton childName) \_ -> Branch.empty)

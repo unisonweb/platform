@@ -4,6 +4,7 @@ module Unison.Codebase.Path
   ( Path,
     Path' (..),
     Pathy (..),
+    Namey (..),
     Absolute (..),
     absPath_,
     Relative (..),
@@ -236,42 +237,48 @@ class Pathy path where
   prefix :: path -> Relative -> path
 
   split :: path -> Maybe (Split path)
+
+  unsplit :: Split path -> path
+  unsplit = uncurry descend
+  toText :: path -> Text
+
+class (Pathy path) => Namey path where
   nameFromSplit :: Split path -> Name
 
   -- | Convert a path' to a `Name`
   toName :: path -> Maybe Name
   toName = fmap nameFromSplit . split
 
-  unsplit :: Split path -> path
-  toText :: path -> Text
-
 instance Pathy Path where
-  descend (Path p) ns = Path (p <> pure ns)
+  descend (Path p) = Path . (p :|>)
   prefix pre = Path . (toSeq pre <>) . toSeq . unrelative
   split (Path seq) = case seq of
     Seq.Empty -> Nothing
     p :|> n -> pure (Path p, n)
-  nameFromSplit = Name.fromReverseSegments . uncurry (flip (:|)) . first (reverse . toList)
-  unsplit (Path p, a) = Path (p :|> a)
 
   -- Note: This treats the path as relative.
   toText = maybe Text.empty Name.toText . toName
+
+instance Namey Path where
+  nameFromSplit = Name.fromReverseSegments . uncurry (flip (:|)) . first (reverse . toList)
 
 instance Pathy Absolute where
   descend (Absolute p) = Absolute . descend p
   prefix (Absolute pre) = Absolute . prefix pre
   split (Absolute p) = first Absolute <$> split p
-  nameFromSplit = Name.makeAbsolute . nameFromSplit . first unabsolute
-  unsplit = Absolute . unsplit . first unabsolute
   toText = ("." <>) . toText . unabsolute
+
+instance Namey Absolute where
+  nameFromSplit = Name.makeAbsolute . nameFromSplit . first unabsolute
 
 instance Pathy Relative where
   descend (Relative p) = Relative . descend p
   prefix (Relative pre) = Relative . prefix pre
   split (Relative p) = first Relative <$> split p
-  nameFromSplit = Name.makeRelative . nameFromSplit . first unrelative
-  unsplit = Relative . unsplit . first unrelative
   toText = toText . unrelative
+
+instance Namey Relative where
+  nameFromSplit = Name.makeRelative . nameFromSplit . first unrelative
 
 instance Pathy Path' where
   descend = \case
@@ -283,15 +290,14 @@ instance Pathy Path' where
   split = \case
     AbsolutePath' p -> first AbsolutePath' <$> split p
     RelativePath' p -> first RelativePath' <$> split p
-  nameFromSplit (path, ns) = case path of
-    AbsolutePath' p -> nameFromSplit (p, ns)
-    RelativePath' p -> nameFromSplit (p, ns)
-  unsplit (path, ns) = case path of
-    AbsolutePath' p -> AbsolutePath' $ unsplit (p, ns)
-    RelativePath' p -> RelativePath' $ unsplit (p, ns)
   toText = \case
     AbsolutePath' p -> toText p
     RelativePath' p -> toText p
+
+instance Namey Path' where
+  nameFromSplit (path, ns) = case path of
+    AbsolutePath' p -> nameFromSplit (p, ns)
+    RelativePath' p -> nameFromSplit (p, ns)
 
 uncons :: Path -> Maybe (NameSegment, Path)
 uncons = Lens.uncons
