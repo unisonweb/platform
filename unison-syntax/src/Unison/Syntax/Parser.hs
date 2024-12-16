@@ -38,6 +38,7 @@ module Unison.Syntax.Parser
     prefixTermName,
     queryToken,
     reserved,
+    resolveUniqueTypeGuid,
     root,
     rootFile,
     run',
@@ -59,7 +60,7 @@ module Unison.Syntax.Parser
   )
 where
 
-import Control.Monad.Reader (ReaderT (..))
+import Control.Monad.Reader (ReaderT (..), ask)
 import Control.Monad.Reader.Class (asks)
 import Crypto.Random qualified as Random
 import Data.Bool (bool)
@@ -76,6 +77,7 @@ import Text.Megaparsec qualified as P
 import U.Codebase.Reference (ReferenceType (..))
 import U.Util.Base32Hex qualified as Base32Hex
 import Unison.ABT qualified as ABT
+import Unison.DataDeclaration (Modifier (Unique))
 import Unison.Hash qualified as Hash
 import Unison.HashQualified qualified as HQ
 import Unison.HashQualifiedPrime qualified as HQ'
@@ -92,7 +94,7 @@ import Unison.Prelude
 import Unison.Reference (Reference)
 import Unison.Referent (Referent)
 import Unison.Syntax.Lexer.Unison qualified as L
-import Unison.Syntax.Name qualified as Name (toVar)
+import Unison.Syntax.Name qualified as Name (toVar, unsafeParseVar)
 import Unison.Syntax.Parser.Doc qualified as Doc
 import Unison.Syntax.Parser.Doc.Data qualified as Doc
 import Unison.Term (MatchCase (..))
@@ -179,6 +181,15 @@ uniqueName lenInBase32Hex = do
   pos <- L.start <$> P.lookAhead anyToken
   let none = Base32Hex.toText . Base32Hex.fromByteString . encodeUtf8 . Text.pack $ show pos
   pure . fromMaybe none $ mkName pos lenInBase32Hex
+
+resolveUniqueTypeGuid :: (Monad m, Var v) => v -> P v m Modifier
+resolveUniqueTypeGuid name = do
+  ParsingEnv {uniqueTypeGuid} <- ask
+  guid <-
+    lift (lift (uniqueTypeGuid (Name.unsafeParseVar name))) >>= \case
+      Nothing -> uniqueName 32
+      Just guid -> pure guid
+  pure (Unique guid)
 
 data Error v
   = SignatureNeedsAccompanyingBody (L.Token v)
