@@ -42,7 +42,6 @@ module Unison.Runtime.ANF
     SuperGroup (..),
     arities,
     POp (..),
-    FOp,
     close,
     saturate,
     float,
@@ -117,6 +116,7 @@ import Unison.Prelude
 import Unison.Reference (Id, Reference, Reference' (Builtin, DerivedId))
 import Unison.Referent (Referent, pattern Con, pattern Ref)
 import Unison.Runtime.Array qualified as PA
+import Unison.Runtime.Foreign.Function.Type (ForeignFunc (..))
 import Unison.Runtime.TypeTags (CTag (..), PackedTag (..), RTag (..), Tag (..), maskTags, packTags, unpackTags)
 import Unison.Symbol (Symbol)
 import Unison.Term hiding (List, Ref, Text, arity, float, fresh, resolve)
@@ -1030,12 +1030,12 @@ pattern TPrm ::
   ABTN.Term ANormalF v
 pattern TPrm p args = TApp (FPrim (Left p)) args
 
-pattern AFOp :: FOp -> [v] -> ANormalF v e
+pattern AFOp :: ForeignFunc -> [v] -> ANormalF v e
 pattern AFOp p args = AApp (FPrim (Right p)) args
 
 pattern TFOp ::
   (ABT.Var v) =>
-  FOp ->
+  ForeignFunc ->
   [v] ->
   ABTN.Term ANormalF v
 pattern TFOp p args = TApp (FPrim (Right p)) args
@@ -1232,9 +1232,6 @@ instance Semigroup (BranchAccum v) where
 instance Monoid (BranchAccum e) where
   mempty = AccumEmpty
 
--- Foreign operation, indexed by words
-type FOp = Word64
-
 data Func v
   = -- variable
     FVar v
@@ -1247,7 +1244,7 @@ data Func v
   | -- ability request
     FReq !Reference !CTag
   | -- prim op
-    FPrim (Either POp FOp)
+    FPrim (Either POp ForeignFunc)
   deriving (Show, Eq, Functor, Foldable, Traversable)
 
 data Lit

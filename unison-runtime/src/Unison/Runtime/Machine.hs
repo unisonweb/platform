@@ -43,11 +43,11 @@ import Data.Set qualified as Set
 import Data.Text qualified as DTx
 import Data.Text.IO qualified as Tx
 import Data.Traversable
-import GHC.Base (IO (..))
 import GHC.Conc as STM (unsafeIOToSTM)
 import GHC.Stack
 import Unison.Builtin.Decls (exceptionRef, ioFailureRef)
 import Unison.Builtin.Decls qualified as Rf
+import Unison.Builtin.Decls qualified as Ty
 import Unison.ConstructorReference qualified as CR
 import Unison.Prelude hiding (Text)
 import Unison.Reference
@@ -72,10 +72,10 @@ import Unison.Runtime.ANF as ANF
   )
 import Unison.Runtime.ANF qualified as ANF
 import Unison.Runtime.Array as PA
-import Unison.Runtime.Builtin
-import Unison.Runtime.Exception (RuntimeExn (..))
+import Unison.Runtime.Builtin hiding (unitValue)
+import Unison.Runtime.Exception hiding (die)
 import Unison.Runtime.Foreign
-import Unison.Runtime.Foreign.Function
+import Unison.Runtime.Foreign.Function (foreignCall)
 import Unison.Runtime.MCode
 import Unison.Runtime.Stack
 import Unison.Runtime.TypeTags qualified as TT
@@ -137,8 +137,7 @@ data Tracer
 
 -- code caching environment
 data CCache = CCache
-  { foreignFuncs :: EnumMap Word64 ForeignFunc,
-    sandboxed :: Bool,
+  { sandboxed :: Bool,
     tracer :: Bool -> Val -> Tracer,
     -- Combinators in their original form, where they're easier to serialize into SCache
     srcCombs :: TVar (EnumMap Word64 Combs),
@@ -169,7 +168,7 @@ refNumTm cc r =
 
 baseCCache :: Bool -> IO CCache
 baseCCache sandboxed = do
-  CCache ffuncs sandboxed noTrace
+  CCache sandboxed noTrace
     <$> newTVarIO srcCombs
     <*> newTVarIO combs
     <*> newTVarIO builtinTermBackref
@@ -183,7 +182,6 @@ baseCCache sandboxed = do
     <*> newTVarIO baseSandboxInfo
   where
     cacheableCombs = mempty
-    ffuncs | sandboxed = sandboxedForeigns | otherwise = builtinForeigns
     noTrace _ _ = NoTrace
     ftm = 1 + maximum builtinTermNumbering
     fty = 1 + maximum builtinTypeNumbering
@@ -198,6 +196,7 @@ baseCCache sandboxed = do
     combs :: EnumMap Word64 MCombs
     combs =
       srcCombs
+        & sanitizeCombsOfForeignFuncs sandboxed sandboxedForeignFuncs
         & absurdCombs
         & resolveCombs Nothing
 
@@ -281,8 +280,13 @@ apply1 callback env threadTracker clo = do
   where
     k0 = CB $ Hook (\stk -> callback $ packXStack stk)
 
-unitValue :: Closure
-unitValue = Enum Rf.unitRef TT.unitTag
+unitValue :: Val
+unitValue = BoxedVal $ unitClosure
+{-# NOINLINE unitValue #-}
+
+unitClosure :: Closure
+unitClosure = Enum Ty.unitRef (PackedTag 0)
+{-# NOINLINE unitClosure #-}
 
 litToVal :: MLit -> Val
 litToVal = \case
@@ -478,8 +482,8 @@ exec env !denv !_activeThreads !stk !k _ (BPrim1 SDBL i)
       stk <- bump stk
       pokeS stk . encodeSandboxListResult =<< sandboxList env tl
       pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (BPrim1 op i) = do
-  stk <- bprim1 stk op i
+exec env !denv !_activeThreads !stk !k _ (BPrim1 op i) = do
+  stk <- bprim1 env stk op i
   pure (denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (BPrim2 SDBX i j) = do
   s <- peekOffS stk i
@@ -551,17 +555,19 @@ exec env !denv !_activeThreads !stk !k _ (BPrim2 TRCE i j)
 exec _ !denv !_trackThreads !stk !k _ (BPrim2 op i j) = do
   stk <- bprim2 stk op i j
   pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (RefCAS refI ticketI valI) = do
-  (ref :: IORef Val) <- peekOffBi stk refI
-  -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
-  -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
-  -- forcing of the values and tickets.
-  !(ticket :: Atomic.Ticket Val) <- peekOffBi stk ticketI
-  v <- peekOff stk valI
-  (r, _) <- Atomic.casIORef ref ticket v
-  stk <- bump stk
-  pokeBool stk r
-  pure (denv, stk, k)
+exec env !denv !_activeThreads !stk !k _ (RefCAS refI ticketI valI)
+  | sandboxed env = die "attempted to use sandboxed operation: Ref.cas"
+  | otherwise = do
+      (ref :: IORef Val) <- peekOffBi stk refI
+      -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
+      -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
+      -- forcing of the values and tickets.
+      !(ticket :: Atomic.Ticket Val) <- peekOffBi stk ticketI
+      v <- peekOff stk valI
+      (r, _) <- Atomic.casIORef ref ticket v
+      stk <- bump stk
+      pokeBool stk r
+      pure (denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (Pack r t args) = do
   clo <- buildData stk r t args
   stk <- bump stk
@@ -585,14 +591,9 @@ exec _ !denv !_activeThreads !stk !k _ (Seq as) = do
   stk <- bump stk
   pokeS stk $ Sq.fromList l
   pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (ForeignCall _ w args)
-  | Just (FF arg res ev) <- EC.lookup w (foreignFuncs env) = do
-      let xStack = unpackXStack stk
-      r <- arg (unpackXStack stk) args >>= ev
-      IO $ \s -> case res xStack r s of
-        (# s, xstk #) -> (# s, (denv, packXStack xstk, k) #)
-  | otherwise =
-      die $ "reference to unknown foreign function: " ++ show w
+exec _env !denv !_activeThreads !stk !k _ (ForeignCall _ func args) = do
+  stk <- xStackIOToIO $ foreignCall func args (unpackXStack stk)
+  pure (denv, stk, k)
 exec env !denv !activeThreads !stk !k _ (Fork i)
   | sandboxed env = die "attempted to use sandboxed operation: fork"
   | otherwise = do
@@ -615,6 +616,8 @@ exec env !denv !activeThreads !stk !k _ (TryForce i)
       ev <- Control.Exception.try $ nestEval env activeThreads (poke stk) v
       stk <- encodeExn stk ev
       pure (denv, stk, k)
+exec !_ !_ !_ !_ !_ _ (SandboxingFailure t) = do
+  die $ "Attempted to use disallowed builtin in sandboxed environment: " <> DTx.unpack t
 {-# INLINE exec #-}
 
 encodeExn ::
@@ -640,22 +643,22 @@ encodeExn stk exc = do
         disp e = Util.Text.pack $ show e
         (link, msg, extra)
           | Just (ioe :: IOException) <- fromException exn =
-              (Rf.ioFailureRef, disp ioe, boxedVal unitValue)
+              (Rf.ioFailureRef, disp ioe, unitValue)
           | Just re <- fromException exn = case re of
               PE _stk msg ->
-                (Rf.runtimeFailureRef, Util.Text.pack $ toPlainUnbroken msg, boxedVal unitValue)
+                (Rf.runtimeFailureRef, Util.Text.pack $ toPlainUnbroken msg, unitValue)
               BU _ tx val -> (Rf.runtimeFailureRef, Util.Text.fromText tx, val)
           | Just (ae :: ArithException) <- fromException exn =
-              (Rf.arithmeticFailureRef, disp ae, boxedVal unitValue)
+              (Rf.arithmeticFailureRef, disp ae, unitValue)
           | Just (nae :: NestedAtomically) <- fromException exn =
-              (Rf.stmFailureRef, disp nae, boxedVal unitValue)
+              (Rf.stmFailureRef, disp nae, unitValue)
           | Just (be :: BlockedIndefinitelyOnSTM) <- fromException exn =
-              (Rf.stmFailureRef, disp be, boxedVal unitValue)
+              (Rf.stmFailureRef, disp be, unitValue)
           | Just (be :: BlockedIndefinitelyOnMVar) <- fromException exn =
-              (Rf.ioFailureRef, disp be, boxedVal unitValue)
+              (Rf.ioFailureRef, disp be, unitValue)
           | Just (ie :: AsyncException) <- fromException exn =
-              (Rf.threadKilledFailureRef, disp ie, boxedVal unitValue)
-          | otherwise = (Rf.miscFailureRef, disp exn, boxedVal unitValue)
+              (Rf.threadKilledFailureRef, disp ie, unitValue)
+          | otherwise = (Rf.miscFailureRef, disp exn, unitValue)
 
 -- | Evaluate a section
 eval ::
@@ -1511,36 +1514,37 @@ uprim2 !stk IORB !i !j = do
 {-# INLINE uprim2 #-}
 
 bprim1 ::
+  CCache ->
   Stack ->
   BPrim1 ->
   Int ->
   IO Stack
-bprim1 !stk SIZT i = do
+bprim1 !_env !stk SIZT i = do
   t <- peekOffBi stk i
   stk <- bump stk
   unsafePokeIasN stk $ Util.Text.size t
   pure stk
-bprim1 !stk SIZS i = do
+bprim1 !_env !stk SIZS i = do
   s <- peekOffS stk i
   stk <- bump stk
   unsafePokeIasN stk $ Sq.length s
   pure stk
-bprim1 !stk ITOT i = do
+bprim1 !_env !stk ITOT i = do
   n <- upeekOff stk i
   stk <- bump stk
   pokeBi stk . Util.Text.pack $ show n
   pure stk
-bprim1 !stk NTOT i = do
+bprim1 !_env !stk NTOT i = do
   n <- peekOffN stk i
   stk <- bump stk
   pokeBi stk . Util.Text.pack $ show n
   pure stk
-bprim1 !stk FTOT i = do
+bprim1 !_env !stk FTOT i = do
   f <- peekOffD stk i
   stk <- bump stk
   pokeBi stk . Util.Text.pack $ show f
   pure stk
-bprim1 !stk USNC i =
+bprim1 !_env !stk USNC i =
   peekOffBi stk i >>= \t -> case Util.Text.unsnoc t of
     Nothing -> do
       stk <- bump stk
@@ -1552,7 +1556,7 @@ bprim1 !stk USNC i =
       pokeOffBi stk 1 t -- remaining text
       pokeTag stk 1 -- 'Just' tag
       pure stk
-bprim1 !stk UCNS i =
+bprim1 !_env !stk UCNS i =
   peekOffBi stk i >>= \t -> case Util.Text.uncons t of
     Nothing -> do
       stk <- bump stk
@@ -1564,7 +1568,7 @@ bprim1 !stk UCNS i =
       pokeOffC stk 1 $ c -- char value
       pokeTag stk 1 -- 'Just' tag
       pure stk
-bprim1 !stk TTOI i =
+bprim1 !_env !stk TTOI i =
   peekOffBi stk i >>= \t -> case readm $ Util.Text.unpack t of
     Just n
       | fromIntegral (minBound :: Int) <= n,
@@ -1580,7 +1584,7 @@ bprim1 !stk TTOI i =
   where
     readm ('+' : s) = readMaybe s
     readm s = readMaybe s
-bprim1 !stk TTON i =
+bprim1 !_env !stk TTON i =
   peekOffBi stk i >>= \t -> case readMaybe $ Util.Text.unpack t of
     Just n
       | 0 <= n,
@@ -1593,7 +1597,7 @@ bprim1 !stk TTON i =
       stk <- bump stk
       pokeTag stk 0
       pure stk
-bprim1 !stk TTOF i =
+bprim1 !_env !stk TTOF i =
   peekOffBi stk i >>= \t -> case readMaybe $ Util.Text.unpack t of
     Nothing -> do
       stk <- bump stk
@@ -1604,7 +1608,7 @@ bprim1 !stk TTOF i =
       pokeTag stk 1
       pokeOffD stk 1 f
       pure stk
-bprim1 !stk VWLS i =
+bprim1 !_env !stk VWLS i =
   peekOffS stk i >>= \case
     Sq.Empty -> do
       stk <- bump stk
@@ -1616,7 +1620,7 @@ bprim1 !stk VWLS i =
       pokeOff stk 1 x -- head
       pokeTag stk 1 -- ':<|' tag
       pure stk
-bprim1 !stk VWRS i =
+bprim1 !_env !stk VWRS i =
   peekOffS stk i >>= \case
     Sq.Empty -> do
       stk <- bump stk
@@ -1628,7 +1632,7 @@ bprim1 !stk VWRS i =
       pokeOffS stk 1 xs -- remaining seq
       pokeTag stk 1 -- ':|>' tag
       pure stk
-bprim1 !stk PAKT i = do
+bprim1 !_env !stk PAKT i = do
   s <- peekOffS stk i
   stk <- bump stk
   pokeBi stk . Util.Text.pack . toList $ val2char <$> s
@@ -1637,7 +1641,7 @@ bprim1 !stk PAKT i = do
     val2char :: Val -> Char
     val2char (CharVal c) = c
     val2char c = error $ "pack text: non-character closure: " ++ show c
-bprim1 !stk UPKT i = do
+bprim1 !_env !stk UPKT i = do
   t <- peekOffBi stk i
   stk <- bump stk
   pokeS stk
@@ -1646,7 +1650,7 @@ bprim1 !stk UPKT i = do
     . Util.Text.unpack
     $ t
   pure stk
-bprim1 !stk PAKB i = do
+bprim1 !_env !stk PAKB i = do
   s <- peekOffS stk i
   stk <- bump stk
   pokeBi stk . By.fromWord8s . fmap val2w8 $ toList s
@@ -1656,18 +1660,18 @@ bprim1 !stk PAKB i = do
     val2w8 :: Val -> Word8
     val2w8 (NatVal n) = toEnum . fromEnum $ n
     val2w8 c = error $ "pack bytes: non-natural closure: " ++ show c
-bprim1 !stk UPKB i = do
+bprim1 !_env !stk UPKB i = do
   b <- peekOffBi stk i
   stk <- bump stk
   pokeS stk . Sq.fromList . fmap (NatVal . toEnum @Word64 . fromEnum @Word8) $
     By.toWord8s b
   pure stk
-bprim1 !stk SIZB i = do
+bprim1 !_env !stk SIZB i = do
   b <- peekOffBi stk i
   stk <- bump stk
   unsafePokeIasN stk $ By.size b
   pure stk
-bprim1 !stk FLTB i = do
+bprim1 !_env !stk FLTB i = do
   b <- peekOffBi stk i
   stk <- bump stk
   pokeBi stk $ By.flatten b
@@ -1680,13 +1684,13 @@ bprim1 !stk FLTB i = do
 -- [1] https://hackage.haskell.org/package/base-4.17.0.0/docs/Data-IORef.html#g:2
 -- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
 -- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
-bprim1 !stk REFR i = do
+bprim1 !_env !stk REFR i = do
   (ref :: IORef Val) <- peekOffBi stk i
   v <- IORef.readIORef ref
   stk <- bump stk
   poke stk v
   pure stk
-bprim1 !stk REFN i = do
+bprim1 !_env !stk REFN i = do
   -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
   -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
   -- forcing of the values and tickets.
@@ -1695,13 +1699,15 @@ bprim1 !stk REFN i = do
   stk <- bump stk
   pokeBi stk ref
   pure stk
-bprim1 !stk RRFC i = do
-  (ref :: IORef Val) <- peekOffBi stk i
-  ticket <- Atomic.readForCAS ref
-  stk <- bump stk
-  pokeBi stk ticket
-  pure stk
-bprim1 !stk TIKR i = do
+bprim1 !env !stk RRFC i
+  | sandboxed env = die "attempted to use sandboxed operation: Ref.readForCAS"
+  | otherwise = do
+      (ref :: IORef Val) <- peekOffBi stk i
+      ticket <- Atomic.readForCAS ref
+      stk <- bump stk
+      pokeBi stk ticket
+      pure stk
+bprim1 !_env !stk TIKR i = do
   (t :: Atomic.Ticket Val) <- peekOffBi stk i
   stk <- bump stk
   let v = Atomic.peekTicket t
@@ -1709,15 +1715,15 @@ bprim1 !stk TIKR i = do
   pure stk
 
 -- impossible
-bprim1 !stk MISS _ = pure stk
-bprim1 !stk CACH _ = pure stk
-bprim1 !stk LKUP _ = pure stk
-bprim1 !stk CVLD _ = pure stk
-bprim1 !stk TLTT _ = pure stk
-bprim1 !stk LOAD _ = pure stk
-bprim1 !stk VALU _ = pure stk
-bprim1 !stk DBTX _ = pure stk
-bprim1 !stk SDBL _ = pure stk
+bprim1 !_env !stk MISS _ = pure stk
+bprim1 !_env !stk CACH _ = pure stk
+bprim1 !_env !stk LKUP _ = pure stk
+bprim1 !_env !stk CVLD _ = pure stk
+bprim1 !_env !stk TLTT _ = pure stk
+bprim1 !_env !stk LOAD _ = pure stk
+bprim1 !_env !stk VALU _ = pure stk
+bprim1 !_env !stk DBTX _ = pure stk
+bprim1 !_env !stk SDBL _ = pure stk
 {-# INLINE bprim1 #-}
 
 bprim2 ::
@@ -1917,7 +1923,7 @@ bprim2 !stk REFW i j = do
   v <- peekOff stk j
   IORef.writeIORef ref v
   stk <- bump stk
-  bpoke stk unitValue
+  bpoke stk unitClosure
   pure stk
 bprim2 !stk THRO _ _ = pure stk -- impossible
 bprim2 !stk TRCE _ _ = pure stk -- impossible
@@ -2226,7 +2232,8 @@ cacheAdd0 ntys0 termSuperGroups sands cc = do
     newCombRefs <- updateMap combRefUpdates (combRefs cc)
     (unresolvedNewCombs, unresolvedCacheableCombs, unresolvedNonCacheableCombs, updatedCombs) <- stateTVar (combs cc) \oldCombs ->
       let unresolvedNewCombs :: EnumMap Word64 (GCombs any CombIx)
-          unresolvedNewCombs = absurdCombs . mapFromList $ zipWith combinate [ntm ..] rgs
+          unresolvedNewCombs =
+            absurdCombs . sanitizeCombsOfForeignFuncs (sandboxed cc) sandboxedForeignFuncs . mapFromList $ zipWith combinate [ntm ..] rgs
           (unresolvedCacheableCombs, unresolvedNonCacheableCombs) =
             EC.mapToList unresolvedNewCombs & foldMap \(w, gcombs) ->
               if EC.member w newCacheableCombs

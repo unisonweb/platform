@@ -13,6 +13,7 @@ import Hedgehog hiding (Rec, Test, test)
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Unison.Prelude
+import Unison.Runtime.Foreign.Function.Type (ForeignFunc)
 import Unison.Runtime.Interface
 import Unison.Runtime.MCode (Args (..), BPrim1, BPrim2, Branch, Comb, CombIx (..), GBranch (..), GComb (..), GCombInfo (..), GInstr (..), GRef (..), GSection (..), Instr, MLit (..), Ref, Section, UPrim1, UPrim2)
 import Unison.Runtime.Machine (Combs)
@@ -32,6 +33,9 @@ test =
             [ ("SCache", sCacheRoundtrip)
             ]
     EasyTest.expect success
+
+genForeignCall :: Gen ForeignFunc
+genForeignCall = Gen.enumBounded
 
 genEnumMap :: (EC.EnumKey k) => Gen k -> Gen v -> Gen (EnumMap k v)
 genEnumMap genK genV = EC.mapFromList <$> Gen.list (Range.linear 0 10) ((,) <$> genK <*> genV)
@@ -116,7 +120,7 @@ genInstr =
       UPrim2 <$> genUPrim2 <*> genSmallInt <*> genSmallInt,
       BPrim1 <$> genBPrim1 <*> genSmallInt,
       BPrim2 <$> genBPrim2 <*> genSmallInt <*> genSmallInt,
-      ForeignCall <$> Gen.bool <*> genSmallWord64 <*> genArgs,
+      ForeignCall <$> Gen.bool <*> genForeignCall <*> genArgs,
       SetDyn <$> genSmallWord64 <*> genSmallInt,
       Capture <$> genSmallWord64,
       Name <$> genGRef <*> genArgs,
