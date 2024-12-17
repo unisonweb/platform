@@ -89,8 +89,8 @@ file = do
     result <- UFN.environmentFor namesStart dataDecls effectDecls & onLeft \errs -> resolutionFailures (toList errs)
     result & onLeft \errs -> P.customFailure (TypeDeclarationErrors errs)
 
-  -- Generate the record accessors with *un-namespaced* names (passing `typ` rather than `typ1`) below, because we need
-  -- to know these names in order to perform rewriting. As an example,
+  -- Generate the record accessors with *un-namespaced* names below, because we need to know these names in order to
+  -- perform rewriting. As an example,
   --
   --   namespace foo
   --   type Bar = { baz : Nat }
@@ -102,10 +102,10 @@ file = do
       unNamespacedAccessors =
         foldMap
           ( \case
-              -- N.B. the fields themselves were not namespaced by `applyNamespaceToSynDecls`
               SynDecl'Data decl
                 | Just fields <- decl.fields,
-                  Just (ref, _) <- Map.lookup decl.name.payload (UF.datas env) ->
+                  Just (ref, _) <-
+                    Map.lookup (maybe id Var.namespaced2 maybeNamespaceVar decl.name.payload) (UF.datas env) ->
                     generateRecordAccessors
                       Var.namespaced
                       Ann.GeneratedFrom
@@ -114,7 +114,7 @@ file = do
                       ref
               _ -> []
           )
-          synDecls
+          unNamespacedSynDecls
         where
           toPair (tok, typ) = (tok.payload, ann tok <> ann typ)
 
