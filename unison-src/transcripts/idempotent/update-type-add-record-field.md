@@ -72,28 +72,28 @@ scratch/main> view Foo
 
 scratch/main> find.verbose
 
-  1. -- #05gh1dur4778dauh9slaofprc5356n47qpove0c1jl0birt2fcu301js8auu5vfr5bjfga9j8ikuk07ll9fu1gj3ehrp3basguhsd58
+  1. -- #m0tpa159pbsdld5ea0marnq9614dnmjjc72n1evi4bsk45a1hl84qprt6vdvejuuiuc3f5o23olc1t19tk1dt8mjobmr0chqc3svij8
      type Foo
      
-  2. -- #77mi33dv8ac2s90852khi35km5gsamhnpada8mai0k36obbttgg17qld719ospcs1ht9ctolg3pjsqs6qjnl3hfmu493rgsher73sc0
+  2. -- #16o21u2lli7rd8f3h4epnblpfk3h68gag99d5gicihcpk15dkv4m9601picg37ncsbg2e8j63tu7ebs40jrcoifs7f6nqrus3qnfgv0
      Foo.bar : Foo -> Nat
      
-  3. -- #7m1n2178r5u12jdnb6crcmanu2gm961kdvbjul5m6hta1s57avibsvk6p5g9efut8sennpgstbb8kf97eujbbuiplsoloa4cael7t90
+  3. -- #64v4pv4rvmnts82gbsb1u2dvgdu4eqq8leq37anqjrkq8s9c7ogrjahdotc36nrodva6ok1rs4ah5k09i7sb0clvcap2773k1t7thb8
      Foo.bar.modify : (Nat ->{g} Nat) -> Foo ->{g} Foo
      
-  4. -- #ghuqoel4pao6v8e7un238i3e86vv7a7pnvgaq8m9s32edm1upgv35gri2iu32ipn9r4poli56r5kr3vtjfrltem696grfl75al4jkgg
+  4. -- #bkfjhnu5jqv2m49hosd8g6m4e5u9ju4b1du90cji8s8hnaendvnep2a5cd085ejtu27c4lm3u7slamk52p86rubp211jc5c0qcut2l0
      Foo.bar.set : Nat -> Foo -> Foo
      
-  5. -- #p8emkm2s09n3nsd8ne5f6fro0vsldk8pn7n6rcf417anuvvun43qrk1ioofs6pdq4537eosao17c7ibvktktr3lfqglmj26gmbulmj0
+  5. -- #u394ule3vr1ab8q5nit6miktgpki9gj4nft5jfjsho6cflg94kf953mdhjj8s18e9j1525iv8l5ebjhebnuc01q51fl8ni5n9j0gs28
      Foo.baz : Foo -> Int
      
-  6. -- #0il9pl29jpe3fh6vp3qeqai73915k3qffhf4bgttrgsj000b9fgs3bqoj8ugjop6kdr04acc34m1bj7lf417tslfeva7dmmoqdu5hug
+  6. -- #cbbi7mqcaqdlcl41uajb608b8fi5dfvc654rmd47mk9okpn1t3jltrf8psnn3g2tnr1ftctj753fjhco3ku1oapc664upo1h6eodfrg
      Foo.baz.modify : (Int ->{g} Int) -> Foo ->{g} Foo
      
-  7. -- #87rjeqltvvd4adffsheqae62eefoge8p78pvnjdkc9q1stq20lhubvtpos0io4v3vhnol8nn2uollup97l4orq1fh2h12b0imeuuc58
+  7. -- #hhi45ik1245qq3g93586f998di8j5afvjamqr2m08auqq8ogqt4d01rejrse4qsl27381vnqnt8uffhgvnc0nk22o5uabimjhji4868
      Foo.baz.set : Int -> Foo -> Foo
      
-  8. -- #05gh1dur4778dauh9slaofprc5356n47qpove0c1jl0birt2fcu301js8auu5vfr5bjfga9j8ikuk07ll9fu1gj3ehrp3basguhsd58#0
+  8. -- #m0tpa159pbsdld5ea0marnq9614dnmjjc72n1evi4bsk45a1hl84qprt6vdvejuuiuc3f5o23olc1t19tk1dt8mjobmr0chqc3svij8#0
      Foo.Foo : Nat -> Int -> Foo
      
 ```

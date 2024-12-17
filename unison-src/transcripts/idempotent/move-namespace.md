@@ -185,7 +185,7 @@ scratch/happy> history b
   Note: The most recent namespace hash is immediately below this
         message.
 
-  ⊙ 1. #rkvfe5p8fu
+  ⊙ 1. #ugqniosnp0
 
     + Adds / updates:
     
@@ -195,7 +195,7 @@ scratch/happy> history b
     
       T.T
 
-  □ 2. #avlnmh0erc (start of history)
+  □ 2. #a7r726o5ut (start of history)
 ```
 
 ## Namespace history

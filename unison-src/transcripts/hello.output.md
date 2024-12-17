@@ -25,7 +25,7 @@ Take a look at [the elaborated output](hello.output.md) to see what this file lo
 
 In the `unison` fenced block, you can give an (optional) file name (defaults to `scratch.u`), like so:
 
-``` unison  myfile.u
+``` unison myfile.u
 x = 42
 ```
 
@@ -72,7 +72,7 @@ This works for `ucm` blocks as well.
 scratch/main> rename.term x answerToUltimateQuestionOfLife
 ```
 
-Doing `unison :hide:all` hides the block altogether, both input and output - this is useful for doing behind-the-scenes control of `ucm`'s state.
+Doing `unison :hide-all` hides the block altogether, both input and output - this is useful for doing behind-the-scenes control of `ucm`'s state.
 
 ## Expecting failures
 

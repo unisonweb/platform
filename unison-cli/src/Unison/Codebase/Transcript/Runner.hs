@@ -171,6 +171,7 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
   currentTags <- newIORef Nothing
   isHidden <- newIORef Shown
   allowErrors <- newIORef False
+  expectFailure <- newIORef False
   hasErrors <- newIORef False
   mBlock <- newIORef Nothing
   let patternMap = Map.fromList $ (\p -> (patternName p, p) : ((,p) <$> aliases p)) =<< validInputs
@@ -204,12 +205,25 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
           -- We shorten the terminal width, because "Transcript" manages a 2-space indent for output lines.
           Pretty.toPlain (terminalWidth - 2) line
 
-      maybeDieWithMsg :: String -> IO ()
+      maybeDieWithMsg :: Pretty.Pretty Pretty.ColorText -> IO ()
       maybeDieWithMsg msg = do
-        errOk <- readIORef allowErrors
-        if errOk
-          then writeIORef hasErrors True
-          else dieWithMsg msg
+        liftIO $ writeIORef hasErrors True
+        liftIO (liftA2 (,) (readIORef allowErrors) (readIORef expectFailure)) >>= \case
+          (False, False) -> liftIO . dieWithMsg $ Pretty.toPlain terminalWidth msg
+          (True, True) -> do
+            appendFailingStanza
+            fixedBug out $
+              Text.unlines
+                [ "The stanza above marked with `:error :bug` is now failing with",
+                  "",
+                  "```",
+                  Text.pack $ Pretty.toPlain terminalWidth msg,
+                  "```",
+                  "",
+                  "so you can remove `:bug` and close any appropriate Github issues. If the error message is different \
+                  \from the expected error message, open a new issue and reference it in this transcript."
+                ]
+          (_, _) -> pure ()
 
       apiRequest :: APIRequest -> IO [APIRequest]
       apiRequest req = do
@@ -220,9 +234,13 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
           APIComment {} -> pure $ pure req
           GetRequest path ->
             either
-              (([] <$) . maybeDieWithMsg . show)
+              (([] <$) . maybeDieWithMsg . Pretty.string . show)
               ( either
-                  (([] <$) . maybeDieWithMsg . (("Error decoding response from " <> Text.unpack path <> ": ") <>))
+                  ( ([] <$)
+                      . maybeDieWithMsg
+                      . (("Error decoding response from " <> Pretty.text path <> ": ") <>)
+                      . Pretty.string
+                  )
                   ( \(v :: Aeson.Value) ->
                       pure $
                         if hide
@@ -309,12 +327,9 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
                       >>= either
                         -- invalid command is treated as a failure
                         ( \msg -> do
-                            liftIO $ writeIORef hasErrors True
-                            liftIO (readIORef allowErrors) >>= \case
-                              True -> do
-                                liftIO $ outputUcmResult msg
-                                Cli.returnEarlyWithoutOutput
-                              False -> liftIO . dieWithMsg $ Pretty.toPlain terminalWidth msg
+                            liftIO $ outputUcmResult msg
+                            liftIO $ maybeDieWithMsg msg
+                            Cli.returnEarlyWithoutOutput
                         )
                         -- No input received from this line, try again.
                         (maybe Cli.returnEarlyWithoutOutput $ pure . Right . snd)
@@ -325,6 +340,7 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
             writeIORef isHidden $ hidden infoTags
             outputEcho $ pure block
             writeIORef allowErrors $ expectingError infoTags
+            writeIORef expectFailure $ hasBug infoTags
           -- Open a ucm block which will contain the output from UCM after processing the `UnisonFileChanged` event.
           -- Close the ucm block after processing the UnisonFileChanged event.
           atomically . Q.enqueue cmdQueue $ Nothing
@@ -335,6 +351,7 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
           liftIO do
             writeIORef isHidden $ hidden infoTags
             writeIORef allowErrors $ expectingError infoTags
+            writeIORef expectFailure $ hasBug infoTags
             outputEcho . pure . API infoTags . fold =<< traverse apiRequest apiRequests
           Cli.returnEarlyWithoutOutput
         Ucm infoTags cmds -> do
@@ -342,6 +359,7 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
             writeIORef currentTags $ pure infoTags
             writeIORef isHidden $ hidden infoTags
             writeIORef allowErrors $ expectingError infoTags
+            writeIORef expectFailure $ hasBug infoTags
             writeIORef hasErrors False
           traverse_ (atomically . Q.enqueue cmdQueue . Just) cmds
           atomically . Q.enqueue cmdQueue $ Nothing
@@ -382,6 +400,7 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
         liftIO $ writeIORef currentTags Nothing
         liftIO $ writeIORef isHidden Shown
         liftIO $ writeIORef allowErrors False
+        liftIO $ writeIORef expectFailure False
         maybe (liftIO finishTranscript) (uncurry processStanza) =<< atomically (Q.tryDequeue inputQueue)
 
       awaitInput :: Cli (Either Event Input)
@@ -409,22 +428,14 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
       print :: Output.Output -> IO ()
       print o = do
         msg <- notifyUser dir o
-        errOk <- readIORef allowErrors
         outputUcmResult msg
-        when (Output.isFailure o) $
-          if errOk
-            then writeIORef hasErrors True
-            else dieWithMsg $ Pretty.toPlain terminalWidth msg
+        when (Output.isFailure o) $ maybeDieWithMsg msg
 
       printNumbered :: Output.NumberedOutput -> IO Output.NumberedArgs
       printNumbered o = do
         let (msg, numberedArgs) = notifyNumbered o
-        errOk <- readIORef allowErrors
         outputUcmResult msg
-        when (Output.isNumberedFailure o) $
-          if errOk
-            then writeIORef hasErrors True
-            else dieWithMsg $ Pretty.toPlain terminalWidth msg
+        when (Output.isNumberedFailure o) $ maybeDieWithMsg msg
         pure numberedArgs
 
       -- Looks at the current stanza and decides if it is contained in the
@@ -447,13 +458,21 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
       dieUnexpectedSuccess :: IO ()
       dieUnexpectedSuccess = do
         errOk <- readIORef allowErrors
+        expectBug <- readIORef expectFailure
         hasErr <- readIORef hasErrors
-        when (errOk && not hasErr) $ do
-          appendFailingStanza
-          transcriptFailure
-            out
-            "The transcript was expecting an error in the stanza above, but did not encounter one."
-            Nothing
+        case (errOk, expectBug, hasErr) of
+          (True, False, False) -> do
+            appendFailingStanza
+            transcriptFailure
+              out
+              "The transcript was expecting an error in the stanza above, but did not encounter one."
+              Nothing
+          (False, True, False) -> do
+            fixedBug
+              out
+              "The stanza above with `:bug` is now passing! You can remove `:bug` and close any appropriate Github \
+              \issues."
+          (_, _, _) -> pure ()
 
   authenticatedHTTPClient <- AuthN.newAuthenticatedHTTPClient tokenProvider ucmVersion
 
@@ -506,6 +525,22 @@ transcriptFailure out heading mbody = do
                   CMark.Node Nothing CMark.PARAGRAPH [CMark.Node Nothing (CMark.TEXT heading) []]
                 ]
               <> foldr ((:) . CMarkCodeBlock Nothing "") [] mbody
+        )
+
+fixedBug :: IORef (Seq Stanza) -> Text -> IO b
+fixedBug out body = do
+  texts <- readIORef out
+  -- `CMark.commonmarkToNode` returns a @DOCUMENT@, which won’t be rendered inside another document, so we strip the
+  -- outer `CMark.Node`.
+  let CMark.Node _ _DOCUMENT bodyNodes = CMark.commonmarkToNode [CMark.optNormalize] body
+  UnliftIO.throwIO . RunFailure $
+    texts
+      <> Seq.fromList
+        ( Left
+            <$> [ CMark.Node Nothing CMark.PARAGRAPH [CMark.Node Nothing (CMark.TEXT "🎉") []],
+                  CMark.Node Nothing (CMark.HEADING 2) [CMark.Node Nothing (CMark.TEXT "You fixed a bug!") []]
+                ]
+              <> bodyNodes
         )
 
 data Error

@@ -52,7 +52,7 @@ unique type Foo = Bar Nat Nat
 ``` ucm :error
 scratch/main> view Foo
 
-  type Foo = #b509v3eg4k#0 Nat
+  type Foo = #5mod0n8ps2#0 Nat
 
 scratch/main> update
 

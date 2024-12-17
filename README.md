@@ -10,6 +10,8 @@ The Unison language
 * [Codebase Server](#codebase-server)
 * [Configuration](./docs/configuration.md)
 
+![Alt](https://repobeats.axiom.co/api/embed/92b662a65fd842d49cb8d7d813043f5f5b4b550d.svg "Repobeats analytics image")
+
 Overview
 --------
 
