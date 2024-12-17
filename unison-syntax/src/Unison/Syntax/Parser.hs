@@ -97,6 +97,7 @@ import Unison.Syntax.Lexer.Unison qualified as L
 import Unison.Syntax.Name qualified as Name (toVar, unsafeParseVar)
 import Unison.Syntax.Parser.Doc qualified as Doc
 import Unison.Syntax.Parser.Doc.Data qualified as Doc
+import Unison.Syntax.Var qualified as Var
 import Unison.Term (MatchCase (..))
 import Unison.UnisonFile.Error qualified as UF
 import Unison.Util.Bytes (Bytes)
@@ -144,6 +145,9 @@ data ParsingEnv (m :: Type -> Type) = ParsingEnv
     -- And for term links we are certainly out of luck: we can't look up a resolved file-bound term by hash *during
     -- parsing*. That's an issue with term links in general, unrelated to namespaces, but perhaps complicated by
     -- namespaces nonetheless.
+    --
+    -- New development: this namespace is now also used during decl parsing, because in order to accurately reuse a
+    -- unique type guid we need to look up by namespaced name.
     maybeNamespace :: Maybe Name,
     localNamespacePrefixedTypesAndConstructors :: Names
   }
@@ -183,10 +187,11 @@ uniqueName lenInBase32Hex = do
   pure . fromMaybe none $ mkName pos lenInBase32Hex
 
 resolveUniqueTypeGuid :: (Monad m, Var v) => v -> P v m Modifier
-resolveUniqueTypeGuid name = do
-  ParsingEnv {uniqueTypeGuid} <- ask
+resolveUniqueTypeGuid name0 = do
+  ParsingEnv {maybeNamespace, uniqueTypeGuid} <- ask
+  let name = Name.unsafeParseVar (maybe id (Var.namespaced2 . Name.toVar) maybeNamespace name0)
   guid <-
-    lift (lift (uniqueTypeGuid (Name.unsafeParseVar name))) >>= \case
+    lift (lift (uniqueTypeGuid name)) >>= \case
       Nothing -> uniqueName 32
       Just guid -> pure guid
   pure (Unique guid)

@@ -23,7 +23,7 @@ import Unison.Parser.Ann (Ann)
 import Unison.Parser.Ann qualified as Ann
 import Unison.Prelude
 import Unison.Reference (TypeReferenceId)
-import Unison.Syntax.DeclParser (SynDataDecl (..), SynDecl (..), SynEffectDecl (..), UnresolvedModifier (..), synDeclName, synDeclsP, synDeclConstructors)
+import Unison.Syntax.DeclParser (SynDataDecl (..), SynDecl (..), SynEffectDecl (..), synDeclConstructors, synDeclName, synDeclsP)
 import Unison.Syntax.Lexer qualified as L
 import Unison.Syntax.Name qualified as Name (toText, toVar, unsafeParseVar)
 import Unison.Syntax.Parser
@@ -64,8 +64,8 @@ file = do
   -- which are parsed and applied to the type decls and term stanzas
   (namesStart, imports) <- TermParser.imports <* optional semi
 
-  -- Parse all syn decls
-  unNamespacedSynDecls <- synDeclsP
+  -- Parse all syn decls. The namespace in the parsing environment is required here in order to avoid unique type churn.
+  unNamespacedSynDecls <- local (\e -> e {maybeNamespace}) synDeclsP
 
   -- Sanity check: bail if there's a duplicate name among them
   unNamespacedSynDecls
@@ -246,24 +246,15 @@ synDeclsToDecls = do
   foldlM
     ( \(datas, effects) -> \case
         SynDecl'Data decl -> do
-          modifier <- resolveModifier decl.name decl.modifier
-          let decl1 = DataDeclaration modifier decl.annotation decl.tyvars decl.constructors
+          let decl1 = DataDeclaration decl.modifier decl.annotation decl.tyvars decl.constructors
           let !datas1 = Map.insert decl.name.payload decl1 datas
           pure (datas1, effects)
         SynDecl'Effect decl -> do
-          modifier <- resolveModifier decl.name decl.modifier
-          let decl1 = DataDeclaration.mkEffectDecl' modifier decl.annotation decl.tyvars decl.constructors
+          let decl1 = DataDeclaration.mkEffectDecl' decl.modifier decl.annotation decl.tyvars decl.constructors
           let !effects1 = Map.insert decl.name.payload decl1 effects
           pure (datas, effects1)
     )
     (Map.empty, Map.empty)
-  where
-    resolveModifier name modifier =
-      case L.payload <$> modifier of
-        Just UnresolvedModifier'Structural -> pure DataDeclaration.Structural
-        Just (UnresolvedModifier'UniqueWithGuid guid) -> pure (DataDeclaration.Unique guid)
-        Just UnresolvedModifier'UniqueWithoutGuid -> resolveUniqueTypeGuid name.payload
-        Nothing -> resolveUniqueTypeGuid name.payload
 
 applyNamespaceToStanza ::
   forall a v.

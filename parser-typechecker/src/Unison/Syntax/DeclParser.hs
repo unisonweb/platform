@@ -5,7 +5,6 @@ module Unison.Syntax.DeclParser
     synDeclName,
     SynDataDecl (..),
     SynEffectDecl (..),
-    UnresolvedModifier (..),
   )
 where
 
@@ -13,6 +12,7 @@ import Control.Lens
 import Data.List.NonEmpty (pattern (:|))
 import Data.List.NonEmpty qualified as NonEmpty
 import Unison.ABT qualified as ABT
+import Unison.DataDeclaration qualified as DataDeclaration
 import Unison.Name qualified as Name
 import Unison.Parser.Ann (Ann)
 import Unison.Prelude
@@ -51,7 +51,7 @@ data SynDataDecl v = SynDataDecl
   { annotation :: !Ann,
     constructors :: ![(Ann, v, Type v Ann)],
     fields :: !(Maybe [(L.Token v, Type v Ann)]),
-    modifier :: !(Maybe (L.Token UnresolvedModifier)),
+    modifier :: !DataDeclaration.Modifier,
     name :: !(L.Token v),
     tyvars :: ![v]
   }
@@ -60,7 +60,7 @@ data SynDataDecl v = SynDataDecl
 data SynEffectDecl v = SynEffectDecl
   { annotation :: !Ann,
     constructors :: ![(Ann, v, Type v Ann)],
-    modifier :: !(Maybe (L.Token UnresolvedModifier)),
+    modifier :: !DataDeclaration.Modifier,
     name :: !(L.Token v),
     tyvars :: ![v]
   }
@@ -100,7 +100,7 @@ synDeclP = do
   SynDecl'Effect <$> synEffectDeclP modifier <|> SynDecl'Data <$> synDataDeclP modifier
 
 synDataDeclP :: forall m v. (Monad m, Var v) => Maybe (L.Token UnresolvedModifier) -> P v m (SynDataDecl v)
-synDataDeclP modifier = do
+synDataDeclP modifier0 = do
   typeToken <- fmap void (reserved "type") <|> openBlockWith "type"
   (name, typeArgs) <- (,) <$> prefixVar <*> many prefixVar
   let tyvars = L.payload <$> typeArgs
@@ -142,9 +142,10 @@ synDataDeclP modifier = do
       _ <- closeBlock
       let closingAnn :: Ann
           closingAnn = NonEmpty.last (ann eq NonEmpty.:| ((\(constrSpanAnn, _) -> constrSpanAnn) <$> constructors))
+      modifier <- resolveModifier name modifier0
       pure
         SynDataDecl
-          { annotation = maybe (ann typeToken) ann modifier <> closingAnn,
+          { annotation = maybe (ann typeToken) ann modifier0 <> closingAnn,
             constructors = snd <$> constructors,
             fields = Nothing,
             modifier,
@@ -153,9 +154,10 @@ synDataDeclP modifier = do
           }
     Just (constructor, fields, closingAnn) -> do
       _ <- closeBlock
+      modifier <- resolveModifier name modifier0
       pure
         SynDataDecl
-          { annotation = maybe (ann typeToken) ann modifier <> closingAnn,
+          { annotation = maybe (ann typeToken) ann modifier0 <> closingAnn,
             constructors = [constructor],
             fields,
             modifier,
@@ -168,7 +170,7 @@ synDataDeclP modifier = do
       TermParser.verifyRelativeVarName prefixDefinitionName
 
 synEffectDeclP :: forall m v. (Monad m, Var v) => Maybe (L.Token UnresolvedModifier) -> P v m (SynEffectDecl v)
-synEffectDeclP modifier = do
+synEffectDeclP modifier0 = do
   abilityToken <- fmap void (reserved "ability") <|> openBlockWith "ability"
   name <- TermParser.verifyRelativeVarName prefixDefinitionName
   typeArgs <- many (TermParser.verifyRelativeVarName prefixDefinitionName)
@@ -178,9 +180,10 @@ synEffectDeclP modifier = do
   _ <- closeBlock <* closeBlock
   let closingAnn =
         last $ ann blockStart : ((\(_, _, t) -> ann t) <$> constructors)
+  modifier <- resolveModifier name modifier0
   pure
     SynEffectDecl
-      { annotation = maybe (ann abilityToken) ann modifier <> closingAnn,
+      { annotation = maybe (ann abilityToken) ann modifier0 <> closingAnn,
         constructors,
         modifier,
         name,
@@ -217,3 +220,11 @@ effectConstructorP typeArgs name =
               then es
               else Type.apps' (toTypeVar name) (toTypeVar <$> typeArgs) : es
        in Type.cleanupAbilityLists $ Type.effect (ABT.annotation t) es' t
+
+resolveModifier :: (Monad m, Var v) => L.Token v -> Maybe (L.Token UnresolvedModifier) -> P v m DataDeclaration.Modifier
+resolveModifier name modifier =
+  case L.payload <$> modifier of
+    Just UnresolvedModifier'Structural -> pure DataDeclaration.Structural
+    Just (UnresolvedModifier'UniqueWithGuid guid) -> pure (DataDeclaration.Unique guid)
+    Just UnresolvedModifier'UniqueWithoutGuid -> resolveUniqueTypeGuid name.payload
+    Nothing -> resolveUniqueTypeGuid name.payload
