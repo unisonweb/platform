@@ -58,7 +58,7 @@ structural ability X where
 ``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
-  I found two types called X:
+  I found multiple types with the name X:
 
       1 | structural type X = x
       2 | structural ability X where
