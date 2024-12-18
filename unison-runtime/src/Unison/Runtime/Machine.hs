@@ -723,6 +723,19 @@ eval env !denv !activeThreads !stk !k r (Let nw cix f sect) = do
     (Push fsz asz cix f sect k)
     r
     nw
+eval env !denv !activeThreads !stk !k r (SEqlN i j nx) = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  pokeBool stk $ m == n
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (SDropN i j nx) = do
+  m <- peekOffN stk i
+  n <- peekOffN stk j
+  stk <- bump stk
+  let rn = if n >= m then 0 else m - n
+  pokeN stk rn
+  eval env denv activeThreads stk k r nx
 eval env !denv !activeThreads !stk !k r (Ins i nx) = do
   (denv, stk, k) <- exec env denv activeThreads stk k r i
   eval env denv activeThreads stk k r nx

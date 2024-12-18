@@ -582,6 +582,8 @@ data GSection comb
       !(GBranch comb) -- branches
   | -- Yield control to the current continuation, with arguments
     Yield !Args -- values to yield
+  | SEqlN !Int !Int !(GSection comb)
+  | SDropN !Int !Int !(GSection comb)
   | -- Prefix an instruction onto a section
     Ins !(GInstr comb) !(GSection comb)
   | -- Sequence two sections. The second is pushed as a return
@@ -1004,6 +1006,30 @@ emitSection _ grpr grpn rec ctx (TVar v)
       let cix = (CIx grpr grpn j)
        in countCtx ctx $ App False (Env cix cix) $ ZArgs
   | otherwise = emitSectionVErr v
+emitSection _ _ grpn _ ctx (TPrm ANF.DRPN args) =
+  case emitArgs grpn ctx args of
+    (VArg2 i j) ->
+      -- 3 is a conservative estimate of how many extra stack slots
+      -- a prim op will need for its results.
+      addCount 3
+        . countCtx ctx
+        . SDropN i j
+        . Yield
+        . VArgV
+        $ countBlock ctx
+    a -> error $ "Bad args DRPN: " ++ show a
+emitSection _ _ grpn _ ctx (TPrm ANF.EQLN args) =
+  case emitArgs grpn ctx args of
+    (VArg2 i j) ->
+      -- 3 is a conservative estimate of how many extra stack slots
+      -- a prim op will need for its results.
+      addCount 3
+        . countCtx ctx
+        . SEqlN i j
+        . Yield
+        . VArgV
+        $ countBlock ctx
+    a -> error $ "Bad args EQLN: " ++ show a
 emitSection _ _ grpn _ ctx (TPrm p args) =
   -- 3 is a conservative estimate of how many extra stack slots
   -- a prim op will need for its results.
@@ -1224,6 +1250,14 @@ emitLet rns _ grpn _ _ _ ctx (TApp (FCon r n) args) =
   fmap (Ins . Pack r (packTags rt n) $ emitArgs grpn ctx args)
   where
     rt = toEnum . fromIntegral $ dnum rns r
+emitLet _ _ grpn _ _ _ ctx (TApp (FPrim (Left ANF.EQLN)) args) =
+  case emitArgs grpn ctx args of
+    (VArg2 i j) -> fmap (SEqlN i j)
+    a -> error $ "Bad args: " ++ show a
+emitLet _ _ grpn _ _ _ ctx (TApp (FPrim (Left ANF.DRPN)) args) =
+  case emitArgs grpn ctx args of
+    (VArg2 i j) -> fmap (SDropN i j)
+    a -> error $ "Bad args: " ++ show a
 emitLet _ _ grpn _ _ _ ctx (TApp (FPrim p) args) =
   fmap (Ins . either emitPOp emitFOp p $ emitArgs grpn ctx args)
 emitLet rns grpr grpn rec d vcs ctx bnd
@@ -1248,7 +1282,7 @@ emitPOp ANF.ADDI = emitP2 ADDI
 emitPOp ANF.ADDN = emitP2 ADDN
 emitPOp ANF.SUBI = emitP2 SUBI
 emitPOp ANF.SUBN = emitP2 SUBN
-emitPOp ANF.DRPN = emitP2 DRPN
+emitPOp ANF.DRPN = error "impossible DRPN"
 emitPOp ANF.MULI = emitP2 MULI
 emitPOp ANF.MULN = emitP2 MULN
 emitPOp ANF.DIVI = emitP2 DIVI
@@ -1267,7 +1301,7 @@ emitPOp ANF.LEQN = emitP2 LEQN
 emitPOp ANF.LESN = emitP2 LESN
 emitPOp ANF.EQLI = emitP2 EQLI
 emitPOp ANF.NEQI = emitP2 NEQI
-emitPOp ANF.EQLN = emitP2 EQLN
+emitPOp ANF.EQLN = error "impossible EQLN"
 emitPOp ANF.NEQN = emitP2 NEQN
 emitPOp ANF.SGNI = emitP1 SGNI
 emitPOp ANF.NEGI = emitP1 NEGI
@@ -1765,6 +1799,7 @@ prettySection ind sec =
             . shows i
             . showString " ->\n"
             . prettyBranches (ind + 1) e
+    _ -> error "prettySection: impossible"
 
 prettyCIx :: CombIx -> ShowS
 prettyCIx (CIx r _ n) =
@@ -1841,6 +1876,8 @@ sanitizeSection sandboxedForeigns section = case section of
   Ins (ForeignCall _ f as) nx
     | Set.member f sandboxedForeigns -> Ins (SandboxingFailure (foreignFuncBuiltinName f)) (sanitizeSection sandboxedForeigns nx)
     | otherwise -> Ins (ForeignCall True f as) (sanitizeSection sandboxedForeigns nx)
+  SEqlN {} -> section
+  SDropN {} -> section
   Ins i nx -> Ins i (sanitizeSection sandboxedForeigns nx)
   App {} -> section
   Call {} -> section

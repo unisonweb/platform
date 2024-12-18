@@ -127,6 +127,7 @@ putSection = \case
       *> pInt i
       *> putSection pu
       *> putEnumMap pWord putBranch bs
+  _ -> undefined
 
 getSection :: (MonadGet m) => m Section
 getSection =
