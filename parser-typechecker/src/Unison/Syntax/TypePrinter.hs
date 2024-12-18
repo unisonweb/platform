@@ -17,6 +17,7 @@ module Unison.Syntax.TypePrinter
   )
 where
 
+import Control.Monad.Reader (ask)
 import Data.Map qualified as Map
 import Unison.Builtin.Decls qualified as DD
 import Unison.HashQualified (HashQualified)
@@ -25,7 +26,7 @@ import Unison.Prelude
 import Unison.PrettyPrintEnv (PrettyPrintEnv)
 import Unison.PrettyPrintEnv qualified as PrettyPrintEnv
 import Unison.PrettyPrintEnv.FQN (Imports, elideFQN)
-import Unison.PrettyPrintEnv.MonadPretty (MonadPretty, getPPE, runPretty, willCapture)
+import Unison.PrettyPrintEnv.MonadPretty (Env (..), MonadPretty, runPretty, willCaptureType)
 import Unison.Reference (Reference, pattern Builtin)
 import Unison.Referent (Referent)
 import Unison.Settings qualified as Settings
@@ -101,8 +102,8 @@ prettyRaw im p tp = go im p tp
       DD.TupleType' xs | length xs /= 1 -> PP.parenthesizeCommas <$> traverse (go im 0) xs
       -- Would be nice to use a different SyntaxHighlights color if the reference is an ability.
       Ref' r -> do
-        n <- getPPE
-        pure $ styleHashQualified'' (fmt $ S.TypeReference r) $ elideFQN im (PrettyPrintEnv.typeName n r)
+        env <- ask
+        pure $ styleHashQualified'' (fmt $ S.TypeReference r) $ elideFQN im (PrettyPrintEnv.typeName env.ppe r)
       Cycle' _ _ -> pure $ fromString "bug: TypeParser does not currently emit Cycle"
       Abs' _ -> pure $ fromString "bug: TypeParser does not currently emit Abs"
       Ann' _ _ -> pure $ fromString "bug: TypeParser does not currently emit Ann"
@@ -125,7 +126,7 @@ prettyRaw im p tp = go im p tp
             -- are universally quantified, then we can omit the `forall` keyword
             -- only if the type variables are not bound in an outer scope
             if p < 0 && not Settings.debugRevealForalls && all Var.universallyQuantifyIfFree vs
-              then ifM (willCapture vs) (prettyForall p) (go im p body)
+              then ifM (willCaptureType vs) (prettyForall p) (go im p body)
               else paren (p >= 0) <$> prettyForall (-1)
       t@(Arrow' _ _) -> case t of
         EffectfulArrows' (Ref' DD.UnitRef) rest ->
