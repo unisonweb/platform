@@ -723,6 +723,10 @@ eval env !denv !activeThreads !stk !k r (Let nw cix f sect) = do
     (Push fsz asz cix f sect k)
     r
     nw
+eval env !denv !activeThreads !stk !k r (SLit ml nx) = do
+  stk <- bump stk
+  poke stk $ litToVal ml
+  eval env denv activeThreads stk k r nx
 eval env !denv !activeThreads !stk !k r (SEqlN i j nx) = do
   m <- peekOffN stk i
   n <- peekOffN stk j

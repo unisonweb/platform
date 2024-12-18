@@ -582,6 +582,7 @@ data GSection comb
       !(GBranch comb) -- branches
   | -- Yield control to the current continuation, with arguments
     Yield !Args -- values to yield
+  | SLit !MLit !(GSection comb)
   | SEqlN !Int !Int !(GSection comb)
   | SDropN !Int !Int !(GSection comb)
   | -- Prefix an instruction onto a section
@@ -1050,7 +1051,7 @@ emitSection rns grpr grpn rec ctx (TApp f args) =
   emitClosures grpr grpn rec ctx args $ \ctx as ->
     countCtx ctx $ emitFunction rns grpr grpn rec ctx f as
 emitSection _ _ _ _ ctx (TLit l) =
-  c . countCtx ctx . Ins (emitLit l) . Yield $ VArg1 0
+  c . countCtx ctx . emitLit l . Yield $ VArg1 0
   where
     c
       | ANF.T {} <- l = addCount 1
@@ -1058,7 +1059,7 @@ emitSection _ _ _ _ ctx (TLit l) =
       | ANF.LY {} <- l = addCount 1
       | otherwise = addCount 1
 emitSection _ _ _ _ ctx (TBLit l) =
-  addCount 1 . countCtx ctx . Ins (emitLit l) . Yield $ VArg1 0
+  addCount 1 . countCtx ctx . emitLit l . Yield $ VArg1 0
 emitSection rns grpr grpn rec ctx (TMatch v bs)
   | Just (i, BX) <- ctxResolve ctx v,
     MatchData r cs df <- bs =
@@ -1236,9 +1237,9 @@ emitLet ::
   Emit Section ->
   Emit Section
 emitLet _ _ _ _ _ _ _ (TLit l) =
-  fmap (Ins $ emitLit l)
+  fmap (emitLit l)
 emitLet _ _ _ _ _ _ _ (TBLit l) =
-  fmap (Ins $ emitLit l)
+  fmap (emitLit l)
 -- emitLet rns grp _   _ _   ctx (TApp (FComb r) args)
 --   -- We should be able to tell if we are making a saturated call
 --   -- or not here. We aren't carrying the information here yet, though.
@@ -1609,8 +1610,8 @@ litToMLit (ANF.LM r) = MM r
 litToMLit (ANF.LY r) = MY r
 
 -- | Emit a literal as a machine literal of the correct boxed/unboxed format.
-emitLit :: ANF.Lit -> Instr
-emitLit = Lit . litToMLit
+emitLit :: ANF.Lit -> Section -> Section
+emitLit = SLit . litToMLit
 
 -- Emits some fix-up code for calling functions. Some of the
 -- variables in scope come from the top-level let rec, but these
@@ -1878,6 +1879,7 @@ sanitizeSection sandboxedForeigns section = case section of
     | otherwise -> Ins (ForeignCall True f as) (sanitizeSection sandboxedForeigns nx)
   SEqlN {} -> section
   SDropN {} -> section
+  SLit {} -> section
   Ins i nx -> Ins i (sanitizeSection sandboxedForeigns nx)
   App {} -> section
   Call {} -> section
