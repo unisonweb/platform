@@ -15,6 +15,7 @@ module Unison.Syntax.TermPrinter
 where
 
 import Control.Lens (unsnoc)
+import Control.Monad.Reader (ask, local)
 import Control.Monad.State (evalState)
 import Control.Monad.State qualified as State
 import Data.Char (isPrint)
@@ -53,7 +54,7 @@ import Unison.Referent (Referent)
 import Unison.Referent qualified as Referent
 import Unison.Syntax.HashQualified qualified as HQ (unsafeFromVar)
 import Unison.Syntax.Lexer.Unison (showEscapeChar)
-import Unison.Syntax.Name qualified as Name (isSymboly, parseText, parseTextEither, toText, unsafeParseText)
+import Unison.Syntax.Name qualified as Name (isSymboly, parseText, parseTextEither, toText, unsafeParseText, unsafeParseVar)
 import Unison.Syntax.NamePrinter (styleHashQualified'')
 import Unison.Syntax.NameSegment qualified as NameSegment (toEscapedText)
 import Unison.Syntax.Precedence (InfixPrecedence (..), Precedence (..), increment, isTopLevelPrecedence, operatorPrecedence)
@@ -68,7 +69,6 @@ import Unison.Util.Pretty qualified as PP
 import Unison.Util.SyntaxText qualified as S
 import Unison.Var (Var)
 import Unison.Var qualified as Var
-import Control.Monad.Reader (ask)
 
 type SyntaxText = S.SyntaxText' Reference
 
@@ -217,11 +217,13 @@ pretty0
     }
   term =
     specialCases term \case
-      Var' v -> do
+      Var' (Var.reset -> v) -> do
+        env <- ask
+        let name =
+              if Set.member v env.boundTerms
+                then HQ.fromName (Name.makeAbsolute (Name.unsafeParseVar v))
+                else elideFQN im $ HQ.unsafeFromVar v
         pure . parenIfInfix name ic $ styleHashQualified'' (fmt S.Var) name
-        where
-          -- OK since all term vars are user specified, any freshening was just added during typechecking
-          name = elideFQN im $ HQ.unsafeFromVar (Var.reset v)
       Ref' r -> do
         env <- ask
         let name = elideFQN im $ PrettyPrintEnv.termName env.ppe (Referent.Ref r)
@@ -688,10 +690,9 @@ printLetBindings context = \case
   LetrecBindings bindings -> traverse (printLetrecBinding context) bindings
 
 printLetBinding :: (MonadPretty v m) => AmbientContext -> (v, Term3 v PrintAnnotation) -> m (Pretty SyntaxText)
-printLetBinding context (v, binding) =
-  if Var.isAction v
-    then pretty0 context binding
-    else
+printLetBinding context (v, binding)
+  | Var.isAction v = pretty0 context binding
+  | otherwise =
       -- For a non-recursive let binding like "let x = y in z", variable "x" is not bound in "y". Yet, "x" may be free
       -- in "y" anyway, referring to some previous binding.
       --
@@ -702,10 +703,10 @@ printLetBinding context (v, binding) =
       --
       -- So, render free "x" in "y" with a leading dot. This is because we happen to know that the only way to have
       -- a free "x" in "y" is if "x" is a top-level binding.
-      let
-      v1 = Var.reset v
-      in
-      renderPrettyBinding <$> prettyBinding0' context (HQ.unsafeFromVar v1) binding
+      renderPrettyBinding
+        <$> local (over #boundTerms (Set.insert v1)) (prettyBinding0' context (HQ.unsafeFromVar v1) binding)
+  where
+    v1 = Var.reset v
 
 printLetrecBinding :: (MonadPretty v m) => AmbientContext -> (v, Term3 v PrintAnnotation) -> m (Pretty SyntaxText)
 printLetrecBinding context (v, binding) =
