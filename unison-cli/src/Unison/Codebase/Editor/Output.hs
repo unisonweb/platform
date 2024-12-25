@@ -264,10 +264,12 @@ data Output
   | MovedOverExistingBranch Path'
   | DeletedEverything
   | ListNames
+      String -- input namesQuery for which this output is being produced
       Int -- hq length to print References
       [(Reference, [HQ'.HashQualified Name])] -- type match, type names
       [(Referent, [HQ'.HashQualified Name])] -- term match, term names
   | GlobalListNames
+      String -- input namesQuery for which this output is being produced
       (ProjectAndBranch ProjectName ProjectBranchName)
       Int -- hq length to print References
       [(Reference, [HQ'.HashQualified Name])] -- type match, type names
@@ -547,7 +549,7 @@ isFailure o = case o of
   MoveRootBranchConfirmation -> False
   MovedOverExistingBranch {} -> False
   DeletedEverything -> False
-  ListNames _ tys tms -> null tms && null tys
+  ListNames _ _ tys tms -> null tms && null tys
   GlobalListNames {} -> False
   ListOfDefinitions _ _ _ ds -> null ds
   GlobalFindBranchResults _ _ _ _ -> False

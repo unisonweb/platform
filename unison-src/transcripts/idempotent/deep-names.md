@@ -53,15 +53,15 @@ As such, we see two copies of `a` and two copies of `x` via these direct depende
 ``` ucm
 scratch/app1> names a
 
-  Term
-  Hash:   #gjmq673r1v
-  Names:  lib.text_v1.a lib.text_v2.a
+  'a':
+  Hash          Kind   Names
+  #gjmq673r1v   Term   lib.text_v1.a, lib.text_v2.a
 
 scratch/app1> names x
 
-  Term
-  Hash:   #nsmc4p1ra4
-  Names:  lib.http_v3.x lib.http_v4.x
+  'x':
+  Hash          Kind   Names
+  #nsmc4p1ra4   Term   lib.http_v3.x, lib.http_v4.x
 ```
 
 Our `app2` project includes the `http` library twice as direct dependencies, and once as an indirect dependency via `webutil`.
@@ -103,13 +103,13 @@ We see neither the second indirect copy of `a` nor the indirect copy of `x` via 
 ``` ucm
 scratch/app2> names a
 
-  Term
-  Hash:   #gjmq673r1v
-  Names:  lib.webutil.lib.text_v1.a
+  'a':
+  Hash          Kind   Names
+  #gjmq673r1v   Term   lib.webutil.lib.text_v1.a
 
 scratch/app2> names x
 
-  Term
-  Hash:   #nsmc4p1ra4
-  Names:  lib.http_v1.x lib.http_v2.x
+  'x':
+  Hash          Kind   Names
+  #nsmc4p1ra4   Term   lib.http_v1.x, lib.http_v2.x
 ```

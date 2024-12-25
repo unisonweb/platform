@@ -51,13 +51,10 @@ If the name stays the same, the churn is even prevented if the type is updated a
 ``` ucm
 scratch/main> names A
 
-  Type
-  Hash:  #j743idicb1
-  Names: A
-
-  Term
-  Hash:   #j743idicb1#0
-  Names:  A.A
+  'A':
+  Hash            Kind   Names
+  #j743idicb1     Type   A
+  #j743idicb1#0   Term   A.A
 ```
 
 ``` unison
@@ -87,13 +84,10 @@ scratch/main> update
 
 scratch/main> names A
 
-  Type
-  Hash:  #186m0i6upt
-  Names: A
-
-  Term
-  Hash:   #186m0i6upt#0
-  Names:  A.A
+  'A':
+  Hash            Kind   Names
+  #186m0i6upt     Type   A
+  #186m0i6upt#0   Term   A.A
 ```
 
 ``` unison
@@ -125,11 +119,8 @@ scratch/main> update
 
 scratch/main> names A
 
-  Type
-  Hash:  #j743idicb1
-  Names: A
-
-  Term
-  Hash:   #j743idicb1#0
-  Names:  A.A
+  'A':
+  Hash            Kind   Names
+  #j743idicb1     Type   A
+  #j743idicb1#0   Term   A.A
 ```

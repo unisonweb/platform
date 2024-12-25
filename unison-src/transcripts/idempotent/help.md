@@ -152,10 +152,13 @@ scratch/main> help
                                    operation.
 
   debug.names.global
-  `debug.names.global foo` Iteratively search across all
-  projects and branches for names matching `foo`. Note that this
-  is expected to be quite slow and is primarily for debugging
-  issues with your codebase.
+  Iteratively search names or hashes across all projects and branches.
+  `debug.names.global foo` List all known names for `foo`.
+  `debug.names.global foo #bar` List all known names for the
+  name `foo` and for the hash `#bar`.
+  `debug.names.global` without arguments invokes a search to
+  select names/hashes to list, which requires that `fzf` can be
+  found within your PATH.
 
   debug.numberedArgs
   Dump the contents of the numbered args state.
@@ -553,8 +556,13 @@ scratch/main> help
   `move.type foo bar` renames `foo` to `bar`.
 
   names
-  `names foo` List all known names for `foo` in the current
-  branch.
+  Search names or hashes in the current branch.
+  `names foo` List all known names for `foo`.
+  `names foo #bar` List all known names for the name `foo` and
+  for the hash `#bar`.
+  `names` without arguments invokes a search to select
+  names/hashes to list, which requires that `fzf` can be found
+  within your PATH.
 
   namespace.dependencies
   List the external dependencies of the specified namespace.

@@ -27,6 +27,10 @@ module Unison.Codebase.Editor.Input
     IsGlobal,
     DeleteOutput (..),
     DeleteTarget (..),
+
+    -- * Type aliases
+    ErrorMessageOrName,
+    RawQuery,
   )
 where
 
@@ -60,6 +64,12 @@ type Source = Text -- "id x = x\nconst a b = a"
 type SourceName = Text -- "foo.u" or "buffer 7"
 
 type PatchPath = Path.Split'
+
+type ErrorMessageOrValue a = Either (P.Pretty P.ColorText) a
+
+type ErrorMessageOrName = ErrorMessageOrValue (HQ.HashQualified Name)
+
+type RawQuery = String
 
 data OptionalPatch = NoPatch | DefaultPatch | UsePatch PatchPath
   deriving (Eq, Ord, Show)
@@ -141,7 +151,8 @@ data Input
     -- > names .foo.bar
     -- > names .foo.bar#asdflkjsdf
     -- > names #sdflkjsdfhsdf
-    NamesI IsGlobal (HQ.HashQualified Name)
+    -- > names foo.bar foo.baz #sdflkjsdfhsdf
+    NamesI IsGlobal [(RawQuery, ErrorMessageOrName)]
   | AliasTermI !Bool HashOrHQSplit' Path.Split' -- bool = force?
   | AliasTypeI !Bool HashOrHQSplit' Path.Split' -- bool = force?
   | AliasManyI [Path.HQSplit] Path'
