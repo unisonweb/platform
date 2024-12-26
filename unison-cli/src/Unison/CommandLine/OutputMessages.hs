@@ -7,6 +7,7 @@ module Unison.CommandLine.OutputMessages where
 
 import Control.Lens hiding (at)
 import Control.Monad.State.Strict qualified as State
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Foldable qualified as Foldable
 import Data.List (stripPrefix)
@@ -20,12 +21,15 @@ import Data.Set.NonEmpty (NESet)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Data.Text.Lazy qualified as TL
+import Data.Text.Lazy.Builder qualified as B
+import Data.Text.Lazy.Builder.Int qualified as B
 import Data.Time (UTCTime, getCurrentTime)
 import Data.Tuple (swap)
 import Data.Tuple.Extra (dupe)
 import Data.Void (absurd)
 import Debug.RecoverRTTI qualified as RTTI
 import Network.HTTP.Types qualified as Http
+import Network.HTTP.Types.Status qualified as HttpStatus
 import Servant.Client qualified as Servant
 import System.Console.ANSI qualified as ANSI
 import System.Console.Haskeline.Completion qualified as Completion
@@ -1770,23 +1774,32 @@ notifyUser dir = \case
           <> P.newline
           <> P.newline
           <> P.indentN 2 (P.pshown response)
-      Servant.FailureResponse request response ->
-        P.wrap "Oops, I received an unexpected status code from the server."
+      Servant.FailureResponse _ response ->
+        P.wrap "Sorry, I wasn't able to perform the request. The server responded unexpectedly with: "
           <> P.newline
           <> P.newline
-          <> P.wrap "Here is the request."
+          <> P.indentN 2 (P.wrap ("Status " <> P.text (statusCode response) <> ", " <> P.text (statusMessage response)))
           <> P.newline
-          <> P.newline
-          <> P.indentN 2 (P.pshown request)
-          <> P.newline
-          <> P.newline
-          <> P.wrap "Here is the full response."
-          <> P.newline
-          <> P.newline
-          <> P.indentN 2 (P.pshown response)
+          <> P.indentN 2 (P.wrap (P.text (responseBody response)))
       Servant.InvalidContentTypeHeader response -> wrongContentType response
       Servant.UnsupportedContentType _mediaType response -> wrongContentType response
     where
+      statusCode :: Servant.Response -> Text
+      statusCode response =
+        intToText (HttpStatus.statusCode (Servant.responseStatusCode response))
+        where
+          intToText = TL.toStrict . B.toLazyText . B.decimal
+
+      statusMessage :: Servant.Response -> Text
+      statusMessage response =
+        Text.decodeUtf8 (HttpStatus.statusMessage (Servant.responseStatusCode response))
+
+      responseBody :: Servant.Response -> Text
+      responseBody response =
+        toText (Servant.responseBody response)
+        where
+          toText = Text.decodeUtf8 . ByteString.concat . LazyByteString.toChunks
+
       wrongContentType response =
         P.wrap "Huh, the server sent me the wrong content type."
           <> P.newline
