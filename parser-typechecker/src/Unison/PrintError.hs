@@ -14,7 +14,7 @@ module Unison.PrintError
   )
 where
 
-import Control.Lens.Tuple (_1, _2, _3)
+import Control.Lens.Tuple (_1, _2, _3, _4, _5)
 import Data.Foldable qualified as Foldable
 import Data.Function (on)
 import Data.List (find, intersperse, sortBy)
@@ -628,17 +628,19 @@ renderTypeError e env src = case e of
         Type.Var' (TypeVar.Existential {}) -> mempty
         _ -> Pr.wrap $ "It should be of type " <> Pr.group (style Type1 (renderType' env expectedType) <> ".")
   UnknownTerm {..} ->
-    let (correct, wrongTypes, wrongNames) =
+    let (correct, rightNameWrongTypes, wrongNameRightTypes, similarNameRightTypes, similarNameWrongTypes) =
           foldr
             sep
             id
             (sortBy (comparing length <> compare `on` (Name.segments . C.suggestionName)) suggestions)
-            ([], [], [])
+            ([], [], [], [], [])
         sep s@(C.Suggestion _ _ _ match) r =
           case match of
             C.Exact -> (_1 %~ (s :)) . r
-            C.WrongType -> (_2 %~ (s :)) . r
-            C.WrongName -> (_3 %~ (s :)) . r
+            C.RightNameWrongType -> (_2 %~ (s :)) . r
+            C.WrongNameRightType -> (_3 %~ (s :)) . r
+            C.SimilarNameRightType -> (_4 %~ (s :)) . r
+            C.SimilarNameWrongType -> (_5 %~ (s :)) . r
         undefinedSymbolHelp =
           mconcat
             [ ( case expectedType of
@@ -668,11 +670,24 @@ renderTypeError e env src = case e of
             annotatedAsErrorSite src termSite,
             "\n",
             case correct of
-              [] -> case wrongTypes of
-                [] -> case wrongNames of
-                  [] -> undefinedSymbolHelp
-                  wrongs -> formatWrongs wrongNameText wrongs
-                wrongs ->
+              [] -> case rightNameWrongTypes of
+                [] -> case similarNameRightTypes of
+                  [] ->
+                    -- If available, show any 'WrongNameRightType' or 'SimilarNameWrongType' suggestions
+                    -- Otherwise if no suggestions are available show 'undefinedSymbolHelp'
+                    if null wrongNameRightTypes && null similarNameWrongTypes
+                      then undefinedSymbolHelp
+                      else
+                        mconcat
+                          [ if null similarNameWrongTypes
+                              then ""
+                              else formatWrongs similarNameWrongTypeText similarNameWrongTypes,
+                            if null wrongNameRightTypes
+                              then ""
+                              else formatWrongs wrongNameRightTypeText wrongNameRightTypes
+                          ]
+                  similarNameRightTypes -> formatWrongs similarNameRightTypeText similarNameRightTypes
+                rightNameWrongTypes ->
                   let helpMeOut =
                         Pr.wrap
                           ( mconcat
@@ -709,7 +724,7 @@ renderTypeError e env src = case e of
                                   )
                               ]
                         <> "\n\n"
-                        <> formatWrongs wrongTypeText wrongs
+                        <> formatWrongs rightNameWrongTypeText rightNameWrongTypes
               suggs ->
                 mconcat
                   [ Pr.wrap
@@ -790,45 +805,46 @@ renderTypeError e env src = case e of
         summary note
       ]
   where
-    wrongTypeText pl =
-      Pr.paragraphyText
-        ( mconcat
-            [ "I found ",
-              pl "a term" "some terms",
-              " in scope with ",
-              pl "a " "",
-              "matching name",
-              pl "" "s",
-              " but ",
-              pl "a " "",
-              "different type",
-              pl "" "s",
-              ". ",
-              "If ",
-              pl "this" "one of these",
-              " is what you meant, try using its full name:"
-            ]
-        )
-        <> "\n\n"
-    wrongNameText pl =
-      Pr.paragraphyText
-        ( mconcat
-            [ "I found ",
-              pl "a term" "some terms",
-              " in scope with ",
-              pl "a " "",
-              "matching type",
-              pl "" "s",
-              " but ",
-              pl "a " "",
-              "different name",
-              pl "" "s",
-              ". ",
-              "Maybe you meant ",
-              pl "this" "one of these",
-              ":\n\n"
-            ]
-        )
+    rightNameWrongTypeText _ =
+      mconcat
+        [ "I found one or more terms in scope with the ",
+          Pr.bold "right names ",
+          "but the ",
+          Pr.bold "wrong types.",
+          "\n",
+          "If you meant to use one of these, try using it with its full name and then adjusting types",
+          ":\n\n"
+        ]
+    similarNameRightTypeText _ =
+      mconcat
+        [ "I found one or more terms in scope with ",
+          Pr.bold "similar names ",
+          "and the ",
+          Pr.bold "right types.",
+          "\n",
+          "If you meant to use one of these, try using it instead",
+          ":\n\n"
+        ]
+    similarNameWrongTypeText _ =
+      mconcat
+        [ "I found one or more terms in scope with ",
+          Pr.bold "similar names ",
+          "but the ",
+          Pr.bold "wrong types.",
+          "\n",
+          "If you meant to use one of these, try using it instead and then adjusting types",
+          ":\n\n"
+        ]
+    wrongNameRightTypeText _ =
+      mconcat
+        [ "I found one or more terms in scope with the ",
+          Pr.bold "wrong names ",
+          "but the ",
+          Pr.bold "right types.",
+          "\n",
+          "If you meant to use one of these, try using it instead",
+          ":\n\n"
+        ]
     formatWrongs txt wrongs =
       let sz = length wrongs
           pl a b = if sz == 1 then a else b

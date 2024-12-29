@@ -336,14 +336,10 @@ scratch/main> load
 
      19 |   bar21
 
-  I also don't know what type it should be.
+  I found one or more terms in scope with similar names and the right types.
+  If you meant to use one of these, try using it instead:
 
-  Some common causes of this error include:
-    * Your current namespace is too deep to contain the
-      definition in its subtree
-    * The definition is part of a library which hasn't been
-      added to this project
-    * You have a typo in the name
+  bar1 : Nat
 ```
 
 In this example, the `a` is locally bound by the rule, so it shouldn't capture the `a = 39494` binding which is in scope at the point of the replacement:
@@ -393,14 +389,12 @@ scratch/main> load
 
       6 |   a1
 
-  I also don't know what type it should be.
+  I found one or more terms in scope with similar names and the right types.
+  If you meant to use one of these, try using it instead:
 
-  Some common causes of this error include:
-    * Your current namespace is too deep to contain the
-      definition in its subtree
-    * The definition is part of a library which hasn't been
-      added to this project
-    * You have a typo in the name
+  (<|) : (i ->{g} o) -> i ->{g} o
+  Bytes.at : Nat -> Bytes -> Optional Nat
+  List.at : Nat -> [a] -> Optional a
 ```
 
 ## Structural find

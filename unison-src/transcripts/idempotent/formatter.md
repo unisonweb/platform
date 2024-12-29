@@ -193,9 +193,8 @@ brokenDoc = {{ hello }} + 1
   Help me out by using a more specific name here or adding a
   type annotation.
 
-  I found some terms in scope with matching names but different 
-  types. If one of these is what you meant, try using its full 
-  name:
+  I found one or more terms in scope with the right names but the wrong types.
+  If you meant to use one of these, try using it with its full name and then adjusting types:
 
   (Float.+) : Float -> Float -> Float
   (Int.+) : Int -> Int -> Int

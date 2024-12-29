@@ -327,7 +327,12 @@ type ExpectedArgCount = Int
 
 type ActualArgCount = Int
 
-data SuggestionMatch = Exact | WrongType | WrongName
+data SuggestionMatch
+  = Exact
+  | RightNameWrongType
+  | WrongNameRightType
+  | SimilarNameRightType
+  | SimilarNameWrongType
   deriving (Ord, Eq, Show)
 
 data Suggestion v loc = Suggestion

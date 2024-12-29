@@ -50,6 +50,7 @@ typecheckTerm codebase tm = do
           { ambientAbilities = [],
             typeLookup,
             termsByShortname = Map.empty,
+            freeNameToFuzzyTermsByShortName = Map.empty,
             topLevelComponents = Map.empty
           }
   pure $ fmap extract $ FileParsers.synthesizeFile typecheckingEnv file
