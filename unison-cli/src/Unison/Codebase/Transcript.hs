@@ -3,6 +3,7 @@
 -- | The data model for Unison transcripts.
 module Unison.Codebase.Transcript
   ( ExpectingError,
+    HasBug,
     ScratchFileName,
     Hidden (..),
     UcmLine (..),
@@ -24,6 +25,8 @@ import Unison.Prelude
 import Unison.Project (ProjectAndBranch)
 
 type ExpectingError = Bool
+
+type HasBug = Bool
 
 type ScratchFileName = Text
 
@@ -56,13 +59,14 @@ type Stanza = Either CMark.Node ProcessedBlock
 data InfoTags a = InfoTags
   { hidden :: Hidden,
     expectingError :: ExpectingError,
+    hasBug :: HasBug,
     generated :: Bool,
     additionalTags :: a
   }
   deriving (Eq, Ord, Read, Show)
 
 defaultInfoTags :: a -> InfoTags a
-defaultInfoTags = InfoTags Shown False False
+defaultInfoTags = InfoTags Shown False False False
 
 -- | If the `additionalTags` form a `Monoid`, then you don’t need to provide a default value for them.
 defaultInfoTags' :: (Monoid a) => InfoTags a

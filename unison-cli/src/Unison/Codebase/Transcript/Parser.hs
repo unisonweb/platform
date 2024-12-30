@@ -23,7 +23,7 @@ import Data.Char qualified as Char
 import Data.Text qualified as Text
 import Text.Megaparsec qualified as P
 import Text.Megaparsec.Char qualified as P
-import Unison.Codebase.Transcript hiding (expectingError, generated, hidden)
+import Unison.Codebase.Transcript hiding (expectingError, generated, hasBug, hidden)
 import Unison.Prelude
 import Unison.Project (fullyQualifiedProjectAndBranchNamesParser)
 
@@ -50,9 +50,9 @@ formatStanzas =
 
 processedBlockToNode :: ProcessedBlock -> CMark.Node
 processedBlockToNode = \case
-  Ucm tags cmds -> mkNode (\() -> "") "ucm" tags $ foldr ((<>) . formatUcmLine) "" cmds
-  Unison tags txt -> mkNode (maybe "" (" " <>)) "unison" tags txt
-  API tags apiRequests -> mkNode (\() -> "") "api" tags $ foldr ((<>) . formatAPIRequest) "" apiRequests
+  Ucm tags cmds -> mkNode (\() -> Nothing) "ucm" tags $ foldr ((<>) . formatUcmLine) "" cmds
+  Unison tags txt -> mkNode id "unison" tags txt
+  API tags apiRequests -> mkNode (\() -> Nothing) "api" tags $ foldr ((<>) . formatAPIRequest) "" apiRequests
   where
     mkNode formatA lang = CMarkCodeBlock Nothing . formatInfoString formatA lang
 
@@ -98,20 +98,28 @@ apiRequest =
     <|> APIComment <$> (P.chunk "--" *> restOfLine)
     <|> APIResponseLine <$> (P.chunk "  " *> restOfLine <|> "" <$ P.single '\n' <|> "" <$ P.chunk " \n")
 
-formatInfoString :: (a -> Text) -> Text -> InfoTags a -> Text
+formatInfoString :: (a -> Maybe Text) -> Text -> InfoTags a -> Text
 formatInfoString formatA language infoTags =
   let infoTagText = formatInfoTags formatA infoTags
    in if Text.null infoTagText then language else language <> " " <> infoTagText
 
-formatInfoTags :: (a -> Text) -> InfoTags a -> Text
-formatInfoTags formatA (InfoTags hidden expectingError generated additionalTags) =
-  formatHidden hidden <> formatExpectingError expectingError <> formatGenerated generated <> formatA additionalTags
+formatInfoTags :: (a -> Maybe Text) -> InfoTags a -> Text
+formatInfoTags formatA (InfoTags hidden expectingError hasBug generated additionalTags) =
+  Text.intercalate " " $
+    catMaybes
+      [ formatHidden hidden,
+        formatExpectingError expectingError,
+        formatHasBug hasBug,
+        formatGenerated generated,
+        formatA additionalTags
+      ]
 
 infoTags :: P a -> P (InfoTags a)
 infoTags p =
   InfoTags
     <$> lineToken hidden
     <*> lineToken expectingError
+    <*> lineToken hasBug
     <*> lineToken generated
     <*> p
     <* P.single '\n'
@@ -135,26 +143,32 @@ lineToken p = p <* nonNewlineSpaces
 nonNewlineSpaces :: P ()
 nonNewlineSpaces = void $ P.takeWhileP Nothing (\ch -> ch == ' ' || ch == '\t')
 
-formatHidden :: Hidden -> Text
+formatHidden :: Hidden -> Maybe Text
 formatHidden = \case
-  HideAll -> ":hide:all"
-  HideOutput -> ":hide"
-  Shown -> ""
+  HideAll -> pure ":hide-all"
+  HideOutput -> pure ":hide"
+  Shown -> Nothing
 
 hidden :: P Hidden
 hidden =
-  (HideAll <$ word ":hide:all")
+  (HideAll <$ word ":hide-all")
     <|> (HideOutput <$ word ":hide")
     <|> pure Shown
 
-formatExpectingError :: ExpectingError -> Text
-formatExpectingError = bool "" ":error"
+formatExpectingError :: ExpectingError -> Maybe Text
+formatExpectingError = bool Nothing $ pure ":error"
 
 expectingError :: P ExpectingError
 expectingError = isJust <$> optional (word ":error")
 
-formatGenerated :: ExpectingError -> Text
-formatGenerated = bool "" ":added-by-ucm"
+formatHasBug :: HasBug -> Maybe Text
+formatHasBug = bool Nothing $ pure ":bug"
+
+hasBug :: P HasBug
+hasBug = isJust <$> optional (word ":bug")
+
+formatGenerated :: ExpectingError -> Maybe Text
+formatGenerated = bool Nothing $ pure ":added-by-ucm"
 
 generated :: P Bool
 generated = isJust <$> optional (word ":added-by-ucm")

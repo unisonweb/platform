@@ -1469,7 +1469,9 @@ displayI outputLoc hq = do
       let filePPED = PPED.makePPED (PPE.hqNamer 10 namesWithDefinitionsFromFile) (suffixify namesWithDefinitionsFromFile)
 
       let suffixifiedFilePPE = PPE.biasTo bias $ PPE.suffixifiedPPE filePPED
-      (_, watches) <- evalUnisonFile Sandboxed suffixifiedFilePPE unisonFile []
+      (_, watches) <-
+        evalUnisonFile Sandboxed suffixifiedFilePPE unisonFile [] & onLeftM \err ->
+          Cli.returnEarly (Output.EvaluationFailure err)
       (_, _, _, _, tm, _) <-
         Map.lookup toDisplay watches & onNothing (error $ "Evaluation dropped a watch expression: " <> Text.unpack (HQ.toText hq))
       let ns = UF.addNamesFromTypeCheckedUnisonFile unisonFile names

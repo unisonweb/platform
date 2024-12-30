@@ -30,7 +30,7 @@ scratch/main> add
     x : Nat
 ```
 
-``` unison :hide:error :scratch.u
+``` unison :hide :error scratch.u
 z
 ```
 

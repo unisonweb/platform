@@ -1618,7 +1618,7 @@ scratch/bob> move.term Foo.Bar.Qux Foo.Bar.Hello
 ``` ucm
 scratch/bob> view Foo.Bar
 
-  type Foo.Bar = Baz Nat | Hello Nat Nat
+  type Foo.Bar = Hello Nat Nat | Baz Nat
 ```
 
 At this point, Bob and alice have both updated the name `Foo.Bar.Hello` in different ways, so that's a conflict. Therefore, Bob's entire type (`Foo.Bar` with constructors `Foo.Bar.Baz` and `Foo.Bar.Hello`) gets rendered into the scratch file.
@@ -1667,7 +1667,7 @@ Foo.Bar.Hello : Nat
 Foo.Bar.Hello = 18
 
 -- scratch/bob
-type Foo.Bar = Baz Nat | Hello Nat Nat
+type Foo.Bar = Hello Nat Nat | Baz Nat
 
 ```
 

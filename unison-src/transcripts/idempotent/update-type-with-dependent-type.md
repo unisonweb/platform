@@ -68,16 +68,16 @@ scratch/main> view Baz
 
 scratch/main> find.verbose
 
-  1. -- #34msh9satlfog576493eo9pkjn6aj7d8fj6jfheglvgr5s39iptb81649bpkad1lqraheqb8em9ms551k01oternhknc4m7jicgtk08
+  1. -- #1uosg6rv85ql7rbohtfvqqacgjl5pp2faj0t3k3dkrtn0t3jqdh2m2om8earv0jh8m8j86vv6bv1h17jl8a2lfa857pm6n27hnisi1g
      type Baz
      
-  2. -- #34msh9satlfog576493eo9pkjn6aj7d8fj6jfheglvgr5s39iptb81649bpkad1lqraheqb8em9ms551k01oternhknc4m7jicgtk08#0
+  2. -- #1uosg6rv85ql7rbohtfvqqacgjl5pp2faj0t3k3dkrtn0t3jqdh2m2om8earv0jh8m8j86vv6bv1h17jl8a2lfa857pm6n27hnisi1g#0
      Baz.Qux : Foo -> Baz
      
-  3. -- #8fk6k0j208th1ia4vnjtoc5fomd6le540prec255svg71bcfga9dofrvoq1d7v6010d6b6em4q51p8st5c5juhrev72cnnel8ko3o1g
+  3. -- #hlhjq1lf1cvfevkvb9d441kkubn0f6s43gvrd4gcff0r739vomehjnov4b3qe8506fb5bm8m5ba0sol9mbljgkk3gb2qt2u02v6i2vo
      type Foo
      
-  4. -- #8fk6k0j208th1ia4vnjtoc5fomd6le540prec255svg71bcfga9dofrvoq1d7v6010d6b6em4q51p8st5c5juhrev72cnnel8ko3o1g#0
+  4. -- #hlhjq1lf1cvfevkvb9d441kkubn0f6s43gvrd4gcff0r739vomehjnov4b3qe8506fb5bm8m5ba0sol9mbljgkk3gb2qt2u02v6i2vo#0
      Foo.Bar : Nat -> Nat -> Foo
      
 ```

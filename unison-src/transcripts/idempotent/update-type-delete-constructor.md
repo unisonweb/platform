@@ -60,10 +60,10 @@ scratch/main> view Foo
 
 scratch/main> find.verbose
 
-  1. -- #b509v3eg4kehsg29g6pvrogeb71ue32nm2fj9284n4i7lprsr7u9a7g6s695d09du0fsfti6rrsk1s62q5thpr1jjkqb3us3s0lrd60
+  1. -- #h88o5sirfn0a8f4o81sb012p2rha5h8r73n8bloc8qq94kqmltjq94iiep2e6dj7ppuulc8jce2f0vmddqp76nm0hqs9jh53s502v4g
      type Foo
      
-  2. -- #b509v3eg4kehsg29g6pvrogeb71ue32nm2fj9284n4i7lprsr7u9a7g6s695d09du0fsfti6rrsk1s62q5thpr1jjkqb3us3s0lrd60#0
+  2. -- #h88o5sirfn0a8f4o81sb012p2rha5h8r73n8bloc8qq94kqmltjq94iiep2e6dj7ppuulc8jce2f0vmddqp76nm0hqs9jh53s502v4g#0
      Foo.Bar : Nat -> Foo
      
 ```

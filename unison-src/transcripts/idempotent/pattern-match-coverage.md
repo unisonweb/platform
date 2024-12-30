@@ -1286,5 +1286,5 @@ result f =
     
       ability GiveA a
       ability GiveB a
-      result : '{e, GiveA V, GiveB V} r ->{e} r
+      result : '{e, GiveB V, GiveA V} r ->{e} r
 ```
