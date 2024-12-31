@@ -90,3 +90,4 @@ The format for this list: name, GitHub handle
 * Brian McKenna (@puffnfresh)
 * Ruslan Simchuk (@SimaDovakin)
 * Brandon Barker (@bbarker)
+* Manish Bhasin (@xmbhasin)
