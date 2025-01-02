@@ -503,50 +503,6 @@ data GInstr comb
       !BPrim2
       !Int
       !Int
-  | -- Use a check-and-set ticket to update a reference
-    -- (ref stack index, ticket stack index, new value stack index)
-    RefCAS !Int !Int !Int
-  | -- Call out to a Haskell function.
-    ForeignCall
-      !Bool -- catch exceptions
-      !ForeignFunc -- FFI call
-      !Args -- arguments
-  | -- Set the value of a dynamic reference
-    SetDyn
-      !Word64 -- the prompt tag of the reference
-      !Int -- the stack index of the closure to store
-  | -- Capture the continuation up to a given marker.
-    Capture !Word64 -- the prompt tag
-  | -- This is essentially the opposite of `Call`. Pack a given
-    -- statically known function into a closure with arguments.
-    -- No stack is necessary, because no nested evaluation happens,
-    -- so the instruction directly takes a follow-up.
-    Name !(GRef comb) !Args
-  | -- Dump some debugging information about the machine state to
-    -- the screen.
-    Info !String -- prefix for output
-  | -- Pack a data type value into a closure and place it
-    -- on the stack.
-    Pack
-      !Reference -- data type reference
-      !PackedTag -- tag
-      !Args -- arguments to pack
-  | -- Push a particular value onto the appropriate stack
-    Lit !MLit -- value to push onto the stack
-  | -- Print a value on the unboxed stack
-    Print !Int -- index of the primitive value to print
-  | -- Put a delimiter on the continuation
-    Reset !(EnumSet Word64) -- prompt ids
-  | -- Fork thread evaluating delayed computation on boxed stack
-    Fork !Int
-  | -- Atomic transaction evaluating delayed computation on boxed stack
-    Atomically !Int
-  | -- Build a sequence consisting of a variable number of arguments
-    Seq !Args
-  | -- Force a delayed expression, catching any runtime exceptions involved
-    TryForce !Int
-  | -- Attempted to use a builtin that was not allowed in the current sandboxing context.
-    SandboxingFailure !Text.Text -- The name of the builtin which failed was sandboxed.
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 type Section = GSection CombIx
@@ -620,6 +576,80 @@ data GSection comb
       !Int -- index of request item on the boxed stack
       !(GSection comb) -- pure case
       !(EnumMap Word64 (GBranch comb)) -- effect cases
+  | -- Embedded instructions
+    -- Conceptually these belong nested into 'GInstr', but we save a couple pointer jumps by embedding them here instead.
+    -- Use a check-and-set ticket to update a reference
+    -- (ref stack index, ticket stack index, new value stack index)
+    RefCAS
+      !Int
+      !Int
+      !Int
+      !(GSection comb) -- Next
+  | -- Call out to a Haskell function.
+    ForeignCall
+      !Bool -- catch exceptions
+      !ForeignFunc -- FFI call
+      !Args -- arguments
+      !(GSection comb) -- Next
+  | -- Set the value of a dynamic reference
+    SetDyn
+      !Word64 -- the prompt tag of the reference
+      !Int -- the stack index of the closure to store
+      !(GSection comb) -- Next
+  | -- Capture the continuation up to a given marker.
+    Capture
+      !Word64 -- the prompt tag
+      !(GSection comb) -- Next
+  | -- This is essentially the opposite of `Call`. Pack a given
+    -- statically known function into a closure with arguments.
+    -- No stack is necessary, because no nested evaluation happens,
+    -- so the instruction directly takes a follow-up.
+    Name
+      !(GRef comb)
+      !Args
+      !(GSection comb) -- Next
+  | -- Dump some debugging information about the machine state to
+    -- the screen.
+    Info
+      !String -- prefix for output
+      !(GSection comb) -- Next
+  | -- Pack a data type value into a closure and place it
+    -- on the stack.
+    Pack
+      !Reference -- data type reference
+      !PackedTag -- tag
+      !Args -- arguments to pack
+      !(GSection comb) -- Next
+  | -- Push a particular value onto the appropriate stack
+    Lit
+      !MLit -- value to push onto the stack
+      !(GSection comb) -- Next
+  | -- Print a value on the unboxed stack
+    Print
+      !Int -- index of the primitive value to print
+      !(GSection comb) -- Next
+  | -- Put a delimiter on the continuation
+    Reset
+      !(EnumSet Word64) -- prompt ids
+      !(GSection comb) -- Next
+  | -- Fork thread evaluating delayed computation on boxed stack
+    Fork
+      !Int
+      !(GSection comb) -- Next
+  | -- Atomic transaction evaluating delayed computation on boxed stack
+    Atomically
+      !Int
+      !(GSection comb) -- Next
+  | -- Build a sequence consisting of a variable number of arguments
+    Seq
+      !Args
+      !(GSection comb) -- Next
+  | -- Force a delayed expression, catching any runtime exceptions involved
+    TryForce
+      !Int
+      !(GSection comb) -- Next
+  | -- Attempted to use a builtin that was not allowed in the current sandboxing context.
+    SandboxingFailure !Text.Text -- The name of the builtin which failed was sandboxed.
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 data CombIx
@@ -985,17 +1015,17 @@ emitSection rns grpr grpn rec ctx (TLets d us ms bu bo) =
 emitSection rns grpr grpn rec ctx (TName u (Left f) args bo) =
   emitClosures grpr grpn rec ctx args $ \ctx as ->
     let cix = (CIx f (cnum rns f) 0)
-     in Ins (Name (Env cix cix) as)
+     in (Name (Env cix cix) as)
           <$> emitSection rns grpr grpn rec (Var u BX ctx) bo
 emitSection rns grpr grpn rec ctx (TName u (Right v) args bo)
   | Just (i, BX) <- ctxResolve ctx v =
       emitClosures grpr grpn rec ctx args $ \ctx as ->
-        Ins (Name (Stk i) as)
+        (Name (Stk i) as)
           <$> emitSection rns grpr grpn rec (Var u BX ctx) bo
   | Just n <- rctxResolve rec v =
       emitClosures grpr grpn rec ctx args $ \ctx as ->
         let cix = (CIx grpr grpn n)
-         in Ins (Name (Env cix cix) as)
+         in (Name (Env cix cix) as)
               <$> emitSection rns grpr grpn rec (Var u BX ctx) bo
   | otherwise = emitSectionVErr v
 emitSection _ grpr grpn rec ctx (TVar v)
@@ -1009,14 +1039,14 @@ emitSection _ _ grpn _ ctx (TPrm p args) =
   -- a prim op will need for its results.
   addCount 3
     . countCtx ctx
-    . Ins (emitPOp p $ emitArgs grpn ctx args)
+    . (emitPOp p $ emitArgs grpn ctx args)
     . Yield
     . VArgV
     $ countBlock ctx
 emitSection _ _ grpn _ ctx (TFOp p args) =
   addCount 3
     . countCtx ctx
-    . Ins (emitFOp p $ emitArgs grpn ctx args)
+    . (emitFOp p $ emitArgs grpn ctx args)
     . Yield
     . VArgV
     $ countBlock ctx
@@ -1024,7 +1054,7 @@ emitSection rns grpr grpn rec ctx (TApp f args) =
   emitClosures grpr grpn rec ctx args $ \ctx as ->
     countCtx ctx $ emitFunction rns grpr grpn rec ctx f as
 emitSection _ _ _ _ ctx (TLit l) =
-  c . countCtx ctx . Ins (emitLit l) . Yield $ VArg1 0
+  c . countCtx ctx . emitLit l . Yield $ VArg1 0
   where
     c
       | ANF.T {} <- l = addCount 1
@@ -1032,7 +1062,7 @@ emitSection _ _ _ _ ctx (TLit l) =
       | ANF.LY {} <- l = addCount 1
       | otherwise = addCount 1
 emitSection _ _ _ _ ctx (TBLit l) =
-  addCount 1 . countCtx ctx . Ins (emitLit l) . Yield $ VArg1 0
+  addCount 1 . countCtx ctx . emitLit l . Yield $ VArg1 0
 emitSection rns grpr grpn rec ctx (TMatch v bs)
   | Just (i, BX) <- ctxResolve ctx v,
     MatchData r cs df <- bs =
@@ -1094,14 +1124,14 @@ emitSection rns grpr grpn rec ctx (TMatch v bs)
         "emitSection: could not resolve match variable: " ++ show (ctx, v)
 emitSection rns grpr grpn rec ctx (THnd rs h b)
   | Just (i, BX) <- ctxResolve ctx h =
-      Ins (Reset (EC.setFromList ws))
-        . flip (foldr (\r -> Ins (SetDyn r i))) ws
+      Reset (EC.setFromList ws)
+        . flip (foldr (\r -> SetDyn r i)) ws
         <$> emitSection rns grpr grpn rec ctx b
   | otherwise = emitSectionVErr h
   where
     ws = dnum rns <$> rs
 emitSection rns grpr grpn rec ctx (TShift r v e) =
-  Ins (Capture $ dnum rns r)
+  Capture (dnum rns r)
     <$> emitSection rns grpr grpn rec (Var v BX ctx) e
 emitSection _ _ _ _ ctx (TFrc v)
   | Just (i, BX) <- ctxResolve ctx v =
@@ -1143,7 +1173,7 @@ emitFunction rns _grpr _ _ _ (FComb r) as
     n = cnum rns r
     cix = CIx r n 0
 emitFunction rns _grpr _ _ _ (FCon r t) as =
-  Ins (Pack r (packTags rt t) as)
+  Pack r (packTags rt t) as
     . Yield
     $ VArg1 0
   where
@@ -1152,7 +1182,7 @@ emitFunction rns _grpr _ _ _ (FReq r e) as =
   -- Currently implementing packed calling convention for abilities
   -- TODO ct is 16 bits, but a is 48 bits. This will be a problem if we have
   -- more than 2^16 types.
-  Ins (Pack r (packTags rt e) as)
+  Pack r (packTags rt e) as
     . App True (Dyn a)
     $ VArg1 0
   where
@@ -1210,9 +1240,9 @@ emitLet ::
   Emit Section ->
   Emit Section
 emitLet _ _ _ _ _ _ _ (TLit l) =
-  fmap (Ins $ emitLit l)
+  fmap (emitLit l)
 emitLet _ _ _ _ _ _ _ (TBLit l) =
-  fmap (Ins $ emitLit l)
+  fmap (emitLit l)
 -- emitLet rns grp _   _ _   ctx (TApp (FComb r) args)
 --   -- We should be able to tell if we are making a saturated call
 --   -- or not here. We aren't carrying the information here yet, though.
@@ -1221,11 +1251,11 @@ emitLet _ _ _ _ _ _ _ (TBLit l) =
 --   where
 --   n = cnum rns r
 emitLet rns _ grpn _ _ _ ctx (TApp (FCon r n) args) =
-  fmap (Ins . Pack r (packTags rt n) $ emitArgs grpn ctx args)
+  fmap (Pack r (packTags rt n) $ emitArgs grpn ctx args)
   where
     rt = toEnum . fromIntegral $ dnum rns r
 emitLet _ _ grpn _ _ _ ctx (TApp (FPrim p) args) =
-  fmap (Ins . either emitPOp emitFOp p $ emitArgs grpn ctx args)
+  fmap (either emitPOp emitFOp p $ emitArgs grpn ctx args)
 emitLet rns grpr grpn rec d vcs ctx bnd
   | Direct <- d =
       internalBug $ "unsupported compound direct let: " ++ show bnd
@@ -1242,7 +1272,7 @@ emitLet rns grpr grpn rec d vcs ctx bnd
 -- Translate from ANF prim ops to machine code operations. The
 -- machine code operations are divided with respect to more detailed
 -- information about expected number and types of arguments.
-emitPOp :: ANF.POp -> Args -> Instr
+emitPOp :: ANF.POp -> Args -> Section -> Section
 -- Integral
 emitPOp ANF.ADDI = emitP2 ADDI
 emitPOp ANF.ADDN = emitP2 ADDN
@@ -1420,40 +1450,40 @@ emitPOp ANF.TFRC = \case
 -- to 'foreing function' calls, but there is a special case for the
 -- standard handle access function, because it does not yield an
 -- explicit error.
-emitFOp :: ForeignFunc -> Args -> Instr
+emitFOp :: ForeignFunc -> Args -> Section -> Section
 emitFOp fop = ForeignCall True fop
 
 -- Helper functions for packing the variable argument representation
 -- into the indexes stored in prim op instructions
-emitP1 :: UPrim1 -> Args -> Instr
-emitP1 p (VArg1 i) = UPrim1 p i
+emitP1 :: UPrim1 -> Args -> Section -> Section
+emitP1 p (VArg1 i) = Ins $ UPrim1 p i
 emitP1 p a =
   internalBug $
     "wrong number of args for unary unboxed primop: "
       ++ show (p, a)
 
-emitP2 :: UPrim2 -> Args -> Instr
-emitP2 p (VArg2 i j) = UPrim2 p i j
+emitP2 :: UPrim2 -> Args -> Section -> Section
+emitP2 p (VArg2 i j) = Ins $ UPrim2 p i j
 emitP2 p a =
   internalBug $
     "wrong number of args for binary unboxed primop: "
       ++ show (p, a)
 
-emitBP1 :: BPrim1 -> Args -> Instr
-emitBP1 p (VArg1 i) = BPrim1 p i
+emitBP1 :: BPrim1 -> Args -> Section -> Section
+emitBP1 p (VArg1 i) = Ins $ BPrim1 p i
 emitBP1 p a =
   internalBug $
     "wrong number of args for unary boxed primop: "
       ++ show (p, a)
 
-emitBP2 :: BPrim2 -> Args -> Instr
-emitBP2 p (VArg2 i j) = BPrim2 p i j
+emitBP2 :: BPrim2 -> Args -> Section -> Section
+emitBP2 p (VArg2 i j) = Ins $ BPrim2 p i j
 emitBP2 p a =
   internalBug $
     "wrong number of args for binary boxed primop: "
       ++ show (p, a)
 
-refCAS :: Args -> Instr
+refCAS :: Args -> Section -> Section
 refCAS (VArgN (primArrayToList -> [i, j, k])) = RefCAS i j k
 refCAS a =
   internalBug $
@@ -1575,7 +1605,7 @@ litToMLit (ANF.LM r) = MM r
 litToMLit (ANF.LY r) = MY r
 
 -- | Emit a literal as a machine literal of the correct boxed/unboxed format.
-emitLit :: ANF.Lit -> Instr
+emitLit :: ANF.Lit -> Section -> Section
 emitLit = Lit . litToMLit
 
 -- Emits some fix-up code for calling functions. Some of the
@@ -1602,7 +1632,7 @@ emitClosures grpr grpn rec ctx args k =
       | Just _ <- ctxResolve ctx a = allocate ctx as k
       | Just n <- rctxResolve rec a =
           let cix = (CIx grpr grpn n)
-           in Ins (Name (Env cix cix) ZArgs) <$> allocate (Var a BX ctx) as k
+           in Name (Env cix cix) ZArgs <$> allocate (Var a BX ctx) as k
       | otherwise =
           internalBug $ "emitClosures: unknown reference: " ++ show a ++ show grpr
 
@@ -1642,9 +1672,8 @@ sectionDeps (DMatch _ _ br) = branchDeps br
 sectionDeps (RMatch _ pu br) =
   sectionDeps pu ++ foldMap branchDeps br
 sectionDeps (NMatch _ _ br) = branchDeps br
-sectionDeps (Ins i s)
-  | Name (Env (CIx _ w _) _) _ <- i = w : sectionDeps s
-  | otherwise = sectionDeps s
+sectionDeps (Name (Env (CIx _ w _) _) _ s) = w : sectionDeps s
+sectionDeps (Ins _i s) = sectionDeps s
 sectionDeps (Let s (CIx _ w _) _ b) =
   w : sectionDeps s ++ sectionDeps b
 sectionDeps _ = []
@@ -1657,13 +1686,13 @@ sectionTypes (DMatch _ _ br) = branchTypes br
 sectionTypes (NMatch _ _ br) = branchTypes br
 sectionTypes (RMatch _ pu br) =
   sectionTypes pu ++ foldMap branchTypes br
+sectionTypes (Pack _ (PackedTag w) _ next) = [w `shiftR` 16] ++ sectionTypes next
+sectionTypes (Reset ws next) = setToList ws ++ sectionTypes next
+sectionTypes (Capture w next) = [w] ++ sectionTypes next
+sectionTypes (SetDyn w _ next) = [w] ++ sectionTypes next
 sectionTypes _ = []
 
 instrTypes :: GInstr comb -> [Word64]
-instrTypes (Pack _ (PackedTag w) _) = [w `shiftR` 16]
-instrTypes (Reset ws) = setToList ws
-instrTypes (Capture w) = [w]
-instrTypes (SetDyn w _) = [w]
 instrTypes _ = []
 
 branchDeps :: GBranch comb -> [Word64]
@@ -1736,6 +1765,24 @@ prettySection ind sec =
     Yield as -> showString "Yield " . prettyArgs as
     Ins i nx ->
       prettyIns i . showString "\n" . prettySection ind nx
+    Pack r i as next ->
+      showString "Pack "
+        . prettyRef r
+        . (' ' :)
+        . shows i
+        . (' ' :)
+        . prettyArgs as
+        . prettySection ind next
+    Lit l next ->
+      showString "Lit "
+        . showsPrec 11 l
+        . prettySection ind next
+    Name r as next ->
+      showString "Name "
+        . prettyGRef 12 r
+        . (' ' :)
+        . prettyArgs as
+        . prettySection ind next
     Let s _ _ b ->
       showString "Let\n"
         . prettySection (ind + 2) s
@@ -1765,6 +1812,72 @@ prettySection ind sec =
             . shows i
             . showString " ->\n"
             . prettyBranches (ind + 1) e
+    RefCAS a b c nx ->
+      showString "RefCAS "
+        . shows a
+        . showString " "
+        . shows b
+        . showString " "
+        . shows c
+        . showString "\n"
+        . prettySection ind nx
+    ForeignCall b ff args nx ->
+      showString "ForeignCall "
+        . shows b
+        . showString " "
+        . shows ff
+        . showString " "
+        . prettyArgs args
+        . showString "\n"
+        . prettySection ind nx
+    SetDyn a b nx ->
+      showString "SetDyn "
+        . shows a
+        . showString " "
+        . shows b
+        . showString "\n"
+        . prettySection ind nx
+    Capture a nx ->
+      showString "Capture "
+        . shows a
+        . showString "\n"
+        . prettySection ind nx
+    Print a nx ->
+      showString "Print "
+        . shows a
+        . showString "\n"
+        . prettySection ind nx
+    Reset ws nx ->
+      showString "Reset "
+        . shows ws
+        . showString "\n"
+        . prettySection ind nx
+    Fork a nx ->
+      showString "Fork "
+        . shows a
+        . showString "\n"
+        . prettySection ind nx
+    Atomically a nx ->
+      showString "Atomically "
+        . shows a
+        . showString "\n"
+        . prettySection ind nx
+    Info s nx ->
+      showString "Info "
+        . shows s
+        . showString "\n"
+        . prettySection ind nx
+    Seq a nx ->
+      showString "Seq "
+        . shows a
+        . showString "\n"
+        . prettySection ind nx
+    TryForce a nx ->
+      showString "TryForce "
+        . shows a
+        . showString "\n"
+        . prettySection ind nx
+    SandboxingFailure s -> showString $ "SandboxingFailure " ++ show s
 
 prettyCIx :: CombIx -> ShowS
 prettyCIx (CIx r _ n) =
@@ -1805,20 +1918,6 @@ prettyBranches ind bs =
         . prettySection (ind + 1) e
 
 prettyIns :: (Show comb) => GInstr comb -> ShowS
-prettyIns (Pack r i as) =
-  showString "Pack "
-    . prettyRef r
-    . (' ' :)
-    . shows i
-    . (' ' :)
-    . prettyArgs as
-prettyIns (Lit l) =
-  showString "Lit " . showsPrec 11 l
-prettyIns (Name r as) =
-  showString "Name "
-    . prettyGRef 12 r
-    . (' ' :)
-    . prettyArgs as
 prettyIns i = shows i
 
 prettyArgs :: Args -> ShowS
@@ -1838,10 +1937,24 @@ sanitizeComb sandboxedForeigns = \case
 -- | Crawl the source code and statically replace all sandboxed foreign funcs with an error.
 sanitizeSection :: Set ForeignFunc -> GSection CombIx -> GSection CombIx
 sanitizeSection sandboxedForeigns section = case section of
-  Ins (ForeignCall _ f as) nx
-    | Set.member f sandboxedForeigns -> Ins (SandboxingFailure (foreignFuncBuiltinName f)) (sanitizeSection sandboxedForeigns nx)
-    | otherwise -> Ins (ForeignCall True f as) (sanitizeSection sandboxedForeigns nx)
+  ForeignCall _ f as nx
+    | Set.member f sandboxedForeigns -> SandboxingFailure (foreignFuncBuiltinName f)
+    | otherwise -> ForeignCall True f as (sanitizeSection sandboxedForeigns nx)
   Ins i nx -> Ins i (sanitizeSection sandboxedForeigns nx)
+  RefCAS a b c nx -> RefCAS a b c (sanitizeSection sandboxedForeigns nx)
+  SetDyn a b nx -> SetDyn a b (sanitizeSection sandboxedForeigns nx)
+  Capture a nx -> Capture a (sanitizeSection sandboxedForeigns nx)
+  Name a b nx -> Name a b (sanitizeSection sandboxedForeigns nx)
+  Info a nx -> Info a (sanitizeSection sandboxedForeigns nx)
+  Pack a b c nx -> Pack a b c (sanitizeSection sandboxedForeigns nx)
+  Lit a nx -> Lit a (sanitizeSection sandboxedForeigns nx)
+  Print a nx -> Print a (sanitizeSection sandboxedForeigns nx)
+  Reset a nx -> Reset a (sanitizeSection sandboxedForeigns nx)
+  Fork a nx -> Fork a (sanitizeSection sandboxedForeigns nx)
+  Atomically a nx -> Atomically a (sanitizeSection sandboxedForeigns nx)
+  Seq a nx -> Seq a (sanitizeSection sandboxedForeigns nx)
+  TryForce a nx -> TryForce a (sanitizeSection sandboxedForeigns nx)
+  SandboxingFailure a -> SandboxingFailure a
   App {} -> section
   Call {} -> section
   Jump {} -> section

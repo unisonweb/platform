@@ -336,22 +336,6 @@ exec _ !_ !_ !stk !_ !_ instr
   | debugger stk "exec" instr = undefined
 #endif
 {- ORMOLU_ENABLE -}
-exec _ !denv !_activeThreads !stk !k _ (Info tx) = do
-  info tx stk
-  info tx k
-  pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (Name r args) = do
-  v <- resolve env denv stk r
-  stk <- name stk args v
-  pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (SetDyn p i) = do
-  val <- peekOff stk i
-  pure (EC.mapInsert p val denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (Capture p) = do
-  (cap, denv, stk, k) <- splitCont denv stk k p
-  stk <- bump stk
-  poke stk cap
-  pure (denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (UPrim1 op i) = do
   stk <- uprim1 stk op i
   pure (denv, stk, k)
@@ -555,69 +539,6 @@ exec env !denv !_activeThreads !stk !k _ (BPrim2 TRCE i j)
 exec _ !denv !_trackThreads !stk !k _ (BPrim2 op i j) = do
   stk <- bprim2 stk op i j
   pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (RefCAS refI ticketI valI)
-  | sandboxed env = die "attempted to use sandboxed operation: Ref.cas"
-  | otherwise = do
-      (ref :: IORef Val) <- peekOffBi stk refI
-      -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
-      -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
-      -- forcing of the values and tickets.
-      !(ticket :: Atomic.Ticket Val) <- peekOffBi stk ticketI
-      v <- peekOff stk valI
-      (r, _) <- Atomic.casIORef ref ticket v
-      stk <- bump stk
-      pokeBool stk r
-      pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (Pack r t args) = do
-  clo <- buildData stk r t args
-  stk <- bump stk
-  bpoke stk clo
-  pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (Print i) = do
-  t <- peekOffBi stk i
-  Tx.putStrLn (Util.Text.toText t)
-  pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (Lit ml) = do
-  stk <- bump stk
-  poke stk $ litToVal ml
-  pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (Reset ps) = do
-  (stk, a) <- saveArgs stk
-  pure (denv, stk, Mark a ps clos k)
-  where
-    clos = EC.restrictKeys denv ps
-exec _ !denv !_activeThreads !stk !k _ (Seq as) = do
-  l <- closureArgs stk as
-  stk <- bump stk
-  pokeS stk $ Sq.fromList l
-  pure (denv, stk, k)
-exec _env !denv !_activeThreads !stk !k _ (ForeignCall _ func args) = do
-  stk <- xStackIOToIO $ foreignCall func args (unpackXStack stk)
-  pure (denv, stk, k)
-exec env !denv !activeThreads !stk !k _ (Fork i)
-  | sandboxed env = die "attempted to use sandboxed operation: fork"
-  | otherwise = do
-      tid <- forkEval env activeThreads =<< peekOff stk i
-      stk <- bump stk
-      bpoke stk . Foreign . Wrap Rf.threadIdRef $ tid
-      pure (denv, stk, k)
-exec env !denv !activeThreads !stk !k _ (Atomically i)
-  | sandboxed env = die $ "attempted to use sandboxed operation: atomically"
-  | otherwise = do
-      v <- peekOff stk i
-      stk <- bump stk
-      atomicEval env activeThreads (poke stk) v
-      pure (denv, stk, k)
-exec env !denv !activeThreads !stk !k _ (TryForce i)
-  | sandboxed env = die $ "attempted to use sandboxed operation: tryForce"
-  | otherwise = do
-      v <- peekOff stk i
-      stk <- bump stk -- Bump the boxed stack to make a slot for the result, which will be written in the callback if we succeed.
-      ev <- Control.Exception.try $ nestEval env activeThreads (poke stk) v
-      stk <- encodeExn stk ev
-      pure (denv, stk, k)
-exec !_ !_ !_ !_ !_ _ (SandboxingFailure t) = do
-  die $ "Attempted to use disallowed builtin in sandboxed environment: " <> DTx.unpack t
 {-# INLINE exec #-}
 
 encodeExn ::
@@ -728,6 +649,87 @@ eval env !denv !activeThreads !stk !k r (Ins i nx) = do
   eval env denv activeThreads stk k r nx
 eval _ !_ !_ !_activeThreads !_ _ Exit = pure ()
 eval _ !_ !_ !_activeThreads !_ _ (Die s) = die s
+eval env !denv !activeThreads !stk !k r (Info tx nx) = do
+  info tx stk
+  info tx k
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k ref (Name r args nx) = do
+  v <- resolve env denv stk r
+  stk <- name stk args v
+  eval env denv activeThreads stk k ref nx
+eval env !denv !activeThreads !stk !k r (SetDyn p i nx) = do
+  val <- peekOff stk i
+  let denv' = EC.mapInsert p val denv
+  eval env denv' activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (Capture p nx) = do
+  (cap, denv, stk, k) <- splitCont denv stk k p
+  stk <- bump stk
+  poke stk cap
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (RefCAS refI ticketI valI nx)
+  | sandboxed env = die "attempted to use sandboxed operation: Ref.cas"
+  | otherwise = do
+      (ref :: IORef Val) <- peekOffBi stk refI
+      -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
+      -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
+      -- forcing of the values and tickets.
+      !(ticket :: Atomic.Ticket Val) <- peekOffBi stk ticketI
+      v <- peekOff stk valI
+      (result, _) <- Atomic.casIORef ref ticket v
+      stk <- bump stk
+      pokeBool stk result
+      eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k ref (Pack r t args nx) = do
+  clo <- buildData stk r t args
+  stk <- bump stk
+  bpoke stk clo
+  eval env denv activeThreads stk k ref nx
+eval env !denv !activeThreads !stk !k r (Print i nx) = do
+  t <- peekOffBi stk i
+  Tx.putStrLn (Util.Text.toText t)
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (Lit ml nx) = do
+  stk <- bump stk
+  poke stk $ litToVal ml
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (Reset ps nx) = do
+  (stk, a) <- saveArgs stk
+  let k' = Mark a ps clos k
+  eval env denv activeThreads stk k' r nx
+  where
+    clos = EC.restrictKeys denv ps
+eval env !denv !activeThreads !stk !k r (Seq as nx) = do
+  l <- closureArgs stk as
+  stk <- bump stk
+  pokeS stk $ Sq.fromList l
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (ForeignCall _ func args nx) = do
+  stk <- xStackIOToIO $ foreignCall func args (unpackXStack stk)
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (Fork i nx)
+  | sandboxed env = die "attempted to use sandboxed operation: fork"
+  | otherwise = do
+      tid <- forkEval env activeThreads =<< peekOff stk i
+      stk <- bump stk
+      bpoke stk . Foreign . Wrap Rf.threadIdRef $ tid
+      eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (Atomically i nx)
+  | sandboxed env = die $ "attempted to use sandboxed operation: atomically"
+  | otherwise = do
+      v <- peekOff stk i
+      stk <- bump stk
+      atomicEval env activeThreads (poke stk) v
+      eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (TryForce i nx)
+  | sandboxed env = die $ "attempted to use sandboxed operation: tryForce"
+  | otherwise = do
+      v <- peekOff stk i
+      stk <- bump stk -- Bump the boxed stack to make a slot for the result, which will be written in the callback if we succeed.
+      ev <- Control.Exception.try $ nestEval env activeThreads (poke stk) v
+      stk <- encodeExn stk ev
+      eval env denv activeThreads stk k r nx
+eval !_ !_ !_ !_ !_ _ (SandboxingFailure t) = do
+  die $ "Attempted to use disallowed builtin in sandboxed environment: " <> DTx.unpack t
 {-# NOINLINE eval #-}
 
 unhandledAbilityRequest :: (HasCallStack) => IO a
