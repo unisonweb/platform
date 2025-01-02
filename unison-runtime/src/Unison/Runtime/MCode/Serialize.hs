@@ -75,6 +75,21 @@ data SectionT
   | DMatchT
   | NMatchT
   | RMatchT
+  | ForeignCallT
+  | SetDynT
+  | CaptureT
+  | NameT
+  | InfoT
+  | PackT
+  | LitT
+  | PrintT
+  | ResetT
+  | ForkT
+  | AtomicallyT
+  | SeqT
+  | TryForceT
+  | RefCAST
+  | SandboxingFailureT
 
 instance Tag SectionT where
   tag2word AppT = 0
@@ -89,6 +104,21 @@ instance Tag SectionT where
   tag2word DMatchT = 9
   tag2word NMatchT = 10
   tag2word RMatchT = 11
+  tag2word ForeignCallT = 12
+  tag2word SetDynT = 13
+  tag2word CaptureT = 14
+  tag2word NameT = 15
+  tag2word InfoT = 16
+  tag2word PackT = 17
+  tag2word LitT = 18
+  tag2word PrintT = 19
+  tag2word ResetT = 20
+  tag2word ForkT = 21
+  tag2word AtomicallyT = 22
+  tag2word SeqT = 23
+  tag2word TryForceT = 24
+  tag2word RefCAST = 25
+  tag2word SandboxingFailureT = 26
 
   word2tag 0 = pure AppT
   word2tag 1 = pure CallT
@@ -102,6 +132,21 @@ instance Tag SectionT where
   word2tag 9 = pure DMatchT
   word2tag 10 = pure NMatchT
   word2tag 11 = pure RMatchT
+  word2tag 12 = pure ForeignCallT
+  word2tag 13 = pure SetDynT
+  word2tag 14 = pure CaptureT
+  word2tag 15 = pure NameT
+  word2tag 16 = pure InfoT
+  word2tag 17 = pure PackT
+  word2tag 18 = pure LitT
+  word2tag 19 = pure PrintT
+  word2tag 20 = pure ResetT
+  word2tag 21 = pure ForkT
+  word2tag 22 = pure AtomicallyT
+  word2tag 23 = pure SeqT
+  word2tag 24 = pure TryForceT
+  word2tag 25 = pure RefCAST
+  word2tag 26 = pure SandboxingFailureT
   word2tag i = unknownTag "SectionT" i
 
 putSection :: (MonadPut m) => GSection cix -> m ()
@@ -127,6 +172,23 @@ putSection = \case
       *> pInt i
       *> putSection pu
       *> putEnumMap pWord putBranch bs
+  RefCAS i j k nx -> putTag RefCAST *> pInt i *> pInt j *> pInt k *> putSection nx
+  ForeignCall b ff a nx -> putTag ForeignCallT *> serialize b *> putMForeignFunc ff *> putArgs a *> putSection nx
+  SetDyn w i nx -> putTag SetDynT *> pWord w *> pInt i *> putSection nx
+  Capture w nx -> putTag CaptureT *> pWord w *> putSection nx
+  Name r a nx -> putTag NameT *> putRef r *> putArgs a *> putSection nx
+  Info s nx -> putTag InfoT *> serialize s *> putSection nx
+  Pack r w a nx -> putTag PackT *> putReference r *> putPackedTag w *> putArgs a *> putSection nx
+  Lit l nx -> putTag LitT *> putLit l *> putSection nx
+  Print i nx -> putTag PrintT *> pInt i *> putSection nx
+  Reset s nx -> putTag ResetT *> putEnumSet pWord s *> putSection nx
+  Fork i nx -> putTag ForkT *> pInt i *> putSection nx
+  Atomically i nx -> putTag AtomicallyT *> pInt i *> putSection nx
+  Seq a nx -> putTag SeqT *> putArgs a *> putSection nx
+  TryForce i nx -> putTag TryForceT *> pInt i *> putSection nx
+  SandboxingFailure {} ->
+    -- Sandboxing failures should only exist in code we're actively running, it shouldn't be serialized.
+    error "putInstr: Unexpected serialized Sandboxing Failure"
 
 getSection :: (MonadGet m) => m Section
 getSection =
@@ -149,68 +211,38 @@ getSection =
     NMatchT -> NMatch <$> getMaybe getReference <*> gInt <*> getBranch
     RMatchT ->
       RMatch <$> gInt <*> getSection <*> getEnumMap gWord getBranch
+    RefCAST -> RefCAS <$> gInt <*> gInt <*> gInt <*> getSection
+    ForeignCallT -> ForeignCall <$> deserialize <*> getMForeignFunc <*> getArgs <*> getSection
+    SetDynT -> SetDyn <$> gWord <*> gInt <*> getSection
+    CaptureT -> Capture <$> gWord <*> getSection
+    NameT -> Name <$> getRef <*> getArgs <*> getSection
+    InfoT -> Info <$> deserialize <*> getSection
+    PackT -> Pack <$> getReference <*> getPackedTag <*> getArgs <*> getSection
+    LitT -> Lit <$> getLit <*> getSection
+    PrintT -> Print <$> gInt <*> getSection
+    ResetT -> Reset <$> getEnumSet gWord <*> getSection
+    ForkT -> Fork <$> gInt <*> getSection
+    AtomicallyT -> Atomically <$> gInt <*> getSection
+    SeqT -> Seq <$> getArgs <*> getSection
+    TryForceT -> TryForce <$> gInt <*> getSection
+    SandboxingFailureT -> error "getInstr: Unexpected serialized Sandboxing Failure"
 
 data InstrT
   = UPrim1T
   | UPrim2T
   | BPrim1T
   | BPrim2T
-  | ForeignCallT
-  | SetDynT
-  | CaptureT
-  | NameT
-  | InfoT
-  | PackT
-  | LitT
-  | PrintT
-  | ResetT
-  | ForkT
-  | AtomicallyT
-  | SeqT
-  | TryForceT
-  | RefCAST
-  | SandboxingFailureT
 
 instance Tag InstrT where
   tag2word UPrim1T = 0
   tag2word UPrim2T = 1
   tag2word BPrim1T = 2
   tag2word BPrim2T = 3
-  tag2word ForeignCallT = 4
-  tag2word SetDynT = 5
-  tag2word CaptureT = 6
-  tag2word NameT = 7
-  tag2word InfoT = 8
-  tag2word PackT = 9
-  tag2word LitT = 10
-  tag2word PrintT = 11
-  tag2word ResetT = 12
-  tag2word ForkT = 13
-  tag2word AtomicallyT = 14
-  tag2word SeqT = 15
-  tag2word TryForceT = 16
-  tag2word RefCAST = 17
-  tag2word SandboxingFailureT = 18
 
   word2tag 0 = pure UPrim1T
   word2tag 1 = pure UPrim2T
   word2tag 2 = pure BPrim1T
   word2tag 3 = pure BPrim2T
-  word2tag 4 = pure ForeignCallT
-  word2tag 5 = pure SetDynT
-  word2tag 6 = pure CaptureT
-  word2tag 7 = pure NameT
-  word2tag 8 = pure InfoT
-  word2tag 9 = pure PackT
-  word2tag 10 = pure LitT
-  word2tag 11 = pure PrintT
-  word2tag 12 = pure ResetT
-  word2tag 13 = pure ForkT
-  word2tag 14 = pure AtomicallyT
-  word2tag 15 = pure SeqT
-  word2tag 16 = pure TryForceT
-  word2tag 17 = pure RefCAST
-  word2tag 18 = pure SandboxingFailureT
   word2tag n = unknownTag "InstrT" n
 
 putInstr :: (MonadPut m) => GInstr cix -> m ()
@@ -219,23 +251,6 @@ putInstr = \case
   (UPrim2 up i j) -> putTag UPrim2T *> putTag up *> pInt i *> pInt j
   (BPrim1 bp i) -> putTag BPrim1T *> putTag bp *> pInt i
   (BPrim2 bp i j) -> putTag BPrim2T *> putTag bp *> pInt i *> pInt j
-  (RefCAS i j k) -> putTag RefCAST *> pInt i *> pInt j *> pInt k
-  (ForeignCall b ff a) -> putTag ForeignCallT *> serialize b *> putMForeignFunc ff *> putArgs a
-  (SetDyn w i) -> putTag SetDynT *> pWord w *> pInt i
-  (Capture w) -> putTag CaptureT *> pWord w
-  (Name r a) -> putTag NameT *> putRef r *> putArgs a
-  (Info s) -> putTag InfoT *> serialize s
-  (Pack r w a) -> putTag PackT *> putReference r *> putPackedTag w *> putArgs a
-  (Lit l) -> putTag LitT *> putLit l
-  (Print i) -> putTag PrintT *> pInt i
-  (Reset s) -> putTag ResetT *> putEnumSet pWord s
-  (Fork i) -> putTag ForkT *> pInt i
-  (Atomically i) -> putTag AtomicallyT *> pInt i
-  (Seq a) -> putTag SeqT *> putArgs a
-  (TryForce i) -> putTag TryForceT *> pInt i
-  (SandboxingFailure {}) ->
-    -- Sandboxing failures should only exist in code we're actively running, it shouldn't be serialized.
-    error "putInstr: Unexpected serialized Sandboxing Failure"
 
 getInstr :: (MonadGet m) => m Instr
 getInstr =
@@ -244,21 +259,6 @@ getInstr =
     UPrim2T -> UPrim2 <$> getTag <*> gInt <*> gInt
     BPrim1T -> BPrim1 <$> getTag <*> gInt
     BPrim2T -> BPrim2 <$> getTag <*> gInt <*> gInt
-    RefCAST -> RefCAS <$> gInt <*> gInt <*> gInt
-    ForeignCallT -> ForeignCall <$> deserialize <*> getMForeignFunc <*> getArgs
-    SetDynT -> SetDyn <$> gWord <*> gInt
-    CaptureT -> Capture <$> gWord
-    NameT -> Name <$> getRef <*> getArgs
-    InfoT -> Info <$> deserialize
-    PackT -> Pack <$> getReference <*> getPackedTag <*> getArgs
-    LitT -> Lit <$> getLit
-    PrintT -> Print <$> gInt
-    ResetT -> Reset <$> getEnumSet gWord
-    ForkT -> Fork <$> gInt
-    AtomicallyT -> Atomically <$> gInt
-    SeqT -> Seq <$> getArgs
-    TryForceT -> TryForce <$> gInt
-    SandboxingFailureT -> error "getInstr: Unexpected serialized Sandboxing Failure"
 
 data ArgsT
   = ZArgsT

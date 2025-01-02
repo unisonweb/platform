@@ -109,7 +109,6 @@ import Unison.Runtime.Exception
 import Unison.Runtime.MCode
   ( Args (..),
     CombIx (..),
-    GInstr (..),
     GSection (..),
     RCombs,
     RefNums (..),
@@ -1063,7 +1062,7 @@ executeMainComb ::
   CCache ->
   IO (Either (Pretty ColorText) ())
 executeMainComb init cc = do
-  rSection <- resolveSection cc $ Ins (Pack RF.unitRef (PackedTag 0) ZArgs) $ Call True init init (VArg1 0)
+  rSection <- resolveSection cc $ Pack RF.unitRef (PackedTag 0) ZArgs $ Call True init init (VArg1 0)
   result <-
     UnliftIO.try . eval0 cc Nothing $ rSection
   case result of
@@ -1440,18 +1439,19 @@ buildSCache crsrc cssrc cacheableCombs trsrc ftm fty int rtmsrc rtysrc sndbx =
     restrictTyR m = Map.restrictKeys m typeRefs
 
 standalone :: CCache -> Word64 -> IO StoredCache
-standalone cc init = readTVarIO (combRefs cc) >>= \crs ->
-  case EC.lookup init crs of
-    Just rinit ->
-      buildSCache crs
-        <$> readTVarIO (srcCombs cc)
-        <*> readTVarIO (cacheableCombs cc)
-        <*> readTVarIO (tagRefs cc)
-        <*> readTVarIO (freshTm cc)
-        <*> readTVarIO (freshTy cc)
-        <*> (readTVarIO (intermed cc) >>= traceNeeded rinit)
-        <*> readTVarIO (refTm cc)
-        <*> readTVarIO (refTy cc)
-        <*> readTVarIO (sandbox cc)
-    Nothing ->
-      die $ "standalone: unknown combinator: " ++ show init
+standalone cc init =
+  readTVarIO (combRefs cc) >>= \crs ->
+    case EC.lookup init crs of
+      Just rinit ->
+        buildSCache crs
+          <$> readTVarIO (srcCombs cc)
+          <*> readTVarIO (cacheableCombs cc)
+          <*> readTVarIO (tagRefs cc)
+          <*> readTVarIO (freshTm cc)
+          <*> readTVarIO (freshTy cc)
+          <*> (readTVarIO (intermed cc) >>= traceNeeded rinit)
+          <*> readTVarIO (refTm cc)
+          <*> readTVarIO (refTy cc)
+          <*> readTVarIO (sandbox cc)
+      Nothing ->
+        die $ "standalone: unknown combinator: " ++ show init
