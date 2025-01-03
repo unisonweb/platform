@@ -1,16 +1,21 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE UnboxedTuples #-}
 
 module Unison.Runtime.MCode
   ( Args' (..),
     Args (..),
     RefNums (..),
-    MLit (..),
+    MLit,
     GInstr (..),
     Instr,
     RInstr,
@@ -33,8 +38,48 @@ module Unison.Runtime.MCode
     BPrim1 (..),
     BPrim2 (..),
     GBranch (..),
+    GClosure (..),
+    Val
+      ( Val,
+        getUnboxedVal,
+        getBoxedVal,
+        BoxedVal,
+        UnboxedVal,
+        CharVal,
+        NatVal,
+        DoubleVal,
+        IntVal,
+        BoolVal
+      ),
+    Closure
+      ( ..,
+        DataC,
+        PApV,
+        CapV,
+        PAp,
+        Enum,
+        Data1,
+        Data2,
+        DataG,
+        Captured,
+        Foreign,
+        BlackHole,
+        UnboxedTypeTag
+      ),
     Branch,
     RBranch,
+    K (..),
+    Callback (..),
+    XStack,
+    USeq,
+    IxClosure,
+    UVal,
+    BVal,
+    Seg,
+    USeg,
+    BSeg,
+    falseVal,
+    trueVal,
     emitCombs,
     emitComb,
     resolveCombs,
@@ -48,57 +93,50 @@ module Unison.Runtime.MCode
     combTypes,
     prettyCombs,
     prettyComb,
+    unboxedTypeTagToInt,
+    unboxedTypeTagFromInt,
+    emptyVal,
+    boxedVal,
+    UnboxedTypeTag (..),
+    SegList,
+    natTypeTag,
+    intTypeTag,
+    charTypeTag,
+    floatTypeTag,
   )
 where
 
+import Control.Monad.Primitive
 import Data.Bifoldable (Bifoldable (..))
-import Data.Bifunctor (Bifunctor, bimap, first)
 import Data.Bitraversable (Bitraversable (..), bifoldMapDefault, bimapDefault)
 import Data.Bits (shiftL, shiftR, (.|.))
+import Data.Char qualified as Char
 import Data.Coerce
-import Data.Functor ((<&>))
+import Data.IORef (IORef)
 import Data.Map.Strict qualified as M
+import Data.Primitive.ByteArray qualified as BA
 import Data.Primitive.PrimArray
 import Data.Primitive.PrimArray qualified as PA
-import Data.Set (Set)
 import Data.Set qualified as Set
+import Data.Tagged (Tagged (..))
 import Data.Text qualified as Text
-import Data.Void (Void, absurd)
-import Data.Word (Word16, Word64)
-import GHC.Stack (HasCallStack)
+import Data.Word
+import GHC.Base
+import GHC.Exts as L (IsList (..))
 import Unison.ABT.Normalized (pattern TAbss)
+import Unison.Prelude
 import Unison.Reference (Reference, showShort)
-import Unison.Referent (Referent)
-import Unison.Runtime.ANF
-  ( ANormal,
-    Branched (..),
-    CTag,
-    Direction (..),
-    Func (..),
-    Mem (..),
-    PackedTag (..),
-    SuperGroup (..),
-    SuperNormal (..),
-    internalBug,
-    packTags,
-    pattern TApp,
-    pattern TBLit,
-    pattern TFOp,
-    pattern TFrc,
-    pattern THnd,
-    pattern TLets,
-    pattern TLit,
-    pattern TMatch,
-    pattern TName,
-    pattern TPrm,
-    pattern TShift,
-    pattern TVar,
-  )
+import Unison.Runtime.ANF (ANormal, Branched (..), CTag, Direction (..), Func (..), Mem (..), PackedTag (..), SuperGroup (..), SuperNormal (..), internalBug, packTags, pattern TApp, pattern TBLit, pattern TFOp, pattern TFrc, pattern THnd, pattern TLets, pattern TLit, pattern TMatch, pattern TName, pattern TPrm, pattern TShift, pattern TVar)
 import Unison.Runtime.ANF qualified as ANF
+import Unison.Runtime.Array
+import Unison.Runtime.Foreign
 import Unison.Runtime.Foreign.Function.Type (ForeignFunc (..), foreignFuncBuiltinName)
+import Unison.Runtime.TypeTags qualified as TT
+import Unison.Type qualified as Ty
 import Unison.Util.EnumContainers as EC
-import Unison.Util.Text (Text)
+import Unison.Util.Text qualified as Util.Text
 import Unison.Var (Var)
+import Prelude hiding (words)
 
 -- This outlines some of the ideas/features in this core
 -- language, and how they may be used to implement features of
@@ -256,6 +294,360 @@ import Unison.Var (Var)
 -- mutation is to enable more efficient implementation of
 -- certain recursive, 'deep' handlers, since those can operate
 -- more like stateful code than control operators.
+
+newtype Closure = Closure {unClosure :: (GClosure (RComb Val))}
+  deriving stock (Show, Eq, Ord)
+
+type USeg = ByteArray
+
+type BVal = Closure
+
+type BSeg = Array Closure
+
+type Seg = (USeg, BSeg)
+
+-- Unboxed representation of the Stack, used to force GHC optimizations in a few spots.
+type XStack = (# Int#, Int#, Int#, MutableByteArray# (PrimState IO), MutableArray# (PrimState IO) Closure #)
+
+newtype Callback = Hook (XStack -> IO ())
+
+instance Eq Callback where _ == _ = True
+
+instance Ord Callback where compare _ _ = EQ
+
+-- Evaluation stack
+data K
+  = KE
+  | -- callback hook
+    CB Callback
+  | -- mark continuation with a prompt
+    Mark
+      !Int -- pending args
+      !(EnumSet Word64)
+      !(EnumMap Word64 Val)
+      !K
+  | -- save information about a frame for later resumption
+    Push
+      !Int -- frame size
+      !Int -- pending args
+      !CombIx -- resumption section reference
+      !Int -- stack guard
+      !(RSection Val) -- resumption section
+      !K
+
+instance Eq K where
+  KE == KE = True
+  (CB _) == (CB _) = True
+  (Mark a ps _ k) == (Mark a' ps' _ k') = a == a' && ps == ps' && k == k'
+  (Push f a ci _g _rsect k) == (Push f' a' ci' _g' _rsect' k') = f == f' && a == a' && ci == ci' && k == k'
+  _ == _ = False
+
+instance Ord K where
+  compare KE KE = EQ
+  compare KE _ = LT
+  compare _ KE = GT
+  compare (CB _) (CB _) = EQ
+  compare (CB _) _ = LT
+  compare _ (CB _) = GT
+  compare (Mark a ps _ k) (Mark a' ps' _ k') = compare (a, ps, k) (a', ps', k')
+  compare (Mark {}) _ = LT
+  compare _ (Mark {}) = GT
+  compare (Push f a ci _g _rsect k) (Push f' a' ci' _g' _rsect' k') = compare (f, a, ci, k) (f', a', ci', k')
+
+instance Show K where
+  show k = "[" ++ go "" k
+    where
+      go _ KE = "]"
+      go _ (CB _) = "]"
+      go com (Push f a ci _g _rsect k) =
+        com ++ show (f, a, ci) ++ go "," k
+      go com (Mark a ps _ k) =
+        com ++ "M " ++ show a ++ " " ++ show ps ++ go "," k
+
+{- ORMOLU_DISABLE -}
+data GClosure comb
+  = GPAp
+      !CombIx
+      {-# UNPACK #-} !(GCombInfo comb)
+      {-# UNPACK #-} !Seg -- args
+  | GEnum !Reference !PackedTag
+  | GData1 !Reference !PackedTag !Val
+  | GData2 !Reference !PackedTag !Val !Val
+  | GDataG !Reference !PackedTag {-# UNPACK #-} !Seg
+  | -- code cont, arg size, u/b data stacks
+    GCaptured !K !Int {-# UNPACK #-} !Seg
+  | GForeign !Foreign
+  | -- The type tag for the value in the corresponding unboxed stack slot.
+    -- We should consider adding separate constructors for common builtin type tags.
+    --  GHC will optimize nullary constructors into singletons.
+    GUnboxedTypeTag !UnboxedTypeTag
+  | GBlackHole
+#ifdef STACK_CHECK
+  | GUnboxedSentinel
+#endif
+  deriving stock (Show, Functor, Foldable, Traversable, Eq, Ord)
+{- ORMOLU_ENABLE -}
+
+-- | Implementation for Unison sequences.
+type USeq = Seq Val
+
+type IxClosure = GClosure CombIx
+
+-- Don't re-order these, the ord instance affects Universal.compare
+data UnboxedTypeTag
+  = CharTag
+  | FloatTag
+  | IntTag
+  | NatTag
+  deriving stock (Show, Eq, Ord)
+
+unboxedTypeTagToInt :: UnboxedTypeTag -> Int
+unboxedTypeTagToInt = \case
+  CharTag -> 0
+  FloatTag -> 1
+  IntTag -> 2
+  NatTag -> 3
+
+unboxedTypeTagFromInt :: (HasCallStack) => Int -> UnboxedTypeTag
+unboxedTypeTagFromInt = \case
+  0 -> CharTag
+  1 -> FloatTag
+  2 -> IntTag
+  3 -> NatTag
+  _ -> error "intToUnboxedTypeTag: invalid tag"
+
+-- Singleton black hole value to avoid allocation.
+blackHole :: Closure
+blackHole = Closure GBlackHole
+{-# NOINLINE blackHole #-}
+
+pattern PAp :: CombIx -> GCombInfo (RComb Val) -> Seg -> Closure
+pattern PAp cix comb seg = Closure (GPAp cix comb seg)
+
+pattern Enum :: Reference -> PackedTag -> Closure
+pattern Enum r t = Closure (GEnum r t)
+
+pattern Data1 r t i = Closure (GData1 r t i)
+
+pattern Data2 r t i j = Closure (GData2 r t i j)
+
+pattern DataG r t seg = Closure (GDataG r t seg)
+
+pattern Captured k a seg = Closure (GCaptured k a seg)
+
+pattern Foreign x = Closure (GForeign x)
+
+pattern BlackHole <- Closure GBlackHole
+  where
+    BlackHole = blackHole
+
+pattern UnboxedTypeTag t <- Closure (GUnboxedTypeTag t)
+  where
+    UnboxedTypeTag t = case t of
+      CharTag -> charTypeTag
+      FloatTag -> floatTypeTag
+      IntTag -> intTypeTag
+      NatTag -> natTypeTag
+
+{-# COMPLETE PAp, Enum, Data1, Data2, DataG, Captured, Foreign, UnboxedTypeTag, BlackHole #-}
+
+{-# COMPLETE DataC, PAp, Captured, Foreign, BlackHole, UnboxedTypeTag #-}
+
+{-# COMPLETE DataC, PApV, Captured, Foreign, BlackHole, UnboxedTypeTag #-}
+
+{-# COMPLETE DataC, PApV, CapV, Foreign, BlackHole, UnboxedTypeTag #-}
+
+type UVal = Int
+
+instance BuiltinForeign (IORef Val) where foreignRef = Tagged Ty.refRef
+
+-- | A nulled out value you can use when filling empty arrays, etc.
+emptyVal :: Val
+emptyVal = Val (-1) BlackHole
+
+pattern UnboxedVal :: Int -> UnboxedTypeTag -> Val
+pattern UnboxedVal v t = (Val v (UnboxedTypeTag t))
+
+valToBoxed :: Val -> Maybe Closure
+valToBoxed UnboxedVal {} = Nothing
+valToBoxed (Val _ b) = Just b
+
+-- | Matches a Val which is known to be boxed, and returns the closure portion.
+pattern BoxedVal :: Closure -> Val
+pattern BoxedVal b <- (valToBoxed -> Just b)
+  where
+    BoxedVal b = Val (-1) b
+
+{-# COMPLETE UnboxedVal, BoxedVal #-}
+
+-- | Lift a boxed val into an Val
+boxedVal :: BVal -> Val
+boxedVal = Val 0
+
+splitData :: Closure -> Maybe (Reference, PackedTag, SegList)
+splitData = \case
+  (Enum r t) -> Just (r, t, [])
+  (Data1 r t u) -> Just (r, t, [u])
+  (Data2 r t i j) -> Just (r, t, [i, j])
+  (DataG r t seg) -> Just (r, t, segToList seg)
+  _ -> Nothing
+
+-- | Converts from the efficient stack form of a segment to the list representation. Segments are stored backwards,
+-- so this reverses the contents
+segToList :: Seg -> SegList
+segToList (u, b) =
+  zipWith Val (ints u) (bsegToList b)
+
+-- | Converts an unboxed segment to a list of integers for a more interchangeable
+-- representation. The segments are stored in backwards order, so this reverses
+-- the contents.
+ints :: ByteArray -> [Int]
+ints ba = fmap (indexByteArray ba) [n - 1, n - 2 .. 0]
+  where
+    n = sizeofByteArray ba `div` 8
+
+-- | Converts from the list representation of a segment to the efficient stack form. Segments are stored backwards,
+-- so this reverses the contents.
+segFromList :: SegList -> Seg
+segFromList xs =
+  xs
+    & foldMap
+      ( \(Val unboxed boxed) -> ([unboxed], [boxed])
+      )
+    & \(us, bs) -> (useg us, bseg bs)
+
+-- | Converts a list of integers representing an unboxed segment back into the
+-- appropriate segment. Segments are stored backwards in the runtime, so this
+-- reverses the list.
+useg :: [Int] -> USeg
+useg ws = case L.fromList $ reverse ws of
+  PrimArray ba -> ByteArray ba
+
+-- | Converts a boxed segment to a list of closures. The segments are stored
+-- backwards, so this reverses the contents.
+bsegToList :: BSeg -> [Closure]
+bsegToList = reverse . L.toList
+
+-- | Converts a list of closures back to a boxed segment. Segments are stored
+-- backwards, so this reverses the contents.
+bseg :: [Closure] -> BSeg
+bseg = L.fromList . reverse
+
+formData :: Reference -> PackedTag -> SegList -> Closure
+formData r t [] = Enum r t
+formData r t [v1] = Data1 r t v1
+formData r t [v1, v2] = Data2 r t v1 v2
+formData r t segList = DataG r t (segFromList segList)
+
+pattern DataC :: Reference -> PackedTag -> SegList -> Closure
+pattern DataC rf ct segs <-
+  (splitData -> Just (rf, ct, segs))
+  where
+    DataC rf ct segs = formData rf ct segs
+
+matchCharVal :: Val -> Maybe Char
+matchCharVal = \case
+  (UnboxedVal u CharTag) -> Just (Char.chr u)
+  _ -> Nothing
+
+pattern CharVal :: Char -> Val
+pattern CharVal c <- (matchCharVal -> Just c)
+  where
+    CharVal c = Val (Char.ord c) charTypeTag
+
+matchNatVal :: Val -> Maybe Word64
+matchNatVal = \case
+  (UnboxedVal u NatTag) -> Just (fromIntegral u)
+  _ -> Nothing
+
+pattern NatVal :: Word64 -> Val
+pattern NatVal n <- (matchNatVal -> Just n)
+  where
+    NatVal n = Val (fromIntegral n) natTypeTag
+
+matchDoubleVal :: Val -> Maybe Double
+matchDoubleVal = \case
+  (UnboxedVal u FloatTag) -> Just (intToDouble u)
+  _ -> Nothing
+
+pattern DoubleVal :: Double -> Val
+pattern DoubleVal d <- (matchDoubleVal -> Just d)
+  where
+    DoubleVal d = Val (doubleToInt d) floatTypeTag
+
+matchIntVal :: Val -> Maybe Int
+matchIntVal = \case
+  (UnboxedVal u IntTag) -> Just u
+  _ -> Nothing
+
+pattern IntVal :: Int -> Val
+pattern IntVal i <- (matchIntVal -> Just i)
+  where
+    IntVal i = Val i intTypeTag
+
+matchBoolVal :: Val -> Maybe Bool
+matchBoolVal = \case
+  (BoxedVal (Enum r t)) | r == Ty.booleanRef -> Just (t == TT.falseTag)
+  _ -> Nothing
+
+pattern BoolVal :: Bool -> Val
+pattern BoolVal b <- (matchBoolVal -> Just b)
+  where
+    BoolVal b = if b then trueVal else falseVal
+
+-- Define singletons we can use for the bools to prevent allocation where possible.
+falseVal :: Val
+falseVal = BoxedVal (Enum Ty.booleanRef TT.falseTag)
+{-# NOINLINE falseVal #-}
+
+trueVal :: Val
+trueVal = BoxedVal (Enum Ty.booleanRef TT.trueTag)
+{-# NOINLINE trueVal #-}
+
+doubleToInt :: Double -> Int
+doubleToInt d = indexByteArray (BA.byteArrayFromList [d]) 0
+{-# INLINE doubleToInt #-}
+
+intToDouble :: Int -> Double
+intToDouble w = indexByteArray (BA.byteArrayFromList [w]) 0
+{-# INLINE intToDouble #-}
+
+type SegList = [Val]
+
+pattern PApV :: CombIx -> RCombInfo Val -> SegList -> Closure
+pattern PApV cix rcomb segs <-
+  PAp cix rcomb (segToList -> segs)
+  where
+    PApV cix rcomb segs = PAp cix rcomb (segFromList segs)
+
+pattern CapV :: K -> Int -> SegList -> Closure
+pattern CapV k a segs <- Captured k a (segToList -> segs)
+  where
+    CapV k a segList = Captured k a (segFromList segList)
+
+-- We can avoid allocating a closure for common type tags on each poke by having shared top-level closures for them.
+natTypeTag :: Closure
+natTypeTag = (Closure (GUnboxedTypeTag NatTag))
+{-# NOINLINE natTypeTag #-}
+
+intTypeTag :: Closure
+intTypeTag = (Closure (GUnboxedTypeTag IntTag))
+{-# NOINLINE intTypeTag #-}
+
+charTypeTag :: Closure
+charTypeTag = (Closure (GUnboxedTypeTag CharTag))
+{-# NOINLINE charTypeTag #-}
+
+floatTypeTag :: Closure
+floatTypeTag = (Closure (GUnboxedTypeTag FloatTag))
+{-# NOINLINE floatTypeTag #-}
+
+-- | A runtime value, which is either a boxed or unboxed value, but we may not know which.
+data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
+  -- The Eq instance for Val is deliberately omitted because you need to take into account the fact that if a Val is boxed, the
+  -- unboxed side is garbage and should not be compared.
+  -- See universalEq.
+  deriving (Show, Eq, Ord)
 
 data Sandboxed = Tracked | Untracked
   deriving (Show, Eq, Ord)
@@ -468,15 +860,17 @@ data BPrim2
   | REFW -- Ref.write
   deriving (Show, Eq, Ord, Enum, Bounded)
 
-data MLit
-  = MI !Int
-  | MN !Word64
-  | MC !Char
-  | MD !Double
-  | MT !Text
-  | MM !Referent -- Term Link
-  | MY !Reference -- Type Link
-  deriving (Show, Eq, Ord)
+type MLit = Val
+
+-- data MLit
+--   = MI !Int
+--   | MN !Word64
+--   | MC !Char
+--   | MD !Double
+--   | MT !Text
+--   | MM !Referent -- Term Link
+--   | MY !Reference -- Type Link
+--   deriving (Show, Eq, Ord)
 
 type Instr = GInstr CombIx
 
@@ -684,6 +1078,7 @@ type RCombs val = GCombs val (RComb val)
 
 -- | The fixed point of a GComb where all references to a Comb are themselves Combs.
 newtype RComb val = RComb {unRComb :: GComb val (RComb val)}
+  deriving (Eq, Ord)
 
 type RCombInfo val = GCombInfo (RComb val)
 
@@ -737,7 +1132,7 @@ data GBranch comb
       !(EnumMap Word64 (GSection comb))
   | TestT
       !(GSection comb)
-      !(M.Map Text (GSection comb))
+      !(M.Map Util.Text.Text (GSection comb))
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 branchToEnumMap :: GBranch comb -> Maybe ((GSection comb), EnumMap Word64 (GSection comb))
@@ -753,7 +1148,7 @@ pattern MatchW i d cs <- Match i (branchToEnumMap -> Just (d, cs))
   where
     MatchW i d cs = Match i (mkBranch d cs)
 
-pattern MatchT :: Int -> (GSection comb) -> M.Map Text (GSection comb) -> (GSection comb)
+pattern MatchT :: Int -> (GSection comb) -> M.Map Util.Text.Text (GSection comb) -> (GSection comb)
 pattern MatchT i d cs = Match i (TestT d cs)
 
 pattern NMatchW ::
@@ -806,7 +1201,7 @@ ctxResolve ctx v = walk 0 ctx
 
 -- Add a sequence of variables and calling conventions to the context.
 pushCtx :: [(v, Mem)] -> Ctx v -> Ctx v
-pushCtx new old = foldr (uncurry Var) old new
+pushCtx new old = Prelude.foldr (uncurry Var) old new
 
 -- Concatenate two contexts
 catCtx :: Ctx v -> Ctx v -> Ctx v
@@ -1095,7 +1490,7 @@ emitSection rns grpr grpn rec ctx (TMatch v bs)
 emitSection rns grpr grpn rec ctx (THnd rs h b)
   | Just (i, BX) <- ctxResolve ctx h =
       Ins (Reset (EC.setFromList ws))
-        . flip (foldr (\r -> Ins (SetDyn r i))) ws
+        . flip (Prelude.foldr (\r -> Ins (SetDyn r i))) ws
         <$> emitSection rns grpr grpn rec ctx b
   | otherwise = emitSectionVErr h
   where
@@ -1566,13 +1961,13 @@ emitSumCase rns grpr grpn rec ctx v (ccs, TAbss vs bo) =
   emitSection rns grpr grpn rec (sumCtx ctx v $ zip vs ccs) bo
 
 litToMLit :: ANF.Lit -> MLit
-litToMLit (ANF.I i) = MI (fromIntegral i)
-litToMLit (ANF.N n) = MN n
-litToMLit (ANF.C c) = MC c
-litToMLit (ANF.F d) = MD d
-litToMLit (ANF.T t) = MT t
-litToMLit (ANF.LM r) = MM r
-litToMLit (ANF.LY r) = MY r
+litToMLit (ANF.I i) = IntVal (fromIntegral i)
+litToMLit (ANF.N n) = NatVal n
+litToMLit (ANF.C c) = CharVal c
+litToMLit (ANF.F d) = DoubleVal d
+litToMLit (ANF.T t) = BoxedVal $ Foreign (Wrap Ty.textRef t)
+litToMLit (ANF.LM r) = BoxedVal $ Foreign (Wrap Ty.termLinkRef r)
+litToMLit (ANF.LY r) = BoxedVal $ Foreign (Wrap Ty.typeLinkRef r)
 
 -- | Emit a literal as a machine literal of the correct boxed/unboxed format.
 emitLit :: ANF.Lit -> Instr
@@ -1692,7 +2087,7 @@ prettyCombs ::
   EnumMap Word64 Comb ->
   ShowS
 prettyCombs w es =
-  foldr
+  Prelude.foldr
     (\(i, c) r -> prettyComb w i c . showString "\n" . r)
     id
     (mapToList es)
@@ -1758,7 +2153,7 @@ prettySection ind sec =
         . shows i
         . showString "\nPUR ->\n"
         . prettySection (ind + 1) pu
-        . foldr (\p r -> rqc p . r) id (mapToList bs)
+        . Prelude.foldr (\p r -> rqc p . r) id (mapToList bs)
       where
         rqc (i, e) =
           showString "\n"
@@ -1786,9 +2181,9 @@ prettyBranches ind bs =
     Test1 i e df -> pdf df . picase i e
     Test2 i ei j ej df -> pdf df . picase i ei . picase j ej
     TestW df m ->
-      pdf df . foldr (\(i, e) r -> picase i e . r) id (mapToList m)
+      pdf df . Prelude.foldr (\(i, e) r -> picase i e . r) id (mapToList m)
     TestT df m ->
-      pdf df . foldr (\(i, e) r -> ptcase i e . r) id (M.toList m)
+      pdf df . Prelude.foldr (\(i, e) r -> ptcase i e . r) id (M.toList m)
   where
     pdf e = indent ind . showString "DFLT ->\n" . prettySection (ind + 1) e
     ptcase t e =

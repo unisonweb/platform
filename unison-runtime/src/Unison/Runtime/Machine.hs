@@ -288,17 +288,6 @@ unitClosure :: Closure
 unitClosure = Enum Ty.unitRef (PackedTag 0)
 {-# NOINLINE unitClosure #-}
 
-litToVal :: MLit -> Val
-litToVal = \case
-  MT t -> BoxedVal $ Foreign (Wrap Rf.textRef t)
-  MM r -> BoxedVal $ Foreign (Wrap Rf.termLinkRef r)
-  MY r -> BoxedVal $ Foreign (Wrap Rf.typeLinkRef r)
-  MI i -> IntVal i
-  MN n -> NatVal n
-  MC c -> CharVal c
-  MD d -> DoubleVal d
-{-# INLINE litToVal #-}
-
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
 debugger :: (Show a) => Stack -> String -> a -> Bool
@@ -579,7 +568,7 @@ exec _ !denv !_activeThreads !stk !k _ (Print i) = do
   pure (denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (Lit ml) = do
   stk <- bump stk
-  poke stk $ litToVal ml
+  poke stk ml
   pure (denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (Reset ps) = do
   (stk, a) <- saveArgs stk

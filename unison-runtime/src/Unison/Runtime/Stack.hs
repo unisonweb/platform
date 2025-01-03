@@ -7,21 +7,7 @@
 module Unison.Runtime.Stack
   ( K (..),
     GClosure (..),
-    Closure
-      ( ..,
-        DataC,
-        PApV,
-        CapV,
-        PAp,
-        Enum,
-        Data1,
-        Data2,
-        DataG,
-        Captured,
-        Foreign,
-        BlackHole,
-        UnboxedTypeTag
-      ),
+    Closure (..),
     UnboxedTypeTag (..),
     unboxedTypeTagToInt,
     unboxedTypeTagFromInt,
@@ -49,16 +35,7 @@ module Unison.Runtime.Stack
     USeg,
     BSeg,
     SegList,
-    Val
-      ( ..,
-        CharVal,
-        NatVal,
-        DoubleVal,
-        IntVal,
-        BoolVal,
-        UnboxedVal,
-        BoxedVal
-      ),
+    Val (..),
     emptyVal,
     falseVal,
     trueVal,
@@ -148,24 +125,18 @@ where
 
 import Control.Monad.Primitive
 import Data.Char qualified as Char
-import Data.IORef (IORef)
 import Data.Primitive (sizeOf)
-import Data.Primitive.ByteArray qualified as BA
-import Data.Tagged (Tagged (..))
 import Data.Word
 import GHC.Base
-import GHC.Exts as L (IsList (..))
 import Language.Haskell.TH qualified as TH
 import Test.Inspection qualified as TI
 import Unison.Prelude
 import Unison.Reference (Reference)
-import Unison.Runtime.ANF (PackedTag)
 import Unison.Runtime.Array
 import Unison.Runtime.Foreign
 import Unison.Runtime.MCode
 import Unison.Runtime.TypeTags qualified as TT
 import Unison.Type qualified as Ty
-import Unison.Util.EnumContainers as EC
 import Prelude hiding (words)
 
 {- ORMOLU_DISABLE -}
@@ -207,145 +178,6 @@ type DebugCallStack = (() :: Constraint)
 #endif
 {- ORMOLU_ENABLE -}
 
-newtype Callback = Hook (XStack -> IO ())
-
-instance Eq Callback where _ == _ = True
-
-instance Ord Callback where compare _ _ = EQ
-
--- Evaluation stack
-data K
-  = KE
-  | -- callback hook
-    CB Callback
-  | -- mark continuation with a prompt
-    Mark
-      !Int -- pending args
-      !(EnumSet Word64)
-      !(EnumMap Word64 Val)
-      !K
-  | -- save information about a frame for later resumption
-    Push
-      !Int -- frame size
-      !Int -- pending args
-      !CombIx -- resumption section reference
-      !Int -- stack guard
-      !(RSection Val) -- resumption section
-      !K
-
-newtype Closure = Closure {unClosure :: (GClosure (RComb Val))}
-  deriving stock (Show)
-
--- | Implementation for Unison sequences.
-type USeq = Seq Val
-
-type IxClosure = GClosure CombIx
-
--- Don't re-order these, the ord instance affects Universal.compare
-data UnboxedTypeTag
-  = CharTag
-  | FloatTag
-  | IntTag
-  | NatTag
-  deriving stock (Show, Eq, Ord)
-
-unboxedTypeTagToInt :: UnboxedTypeTag -> Int
-unboxedTypeTagToInt = \case
-  CharTag -> 0
-  FloatTag -> 1
-  IntTag -> 2
-  NatTag -> 3
-
-unboxedTypeTagFromInt :: (HasCallStack) => Int -> UnboxedTypeTag
-unboxedTypeTagFromInt = \case
-  0 -> CharTag
-  1 -> FloatTag
-  2 -> IntTag
-  3 -> NatTag
-  _ -> error "intToUnboxedTypeTag: invalid tag"
-
-{- ORMOLU_DISABLE -}
-data GClosure comb
-  = GPAp
-      !CombIx
-      {-# UNPACK #-} !(GCombInfo comb)
-      {-# UNPACK #-} !Seg -- args
-  | GEnum !Reference !PackedTag
-  | GData1 !Reference !PackedTag !Val
-  | GData2 !Reference !PackedTag !Val !Val
-  | GDataG !Reference !PackedTag {-# UNPACK #-} !Seg
-  | -- code cont, arg size, u/b data stacks
-    GCaptured !K !Int {-# UNPACK #-} !Seg
-  | GForeign !Foreign
-  | -- The type tag for the value in the corresponding unboxed stack slot.
-    -- We should consider adding separate constructors for common builtin type tags.
-    --  GHC will optimize nullary constructors into singletons.
-    GUnboxedTypeTag !UnboxedTypeTag
-  | GBlackHole
-#ifdef STACK_CHECK
-  | GUnboxedSentinel
-#endif
-  deriving stock (Show, Functor, Foldable, Traversable)
-{- ORMOLU_ENABLE -}
-
--- Singleton black hole value to avoid allocation.
-blackHole :: Closure
-blackHole = Closure GBlackHole
-{-# NOINLINE blackHole #-}
-
-pattern PAp :: CombIx -> GCombInfo (RComb Val) -> Seg -> Closure
-pattern PAp cix comb seg = Closure (GPAp cix comb seg)
-
-pattern Enum :: Reference -> PackedTag -> Closure
-pattern Enum r t = Closure (GEnum r t)
-
-pattern Data1 r t i = Closure (GData1 r t i)
-
-pattern Data2 r t i j = Closure (GData2 r t i j)
-
-pattern DataG r t seg = Closure (GDataG r t seg)
-
-pattern Captured k a seg = Closure (GCaptured k a seg)
-
-pattern Foreign x = Closure (GForeign x)
-
-pattern BlackHole <- Closure GBlackHole
-  where
-    BlackHole = blackHole
-
-pattern UnboxedTypeTag t <- Closure (GUnboxedTypeTag t)
-  where
-    UnboxedTypeTag t = case t of
-      CharTag -> charTypeTag
-      FloatTag -> floatTypeTag
-      IntTag -> intTypeTag
-      NatTag -> natTypeTag
-
-{-# COMPLETE PAp, Enum, Data1, Data2, DataG, Captured, Foreign, UnboxedTypeTag, BlackHole #-}
-
-{-# COMPLETE DataC, PAp, Captured, Foreign, BlackHole, UnboxedTypeTag #-}
-
-{-# COMPLETE DataC, PApV, Captured, Foreign, BlackHole, UnboxedTypeTag #-}
-
-{-# COMPLETE DataC, PApV, CapV, Foreign, BlackHole, UnboxedTypeTag #-}
-
--- We can avoid allocating a closure for common type tags on each poke by having shared top-level closures for them.
-natTypeTag :: Closure
-natTypeTag = (Closure (GUnboxedTypeTag NatTag))
-{-# NOINLINE natTypeTag #-}
-
-intTypeTag :: Closure
-intTypeTag = (Closure (GUnboxedTypeTag IntTag))
-{-# NOINLINE intTypeTag #-}
-
-charTypeTag :: Closure
-charTypeTag = (Closure (GUnboxedTypeTag CharTag))
-{-# NOINLINE charTypeTag #-}
-
-floatTypeTag :: Closure
-floatTypeTag = (Closure (GUnboxedTypeTag FloatTag))
-{-# NOINLINE floatTypeTag #-}
-
 traceK :: Reference -> K -> [(Reference, Int)]
 traceK begin = dedup (begin, 1)
   where
@@ -355,37 +187,6 @@ traceK begin = dedup (begin, 1)
       | otherwise = p : dedup (r, 1) k
     dedup p _ = [p]
 
-splitData :: Closure -> Maybe (Reference, PackedTag, SegList)
-splitData = \case
-  (Enum r t) -> Just (r, t, [])
-  (Data1 r t u) -> Just (r, t, [u])
-  (Data2 r t i j) -> Just (r, t, [i, j])
-  (DataG r t seg) -> Just (r, t, segToList seg)
-  _ -> Nothing
-
--- | Converts a list of integers representing an unboxed segment back into the
--- appropriate segment. Segments are stored backwards in the runtime, so this
--- reverses the list.
-useg :: [Int] -> USeg
-useg ws = case L.fromList $ reverse ws of
-  PrimArray ba -> ByteArray ba
-
--- | Converts a boxed segment to a list of closures. The segments are stored
--- backwards, so this reverses the contents.
-bsegToList :: BSeg -> [Closure]
-bsegToList = reverse . L.toList
-
--- | Converts a list of closures back to a boxed segment. Segments are stored
--- backwards, so this reverses the contents.
-bseg :: [Closure] -> BSeg
-bseg = L.fromList . reverse
-
-formData :: Reference -> PackedTag -> SegList -> Closure
-formData r t [] = Enum r t
-formData r t [v1] = Data1 r t v1
-formData r t [v1, v2] = Data2 r t v1 v2
-formData r t segList = DataG r t (segFromList segList)
-
 frameDataSize :: K -> Int
 frameDataSize = go 0
   where
@@ -394,116 +195,6 @@ frameDataSize = go 0
     go sz (Mark a _ _ k) = go (sz + a) k
     go sz (Push f a _ _ _ k) =
       go (sz + f + a) k
-
-pattern DataC :: Reference -> PackedTag -> SegList -> Closure
-pattern DataC rf ct segs <-
-  (splitData -> Just (rf, ct, segs))
-  where
-    DataC rf ct segs = formData rf ct segs
-
-matchCharVal :: Val -> Maybe Char
-matchCharVal = \case
-  (UnboxedVal u CharTag) -> Just (Char.chr u)
-  _ -> Nothing
-
-pattern CharVal :: Char -> Val
-pattern CharVal c <- (matchCharVal -> Just c)
-  where
-    CharVal c = Val (Char.ord c) charTypeTag
-
-matchNatVal :: Val -> Maybe Word64
-matchNatVal = \case
-  (UnboxedVal u NatTag) -> Just (fromIntegral u)
-  _ -> Nothing
-
-pattern NatVal :: Word64 -> Val
-pattern NatVal n <- (matchNatVal -> Just n)
-  where
-    NatVal n = Val (fromIntegral n) natTypeTag
-
-matchDoubleVal :: Val -> Maybe Double
-matchDoubleVal = \case
-  (UnboxedVal u FloatTag) -> Just (intToDouble u)
-  _ -> Nothing
-
-pattern DoubleVal :: Double -> Val
-pattern DoubleVal d <- (matchDoubleVal -> Just d)
-  where
-    DoubleVal d = Val (doubleToInt d) floatTypeTag
-
-matchIntVal :: Val -> Maybe Int
-matchIntVal = \case
-  (UnboxedVal u IntTag) -> Just u
-  _ -> Nothing
-
-pattern IntVal :: Int -> Val
-pattern IntVal i <- (matchIntVal -> Just i)
-  where
-    IntVal i = Val i intTypeTag
-
-matchBoolVal :: Val -> Maybe Bool
-matchBoolVal = \case
-  (BoxedVal (Enum r t)) | r == Ty.booleanRef -> Just (t == TT.falseTag)
-  _ -> Nothing
-
-pattern BoolVal :: Bool -> Val
-pattern BoolVal b <- (matchBoolVal -> Just b)
-  where
-    BoolVal b = if b then trueVal else falseVal
-
--- Define singletons we can use for the bools to prevent allocation where possible.
-falseVal :: Val
-falseVal = BoxedVal (Enum Ty.booleanRef TT.falseTag)
-{-# NOINLINE falseVal #-}
-
-trueVal :: Val
-trueVal = BoxedVal (Enum Ty.booleanRef TT.trueTag)
-{-# NOINLINE trueVal #-}
-
-doubleToInt :: Double -> Int
-doubleToInt d = indexByteArray (BA.byteArrayFromList [d]) 0
-{-# INLINE doubleToInt #-}
-
-intToDouble :: Int -> Double
-intToDouble w = indexByteArray (BA.byteArrayFromList [w]) 0
-{-# INLINE intToDouble #-}
-
-type SegList = [Val]
-
-pattern PApV :: CombIx -> RCombInfo Val -> SegList -> Closure
-pattern PApV cix rcomb segs <-
-  PAp cix rcomb (segToList -> segs)
-  where
-    PApV cix rcomb segs = PAp cix rcomb (segFromList segs)
-
-pattern CapV :: K -> Int -> SegList -> Closure
-pattern CapV k a segs <- Captured k a (segToList -> segs)
-  where
-    CapV k a segList = Captured k a (segFromList segList)
-
--- | Converts from the efficient stack form of a segment to the list representation. Segments are stored backwards,
--- so this reverses the contents
-segToList :: Seg -> SegList
-segToList (u, b) =
-  zipWith Val (ints u) (bsegToList b)
-
--- | Converts an unboxed segment to a list of integers for a more interchangeable
--- representation. The segments are stored in backwards order, so this reverses
--- the contents.
-ints :: ByteArray -> [Int]
-ints ba = fmap (indexByteArray ba) [n - 1, n - 2 .. 0]
-  where
-    n = sizeofByteArray ba `div` 8
-
--- | Converts from the list representation of a segment to the efficient stack form. Segments are stored backwards,
--- so this reverses the contents.
-segFromList :: SegList -> Seg
-segFromList xs =
-  xs
-    & foldMap
-      ( \(Val unboxed boxed) -> ([unboxed], [boxed])
-      )
-    & \(us, bs) -> (useg us, bseg bs)
 
 marshalToForeign :: (HasCallStack) => Closure -> Foreign
 marshalToForeign (Foreign x) = x
@@ -645,9 +336,6 @@ data Stack = Stack
     bstk :: {-# UNPACK #-} !(MutableArray (PrimState IO) Closure)
   }
 
--- Unboxed representation of the Stack, used to force GHC optimizations in a few spots.
-type XStack = (# Int#, Int#, Int#, MutableByteArray# (PrimState IO), MutableArray# (PrimState IO) Closure #)
-
 type IOXStack = State# RealWorld -> (# State# RealWorld, XStack #)
 
 pattern XStack :: Int# -> Int# -> Int# -> MutableByteArray# RealWorld -> MutableArray# RealWorld Closure -> Stack
@@ -676,48 +364,6 @@ stackIOToIOX (IO f) = \s -> case f s of (# s', x #) -> (# s', unpackXStack x #)
 instance Show Stack where
   show (Stack ap fp sp _ _) =
     "Stack " ++ show ap ++ " " ++ show fp ++ " " ++ show sp
-
-type UVal = Int
-
--- | A runtime value, which is either a boxed or unboxed value, but we may not know which.
-data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
-  -- The Eq instance for Val is deliberately omitted because you need to take into account the fact that if a Val is boxed, the
-  -- unboxed side is garbage and should not be compared.
-  -- See universalEq.
-  deriving (Show)
-
-instance BuiltinForeign (IORef Val) where foreignRef = Tagged Ty.refRef
-
--- | A nulled out value you can use when filling empty arrays, etc.
-emptyVal :: Val
-emptyVal = Val (-1) BlackHole
-
-pattern UnboxedVal :: Int -> UnboxedTypeTag -> Val
-pattern UnboxedVal v t = (Val v (UnboxedTypeTag t))
-
-valToBoxed :: Val -> Maybe Closure
-valToBoxed UnboxedVal {} = Nothing
-valToBoxed (Val _ b) = Just b
-
--- | Matches a Val which is known to be boxed, and returns the closure portion.
-pattern BoxedVal :: Closure -> Val
-pattern BoxedVal b <- (valToBoxed -> Just b)
-  where
-    BoxedVal b = Val (-1) b
-
-{-# COMPLETE UnboxedVal, BoxedVal #-}
-
--- | Lift a boxed val into an Val
-boxedVal :: BVal -> Val
-boxedVal = Val 0
-
-type USeg = ByteArray
-
-type BVal = Closure
-
-type BSeg = Array Closure
-
-type Seg = (USeg, BSeg)
 
 alloc :: IO Stack
 alloc = do
@@ -1205,16 +851,6 @@ bnull = fromListN 0 []
 
 nullSeg :: Seg
 nullSeg = (unull, bnull)
-
-instance Show K where
-  show k = "[" ++ go "" k
-    where
-      go _ KE = "]"
-      go _ (CB _) = "]"
-      go com (Push f a ci _g _rsect k) =
-        com ++ show (f, a, ci) ++ go "," k
-      go com (Mark a ps _ k) =
-        com ++ "M " ++ show a ++ " " ++ show ps ++ go "," k
 
 frameView :: Stack -> IO ()
 frameView stk = putStr "|" >> gof False 0

@@ -355,24 +355,10 @@ instance Tag MLitT where
   word2tag n = unknownTag "MLitT" n
 
 putLit :: (MonadPut m) => MLit -> m ()
-putLit (MI i) = putTag MIT *> pInt i
-putLit (MN n) = putTag MNT *> pWord n
-putLit (MC c) = putTag MCT *> putChar c
-putLit (MD d) = putTag MDT *> putFloat d
-putLit (MT t) = putTag MTT *> putText (Util.Text.toText t)
-putLit (MM r) = putTag MMT *> putReferent r
-putLit (MY r) = putTag MYT *> putReference r
+putLit = error "FIX ME"
 
 getLit :: (MonadGet m) => m MLit
-getLit =
-  getTag >>= \case
-    MIT -> MI <$> gInt
-    MNT -> MN <$> gWord
-    MCT -> MC <$> getChar
-    MDT -> MD <$> getFloat
-    MTT -> MT . Util.Text.fromText <$> getText
-    MMT -> MM <$> getReferent
-    MYT -> MY <$> getReference
+getLit = error "FIX ME"
 
 data BranchT = Test1T | Test2T | TestWT | TestTT
 
