@@ -68,7 +68,6 @@ data SectionT
   | JumpT
   | MatchT
   | YieldT
-  | InsT
   | LetT
   | DieT
   | ExitT
@@ -90,6 +89,10 @@ data SectionT
   | TryForceT
   | RefCAST
   | SandboxingFailureT
+  | UPrim1T
+  | UPrim2T
+  | BPrim1T
+  | BPrim2T
 
 instance Tag SectionT where
   tag2word AppT = 0
@@ -97,56 +100,62 @@ instance Tag SectionT where
   tag2word JumpT = 2
   tag2word MatchT = 3
   tag2word YieldT = 4
-  tag2word InsT = 5
-  tag2word LetT = 6
-  tag2word DieT = 7
-  tag2word ExitT = 8
-  tag2word DMatchT = 9
-  tag2word NMatchT = 10
-  tag2word RMatchT = 11
-  tag2word ForeignCallT = 12
-  tag2word SetDynT = 13
-  tag2word CaptureT = 14
-  tag2word NameT = 15
-  tag2word InfoT = 16
-  tag2word PackT = 17
-  tag2word LitT = 18
-  tag2word PrintT = 19
-  tag2word ResetT = 20
-  tag2word ForkT = 21
-  tag2word AtomicallyT = 22
-  tag2word SeqT = 23
-  tag2word TryForceT = 24
-  tag2word RefCAST = 25
-  tag2word SandboxingFailureT = 26
+  tag2word LetT = 5
+  tag2word DieT = 6
+  tag2word ExitT = 7
+  tag2word DMatchT = 8
+  tag2word NMatchT = 9
+  tag2word RMatchT = 10
+  tag2word ForeignCallT = 11
+  tag2word SetDynT = 12
+  tag2word CaptureT = 13
+  tag2word NameT = 14
+  tag2word InfoT = 15
+  tag2word PackT = 16
+  tag2word LitT = 17
+  tag2word PrintT = 18
+  tag2word ResetT = 19
+  tag2word ForkT = 20
+  tag2word AtomicallyT = 21
+  tag2word SeqT = 22
+  tag2word TryForceT = 23
+  tag2word RefCAST = 24
+  tag2word SandboxingFailureT = 25
+  tag2word UPrim1T = 26
+  tag2word UPrim2T = 27
+  tag2word BPrim1T = 28
+  tag2word BPrim2T = 29
 
   word2tag 0 = pure AppT
   word2tag 1 = pure CallT
   word2tag 2 = pure JumpT
   word2tag 3 = pure MatchT
   word2tag 4 = pure YieldT
-  word2tag 5 = pure InsT
-  word2tag 6 = pure LetT
-  word2tag 7 = pure DieT
-  word2tag 8 = pure ExitT
-  word2tag 9 = pure DMatchT
-  word2tag 10 = pure NMatchT
-  word2tag 11 = pure RMatchT
-  word2tag 12 = pure ForeignCallT
-  word2tag 13 = pure SetDynT
-  word2tag 14 = pure CaptureT
-  word2tag 15 = pure NameT
-  word2tag 16 = pure InfoT
-  word2tag 17 = pure PackT
-  word2tag 18 = pure LitT
-  word2tag 19 = pure PrintT
-  word2tag 20 = pure ResetT
-  word2tag 21 = pure ForkT
-  word2tag 22 = pure AtomicallyT
-  word2tag 23 = pure SeqT
-  word2tag 24 = pure TryForceT
-  word2tag 25 = pure RefCAST
-  word2tag 26 = pure SandboxingFailureT
+  word2tag 5 = pure LetT
+  word2tag 6 = pure DieT
+  word2tag 7 = pure ExitT
+  word2tag 8 = pure DMatchT
+  word2tag 9 = pure NMatchT
+  word2tag 10 = pure RMatchT
+  word2tag 11 = pure ForeignCallT
+  word2tag 12 = pure SetDynT
+  word2tag 13 = pure CaptureT
+  word2tag 14 = pure NameT
+  word2tag 15 = pure InfoT
+  word2tag 16 = pure PackT
+  word2tag 17 = pure LitT
+  word2tag 18 = pure PrintT
+  word2tag 19 = pure ResetT
+  word2tag 20 = pure ForkT
+  word2tag 21 = pure AtomicallyT
+  word2tag 22 = pure SeqT
+  word2tag 23 = pure TryForceT
+  word2tag 24 = pure RefCAST
+  word2tag 25 = pure SandboxingFailureT
+  word2tag 26 = pure UPrim1T
+  word2tag 27 = pure UPrim2T
+  word2tag 28 = pure BPrim1T
+  word2tag 29 = pure BPrim2T
   word2tag i = unknownTag "SectionT" i
 
 putSection :: (MonadPut m) => GSection cix -> m ()
@@ -156,7 +165,6 @@ putSection = \case
   Jump i a -> putTag JumpT *> pInt i *> putArgs a
   Match i b -> putTag MatchT *> pInt i *> putBranch b
   Yield a -> putTag YieldT *> putArgs a
-  Ins i s -> putTag InsT *> putInstr i *> putSection s
   Let s ci f bd ->
     putTag LetT
       *> putSection s
@@ -189,6 +197,10 @@ putSection = \case
   SandboxingFailure {} ->
     -- Sandboxing failures should only exist in code we're actively running, it shouldn't be serialized.
     error "putInstr: Unexpected serialized Sandboxing Failure"
+  UPrim1 up i nx -> putTag UPrim1T *> putTag up *> pInt i *> putSection nx
+  UPrim2 up i j nx -> putTag UPrim2T *> putTag up *> pInt i *> pInt j *> putSection nx
+  BPrim1 bp i nx -> putTag BPrim1T *> putTag bp *> pInt i *> putSection nx
+  BPrim2 bp i j nx -> putTag BPrim2T *> putTag bp *> pInt i *> pInt j *> putSection nx
 
 getSection :: (MonadGet m) => m Section
 getSection =
@@ -202,7 +214,6 @@ getSection =
     JumpT -> Jump <$> gInt <*> getArgs
     MatchT -> Match <$> gInt <*> getBranch
     YieldT -> Yield <$> getArgs
-    InsT -> Ins <$> getInstr <*> getSection
     LetT ->
       Let <$> getSection <*> getCombIx <*> gInt <*> getSection
     DieT -> Die <$> deserialize
@@ -226,39 +237,10 @@ getSection =
     SeqT -> Seq <$> getArgs <*> getSection
     TryForceT -> TryForce <$> gInt <*> getSection
     SandboxingFailureT -> error "getInstr: Unexpected serialized Sandboxing Failure"
-
-data InstrT
-  = UPrim1T
-  | UPrim2T
-  | BPrim1T
-  | BPrim2T
-
-instance Tag InstrT where
-  tag2word UPrim1T = 0
-  tag2word UPrim2T = 1
-  tag2word BPrim1T = 2
-  tag2word BPrim2T = 3
-
-  word2tag 0 = pure UPrim1T
-  word2tag 1 = pure UPrim2T
-  word2tag 2 = pure BPrim1T
-  word2tag 3 = pure BPrim2T
-  word2tag n = unknownTag "InstrT" n
-
-putInstr :: (MonadPut m) => GInstr cix -> m ()
-putInstr = \case
-  (UPrim1 up i) -> putTag UPrim1T *> putTag up *> pInt i
-  (UPrim2 up i j) -> putTag UPrim2T *> putTag up *> pInt i *> pInt j
-  (BPrim1 bp i) -> putTag BPrim1T *> putTag bp *> pInt i
-  (BPrim2 bp i j) -> putTag BPrim2T *> putTag bp *> pInt i *> pInt j
-
-getInstr :: (MonadGet m) => m Instr
-getInstr =
-  getTag >>= \case
-    UPrim1T -> UPrim1 <$> getTag <*> gInt
-    UPrim2T -> UPrim2 <$> getTag <*> gInt <*> gInt
-    BPrim1T -> BPrim1 <$> getTag <*> gInt
-    BPrim2T -> BPrim2 <$> getTag <*> gInt <*> gInt
+    UPrim1T -> UPrim1 <$> getTag <*> gInt <*> getSection
+    UPrim2T -> UPrim2 <$> getTag <*> gInt <*> gInt <*> getSection
+    BPrim1T -> BPrim1 <$> getTag <*> gInt <*> getSection
+    BPrim2T -> BPrim2 <$> getTag <*> gInt <*> gInt <*> getSection
 
 data ArgsT
   = ZArgsT

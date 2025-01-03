@@ -11,9 +11,6 @@ module Unison.Runtime.MCode
     Args (..),
     RefNums (..),
     MLit (..),
-    GInstr (..),
-    Instr,
-    RInstr,
     GSection (.., MatchT, MatchW),
     RSection,
     Section,
@@ -478,33 +475,6 @@ data MLit
   | MY !Reference -- Type Link
   deriving (Show, Eq, Ord)
 
-type Instr = GInstr CombIx
-
-type RInstr val = GInstr (RComb val)
-
--- Instructions for manipulating the data stack in the main portion of
--- a block
-data GInstr comb
-  = -- 1-argument unboxed primitive operations
-    UPrim1
-      !UPrim1 -- primitive instruction
-      !Int -- index of prim argument
-  | -- 2-argument unboxed primitive operations
-    UPrim2
-      !UPrim2 -- primitive instruction
-      !Int -- index of first prim argument
-      !Int -- index of second prim argument
-  | -- 1-argument primitive operations that may involve boxed values
-    BPrim1
-      !BPrim1
-      !Int
-  | -- 2-argument primitive operations that may involve boxed values
-    BPrim2
-      !BPrim2
-      !Int
-      !Int
-  deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
-
 type Section = GSection CombIx
 
 type RSection val = GSection (RComb val)
@@ -538,8 +508,6 @@ data GSection comb
       !(GBranch comb) -- branches
   | -- Yield control to the current continuation, with arguments
     Yield !Args -- values to yield
-  | -- Prefix an instruction onto a section
-    Ins !(GInstr comb) !(GSection comb)
   | -- Sequence two sections. The second is pushed as a return
     -- point for the results of the first. Stack modifications in
     -- the first are lost on return to the second.
@@ -650,6 +618,30 @@ data GSection comb
       !(GSection comb) -- Next
   | -- Attempted to use a builtin that was not allowed in the current sandboxing context.
     SandboxingFailure !Text.Text -- The name of the builtin which failed was sandboxed.
+  | -- Instructions for manipulating the data stack in the main portion of
+    -- a block
+    -- 1-argument unboxed primitive operations
+    UPrim1
+      !UPrim1 -- primitive instruction
+      !Int -- index of prim argument
+      !(GSection comb) -- Next
+  | -- 2-argument unboxed primitive operations
+    UPrim2
+      !UPrim2 -- primitive instruction
+      !Int -- index of first prim argument
+      !Int -- index of second prim argument
+      !(GSection comb) -- Next
+  | -- 1-argument primitive operations that may involve boxed values
+    BPrim1
+      !BPrim1
+      !Int
+      !(GSection comb) -- Next
+  | -- 2-argument primitive operations that may involve boxed values
+    BPrim2
+      !BPrim2
+      !Int
+      !Int
+      !(GSection comb) -- Next
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 data CombIx
@@ -1456,28 +1448,28 @@ emitFOp fop = ForeignCall True fop
 -- Helper functions for packing the variable argument representation
 -- into the indexes stored in prim op instructions
 emitP1 :: UPrim1 -> Args -> Section -> Section
-emitP1 p (VArg1 i) = Ins $ UPrim1 p i
+emitP1 p (VArg1 i) = UPrim1 p i
 emitP1 p a =
   internalBug $
     "wrong number of args for unary unboxed primop: "
       ++ show (p, a)
 
 emitP2 :: UPrim2 -> Args -> Section -> Section
-emitP2 p (VArg2 i j) = Ins $ UPrim2 p i j
+emitP2 p (VArg2 i j) = UPrim2 p i j
 emitP2 p a =
   internalBug $
     "wrong number of args for binary unboxed primop: "
       ++ show (p, a)
 
 emitBP1 :: BPrim1 -> Args -> Section -> Section
-emitBP1 p (VArg1 i) = Ins $ BPrim1 p i
+emitBP1 p (VArg1 i) = BPrim1 p i
 emitBP1 p a =
   internalBug $
     "wrong number of args for unary boxed primop: "
       ++ show (p, a)
 
 emitBP2 :: BPrim2 -> Args -> Section -> Section
-emitBP2 p (VArg2 i j) = Ins $ BPrim2 p i j
+emitBP2 p (VArg2 i j) = BPrim2 p i j
 emitBP2 p a =
   internalBug $
     "wrong number of args for binary boxed primop: "
@@ -1673,13 +1665,11 @@ sectionDeps (RMatch _ pu br) =
   sectionDeps pu ++ foldMap branchDeps br
 sectionDeps (NMatch _ _ br) = branchDeps br
 sectionDeps (Name (Env (CIx _ w _) _) _ s) = w : sectionDeps s
-sectionDeps (Ins _i s) = sectionDeps s
 sectionDeps (Let s (CIx _ w _) _ b) =
   w : sectionDeps s ++ sectionDeps b
 sectionDeps _ = []
 
 sectionTypes :: GSection comb -> [Word64]
-sectionTypes (Ins i s) = instrTypes i ++ sectionTypes s
 sectionTypes (Let s _ _ b) = sectionTypes s ++ sectionTypes b
 sectionTypes (Match _ br) = branchTypes br
 sectionTypes (DMatch _ _ br) = branchTypes br
@@ -1690,10 +1680,27 @@ sectionTypes (Pack _ (PackedTag w) _ next) = [w `shiftR` 16] ++ sectionTypes nex
 sectionTypes (Reset ws next) = setToList ws ++ sectionTypes next
 sectionTypes (Capture w next) = [w] ++ sectionTypes next
 sectionTypes (SetDyn w _ next) = [w] ++ sectionTypes next
-sectionTypes _ = []
-
-instrTypes :: GInstr comb -> [Word64]
-instrTypes _ = []
+sectionTypes (App {}) = []
+sectionTypes (Call {}) = []
+sectionTypes (Jump {}) = []
+sectionTypes (Yield {}) = []
+sectionTypes (Lit {}) = []
+sectionTypes (Name {}) = []
+sectionTypes (Die {}) = []
+sectionTypes (Exit {}) = []
+sectionTypes (RefCAS {}) = []
+sectionTypes (ForeignCall {}) = []
+sectionTypes (Print {}) = []
+sectionTypes (Info {}) = []
+sectionTypes (Fork {}) = []
+sectionTypes (Atomically {}) = []
+sectionTypes (Seq {}) = []
+sectionTypes (TryForce {}) = []
+sectionTypes (SandboxingFailure {}) = []
+sectionTypes (UPrim1 {}) = []
+sectionTypes (UPrim2 {}) = []
+sectionTypes (BPrim1 {}) = []
+sectionTypes (BPrim2 {}) = []
 
 branchDeps :: GBranch comb -> [Word64]
 branchDeps (Test1 _ s1 d) = sectionDeps s1 ++ sectionDeps d
@@ -1763,8 +1770,6 @@ prettySection ind sec =
         . showString "\n"
         . prettyBranches (ind + 1) bs
     Yield as -> showString "Yield " . prettyArgs as
-    Ins i nx ->
-      prettyIns i . showString "\n" . prettySection ind nx
     Pack r i as next ->
       showString "Pack "
         . prettyRef r
@@ -1878,6 +1883,38 @@ prettySection ind sec =
         . showString "\n"
         . prettySection ind nx
     SandboxingFailure s -> showString $ "SandboxingFailure " ++ show s
+    UPrim1 p a nx ->
+      showString "UPrim1 "
+        . shows p
+        . showString " "
+        . shows a
+        . showString "\n"
+        . prettySection ind nx
+    UPrim2 p a b nx ->
+      showString "UPrim2 "
+        . shows p
+        . showString " "
+        . shows a
+        . showString " "
+        . shows b
+        . showString "\n"
+        . prettySection ind nx
+    BPrim1 p a nx ->
+      showString "BPrim1 "
+        . shows p
+        . showString " "
+        . shows a
+        . showString "\n"
+        . prettySection ind nx
+    BPrim2 p a b nx ->
+      showString "BPrim2 "
+        . shows p
+        . showString " "
+        . shows a
+        . showString " "
+        . shows b
+        . showString "\n"
+        . prettySection ind nx
 
 prettyCIx :: CombIx -> ShowS
 prettyCIx (CIx r _ n) =
@@ -1917,9 +1954,6 @@ prettyBranches ind bs =
         . showString " ->\n"
         . prettySection (ind + 1) e
 
-prettyIns :: (Show comb) => GInstr comb -> ShowS
-prettyIns i = shows i
-
 prettyArgs :: Args -> ShowS
 prettyArgs ZArgs = showString "ZArgs"
 prettyArgs v = showParen True $ shows v
@@ -1940,7 +1974,6 @@ sanitizeSection sandboxedForeigns section = case section of
   ForeignCall _ f as nx
     | Set.member f sandboxedForeigns -> SandboxingFailure (foreignFuncBuiltinName f)
     | otherwise -> ForeignCall True f as (sanitizeSection sandboxedForeigns nx)
-  Ins i nx -> Ins i (sanitizeSection sandboxedForeigns nx)
   RefCAS a b c nx -> RefCAS a b c (sanitizeSection sandboxedForeigns nx)
   SetDyn a b nx -> SetDyn a b (sanitizeSection sandboxedForeigns nx)
   Capture a nx -> Capture a (sanitizeSection sandboxedForeigns nx)
@@ -1966,6 +1999,10 @@ sanitizeSection sandboxedForeigns section = case section of
   DMatch i j bs -> DMatch i j (sanitizeBranches sandboxedForeigns bs)
   NMatch i j bs -> NMatch i j (sanitizeBranches sandboxedForeigns bs)
   RMatch i s bs -> RMatch i (sanitizeSection sandboxedForeigns s) (fmap (sanitizeBranches sandboxedForeigns) bs)
+  UPrim1 a b nx -> UPrim1 a b (sanitizeSection sandboxedForeigns nx)
+  UPrim2 a b c nx -> UPrim2 a b c (sanitizeSection sandboxedForeigns nx)
+  BPrim1 a b nx -> BPrim1 a b (sanitizeSection sandboxedForeigns nx)
+  BPrim2 a b c nx -> BPrim2 a b c (sanitizeSection sandboxedForeigns nx)
 
 sanitizeBranches :: Set ForeignFunc -> GBranch CombIx -> GBranch CombIx
 sanitizeBranches sandboxedForeigns = \case

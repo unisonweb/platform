@@ -124,8 +124,6 @@ type MSection = RSection Val
 
 type MBranch = RBranch Val
 
-type MInstr = RInstr Val
-
 type MComb = RComb Val
 
 type MRef = RRef Val
@@ -320,227 +318,6 @@ dumpStack stk@(Stack ap fp sp _ustk _bstk)
 #endif
 {- ORMOLU_ENABLE -}
 
--- | Execute an instruction
-exec ::
-  CCache ->
-  DEnv ->
-  ActiveThreads ->
-  Stack ->
-  K ->
-  Reference ->
-  MInstr ->
-  IO (DEnv, Stack, K)
-{- ORMOLU_DISABLE -}
-#ifdef STACK_CHECK
-exec _ !_ !_ !stk !_ !_ instr
-  | debugger stk "exec" instr = undefined
-#endif
-{- ORMOLU_ENABLE -}
-exec _ !denv !_activeThreads !stk !k _ (UPrim1 op i) = do
-  stk <- uprim1 stk op i
-  pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (UPrim2 op i j) = do
-  stk <- uprim2 stk op i j
-  pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (BPrim1 MISS i)
-  | sandboxed env = die "attempted to use sandboxed operation: isMissing"
-  | otherwise = do
-      clink <- bpeekOff stk i
-      let link = case unwrapForeign $ marshalToForeign clink of
-            Ref r -> r
-            _ -> error "exec:BPrim1:MISS: Expected Ref"
-      m <- readTVarIO (intermed env)
-      stk <- bump stk
-      pokeBool stk $ (link `M.member` m)
-      pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (BPrim1 CACH i)
-  | sandboxed env = die "attempted to use sandboxed operation: cache"
-  | otherwise = do
-      arg <- peekOffS stk i
-      news <- decodeCacheArgument arg
-      unknown <- cacheAdd news env
-      stk <- bump stk
-      pokeS
-        stk
-        (Sq.fromList $ boxedVal . Foreign . Wrap Rf.termLinkRef . Ref <$> unknown)
-      pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (BPrim1 CVLD i)
-  | sandboxed env = die "attempted to use sandboxed operation: validate"
-  | otherwise = do
-      arg <- peekOffS stk i
-      news <- decodeCacheArgument arg
-      codeValidate (second codeGroup <$> news) env >>= \case
-        Nothing -> do
-          stk <- bump stk
-          pokeTag stk 0
-          pure (denv, stk, k)
-        Just (Failure ref msg clo) -> do
-          stk <- bumpn stk 3
-          bpoke stk (Foreign $ Wrap Rf.typeLinkRef ref)
-          pokeOffBi stk 1 msg
-          bpokeOff stk 2 clo
-          stk <- bump stk
-          pokeTag stk 1
-          pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (BPrim1 LKUP i)
-  | sandboxed env = die "attempted to use sandboxed operation: lookup"
-  | otherwise = do
-      clink <- bpeekOff stk i
-      let link = case unwrapForeign $ marshalToForeign clink of
-            Ref r -> r
-            _ -> error "exec:BPrim1:LKUP: Expected Ref"
-      m <- readTVarIO (intermed env)
-      rfn <- readTVarIO (refTm env)
-      cach <- readTVarIO (cacheableCombs env)
-      stk <- bump stk
-      stk <- case M.lookup link m of
-        Nothing
-          | Just w <- M.lookup link builtinTermNumbering,
-            Just sn <- EC.lookup w numberedTermLookup -> do
-              pokeBi stk (CodeRep (ANF.Rec [] sn) Uncacheable)
-              stk <- bump stk
-              stk <$ pokeTag stk 1
-          | otherwise -> stk <$ pokeTag stk 0
-        Just sg -> do
-          let ch
-                | Just n <- M.lookup link rfn,
-                  EC.member n cach =
-                    Cacheable
-                | otherwise = Uncacheable
-          pokeBi stk (CodeRep sg ch)
-          stk <- bump stk
-          stk <$ pokeTag stk 1
-      pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (BPrim1 TLTT i) = do
-  clink <- bpeekOff stk i
-  let shortHash = case unwrapForeign $ marshalToForeign clink of
-        Ref r -> toShortHash r
-        Con r _ -> CR.toShortHash r
-  let sh = Util.Text.fromText . SH.toText $ shortHash
-  stk <- bump stk
-  pokeBi stk sh
-  pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (BPrim1 LOAD i)
-  | sandboxed env = die "attempted to use sandboxed operation: load"
-  | otherwise = do
-      v <- peekOffBi stk i
-      stk <- bumpn stk 2
-      reifyValue env v >>= \case
-        Left miss -> do
-          pokeOffS stk 1 $
-            Sq.fromList $
-              boxedVal . Foreign . Wrap Rf.termLinkRef . Ref <$> miss
-          pokeTag stk 0
-        Right x -> do
-          pokeOff stk 1 x
-          pokeTag stk 1
-      pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (BPrim1 VALU i) = do
-  m <- readTVarIO (tagRefs env)
-  c <- peekOff stk i
-  stk <- bump stk
-  pokeBi stk =<< reflectValue m c
-  pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (BPrim1 DBTX i)
-  | sandboxed env =
-      die "attempted to use sandboxed operation: Debug.toText"
-  | otherwise = do
-      val <- peekOff stk i
-      stk <- bump stk
-      stk <- case tracer env False val of
-        NoTrace -> stk <$ pokeTag stk 0
-        MsgTrace _ _ tx -> do
-          pokeBi stk (Util.Text.pack tx)
-          stk <- bump stk
-          stk <$ pokeTag stk 1
-        SimpleTrace tx -> do
-          pokeBi stk (Util.Text.pack tx)
-          stk <- bump stk
-          stk <$ pokeTag stk 2
-      pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (BPrim1 SDBL i)
-  | sandboxed env =
-      die "attempted to use sandboxed operation: sandboxLinks"
-  | otherwise = do
-      tl <- peekOffBi stk i
-      stk <- bump stk
-      pokeS stk . encodeSandboxListResult =<< sandboxList env tl
-      pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (BPrim1 op i) = do
-  stk <- bprim1 env stk op i
-  pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (BPrim2 SDBX i j) = do
-  s <- peekOffS stk i
-  c <- bpeekOff stk j
-  l <- decodeSandboxArgument s
-  b <- checkSandboxing env l c
-  stk <- bump stk
-  pokeBool stk $ b
-  pure (denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (BPrim2 SDBV i j)
-  | sandboxed env =
-      die "attempted to use sandboxed operation: Value.validateSandboxed"
-  | otherwise = do
-      s <- peekOffS stk i
-      v <- peekOffBi stk j
-      l <- decodeSandboxArgument s
-      res <- checkValueSandboxing env l v
-      stk <- bump stk
-      bpoke stk $ encodeSandboxResult res
-      pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (BPrim2 EQLU i j) = do
-  x <- peekOff stk i
-  y <- peekOff stk j
-  stk <- bump stk
-  pokeBool stk $ universalEq (==) x y
-  pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (BPrim2 LEQU i j) = do
-  x <- peekOff stk i
-  y <- peekOff stk j
-  stk <- bump stk
-  pokeBool stk $ (universalCompare compare x y) /= GT
-  pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (BPrim2 LESU i j) = do
-  x <- peekOff stk i
-  y <- peekOff stk j
-  stk <- bump stk
-  pokeBool stk $ (universalCompare compare x y) == LT
-  pure (denv, stk, k)
-exec _ !denv !_activeThreads !stk !k _ (BPrim2 CMPU i j) = do
-  x <- peekOff stk i
-  y <- peekOff stk j
-  stk <- bump stk
-  pokeI stk . pred . fromEnum $ universalCompare compare x y
-  pure (denv, stk, k)
-exec _ !_ !_activeThreads !stk !k r (BPrim2 THRO i j) = do
-  name <- peekOffBi @Util.Text.Text stk i
-  x <- peekOff stk j
-  () <- throwIO (BU (traceK r k) (Util.Text.toText name) x)
-  error "throwIO should never return"
-exec env !denv !_activeThreads !stk !k _ (BPrim2 TRCE i j)
-  | sandboxed env = die "attempted to use sandboxed operation: trace"
-  | otherwise = do
-      tx <- peekOffBi stk i
-      clo <- peekOff stk j
-      case tracer env True clo of
-        NoTrace -> pure ()
-        SimpleTrace str -> do
-          putStrLn $ "trace: " ++ Util.Text.unpack tx
-          putStrLn str
-        MsgTrace msg ugl pre -> do
-          putStrLn $ "trace: " ++ Util.Text.unpack tx
-          putStrLn ""
-          putStrLn msg
-          putStrLn "\nraw structure:\n"
-          putStrLn ugl
-          putStrLn "partial decompilation:\n"
-          putStrLn pre
-      pure (denv, stk, k)
-exec _ !denv !_trackThreads !stk !k _ (BPrim2 op i j) = do
-  stk <- bprim2 stk op i j
-  pure (denv, stk, k)
-{-# INLINE exec #-}
-
 encodeExn ::
   Stack ->
   Either SomeException () ->
@@ -644,8 +421,208 @@ eval env !denv !activeThreads !stk !k r (Let nw cix f sect) = do
     (Push fsz asz cix f sect k)
     r
     nw
-eval env !denv !activeThreads !stk !k r (Ins i nx) = do
-  (denv, stk, k) <- exec env denv activeThreads stk k r i
+eval env !denv !activeThreads !stk !k r (UPrim1 op i nx) = do
+  stk <- uprim1 stk op i
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (UPrim2 op i j nx) = do
+  stk <- uprim2 stk op i j
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim1 MISS i nx)
+  | sandboxed env = die "attempted to use sandboxed operation: isMissing"
+  | otherwise = do
+      clink <- bpeekOff stk i
+      let link = case unwrapForeign $ marshalToForeign clink of
+            Ref r -> r
+            _ -> error "eval:BPrim1:MISS: Expected Ref"
+      m <- readTVarIO (intermed env)
+      stk <- bump stk
+      pokeBool stk $ (link `M.member` m)
+      eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim1 CACH i nx)
+  | sandboxed env = die "attempted to use sandboxed operation: cache"
+  | otherwise = do
+      arg <- peekOffS stk i
+      news <- decodeCacheArgument arg
+      unknown <- cacheAdd news env
+      stk <- bump stk
+      pokeS
+        stk
+        (Sq.fromList $ boxedVal . Foreign . Wrap Rf.termLinkRef . Ref <$> unknown)
+      eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim1 CVLD i nx)
+  | sandboxed env = die "attempted to use sandboxed operation: validate"
+  | otherwise = do
+      arg <- peekOffS stk i
+      news <- decodeCacheArgument arg
+      codeValidate (second codeGroup <$> news) env >>= \case
+        Nothing -> do
+          stk <- bump stk
+          pokeTag stk 0
+          eval env denv activeThreads stk k r nx
+        Just (Failure ref msg clo) -> do
+          stk <- bumpn stk 3
+          bpoke stk (Foreign $ Wrap Rf.typeLinkRef ref)
+          pokeOffBi stk 1 msg
+          bpokeOff stk 2 clo
+          stk <- bump stk
+          pokeTag stk 1
+          eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim1 LKUP i nx)
+  | sandboxed env = die "attempted to use sandboxed operation: lookup"
+  | otherwise = do
+      clink <- bpeekOff stk i
+      let link = case unwrapForeign $ marshalToForeign clink of
+            Ref r -> r
+            _ -> error "eval:BPrim1:LKUP: Expected Ref"
+      m <- readTVarIO (intermed env)
+      rfn <- readTVarIO (refTm env)
+      cach <- readTVarIO (cacheableCombs env)
+      stk <- bump stk
+      stk <- case M.lookup link m of
+        Nothing
+          | Just w <- M.lookup link builtinTermNumbering,
+            Just sn <- EC.lookup w numberedTermLookup -> do
+              pokeBi stk (CodeRep (ANF.Rec [] sn) Uncacheable)
+              stk <- bump stk
+              stk <$ pokeTag stk 1
+          | otherwise -> stk <$ pokeTag stk 0
+        Just sg -> do
+          let ch
+                | Just n <- M.lookup link rfn,
+                  EC.member n cach =
+                    Cacheable
+                | otherwise = Uncacheable
+          pokeBi stk (CodeRep sg ch)
+          stk <- bump stk
+          stk <$ pokeTag stk 1
+      eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim1 TLTT i nx) = do
+  clink <- bpeekOff stk i
+  let shortHash = case unwrapForeign $ marshalToForeign clink of
+        Ref r -> toShortHash r
+        Con r _ -> CR.toShortHash r
+  let sh = Util.Text.fromText . SH.toText $ shortHash
+  stk <- bump stk
+  pokeBi stk sh
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim1 LOAD i nx)
+  | sandboxed env = die "attempted to use sandboxed operation: load"
+  | otherwise = do
+      v <- peekOffBi stk i
+      stk <- bumpn stk 2
+      reifyValue env v >>= \case
+        Left miss -> do
+          pokeOffS stk 1 $
+            Sq.fromList $
+              boxedVal . Foreign . Wrap Rf.termLinkRef . Ref <$> miss
+          pokeTag stk 0
+        Right x -> do
+          pokeOff stk 1 x
+          pokeTag stk 1
+      eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim1 VALU i nx) = do
+  m <- readTVarIO (tagRefs env)
+  c <- peekOff stk i
+  stk <- bump stk
+  pokeBi stk =<< reflectValue m c
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim1 DBTX i nx)
+  | sandboxed env =
+      die "attempted to use sandboxed operation: Debug.toText"
+  | otherwise = do
+      val <- peekOff stk i
+      stk <- bump stk
+      stk <- case tracer env False val of
+        NoTrace -> stk <$ pokeTag stk 0
+        MsgTrace _ _ tx -> do
+          pokeBi stk (Util.Text.pack tx)
+          stk <- bump stk
+          stk <$ pokeTag stk 1
+        SimpleTrace tx -> do
+          pokeBi stk (Util.Text.pack tx)
+          stk <- bump stk
+          stk <$ pokeTag stk 2
+      eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim1 SDBL i nx)
+  | sandboxed env =
+      die "attempted to use sandboxed operation: sandboxLinks"
+  | otherwise = do
+      tl <- peekOffBi stk i
+      stk <- bump stk
+      pokeS stk . encodeSandboxListResult =<< sandboxList env tl
+      eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim1 op i nx) = do
+  stk <- bprim1 env stk op i
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim2 SDBX i j nx) = do
+  s <- peekOffS stk i
+  c <- bpeekOff stk j
+  l <- decodeSandboxArgument s
+  b <- checkSandboxing env l c
+  stk <- bump stk
+  pokeBool stk $ b
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim2 SDBV i j nx)
+  | sandboxed env =
+      die "attempted to use sandboxed operation: Value.validateSandboxed"
+  | otherwise = do
+      s <- peekOffS stk i
+      v <- peekOffBi stk j
+      l <- decodeSandboxArgument s
+      res <- checkValueSandboxing env l v
+      stk <- bump stk
+      bpoke stk $ encodeSandboxResult res
+      eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim2 EQLU i j nx) = do
+  x <- peekOff stk i
+  y <- peekOff stk j
+  stk <- bump stk
+  pokeBool stk $ universalEq (==) x y
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim2 LEQU i j nx) = do
+  x <- peekOff stk i
+  y <- peekOff stk j
+  stk <- bump stk
+  pokeBool stk $ (universalCompare compare x y) /= GT
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim2 LESU i j nx) = do
+  x <- peekOff stk i
+  y <- peekOff stk j
+  stk <- bump stk
+  pokeBool stk $ (universalCompare compare x y) == LT
+  eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim2 CMPU i j nx) = do
+  x <- peekOff stk i
+  y <- peekOff stk j
+  stk <- bump stk
+  pokeI stk . pred . fromEnum $ universalCompare compare x y
+  eval env denv activeThreads stk k r nx
+eval _ !_ !_activeThreads !stk !k r (BPrim2 THRO i j _nx) = do
+  name <- peekOffBi @Util.Text.Text stk i
+  x <- peekOff stk j
+  () <- throwIO (BU (traceK r k) (Util.Text.toText name) x)
+  error "throwIO should never return"
+eval env !denv !activeThreads !stk !k r (BPrim2 TRCE i j nx)
+  | sandboxed env = die "attempted to use sandboxed operation: trace"
+  | otherwise = do
+      tx <- peekOffBi stk i
+      clo <- peekOff stk j
+      case tracer env True clo of
+        NoTrace -> pure ()
+        SimpleTrace str -> do
+          putStrLn $ "trace: " ++ Util.Text.unpack tx
+          putStrLn str
+        MsgTrace msg ugl pre -> do
+          putStrLn $ "trace: " ++ Util.Text.unpack tx
+          putStrLn ""
+          putStrLn msg
+          putStrLn "\nraw structure:\n"
+          putStrLn ugl
+          putStrLn "partial decompilation:\n"
+          putStrLn pre
+      eval env denv activeThreads stk k r nx
+eval env !denv !activeThreads !stk !k r (BPrim2 op i j nx) = do
+  stk <- bprim2 stk op i j
   eval env denv activeThreads stk k r nx
 eval _ !_ !_ !_activeThreads !_ _ Exit = pure ()
 eval _ !_ !_ !_activeThreads !_ _ (Die s) = die s
