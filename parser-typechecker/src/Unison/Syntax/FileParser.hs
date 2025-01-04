@@ -5,14 +5,14 @@ where
 
 import Control.Lens
 import Control.Monad.Reader (asks, local)
+import Data.Foldable (foldlM)
 import Data.List qualified as List
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Text.Megaparsec qualified as P
 import Unison.ABT qualified as ABT
-import Unison.DataDeclaration (DataDeclaration, EffectDeclaration)
-import Unison.DataDeclaration qualified as DD
+import Unison.DataDeclaration (DataDeclaration (..), EffectDeclaration)
 import Unison.DataDeclaration qualified as DataDeclaration
 import Unison.DataDeclaration.Records (generateRecordAccessors)
 import Unison.Name qualified as Name
@@ -23,7 +23,7 @@ import Unison.Parser.Ann (Ann)
 import Unison.Parser.Ann qualified as Ann
 import Unison.Prelude
 import Unison.Reference (TypeReferenceId)
-import Unison.Syntax.DeclParser (declarations)
+import Unison.Syntax.DeclParser (SynDataDecl (..), SynDecl (..), SynEffectDecl (..), synDeclConstructors, synDeclName, synDeclsP)
 import Unison.Syntax.Lexer qualified as L
 import Unison.Syntax.Name qualified as Name (toText, toVar, unsafeParseVar)
 import Unison.Syntax.Parser
@@ -57,62 +57,74 @@ file = do
       Just _ -> do
         namespace <- importWordyId <|> importSymbolyId
         void (optional semi)
-        pure (Just (L.payload namespace))
+        pure (Just namespace.payload)
   let maybeNamespaceVar = Name.toVar <$> maybeNamespace
 
   -- The file may optionally contain top-level imports,
   -- which are parsed and applied to the type decls and term stanzas
   (namesStart, imports) <- TermParser.imports <* optional semi
-  (dataDecls, effectDecls, parsedAccessors) <- declarations
 
-  env <-
-    let applyNamespaceToDecls :: forall decl. Iso' decl (DataDeclaration v Ann) -> Map v decl -> Map v decl
-        applyNamespaceToDecls dataDeclL =
-          case maybeNamespaceVar of
-            Nothing -> id
-            Just namespace -> Map.fromList . map f . Map.toList
-              where
-                f :: (v, decl) -> (v, decl)
-                f (declName, decl) =
-                  ( Var.namespaced2 namespace declName,
-                    review dataDeclL (applyNamespaceToDataDecl namespace unNamespacedTypeNames (view dataDeclL decl))
-                  )
+  -- Parse all syn decls. The namespace in the parsing environment is required here in order to avoid unique type churn.
+  unNamespacedSynDecls <- local (\e -> e {maybeNamespace}) synDeclsP
 
-                unNamespacedTypeNames :: Set v
-                unNamespacedTypeNames =
-                  Set.union (Map.keysSet dataDecls) (Map.keysSet effectDecls)
+  -- Sanity check: bail if there's a duplicate name among them
+  unNamespacedSynDecls
+    & List.map (\decl -> (L.payload (synDeclName decl), decl))
+    & List.multimap
+    & Map.toList
+    & mapMaybe \case
+      (name, decls@(_ : _ : _)) -> Just (name, map ann decls)
+      _ -> Nothing
+    & \case
+      [] -> pure ()
+      dupes -> P.customFailure (DuplicateTypeNames dupes)
 
-        dataDecls1 = applyNamespaceToDecls id dataDecls
-        effectDecls1 = applyNamespaceToDecls DataDeclaration.asDataDecl_ effectDecls
-     in case UFN.environmentFor namesStart dataDecls1 effectDecls1 of
-          Right (Right env) -> pure env
-          Right (Left es) -> P.customFailure $ TypeDeclarationErrors es
-          Left es -> resolutionFailures (toList es)
+  -- Apply the namespace directive (if there is one) to the decls
+  let synDecls = maybe id applyNamespaceToSynDecls maybeNamespaceVar unNamespacedSynDecls
+
+  -- Compute an environment from the decls that we use to parse terms
+  env <- do
+    -- Make real data/effect decls from the "syntactic" ones
+    (dataDecls, effectDecls) <- synDeclsToDecls synDecls
+    result <- UFN.environmentFor namesStart dataDecls effectDecls & onLeft \errs -> resolutionFailures (toList errs)
+    result & onLeft \errs -> P.customFailure (TypeDeclarationErrors errs)
+
+  -- Generate the record accessors with *un-namespaced* names below, because we need to know these names in order to
+  -- perform rewriting. As an example,
+  --
+  --   namespace foo
+  --   type Bar = { baz : Nat }
+  --   term = ... Bar.baz ...
+  --
+  -- we want to rename `Bar.baz` to `foo.Bar.baz`, and it seems easier to first generate un-namespaced accessors like
+  -- `Bar.baz`, rather than rip off the namespace from accessors like `foo.Bar.baz` (though not by much).
   let unNamespacedAccessors :: [(v, Ann, Term v Ann)]
-      unNamespacedAccessors = do
-        (typ, fields) <- parsedAccessors
-        -- The parsed accessor has an un-namespaced type, so apply the namespace directive (if necessary) before
-        -- looking up in the environment computed by `environmentFor`.
-        let typ1 = maybe id Var.namespaced2 maybeNamespaceVar (L.payload typ)
-        Just (r, _) <- [Map.lookup typ1 (UF.datas env)]
-        -- Generate the record accessors with *un-namespaced* names (passing `typ` rather than `typ1`) below, because we
-        -- need to know these names in order to perform rewriting. As an example,
-        --
-        --   namespace foo
-        --   type Bar = { baz : Nat }
-        --   term = ... Bar.baz ...
-        --
-        -- we want to rename `Bar.baz` to `foo.Bar.baz`, and it seems easier to first generate un-namespaced accessors
-        -- like `Bar.baz`, rather than rip off the namespace from accessors like `foo.Bar.baz` (though not by much).
-        generateRecordAccessors Var.namespaced Ann.GeneratedFrom (toPair <$> fields) (L.payload typ) r
+      unNamespacedAccessors =
+        foldMap
+          ( \case
+              SynDecl'Data decl
+                | Just fields <- decl.fields,
+                  Just (ref, _) <-
+                    Map.lookup (maybe id Var.namespaced2 maybeNamespaceVar decl.name.payload) (UF.datas env) ->
+                    generateRecordAccessors
+                      Var.namespaced
+                      Ann.GeneratedFrom
+                      (toPair <$> fields)
+                      decl.name.payload
+                      ref
+              _ -> []
+          )
+          unNamespacedSynDecls
         where
-          toPair (tok, typ) = (L.payload tok, ann tok <> ann typ)
+          toPair (tok, typ) = (tok.payload, ann tok <> ann typ)
+
   let accessors :: [(v, Ann, Term v Ann)]
       accessors =
         unNamespacedAccessors
           & case maybeNamespaceVar of
             Nothing -> id
             Just namespace -> over (mapped . _1) (Var.namespaced2 namespace)
+
   -- At this stage of the file parser, we've parsed all the type and ability
   -- declarations.
   let updateEnvForTermParsing e =
@@ -137,8 +149,7 @@ file = do
                       [ -- The vars parsed from the stanzas themselves (before applying namespace directive)
                         Set.fromList (unNamespacedStanzas >>= getVars),
                         -- The un-namespaced constructor names (from the *originally-parsed* data and effect decls)
-                        foldMap (Set.fromList . DataDeclaration.constructorVars) dataDecls,
-                        foldMap (Set.fromList . DataDeclaration.constructorVars . DataDeclaration.toDataDecl) effectDecls,
+                        foldMap (Set.fromList . map (view _2) . synDeclConstructors) unNamespacedSynDecls,
                         -- The un-namespaced accessors
                         Set.fromList (map (view _1) unNamespacedAccessors)
                       ]
@@ -175,17 +186,75 @@ file = do
       (terms <> accessors)
       (List.multimap watches)
 
-applyNamespaceToDataDecl :: forall a v. (Var v) => v -> Set v -> DataDeclaration v a -> DataDeclaration v a
-applyNamespaceToDataDecl namespace locallyBoundTypes =
-  over (DataDeclaration.constructors_ . mapped) \(ann, conName, conTy) ->
-    (ann, Var.namespaced2 namespace conName, ABT.substsInheritAnnotation replacements conTy)
+-- | Suppose a data declaration `Foo` has a constructor `A` with fields `B` and `C`, where `B` is locally-bound and `C`
+-- is not:
+--
+-- @
+-- type B
+--
+-- type Foo
+-- constructor Foo.A : B -> C -> Foo
+-- @
+--
+-- Then, this function applies a namespace "namespace" to the data declaration `Foo` by prefixing each of its
+-- constructors and references to locally-bound types with "namespace":
+--
+-- @
+-- type Foo
+-- constructor namespace.Foo.A : namespace.B -> C -> foo.Foo
+--             ^^^^^^^^^^        ^^^^^^^^^^          ^^^^
+-- @
+--
+-- (note that the name for the data declaration itself is not prefixed within this function, because a data declaration
+-- does not contain its own name).
+applyNamespaceToSynDecls :: forall v. (Var v) => v -> [SynDecl v] -> [SynDecl v]
+applyNamespaceToSynDecls namespace decls =
+  map
+    ( \case
+        SynDecl'Data decl ->
+          SynDecl'Data
+            ( decl
+                & over (#constructors . mapped) applyToConstructor
+                & over (#name . mapped) (Var.namespaced2 namespace)
+            )
+        SynDecl'Effect decl ->
+          SynDecl'Effect
+            ( decl
+                & over (#constructors . mapped) applyToConstructor
+                & over (#name . mapped) (Var.namespaced2 namespace)
+            )
+    )
+    decls
   where
+    applyToConstructor :: (Ann, v, Type v Ann) -> (Ann, v, Type v Ann)
+    applyToConstructor (ann, name, typ) =
+      ( ann,
+        Var.namespaced2 namespace name,
+        ABT.substsInheritAnnotation typeReplacements typ
+      )
+
     -- Replace var "Foo" with var "namespace.Foo"
-    replacements :: [(v, Type v ())]
-    replacements =
-      locallyBoundTypes
+    typeReplacements :: [(v, Type v ())]
+    typeReplacements =
+      decls
+        & List.foldl' (\acc decl -> Set.insert (L.payload (synDeclName decl)) acc) Set.empty
         & Set.toList
         & map (\v -> (v, Type.var () (Var.namespaced2 namespace v)))
+
+synDeclsToDecls :: (Monad m, Var v) => [SynDecl v] -> P v m (Map v (DataDeclaration v Ann), Map v (EffectDeclaration v Ann))
+synDeclsToDecls = do
+  foldlM
+    ( \(datas, effects) -> \case
+        SynDecl'Data decl -> do
+          let decl1 = DataDeclaration decl.modifier decl.annotation decl.tyvars decl.constructors
+          let !datas1 = Map.insert decl.name.payload decl1 datas
+          pure (datas1, effects)
+        SynDecl'Effect decl -> do
+          let decl1 = DataDeclaration.mkEffectDecl' decl.modifier decl.annotation decl.tyvars decl.constructors
+          let !effects1 = Map.insert decl.name.payload decl1 effects
+          pure (datas, effects1)
+    )
+    (Map.empty, Map.empty)
 
 applyNamespaceToStanza ::
   forall a v.
@@ -253,13 +322,13 @@ checkForDuplicateTermsAndConstructors datas effects terms watches = do
       }
   where
     effectDecls :: [DataDeclaration v Ann]
-    effectDecls = Map.elems . fmap (DD.toDataDecl . snd) $ effects
+    effectDecls = Map.elems . fmap (DataDeclaration.toDataDecl . snd) $ effects
     dataDecls :: [DataDeclaration v Ann]
     dataDecls = fmap snd $ Map.elems datas
     allConstructors :: [(v, Ann)]
     allConstructors =
       (dataDecls <> effectDecls)
-        & foldMap DD.constructors'
+        & foldMap DataDeclaration.constructors'
         & fmap (\(ann, v, _typ) -> (v, ann))
     allTerms :: [(v, Ann)]
     allTerms =

@@ -38,6 +38,7 @@ module Unison.Runtime.MCode
     emitCombs,
     emitComb,
     resolveCombs,
+    sanitizeCombsOfForeignFuncs,
     absurdCombs,
     emptyRNs,
     argsToLists,
@@ -59,7 +60,9 @@ import Data.Functor ((<&>))
 import Data.Map.Strict qualified as M
 import Data.Primitive.PrimArray
 import Data.Primitive.PrimArray qualified as PA
-import Data.Text as Text (unpack)
+import Data.Set (Set)
+import Data.Set qualified as Set
+import Data.Text qualified as Text
 import Data.Void (Void, absurd)
 import Data.Word (Word16, Word64)
 import GHC.Stack (HasCallStack)
@@ -92,6 +95,7 @@ import Unison.Runtime.ANF
     pattern TVar,
   )
 import Unison.Runtime.ANF qualified as ANF
+import Unison.Runtime.Foreign.Function.Type (ForeignFunc (..), foreignFuncBuiltinName)
 import Unison.Util.EnumContainers as EC
 import Unison.Util.Text (Text)
 import Unison.Var (Var)
@@ -253,6 +257,9 @@ import Unison.Var (Var)
 -- certain recursive, 'deep' handlers, since those can operate
 -- more like stateful code than control operators.
 
+data Sandboxed = Tracked | Untracked
+  deriving (Show, Eq, Ord)
+
 data Args'
   = Arg1 !Int
   | Arg2 !Int !Int
@@ -278,6 +285,7 @@ argsToLists = \case
   VArgR i l -> take l [i ..]
   VArgN us -> primArrayToList us
   VArgV _ -> internalBug "argsToLists: DArgV"
+{-# INLINEABLE argsToLists #-}
 
 countArgs :: Args -> Int
 countArgs ZArgs = 0
@@ -286,6 +294,7 @@ countArgs (VArg2 {}) = 2
 countArgs (VArgR _ l) = l
 countArgs (VArgN us) = sizeofPrimArray us
 countArgs (VArgV {}) = internalBug "countArgs: DArgV"
+{-# INLINEABLE countArgs #-}
 
 data UPrim1
   = -- integral
@@ -497,11 +506,10 @@ data GInstr comb
   | -- Use a check-and-set ticket to update a reference
     -- (ref stack index, ticket stack index, new value stack index)
     RefCAS !Int !Int !Int
-  | -- Call out to a Haskell function. This is considerably slower
-    -- for very simple operations, hence the primops.
+  | -- Call out to a Haskell function.
     ForeignCall
       !Bool -- catch exceptions
-      !Word64 -- FFI call
+      !ForeignFunc -- FFI call
       !Args -- arguments
   | -- Set the value of a dynamic reference
     SetDyn
@@ -537,6 +545,8 @@ data GInstr comb
     Seq !Args
   | -- Force a delayed expression, catching any runtime exceptions involved
     TryForce !Int
+  | -- Attempted to use a builtin that was not allowed in the current sandboxing context.
+    SandboxingFailure !Text.Text -- The name of the builtin which failed was sandboxed.
   deriving stock (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 type Section = GSection CombIx
@@ -1410,8 +1420,8 @@ emitPOp ANF.TFRC = \case
 -- to 'foreing function' calls, but there is a special case for the
 -- standard handle access function, because it does not yield an
 -- explicit error.
-emitFOp :: ANF.FOp -> Args -> Instr
-emitFOp fop = ForeignCall True (fromIntegral $ fromEnum fop)
+emitFOp :: ForeignFunc -> Args -> Instr
+emitFOp fop = ForeignCall True fop
 
 -- Helper functions for packing the variable argument representation
 -- into the indexes stored in prim op instructions
@@ -1814,3 +1824,39 @@ prettyIns i = shows i
 prettyArgs :: Args -> ShowS
 prettyArgs ZArgs = showString "ZArgs"
 prettyArgs v = showParen True $ shows v
+
+-- | If running in a sandboxed environment, replace all restricted foreign functions with an error.
+sanitizeCombsOfForeignFuncs :: Bool -> (Set ForeignFunc) -> EnumMap Word64 (EnumMap Word64 (GComb Void CombIx)) -> EnumMap Word64 (EnumMap Word64 (GComb Void CombIx))
+sanitizeCombsOfForeignFuncs sanitize sandboxedForeigns m
+  | sanitize = (fmap . fmap) (sanitizeComb sandboxedForeigns) m
+  | otherwise = m
+
+sanitizeComb :: Set ForeignFunc -> GComb Void CombIx -> GComb Void CombIx
+sanitizeComb sandboxedForeigns = \case
+  Lam a b s -> Lam a b (sanitizeSection sandboxedForeigns s)
+
+-- | Crawl the source code and statically replace all sandboxed foreign funcs with an error.
+sanitizeSection :: Set ForeignFunc -> GSection CombIx -> GSection CombIx
+sanitizeSection sandboxedForeigns section = case section of
+  Ins (ForeignCall _ f as) nx
+    | Set.member f sandboxedForeigns -> Ins (SandboxingFailure (foreignFuncBuiltinName f)) (sanitizeSection sandboxedForeigns nx)
+    | otherwise -> Ins (ForeignCall True f as) (sanitizeSection sandboxedForeigns nx)
+  Ins i nx -> Ins i (sanitizeSection sandboxedForeigns nx)
+  App {} -> section
+  Call {} -> section
+  Jump {} -> section
+  Match i bs -> Match i (sanitizeBranches sandboxedForeigns bs)
+  Yield {} -> section
+  Let s i f b -> Let (sanitizeSection sandboxedForeigns s) i f (sanitizeSection sandboxedForeigns b)
+  Die {} -> section
+  Exit -> section
+  DMatch i j bs -> DMatch i j (sanitizeBranches sandboxedForeigns bs)
+  NMatch i j bs -> NMatch i j (sanitizeBranches sandboxedForeigns bs)
+  RMatch i s bs -> RMatch i (sanitizeSection sandboxedForeigns s) (fmap (sanitizeBranches sandboxedForeigns) bs)
+
+sanitizeBranches :: Set ForeignFunc -> GBranch CombIx -> GBranch CombIx
+sanitizeBranches sandboxedForeigns = \case
+  Test1 i s d -> Test1 i (sanitizeSection sandboxedForeigns s) (sanitizeSection sandboxedForeigns d)
+  Test2 i s j t d -> Test2 i (sanitizeSection sandboxedForeigns s) j (sanitizeSection sandboxedForeigns t) (sanitizeSection sandboxedForeigns d)
+  TestW d m -> TestW (sanitizeSection sandboxedForeigns d) (fmap (sanitizeSection sandboxedForeigns) m)
+  TestT d m -> TestT (sanitizeSection sandboxedForeigns d) (fmap (sanitizeSection sandboxedForeigns) m)

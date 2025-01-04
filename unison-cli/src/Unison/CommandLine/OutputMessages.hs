@@ -138,6 +138,7 @@ import Unison.Term (Term)
 import Unison.Term qualified as Term
 import Unison.Type (Type)
 import Unison.UnisonFile qualified as UF
+import Unison.Util.ColorText qualified
 import Unison.Util.Conflicted (Conflicted (..))
 import Unison.Util.Defn (Defn (..))
 import Unison.Util.Defns (Defns (..))
@@ -971,7 +972,6 @@ notifyUser dir = \case
       --       defs in the codebase.  In some cases it's fine for bindings to
       --       shadow codebase names, but you don't want it to capture them in
       --       the decompiled output.
-
         let prettyBindings =
               P.bracket . P.lines $
                 P.wrap "The watch expression(s) reference these definitions:"
@@ -1771,16 +1771,16 @@ notifyUser dir = \case
           <> P.newline
           <> P.indentN 2 (P.pshown response)
       Servant.FailureResponse request response ->
-        P.wrap "Oops, I received an unexpected status code from the server."
+        unexpectedServerResponse response
           <> P.newline
           <> P.newline
-          <> P.wrap "Here is the request."
+          <> P.wrap "Here is the request:"
           <> P.newline
           <> P.newline
           <> P.indentN 2 (P.pshown request)
           <> P.newline
           <> P.newline
-          <> P.wrap "Here is the full response."
+          <> P.wrap "Here is the full response:"
           <> P.newline
           <> P.newline
           <> P.indentN 2 (P.pshown response)
@@ -2362,21 +2362,24 @@ prettyTransportError = \case
   Share.RateLimitExceeded -> "Rate limit exceeded, please try again later."
   Share.Timeout -> "The code server timed-out when responding to your request. Please try again later or report an issue if the problem persists."
   Share.UnexpectedResponse resp ->
-    (P.lines . catMaybes)
-      [ Just
-          ( "The server sent a "
-              <> P.red (P.shown (Http.statusCode (Servant.responseStatusCode resp)))
-              <> " that we didn't expect."
-          ),
-        let body = Text.decodeUtf8 (LazyByteString.toStrict (Servant.responseBody resp))
-         in if Text.null body then Nothing else Just (P.newline <> "Response body: " <> P.text body),
-        responseRequestId resp <&> \responseId -> P.newline <> "Request ID: " <> P.blue (P.text responseId)
-      ]
-  where
-    -- Dig the request id out of a response header.
-    responseRequestId :: Servant.Response -> Maybe Text
-    responseRequestId =
-      fmap Text.decodeUtf8 . List.lookup "X-RequestId" . Foldable.toList @Seq . Servant.responseHeaders
+    unexpectedServerResponse resp
+
+unexpectedServerResponse :: Servant.ResponseF LazyByteString.ByteString -> P.Pretty Unison.Util.ColorText.ColorText
+unexpectedServerResponse resp =
+  (P.lines . catMaybes)
+    [ Just
+        ( "I received an unexpected status code from the server: "
+            <> P.red (P.shown (Http.statusCode (Servant.responseStatusCode resp)))
+        ),
+      let body = Text.decodeUtf8 (LazyByteString.toStrict (Servant.responseBody resp))
+       in if Text.null body then Nothing else Just (P.newline <> "Response body: " <> P.text body),
+      responseRequestId resp <&> \responseId -> P.newline <> "Request ID: " <> P.blue (P.text responseId)
+    ]
+
+-- | Dig the request id out of a response header.
+responseRequestId :: Servant.Response -> Maybe Text
+responseRequestId =
+  fmap Text.decodeUtf8 . List.lookup "X-RequestId" . Foldable.toList @Seq . Servant.responseHeaders
 
 prettyEntityType :: Share.EntityType -> Pretty
 prettyEntityType = \case

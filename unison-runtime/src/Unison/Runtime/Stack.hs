@@ -34,7 +34,9 @@ module Unison.Runtime.Stack
     pattern XStack,
     packXStack,
     unpackXStack,
-    IOStack,
+    xStackIOToIO,
+    stackIOToIOX,
+    IOXStack,
     apX,
     fpX,
     spX,
@@ -646,7 +648,7 @@ data Stack = Stack
 -- Unboxed representation of the Stack, used to force GHC optimizations in a few spots.
 type XStack = (# Int#, Int#, Int#, MutableByteArray# (PrimState IO), MutableArray# (PrimState IO) Closure #)
 
-type IOStack = State# RealWorld -> (# State# RealWorld, XStack #)
+type IOXStack = State# RealWorld -> (# State# RealWorld, XStack #)
 
 pattern XStack :: Int# -> Int# -> Int# -> MutableByteArray# RealWorld -> MutableArray# RealWorld Closure -> Stack
 pattern XStack {apX, fpX, spX, ustkX, bstkX} = Stack (I# apX) (I# fpX) (I# spX) (MutableByteArray ustkX) (MutableArray bstkX)
@@ -662,6 +664,14 @@ packXStack (# ap, fp, sp, ustk, bstk #) = Stack {ap = I# ap, fp = I# fp, sp = I#
 unpackXStack :: Stack -> XStack
 unpackXStack (Stack (I# ap) (I# fp) (I# sp) (MutableByteArray ustk) (MutableArray bstk)) = (# ap, fp, sp, ustk, bstk #)
 {-# INLINE unpackXStack #-}
+
+xStackIOToIO :: IOXStack -> IO Stack
+xStackIOToIO f = IO $ \s -> case f s of (# s', x #) -> (# s', packXStack x #)
+{-# INLINE xStackIOToIO #-}
+
+stackIOToIOX :: IO Stack -> IOXStack
+stackIOToIOX (IO f) = \s -> case f s of (# s', x #) -> (# s', unpackXStack x #)
+{-# INLINE stackIOToIOX #-}
 
 instance Show Stack where
   show (Stack ap fp sp _ _) =
