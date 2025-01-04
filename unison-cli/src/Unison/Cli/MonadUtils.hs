@@ -464,7 +464,7 @@ getTypesAt hq =
 
 -- | The default patch path.
 defaultPatchPath :: Path.Split Path'
-defaultPatchPath = (Path.currentPath, NameSegment.defaultPatchSegment)
+defaultPatchPath = (Path.Current', NameSegment.defaultPatchSegment)
 
 -- | Get the patch at a path, or the empty patch if there's no such patch.
 getPatchAt :: Path.Split Path' -> Cli Patch

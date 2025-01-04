@@ -557,8 +557,8 @@ handleBranchId2Arg =
         pure . pure . UnqualifiedPath . Path.fromName' $ Path.prefixNameIfRel (Path.AbsolutePath' prefix) name
       SA.ProjectBranch (ProjectAndBranch mproject branch) ->
         case mproject of
-          Just proj -> pure . pure $ QualifiedBranchPath proj branch Path.root
-          Nothing -> pure . pure $ BranchPathInCurrentProject branch Path.root
+          Just proj -> pure . pure $ QualifiedBranchPath proj branch Path.Root
+          Nothing -> pure . pure $ BranchPathInCurrentProject branch Path.Root
       otherNumArg -> Left $ wrongStructuredArgument "a branch id" otherNumArg
 
 handleBranchRelativePathArg :: I.Argument -> Either (P.Pretty P.ColorText) BranchRelativePath
@@ -573,8 +573,8 @@ handleBranchRelativePathArg =
         pure . UnqualifiedPath . Path.fromName' $ Path.prefixNameIfRel (Path.AbsolutePath' prefix) name
       SA.ProjectBranch (ProjectAndBranch mproject branch) ->
         case mproject of
-          Just proj -> pure $ QualifiedBranchPath proj branch Path.root
-          Nothing -> pure $ BranchPathInCurrentProject branch Path.root
+          Just proj -> pure $ QualifiedBranchPath proj branch Path.Root
+          Nothing -> pure $ BranchPathInCurrentProject branch Path.Root
       otherNumArg -> Left $ wrongStructuredArgument "a branch id" otherNumArg
 
 handleHashQualifiedSplit'Arg :: I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashQualified (Path.Split Path'))
@@ -1046,7 +1046,7 @@ ui =
       args = [("definition to load", Optional, namespaceOrDefinitionArg)],
       help = P.wrap "`ui` opens the Local UI in the default browser.",
       parse = \case
-        [] -> pure $ Input.UiI Path.currentPath
+        [] -> pure $ Input.UiI Path.Current'
         [path] -> Input.UiI <$> handlePath'Arg path
         args -> wrongArgsLength "no more than one argument" args
     }
@@ -1106,7 +1106,7 @@ sfind =
   InputPattern "rewrite.find" ["sfind"] I.Visible [("rewrite-rule definition", Required, definitionQueryArg)] msg parse
   where
     parse = \case
-      [q] -> Input.StructuredFindI (Input.FindLocal Path.currentPath) <$> handleHashQualifiedNameArg q
+      [q] -> Input.StructuredFindI (Input.FindLocal Path.Current') <$> handleHashQualifiedNameArg q
       args -> wrongArgsLength "exactly one argument" args
     msg =
       P.lines
@@ -1164,10 +1164,10 @@ sfindReplace =
         ]
 
 find :: InputPattern
-find = find' "find" (Input.FindLocal Path.currentPath)
+find = find' "find" (Input.FindLocal Path.Current')
 
 findAll :: InputPattern
-findAll = find' "find.all" (Input.FindLocalAndDeps Path.currentPath)
+findAll = find' "find.all" (Input.FindLocalAndDeps Path.Current')
 
 findGlobal :: InputPattern
 findGlobal = find' "debug.find.global" Input.FindGlobal
@@ -1248,7 +1248,7 @@ findShallow =
         ]
     )
     ( fmap Input.FindShallowI . \case
-        [] -> pure Path.currentPath
+        [] -> pure Path.Current'
         [path] -> handlePath'Arg path
         args -> wrongArgsLength "no more than one argument" args
     )
@@ -1263,7 +1263,7 @@ findVerbose =
     ( "`find.verbose` searches for definitions like `find`, but includes hashes "
         <> "and aliases in the results."
     )
-    (pure . Input.FindI True (Input.FindLocal Path.currentPath) . fmap unifyArgument)
+    (pure . Input.FindI True (Input.FindLocal Path.Current') . fmap unifyArgument)
 
 findVerboseAll :: InputPattern
 findVerboseAll =
@@ -1275,7 +1275,7 @@ findVerboseAll =
     ( "`find.all.verbose` searches for definitions like `find.all`, but includes hashes "
         <> "and aliases in the results."
     )
-    (pure . Input.FindI True (Input.FindLocalAndDeps Path.currentPath) . fmap unifyArgument)
+    (pure . Input.FindI True (Input.FindLocalAndDeps Path.Current') . fmap unifyArgument)
 
 renameTerm :: InputPattern
 renameTerm =
@@ -1614,7 +1614,7 @@ history =
     )
     \case
       [src] -> Input.HistoryI (Just 10) (Just 10) <$> handleBranchIdArg src
-      [] -> pure $ Input.HistoryI (Just 10) (Just 10) (BranchAtPath Path.currentPath)
+      [] -> pure $ Input.HistoryI (Just 10) (Just 10) (BranchAtPath Path.Current')
       args -> wrongArgsLength "no more than one argument" args
 
 forkLocal :: InputPattern
@@ -2230,7 +2230,7 @@ diffNamespace =
     )
     ( \case
         [before, after] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> handleBranchId2Arg after
-        [before] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> pure (Right . UnqualifiedPath $ Path.currentPath)
+        [before] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> pure (Right . UnqualifiedPath $ Path.Current')
         args -> wrongArgsLength "one or two arguments" args
     )
   where

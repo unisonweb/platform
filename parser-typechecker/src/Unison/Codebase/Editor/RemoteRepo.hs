@@ -6,6 +6,7 @@ import Unison.NameSegment qualified as NameSegment
 import Unison.Prelude
 import Unison.Project (ProjectAndBranch (..), ProjectBranchName, ProjectName)
 import Unison.Share.Types
+import Unison.Util.Recursion qualified as Rec
 
 data ShareCodeserver
   = DefaultCodeserver
@@ -64,7 +65,6 @@ data ReadShareLooseCode = ReadShareLooseCode
   deriving stock (Eq, Show)
 
 isPublic :: ReadShareLooseCode -> Bool
-isPublic ReadShareLooseCode {path} =
-  case path of
-    (segment Path.:< _) -> segment == NameSegment.publicLooseCodeSegment
-    _ -> False
+isPublic ReadShareLooseCode {path} = case Rec.project path of
+  Rec.Neither -> False
+  Rec.Both segment _ -> segment == NameSegment.publicLooseCodeSegment

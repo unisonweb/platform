@@ -264,7 +264,7 @@ completeWithinNamespace compTypes query ppCtx = do
 parseLaxPath'Query :: Text -> (Path.Path', Text)
 parseLaxPath'Query txt =
   case P.runParser ((,) <$> Path.splitP' <*> P.takeRest) "" (Text.unpack txt) of
-    Left _err -> (Path.currentPath, txt)
+    Left _err -> (Path.Current', txt)
     Right (name, rest) ->
       if take 1 rest == "."
         then (Path.unsplit name, Text.empty)

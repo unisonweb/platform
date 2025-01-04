@@ -122,7 +122,7 @@ serveTermSummary codebase referent mayName root relativeTo mayWidth = do
           True -> do
             let deps = Type.labeledDependencies typeSig
             liftIO . Codebase.runTransaction codebase $ do
-              namesPerspective <- Ops.namesPerspectiveForRootAndPath (V2Causal.valueHash root) (coerce . Path.toList $ fromMaybe Path.Empty relativeTo)
+              namesPerspective <- Ops.namesPerspectiveForRootAndPath (V2Causal.valueHash root) (coerce $ Path.toList relativeToPath)
               PPESqlite.ppedForReferences namesPerspective deps
           False -> do
             (_localNames, ppe) <- Backend.namesAtPathFromRootBranchHash codebase root relativeToPath

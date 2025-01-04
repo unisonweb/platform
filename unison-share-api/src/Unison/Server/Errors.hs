@@ -125,7 +125,7 @@ expectedNameLookup branchHash =
         "Name lookup index required for branch hash: " <> BSC.pack (show branchHash)
     }
 
-disjointProjectAndPerspective :: Path.Path -> Path.Path -> ServerError
+disjointProjectAndPerspective :: Path.Absolute -> Path.Absolute -> ServerError
 disjointProjectAndPerspective perspective projectRoot =
   err500
     { errBody =

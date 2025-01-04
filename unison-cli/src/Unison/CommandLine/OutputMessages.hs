@@ -179,7 +179,7 @@ notifyNumbered = \case
               undoTip
             ]
       )
-      (showDiffNamespace ShowNumbers ppe (absPathToBranchId Path.root) (absPathToBranchId Path.root) diff)
+      (showDiffNamespace ShowNumbers ppe (absPathToBranchId Path.Root) (absPathToBranchId Path.Root) diff)
   ShowDiffAfterDeleteBranch bAbs ppe diff ->
     first
       ( \p ->
@@ -271,7 +271,7 @@ notifyNumbered = \case
   ShowDiffAfterUndo ppe diffOutput ->
     first
       (\p -> P.lines ["Here are the changes I undid", "", p])
-      (showDiffNamespace ShowNumbers ppe (absPathToBranchId Path.root) (absPathToBranchId Path.root) diffOutput)
+      (showDiffNamespace ShowNumbers ppe (absPathToBranchId Path.Root) (absPathToBranchId Path.Root) diffOutput)
   ShowDiffAfterPull dest' destAbs ppe diff ->
     if OBD.isEmpty diff
       then ("✅  Looks like " <> prettyPath dest' <> " is up to date.", mempty)

@@ -230,7 +230,7 @@ data BackendError
   | -- The inferred project root for a given perspective is neither a parent nor child
     -- of the perspective. This shouldn't happen and indicates a bug.
     -- (perspective, project root)
-    DisjointProjectAndPerspective Path Path
+    DisjointProjectAndPerspective Path.Absolute Path.Absolute
   | ProjectBranchNameNotFound ProjectName ProjectBranchName
   deriving stock (Show)
 

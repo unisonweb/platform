@@ -9,7 +9,6 @@ module Unison.Codebase.Editor.Input
     Event (..),
     OutputLocation (..),
     RelativeToFold (..),
-    PatchPath,
     BranchIdG (..),
     BranchId,
     BranchId2,
@@ -58,9 +57,7 @@ type Source = Text -- "id x = x\nconst a b = a"
 
 type SourceName = Text -- "foo.u" or "buffer 7"
 
-type PatchPath = Path.Split Path'
-
-data OptionalPatch = NoPatch | DefaultPatch | UsePatch PatchPath
+data OptionalPatch = NoPatch | DefaultPatch | UsePatch (Path.Split Path')
   deriving (Eq, Ord, Show)
 
 data BranchIdG p

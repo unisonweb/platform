@@ -280,7 +280,7 @@ loadPropagateDiffDefaultPatch inputDescription maybeDest0 dest = do
       whenJust maybeDest0 \dest0 -> do
         Cli.respond Output.CalculatingDiff
         patched <- Cli.getBranchFromProjectPath dest
-        let patchPath = Path.descend Path.currentPath NameSegment.defaultPatchSegment
+        let patchPath = Path.descend Path.Current' NameSegment.defaultPatchSegment
         (ppe, diff) <- diffHelper original (Branch.head patched)
         Cli.respondNumbered (ShowDiffAfterMergePropagate dest0 dest patchPath ppe diff)
 

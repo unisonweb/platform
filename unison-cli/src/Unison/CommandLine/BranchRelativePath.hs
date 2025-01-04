@@ -131,21 +131,20 @@ incrementalBranchRelativePathParser =
       -- unambiguously parse one or the other.
       parseThese Project.projectNameParser path' >>= \case
         -- project name parser consumed the slash
-        This (_, (projectName, True)) ->
-          startingAtBranch (Just projectName)
+        This (projectName, True) -> startingAtBranch (Just projectName)
         -- project name parser did not consume a slash
         --
         -- Either we are at the end of input or the next character
         -- is not a slash, so we have invalid input
-        This (_, (projectName, False)) ->
+        This (projectName, False) ->
           let end = do
                 Megaparsec.eof
                 pure (IncompleteProject projectName)
            in end <|> startingAtSlash (Just projectName)
         -- The string doesn't parse as a project name but does parse as a path
-        That (_, path) -> pure (OnlyPath' path)
+        That path -> pure (OnlyPath' path)
         -- The string parses both as a project name and a path
-        These _ (_, path) -> ProjectOrPath' <$> Megaparsec.takeRest <*> pure path
+        These (_, _) path -> ProjectOrPath' <$> Megaparsec.takeRest <*> pure path
 
     startingAtBranch :: Maybe ProjectName -> Megaparsec.Parsec Void Text IncrementalBranchRelativePath
     startingAtBranch mproj =
@@ -191,10 +190,7 @@ incrementalBranchRelativePathParser =
         Path.RelativePath' (Path.Relative x) -> pure $ Path.Absolute x
     path' = Megaparsec.try do
       offset <- Megaparsec.getOffset
-      pathStr <- Megaparsec.takeRest
-      case Path.parsePath' (Text.unpack pathStr) of
-        Left err -> failureAt offset err
-        Right x -> pure x
+      either (failureAt offset) pure . Path.parsePath' . Text.unpack =<< Megaparsec.takeRest
 
     failureAt :: forall a. Int -> Text -> Megaparsec.Parsec Void Text a
     failureAt offset str = Megaparsec.parseError (Megaparsec.FancyError offset (Set.singleton (Megaparsec.ErrorFail (Text.unpack str))))
@@ -203,31 +199,34 @@ incrementalBranchRelativePathParser =
       forall a b.
       Megaparsec.Parsec Void Text a ->
       Megaparsec.Parsec Void Text b ->
-      Megaparsec.Parsec Void Text (These (Int, a) (Int, b))
+      Megaparsec.Parsec Void Text (These a b)
     parseThese pa pb = do
-      ea <- Megaparsec.observing $ Megaparsec.lookAhead $ Megaparsec.try $ first Text.length <$> Megaparsec.match pa
-      eb <- Megaparsec.observing $ Megaparsec.lookAhead $ Megaparsec.try $ first Text.length <$> Megaparsec.match pb
+      ea <- observeParse pa
+      eb <- observeParse pb
       case (ea, eb) of
-        (Left aerr, Left berr) ->
-          Megaparsec.parseError (aerr <> berr)
+        (Left aerr, Left berr) -> Megaparsec.parseError $ aerr <> berr
         (Left _, Right (blen, b)) -> do
           Megaparsec.takeP Nothing blen
-          pure (That (blen, b))
+          pure $ That b
         (Right (alen, a), Left _) -> do
           Megaparsec.takeP Nothing alen
-          pure (This (alen, a))
-        (Right a, Right b) -> pure (These a b)
+          pure $ This a
+        (Right (_, a), Right (_, b)) -> pure $ These a b
+    observeParse = Megaparsec.observing . Megaparsec.lookAhead . Megaparsec.try . fmap (first Text.length) . Megaparsec.match
 
 branchRelativePathParser :: Megaparsec.Parsec Void Text BranchRelativePath
 branchRelativePathParser =
   incrementalBranchRelativePathParser >>= \case
-    ProjectOrPath' _txt path -> pure (UnqualifiedPath path)
-    OnlyPath' path -> pure (UnqualifiedPath path)
+    ProjectOrPath' _txt path -> pure $ UnqualifiedPath path
+    OnlyPath' path -> pure $ UnqualifiedPath path
     IncompleteProject _proj -> fail "Branch relative paths require a branch. Expected `/` here."
     IncompleteBranch _mproj _mbranch -> fail "Branch relative paths require a colon. Expected `:` here."
-    PathRelativeToCurrentBranch p -> pure (UnqualifiedPath (Path.AbsolutePath' p))
-    IncompletePath projStuff mpath -> case projStuff of
-      Left (ProjectAndBranch projName branchName) ->
-        pure $ QualifiedBranchPath projName branchName (fromMaybe Path.root mpath)
-      Right branch ->
-        pure $ BranchPathInCurrentProject branch (fromMaybe Path.root mpath)
+    PathRelativeToCurrentBranch p -> pure . UnqualifiedPath $ Path.AbsolutePath' p
+    IncompletePath projStuff mpath ->
+      pure $
+        either
+          ( \(ProjectAndBranch projName branchName) ->
+              QualifiedBranchPath projName branchName $ fromMaybe Path.Root mpath
+          )
+          (flip BranchPathInCurrentProject $ fromMaybe Path.Root mpath)
+          projStuff

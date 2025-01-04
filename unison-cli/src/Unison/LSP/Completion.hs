@@ -269,7 +269,7 @@ matchCompletions :: CompletionTree -> Text -> [(Path, Name, LabeledDependency)]
 matchCompletions (CompletionTree tree) txt =
   case Megaparsec.runParser (Name.nameP <* Megaparsec.eof) "" (Text.unpack txt) of
     Left _ -> []
-    Right name -> matchSegments (Foldable.toList @NonEmpty (Name.segments name)) (Set.toList <$> tree)
+    Right name -> matchSegments (Foldable.toList (Name.segments name)) (Set.toList <$> tree)
   where
     matchSegments :: [NameSegment] -> Cofree (Map NameSegment) [(Name, LabeledDependency)] -> [(Path, Name, LabeledDependency)]
     matchSegments xs (currentMatches :< subtreeMap) =
@@ -278,20 +278,16 @@ matchCompletions (CompletionTree tree) txt =
           let current = currentMatches <&> (\(name, def) -> (mempty, name, def))
            in (current <> mkDefMatches subtreeMap)
         [prefix] ->
-          Map.dropWhileAntitone (< prefix) subtreeMap
-            & Map.takeWhileAntitone (Text.isPrefixOf (NameSegment.toUnescapedText prefix) . NameSegment.toUnescapedText)
-            & \matchingSubtrees ->
-              let subMatches = ifoldMap (\ns subTree -> matchSegments [] subTree & consPathPrefix ns) matchingSubtrees
-               in subMatches
-        (ns : rest) ->
-          foldMap (matchSegments rest) (Map.lookup ns subtreeMap)
-            & consPathPrefix ns
-    consPathPrefix :: NameSegment -> ([(Path, Name, LabeledDependency)]) -> [(Path, Name, LabeledDependency)]
-    consPathPrefix ns = over (mapped . _1) (Path.cons ns)
+          ifoldMap (\ns -> consPathPrefix ns . matchSegments [])
+            . Map.takeWhileAntitone (Text.isPrefixOf (NameSegment.toUnescapedText prefix) . NameSegment.toUnescapedText)
+            $ Map.dropWhileAntitone (< prefix) subtreeMap
+        ns : rest -> consPathPrefix ns . foldMap (matchSegments rest) $ Map.lookup ns subtreeMap
+    consPathPrefix :: NameSegment -> [(Path, Name, LabeledDependency)] -> [(Path, Name, LabeledDependency)]
+    consPathPrefix ns = over (mapped . _1) (Path.resolve $ Path.singleton ns)
     mkDefMatches :: Map NameSegment (Cofree (Map NameSegment) [(Name, LabeledDependency)]) -> [(Path, Name, LabeledDependency)]
     mkDefMatches xs = do
       (ns, (matches :< rest)) <- Map.toList xs
-      let childMatches = mkDefMatches rest <&> over _1 (Path.cons ns)
+      let childMatches = mkDefMatches rest <&> over _1 (Path.resolve $ Path.singleton ns)
       let currentMatches = matches <&> \(name, dep) -> (Path.singleton ns, name, dep)
       currentMatches <> childMatches
 
@@ -306,15 +302,7 @@ completionItemResolveHandler message respond = do
         pped <- lift $ ppedForFile fileUri
 
         builtinsAsync <- liftIO . UnliftIO.async $ UnliftIO.evaluate IOSource.typecheckedFile
-        checkBuiltinsReady <- liftIO do
-          pure
-            ( UnliftIO.poll builtinsAsync
-                <&> ( \case
-                        Nothing -> False
-                        Just (Left {}) -> False
-                        Just (Right {}) -> True
-                    )
-            )
+        checkBuiltinsReady <- pure $ maybe False (either (const False) $ const True) <$> UnliftIO.poll builtinsAsync
         renderedDocs <-
           -- We don't want to block the type signature hover info if the docs are taking a long time to render;
           -- We know it's also possible to write docs that eval forever, so the timeout helps

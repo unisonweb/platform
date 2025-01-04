@@ -118,13 +118,13 @@ serveDefinitions ::
 serveDefinitions rt codebase root relativePath hqns width suff =
   do
     rootCausalHash <- Backend.hoistBackend (Codebase.runTransaction codebase) . Backend.normaliseRootCausalHash $ root
-    hqns
-      & foldMapM
-        ( Local.prettyDefinitionsForHQName
-            (fromMaybe mempty relativePath)
-            rootCausalHash
-            width
-            (fromMaybe (Suffixify True) suff)
-            rt
-            codebase
-        )
+    foldMapM
+      ( Local.prettyDefinitionsForHQName
+          (maybe Path.Root Path.Absolute relativePath)
+          rootCausalHash
+          width
+          (fromMaybe (Suffixify True) suff)
+          rt
+          codebase
+      )
+      hqns

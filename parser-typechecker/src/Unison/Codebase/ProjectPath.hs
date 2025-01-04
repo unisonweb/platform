@@ -74,11 +74,11 @@ instance From (ProjectPathG () ProjectBranchName) Text where
 type ProjectPath = ProjectPathG Project ProjectBranch
 
 projectBranchRoot :: ProjectAndBranch Project ProjectBranch -> ProjectPath
-projectBranchRoot (ProjectAndBranch proj branch) = ProjectPath proj branch Path.root
+projectBranchRoot (ProjectAndBranch proj branch) = ProjectPath proj branch Path.Root
 
 -- | Discard any path within the project and get the project's root
 toRoot :: ProjectPath -> ProjectPath
-toRoot (ProjectPath proj branch _) = ProjectPath proj branch Path.root
+toRoot (ProjectPath proj branch _) = ProjectPath proj branch Path.Root
 
 fromProjectAndBranch :: ProjectAndBranch Project ProjectBranch -> Path.Absolute -> ProjectPath
 fromProjectAndBranch (ProjectAndBranch proj branch) path = ProjectPath proj branch path

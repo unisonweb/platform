@@ -7,7 +7,7 @@ module Unison.Codebase.Editor.HandleInput (loop) where
 
 import Control.Arrow ((&&&))
 import Control.Error.Util qualified as ErrorUtil
-import Control.Lens hiding (from)
+import Control.Lens
 import Control.Monad.Reader (ask)
 import Control.Monad.State (StateT)
 import Control.Monad.State qualified as State
@@ -59,8 +59,8 @@ import Unison.Codebase.Editor.HandleInput.DeleteBranch (handleDeleteBranch)
 import Unison.Codebase.Editor.HandleInput.DeleteNamespace (getEndangeredDependents, handleDeleteNamespace)
 import Unison.Codebase.Editor.HandleInput.DeleteProject (handleDeleteProject)
 import Unison.Codebase.Editor.HandleInput.Dependents (handleDependents)
-import Unison.Codebase.Editor.HandleInput.EditNamespace (handleEditNamespace)
 import Unison.Codebase.Editor.HandleInput.EditDependents (handleEditDependents)
+import Unison.Codebase.Editor.HandleInput.EditNamespace (handleEditNamespace)
 import Unison.Codebase.Editor.HandleInput.FindAndReplace (handleStructuredFindI, handleStructuredFindReplaceI, handleTextFindI)
 import Unison.Codebase.Editor.HandleInput.FormatFile qualified as Format
 import Unison.Codebase.Editor.HandleInput.Global qualified as Global
@@ -208,7 +208,7 @@ loop e = do
                     P.lines
                       [ "The API information is as follows:",
                         P.newline,
-                        P.indentN 2 (P.hiBlue ("UI: " <> Pretty.text (Server.urlFor (Server.ProjectBranchUI (PP.toProjectAndBranch . PP.toNames $ pp) Path.root Nothing) baseUrl))),
+                        P.indentN 2 (P.hiBlue ("UI: " <> Pretty.text (Server.urlFor (Server.ProjectBranchUI (PP.toProjectAndBranch . PP.toNames $ pp) Path.Root Nothing) baseUrl))),
                         P.newline,
                         P.indentN 2 (P.hiBlue ("API: " <> Pretty.text (Server.urlFor Server.Api baseUrl)))
                       ]
@@ -392,7 +392,7 @@ loop e = do
               pure ()
             AliasTermI force src' dest' -> do
               Cli.Env {codebase} <- ask
-              src <- traverseOf _Right (traverse Cli.resolveSplit') src'
+              src <- traverse (traverse Cli.resolveSplit') src'
               srcTerms <-
                 either
                   (Cli.runTransaction . Backend.termReferentsByShortHash codebase)
@@ -415,7 +415,7 @@ loop e = do
               Cli.stepAt description (BranchUtil.makeAddTermName dest srcTerm)
               Cli.respond Success
             AliasTypeI force src' dest' -> do
-              src <- traverseOf _Right (traverse Cli.resolveSplit') src'
+              src <- traverse (traverse Cli.resolveSplit') src'
               srcTypes <-
                 either
                   (Cli.runTransaction . Backend.typeReferencesByShortHash)
@@ -550,7 +550,7 @@ loop e = do
               where
                 d :: Reference.Id -> Referent
                 d = Referent.Ref . Reference.DerivedId
-                base = Path.descend Path.currentPath NameSegment.metadataSegment
+                base = Path.descend Path.Current' NameSegment.metadataSegment
                 authorPath' = (Path.descend base NameSegment.authorsSegment, authorNameSegment)
             MoveTermI src' dest' -> doMoveTerm src' dest' =<< inputDescription input
             MoveTypeI src' dest' -> doMoveType src' dest' =<< inputDescription input
