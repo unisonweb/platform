@@ -319,6 +319,14 @@ testSeek _ =
 
   runTest test
 
+testSetEcho : '{io2.IO} [Result]
+testSetEcho = do
+    a = setEcho.impl (stdHandle StdErr) true
+    b = setEcho.impl (stdHandle StdErr) false
+    match (a, b) with
+      (Right _, Right _) -> [ Ok "setEcho works" ]
+      _ -> [ Fail "setEcho failure" ]
+
 testAppend : '{io2.IO} [Result]
 testAppend _ =
   test = 'let
@@ -352,8 +360,9 @@ testAppend _ =
 
     ⍟ These new definitions are ok to `add`:
     
-      testAppend : '{IO} [Result]
-      testSeek   : '{IO} [Result]
+      testAppend  : '{IO} [Result]
+      testSeek    : '{IO} [Result]
+      testSetEcho : '{IO} [Result]
 ```
 
 ``` ucm
@@ -361,8 +370,9 @@ scratch/main> add
 
   ⍟ I've added these definitions:
 
-    testAppend : '{IO} [Result]
-    testSeek   : '{IO} [Result]
+    testAppend  : '{IO} [Result]
+    testSeek    : '{IO} [Result]
+    testSetEcho : '{IO} [Result]
 
 scratch/main> io.test testSeek
 
@@ -377,6 +387,16 @@ scratch/main> io.test testSeek
                   ◉ getLine should get a line
 
   ✅ 7 test(s) passing
+
+  Tip: Use view 1 to view the source of a test.
+
+scratch/main> io.test testSetEcho
+
+    New test results:
+
+    1. testSetEcho   ◉ setEcho works
+
+  ✅ 1 test(s) passing
 
   Tip: Use view 1 to view the source of a test.
 
