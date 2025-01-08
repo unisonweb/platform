@@ -6,6 +6,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -44,6 +45,10 @@ data Term f v = Term
   { freeVars :: Set v,
     out :: ABT f v
   }
+
+deriving instance (Var v, Ord (f v (Term f v)), forall a. Functor (f a), forall a b. Eq (f a b), Bifunctor f, Bifoldable f) => (Ord (ABT f v))
+
+deriving instance (Var v, Ord (f v (Term f v)), forall a. Functor (f a), forall a b. Eq (f a b), Bifunctor f, Bifoldable f) => (Ord (Term f v))
 
 instance
   (forall a b. (Show a) => (Show b) => Show (f a b), Show v) =>
