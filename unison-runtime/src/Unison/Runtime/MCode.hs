@@ -57,6 +57,7 @@ import Data.Bitraversable (Bitraversable (..), bifoldMapDefault, bimapDefault)
 import Data.Bits (shiftL, shiftR, (.|.))
 import Data.Coerce
 import Data.Functor ((<&>))
+import Data.List qualified as List
 import Data.Map.Strict qualified as M
 import Data.Primitive.PrimArray
 import Data.Primitive.PrimArray qualified as PA
@@ -67,6 +68,9 @@ import Data.Void (Void, absurd)
 import Data.Word (Word16, Word64)
 import GHC.Stack (HasCallStack)
 import Unison.ABT.Normalized (pattern TAbss)
+import Unison.ABT.Normalized qualified as ABT
+import Unison.Debug qualified as Debug
+import Unison.Prelude ((&))
 import Unison.Reference (Reference, showShort)
 import Unison.Referent (Referent)
 import Unison.Runtime.ANF
@@ -1460,6 +1464,27 @@ refCAS a =
     "wrong number of args for refCAS: "
       ++ show a
 
+-- emitDataMatching ::
+--   (Var v) =>
+--   Reference ->
+--   RefNums ->
+--   Reference ->
+--   Word64 ->
+--   RCtx v ->
+--   Ctx v ->
+--   EnumMap CTag ([Mem], ANormal v) ->
+--   Maybe (ANormal v) ->
+--   Emit Branch
+-- emitDataMatching r rns grpr grpn rec ctx cs df =
+--   mkBranch <$> edf <*> traverse (emitCase rns grpr grpn rec ctx) (coerce cs)
+--   where
+--     -- Note: this is not really accurate. A default data case needs
+--     -- stack space corresponding to the actual data that shows up there.
+--     -- However, we currently don't use default cases for data.
+--     edf
+--       | Just co <- df = emitSection rns grpr grpn rec ctx co
+--       | otherwise = countCtx ctx $ Die ("missing data case for hash " <> show r)
+
 emitDataMatching ::
   (Var v) =>
   Reference ->
@@ -1471,15 +1496,43 @@ emitDataMatching ::
   EnumMap CTag ([Mem], ANormal v) ->
   Maybe (ANormal v) ->
   Emit Branch
-emitDataMatching r rns grpr grpn rec ctx cs df =
+emitDataMatching _r rns grpr grpn rec ctx cs (Just df) =
   mkBranch <$> edf <*> traverse (emitCase rns grpr grpn rec ctx) (coerce cs)
   where
     -- Note: this is not really accurate. A default data case needs
     -- stack space corresponding to the actual data that shows up there.
     -- However, we currently don't use default cases for data.
-    edf
-      | Just co <- df = emitSection rns grpr grpn rec ctx co
-      | otherwise = countCtx ctx $ Die ("missing data case for hash " <> show r)
+    edf = emitSection rns grpr grpn rec ctx df
+emitDataMatching r rns grpr grpn rec ctx cs Nothing =
+  let (df, m) = collapseCases cs
+      edf = case df of
+        Nothing -> countCtx ctx $ Die ("missing data case for hash " <> show r)
+        Just df -> emitCase rns grpr grpn rec ctx df
+   in mkBranch <$> edf <*> traverse (emitCase rns grpr grpn rec ctx) (coerce m)
+
+collapseCases :: (Var v, Ord (ANF.ANormalF v (ABT.Term ANF.ANormalF v))) => EnumMap CTag ([Mem], ANormal v) -> (Maybe (([Mem], ANormal v)), EnumMap CTag ([Mem], (ANormal v)))
+collapseCases cd
+  | EC.mapNull cd = (Nothing, cd)
+  | otherwise -- No default case, but do have at least one case.
+    =
+      let (def, new) =
+            cd
+              & EC.mapToList
+              -- Select only cases without any binders.
+              -- & List.filter (\(_, (ms, _)) -> null ms)
+              & fmap (\(k, v) -> (v, EC.setSingleton k))
+              & M.fromListWith (<>)
+              & M.toList
+              & List.sortOn (EC.setSize . snd)
+              & reverse
+              & \case
+                [] -> (Nothing, mempty)
+                (d, ks) : _rest -> (Just d, EC.withoutKeys cd ks)
+       in case def of
+            Nothing -> (def, new)
+            Just {}
+              | EC.mapSize cd > 20 -> Debug.debug Debug.Temp ("Was " <> show (EC.mapSize cd) <> " now " <> show (EC.mapSize new)) $ (def, new)
+              | otherwise -> (def, new)
 
 -- Emits code corresponding to an unboxed sum match.
 -- The match is against a tag on the stack, and cases introduce

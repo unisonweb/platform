@@ -29,6 +29,7 @@ module Unison.Util.EnumContainers
     traverseSet_,
     traverseWithKey,
     setSize,
+    mapSize,
   )
 where
 
@@ -211,3 +212,7 @@ traverseWithKey f (EM m) = EM <$> IM.traverseWithKey (f . intToKey) m
 {-# INLINE setSize #-}
 setSize :: EnumSet k -> Int
 setSize (ES s) = IS.size s
+
+{-# INLINE mapSize #-}
+mapSize :: EnumMap k a -> Int
+mapSize (EM m) = IM.size m

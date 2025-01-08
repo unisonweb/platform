@@ -6,7 +6,6 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -46,10 +45,6 @@ data Term f v = Term
     out :: ABT f v
   }
 
-deriving instance (Var v, Ord (f v (Term f v)), forall a. Functor (f a), forall a b. Eq (f a b), Bifunctor f, Bifoldable f) => (Ord (ABT f v))
-
-deriving instance (Var v, Ord (f v (Term f v)), forall a. Functor (f a), forall a b. Eq (f a b), Bifunctor f, Bifoldable f) => (Ord (Term f v))
-
 instance
   (forall a b. (Show a) => (Show b) => Show (f a b), Show v) =>
   Show (ABT f v)
@@ -70,7 +65,7 @@ instance
     showParen (p >= 9) $ showString "Term " . showsPrec 10 e
 
 instance
-  (forall a b. (Eq a) => (Eq b) => Eq (f a b), Bifunctor f, Bifoldable f, Var v) =>
+  (Eq v, Var v, Bifunctor f, Bifoldable f, Eq (f v (Term f v))) =>
   Eq (ABT f v)
   where
   Abs v1 e1 == Abs v2 e2
@@ -80,10 +75,27 @@ instance
   _ == _ = False
 
 instance
-  (forall a b. (Eq a) => (Eq b) => Eq (f a b), Bifunctor f, Bifoldable f, Var v) =>
+  (Var v, Bifunctor f, Bifoldable f, Eq (f v (Term f v)), Ord (f v (Term f v))) =>
+  Ord (ABT f v)
+  where
+  Abs v1 e1 `compare` Abs v2 e2
+    | v1 == v2 = e1 `compare` e2
+    | otherwise = e1 `compare` rename v2 v1 e2
+  Tm e1 `compare` Tm e2 = e1 `compare` e2
+  Abs {} `compare` Tm {} = LT
+  Tm {} `compare` Abs {} = GT
+
+instance
+  (Eq (ABT f v)) =>
   Eq (Term f v)
   where
   Term _ abt1 == Term _ abt2 = abt1 == abt2
+
+instance
+  (Ord (ABT f v)) =>
+  Ord (Term f v)
+  where
+  Term _ abt1 `compare` Term _ abt2 = abt1 `compare` abt2
 
 pattern TAbs :: (Var v) => v -> Term f v -> Term f v
 pattern TAbs u bd <-

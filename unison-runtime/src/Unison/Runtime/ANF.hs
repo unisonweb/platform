@@ -748,7 +748,7 @@ data ANormalF v e
   | AApp (Func v) [v]
   | AFrc v
   | AVar v
-  deriving (Show, Eq, Functor, Foldable, Traversable)
+  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 instance Bifunctor ANormalF where
   bimap f _ (AVar v) = AVar (f v)
@@ -1137,7 +1137,7 @@ data Branched e
   | MatchData Reference (EnumMap CTag ([Mem], e)) (Maybe e)
   | MatchSum (EnumMap Word64 ([Mem], e))
   | MatchNumeric Reference (EnumMap Word64 e) (Maybe e)
-  deriving (Show, Eq, Functor, Foldable, Traversable)
+  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 -- Data cases expected to cover all constructors
 pattern MatchDataCover :: Reference -> EnumMap CTag ([Mem], e) -> Branched e
@@ -1245,7 +1245,7 @@ data Func v
     FReq !Reference !CTag
   | -- prim op
     FPrim (Either POp ForeignFunc)
-  deriving (Show, Eq, Functor, Foldable, Traversable)
+  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 data Lit
   = I Int64
@@ -1255,7 +1255,7 @@ data Lit
   | C Char
   | LM Referent -- Term Link
   | LY Reference -- Type Link
-  deriving (Show, Eq)
+  deriving (Show, Ord, Eq)
 
 litRef :: Lit -> Reference
 litRef (I _) = Ty.intRef
@@ -1465,7 +1465,7 @@ type DNormal v = Directed () (ANormal v)
 
 -- Should be a completely closed term
 data SuperNormal v = Lambda {conventions :: [Mem], bound :: ANormal v}
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 data SuperGroup v = Rec
   { group :: [(v, SuperNormal v)],
