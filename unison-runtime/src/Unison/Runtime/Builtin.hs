@@ -1015,11 +1015,10 @@ set'echo :: ForeignOp
 set'echo instr =
   ([BX, BX],)
     . TAbss [arg1, arg2]
-    . unenum 2 arg2 Ty.booleanRef bol
-    . TLetD result UN (TFOp instr [arg1, bol])
+    . TLetD result UN (TFOp instr [arg1, arg2])
     $ outIoFailUnit stack1 stack2 stack3 unit fail result
   where
-    (arg1, arg2, bol, stack1, stack2, stack3, unit, fail, result) = fresh
+    (arg1, arg2, stack1, stack2, stack3, unit, fail, result) = fresh
 
 -- a -> IOMode -> ...
 inIomr :: forall v. (Var v) => v -> v -> v -> v -> ANormal v -> ForeignFunc -> ([Mem], ANormal v)
