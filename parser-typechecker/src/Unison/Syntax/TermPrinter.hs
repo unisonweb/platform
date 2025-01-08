@@ -817,17 +817,18 @@ arity1Branches bs = [([pat], guard, body) | MatchCase pat guard body <- bs]
 groupCases ::
   (Ord v) =>
   [MatchCase' () (Term3 v ann)] ->
-  [([Pattern ()], [v], [(Maybe (Term3 v ann), Term3 v ann)])]
-groupCases = go0
+  [([Pattern ()], [v], [(Maybe (Term3 v ann), ([v], Term3 v ann))])]
+groupCases = \cases
+    [] -> []
+    ms@((p1, _, AbsN' vs1 _) : _) -> go (p1, vs1) [] ms
   where
-    go0 [] = []
-    go0 ms@((p1, _, AbsN' vs1 _) : _) = go2 (p1, vs1) [] ms
-    go2 (p0, vs0) acc [] = [(p0, vs0, reverse acc)]
-    go2 (p0, vs0) acc ms@((p1, g1, AbsN' vs body) : tl)
-      | p0 == p1 && vs == vs0 = go2 (p0, vs0) ((g1, body) : acc) tl
-      | otherwise = (p0, vs0, reverse acc) : go0 ms
+    go (p0, vs0) acc [] = [(p0, vs0, reverse acc)]
+    go (p0, vs0) acc ms@((p1, g1, AbsN' vs body) : tl)
+      | p0 == p1 && vs == vs0 = go (p0, vs0) ((g1, (vs, body)) : acc) tl
+      | otherwise = (p0, vs0, reverse acc) : groupCases ms
 
 printCase ::
+  forall m v.
   (MonadPretty v m) =>
   Imports ->
   DocLiteralContext ->
@@ -867,6 +868,7 @@ printCase im doc ms =
                   justified
             justified = PP.leftJustify $ fmap (\(g, b) -> (g, (arrow, b))) gbs
     grid = traverse go (groupCases ms)
+    patLhs :: PrettyPrintEnv -> [v] -> [Pattern ()] -> Pretty SyntaxText
     patLhs ppe vs = \cases
       [pat] -> PP.group (fst (prettyPattern ppe (ac Annotation Block im doc) Bottom vs pat))
       pats -> PP.group
@@ -899,7 +901,7 @@ printCase im doc ms =
           -- like any other variable, ex: case Foo x y | x < y -> ...
           PP.spaceIfNeeded (fmt S.DelimiterChar "|")
             <$> pretty0 (ac Control Normal im doc) g
-        printBody = pretty0 (ac Annotation Block im doc)
+        printBody (vs, body) = withBoundTerms vs (pretty0 (ac Annotation Block im doc) body)
 
 -- A pretty term binding, split into the type signature (possibly empty) and the term.
 data PrettyBinding = PrettyBinding
