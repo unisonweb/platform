@@ -2,6 +2,7 @@ module Unison.Util.EnumContainers
   ( EnumMap,
     EnumSet,
     EnumKey (..),
+    mapNull,
     mapFromList,
     setFromList,
     setToList,
@@ -36,7 +37,7 @@ import Data.Functor.Classes (Eq1, Ord1)
 import Data.IntMap.Strict qualified as IM
 import Data.IntSet qualified as IS
 import Data.Word (Word16, Word64)
-import Prelude hiding (lookup)
+import Prelude hiding (lookup, null)
 
 class EnumKey k where
   keyToInt :: k -> Int
@@ -80,6 +81,10 @@ newtype EnumSet k = ES IS.IntSet
     ( Monoid,
       Semigroup
     )
+
+{-# INLINE mapNull #-}
+mapNull :: EnumMap k a -> Bool
+mapNull (EM m) = IM.null m
 
 {-# INLINE mapFromList #-}
 mapFromList :: (EnumKey k) => [(k, a)] -> EnumMap k a
