@@ -69,7 +69,6 @@ import Data.Word (Word16, Word64)
 import GHC.Stack (HasCallStack)
 import Unison.ABT.Normalized (pattern TAbss)
 import Unison.ABT.Normalized qualified as ABT
-import Unison.Debug qualified as Debug
 import Unison.Prelude ((&))
 import Unison.Reference (Reference, showShort)
 import Unison.Referent (Referent)
@@ -1528,11 +1527,7 @@ collapseCases cd
               & \case
                 [] -> (Nothing, mempty)
                 (d, ks) : _rest -> (Just d, EC.withoutKeys cd ks)
-       in case def of
-            Nothing -> (def, new)
-            Just {}
-              | EC.mapSize cd > 20 -> Debug.debug Debug.Temp ("Was " <> show (EC.mapSize cd) <> " now " <> show (EC.mapSize new)) $ (def, new)
-              | otherwise -> (def, new)
+       in (def, new)
 
 -- Emits code corresponding to an unboxed sum match.
 -- The match is against a tag on the stack, and cases introduce
