@@ -38,6 +38,7 @@ import Unison.Runtime.ANF (Code, Value)
 import Unison.Runtime.Array
 import Unison.Type qualified as Ty
 import Unison.Util.Bytes (Bytes)
+import Unison.Util.RefPromise (Promise)
 import Unison.Util.Text (Text)
 import Unison.Util.Text.Pattern (CPattern, CharPattern)
 import Unsafe.Coerce
@@ -220,49 +221,117 @@ maybeUnwrapForeign rt (Wrap r e)
 {-# NOINLINE maybeUnwrapForeign #-}
 
 class BuiltinForeign f where
+  foreignName :: Tagged f String
   foreignRef :: Tagged f Reference
 
 instance BuiltinForeign Text where
+  foreignName = Tagged "Text"
   foreignRef :: Tagged Text Reference
   foreignRef = Tagged Ty.textRef
 
-instance BuiltinForeign Bytes where foreignRef = Tagged Ty.bytesRef
+instance BuiltinForeign Bytes where
+  foreignName = Tagged "Bytes"
+  foreignRef = Tagged Ty.bytesRef
 
-instance BuiltinForeign Handle where foreignRef = Tagged Ty.fileHandleRef
+instance BuiltinForeign Handle where
+  foreignName = Tagged "Handle"
+  foreignRef = Tagged Ty.fileHandleRef
 
-instance BuiltinForeign ProcessHandle where foreignRef = Tagged Ty.processHandleRef
+instance BuiltinForeign ProcessHandle where
+  foreignName = Tagged "ProcessHandle"
+  foreignRef = Tagged Ty.processHandleRef
 
-instance BuiltinForeign Referent where foreignRef = Tagged Ty.termLinkRef
+instance BuiltinForeign Referent where
+  foreignName = Tagged "Referent"
+  foreignRef = Tagged Ty.termLinkRef
 
-instance BuiltinForeign Socket where foreignRef = Tagged Ty.socketRef
+instance BuiltinForeign Socket where
+  foreignName = Tagged "Socket"
+  foreignRef = Tagged Ty.socketRef
 
-instance BuiltinForeign ListenSocket where foreignRef = Tagged Ty.udpListenSocketRef
+instance BuiltinForeign ListenSocket where
+  foreignName = Tagged "ListenSocket"
+  foreignRef = Tagged Ty.udpListenSocketRef
 
-instance BuiltinForeign ClientSockAddr where foreignRef = Tagged Ty.udpClientSockAddrRef
+instance BuiltinForeign ClientSockAddr where
+  foreignName = Tagged "ClientSockAddr"
+  foreignRef = Tagged Ty.udpClientSockAddrRef
 
-instance BuiltinForeign UDPSocket where foreignRef = Tagged Ty.udpSocketRef
+instance BuiltinForeign UDPSocket where
+  foreignName = Tagged "UDPSocket"
+  foreignRef = Tagged Ty.udpSocketRef
 
-instance BuiltinForeign ThreadId where foreignRef = Tagged Ty.threadIdRef
+instance BuiltinForeign ThreadId where
+  foreignName = Tagged "ThreadId"
+  foreignRef = Tagged Ty.threadIdRef
 
-instance BuiltinForeign TLS.ClientParams where foreignRef = Tagged Ty.tlsClientConfigRef
+instance BuiltinForeign TLS.ClientParams where
+  foreignName = Tagged "ClientParams"
+  foreignRef = Tagged Ty.tlsClientConfigRef
 
-instance BuiltinForeign TLS.ServerParams where foreignRef = Tagged Ty.tlsServerConfigRef
+instance BuiltinForeign TLS.ServerParams where
+  foreignName = Tagged "ServerParams"
+  foreignRef = Tagged Ty.tlsServerConfigRef
 
-instance BuiltinForeign X509.SignedCertificate where foreignRef = Tagged Ty.tlsSignedCertRef
+instance BuiltinForeign X509.SignedCertificate where
+  foreignName = Tagged "X509.SignedCertificate"
+  foreignRef = Tagged Ty.tlsSignedCertRef
 
-instance BuiltinForeign X509.PrivKey where foreignRef = Tagged Ty.tlsPrivateKeyRef
+instance BuiltinForeign X509.PrivKey where
+  foreignName = Tagged "X509.PrivKey"
+  foreignRef = Tagged Ty.tlsPrivateKeyRef
 
-instance BuiltinForeign FilePath where foreignRef = Tagged Ty.filePathRef
+instance BuiltinForeign FilePath where
+  foreignName = Tagged "FilePath"
+  foreignRef = Tagged Ty.filePathRef
 
-instance BuiltinForeign TLS.Context where foreignRef = Tagged Ty.tlsRef
+instance BuiltinForeign TLS.Context where
+  foreignName = Tagged "TLS.Context"
+  foreignRef = Tagged Ty.tlsRef
 
-instance BuiltinForeign Code where foreignRef = Tagged Ty.codeRef
+instance BuiltinForeign Code where
+  foreignName = Tagged "Code"
+  foreignRef = Tagged Ty.codeRef
 
-instance BuiltinForeign Value where foreignRef = Tagged Ty.valueRef
+instance BuiltinForeign Value where
+  foreignName = Tagged "Value"
+  foreignRef = Tagged Ty.valueRef
 
-instance BuiltinForeign TimeSpec where foreignRef = Tagged Ty.timeSpecRef
+instance BuiltinForeign TimeSpec where
+  foreignName = Tagged "TimeSpec"
+  foreignRef = Tagged Ty.timeSpecRef
 
-instance BuiltinForeign (Atomic.Ticket a) where foreignRef = Tagged Ty.ticketRef
+instance BuiltinForeign (Atomic.Ticket a) where
+  foreignName = Tagged "Ticket"
+  foreignRef = Tagged Ty.ticketRef
+
+instance BuiltinForeign (MVar a) where
+  foreignName = Tagged "MVar"
+  foreignRef = Tagged Ty.mvarRef
+
+instance BuiltinForeign (TVar a) where
+  foreignName = Tagged "TVar"
+  foreignRef = Tagged Ty.tvarRef
+
+instance BuiltinForeign (Promise a) where
+  foreignName = Tagged "Promise"
+  foreignRef = Tagged Ty.promiseRef
+
+instance BuiltinForeign (MutableArray s e) where
+  foreignName = Tagged "MutableArray"
+  foreignRef = Tagged Ty.marrayRef
+
+instance BuiltinForeign (Array e) where
+  foreignName = Tagged "Array"
+  foreignRef = Tagged Ty.iarrayRef
+
+instance BuiltinForeign (MutableByteArray s) where
+  foreignName = Tagged "MutableByteArray"
+  foreignRef = Tagged Ty.mbytearrayRef
+
+instance BuiltinForeign ByteArray where
+  foreignName = Tagged "ByteArray"
+  foreignRef = Tagged Ty.ibytearrayRef
 
 data HashAlgorithm where
   -- Reference is a reference to the hash algorithm
@@ -272,12 +341,16 @@ newtype Tls = Tls TLS.Context
 
 data Failure a = Failure Reference Text a
 
-instance BuiltinForeign HashAlgorithm where foreignRef = Tagged Ty.hashAlgorithmRef
+instance BuiltinForeign HashAlgorithm where
+  foreignName = Tagged "HashAlgorithm"
+  foreignRef = Tagged Ty.hashAlgorithmRef
 
 instance BuiltinForeign CPattern where
+  foreignName = Tagged "CPattern"
   foreignRef = Tagged Ty.patternRef
 
 instance BuiltinForeign CharPattern where
+  foreignName = Tagged "CharPattern"
   foreignRef = Tagged Ty.charClassRef
 
 wrapBuiltin :: forall f. (BuiltinForeign f) => f -> Foreign

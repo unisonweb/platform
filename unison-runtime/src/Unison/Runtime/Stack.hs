@@ -64,7 +64,9 @@ module Unison.Runtime.Stack
     USeq,
     traceK,
     frameDataSize,
+    RuntimePanic (..),
     marshalToForeign,
+    marshalUnwrapForeignIO,
     unull,
     bnull,
     nullSeg,
@@ -134,6 +136,8 @@ module Unison.Runtime.Stack
     adjustArgs,
     fsize,
     asize,
+    useg,
+    bseg,
 
     -- * Unboxed type tags
     natTypeTag,
@@ -144,6 +148,7 @@ module Unison.Runtime.Stack
   )
 where
 
+import Control.Exception (throwIO)
 import Control.Monad.Primitive
 import Data.Char qualified as Char
 import Data.IORef (IORef)
@@ -508,6 +513,18 @@ marshalToForeign (Foreign x) = x
 marshalToForeign c =
   error $ "marshalToForeign: unhandled closure: " ++ show c
 
+data RuntimePanic = Panic String (Maybe Val)
+  deriving (Show)
+
+instance Exception RuntimePanic
+
+marshalUnwrapForeignIO :: HasCallStack => Closure -> IO a
+marshalUnwrapForeignIO (Foreign x) = pure $ unwrapForeign x
+marshalUnwrapForeignIO c =
+  throwIO $ Panic "marshalUnwrapForeignIO: unhandled closure" (Just v)
+  where
+    v = BoxedVal c
+
 type Off = Int
 
 type SZ = Int
@@ -676,7 +693,9 @@ data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
   -- See universalEq.
   deriving (Show)
 
-instance BuiltinForeign (IORef Val) where foreignRef = Tagged Ty.refRef
+instance BuiltinForeign (IORef Val) where
+  foreignName = Tagged "IORef"
+  foreignRef = Tagged Ty.refRef
 
 -- | A nulled out value you can use when filling empty arrays, etc.
 emptyVal :: Val

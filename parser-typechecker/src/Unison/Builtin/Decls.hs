@@ -153,6 +153,17 @@ bufferModeBlockBufferingId = Maybe.fromJust $ constructorId bufferModeRef "io2.B
 
 bufferModeSizedBlockBufferingId = Maybe.fromJust $ constructorId bufferModeRef "io2.BufferMode.SizedBlockBuffering"
 
+fileModeReadId, fileModeWriteId, fileModeAppendId, fileModeReadWriteId :: ConstructorId
+fileModeReadId = Maybe.fromJust $ constructorId fileModeRef "io2.FileMode.Read"
+fileModeWriteId = Maybe.fromJust $ constructorId fileModeRef "io2.FileMode.Write"
+fileModeAppendId = Maybe.fromJust $ constructorId fileModeRef "io2.FileMode.Append"
+fileModeReadWriteId = Maybe.fromJust $ constructorId fileModeRef "io2.FileMode.ReadWrite"
+
+seekModeAbsoluteId, seekModeRelativeId, seekModeEndId :: ConstructorId
+seekModeAbsoluteId = Maybe.fromJust $ constructorId seekModeRef "io2.SeekMode.AbsoluteSeek"
+seekModeRelativeId = Maybe.fromJust $ constructorId seekModeRef "io2.SeekMode.RelativeSeek"
+seekModeEndId = Maybe.fromJust $ constructorId seekModeRef "io2.SeekMode.SeekFromEnd"
+
 okConstructorReferent, failConstructorReferent :: Referent.Referent
 okConstructorReferent = Referent.Con (ConstructorReference testResultRef okConstructorId) CT.Data
 failConstructorReferent = Referent.Con (ConstructorReference testResultRef failConstructorId) CT.Data
