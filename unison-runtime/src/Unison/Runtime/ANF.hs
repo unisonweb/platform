@@ -1443,7 +1443,18 @@ type Cte v = CTE v (ANormal v)
 type Ctx v = Directed () [Cte v]
 
 data Direction a = Indirect a | Direct
-  deriving (Eq, Ord, Show, Functor, Foldable, Traversable)
+  deriving (Show, Functor, Foldable, Traversable)
+
+instance Eq (Direction a) where
+  Indirect _ == Indirect _ = True
+  Direct == Direct = True
+  _ == _ = False
+
+instance Ord (Direction a) where
+  compare (Indirect _) (Indirect _) = EQ
+  compare (Indirect _) Direct = LT
+  compare Direct (Indirect _) = GT
+  compare Direct Direct = EQ
 
 directed :: (Foldable f) => f (Cte v) -> Directed () (f (Cte v))
 directed x = (foldMap f x, x)
