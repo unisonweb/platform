@@ -1463,27 +1463,6 @@ refCAS a =
     "wrong number of args for refCAS: "
       ++ show a
 
--- emitDataMatching ::
---   (Var v) =>
---   Reference ->
---   RefNums ->
---   Reference ->
---   Word64 ->
---   RCtx v ->
---   Ctx v ->
---   EnumMap CTag ([Mem], ANormal v) ->
---   Maybe (ANormal v) ->
---   Emit Branch
--- emitDataMatching r rns grpr grpn rec ctx cs df =
---   mkBranch <$> edf <*> traverse (emitCase rns grpr grpn rec ctx) (coerce cs)
---   where
---     -- Note: this is not really accurate. A default data case needs
---     -- stack space corresponding to the actual data that shows up there.
---     -- However, we currently don't use default cases for data.
---     edf
---       | Just co <- df = emitSection rns grpr grpn rec ctx co
---       | otherwise = countCtx ctx $ Die ("missing data case for hash " <> show r)
-
 emitDataMatching ::
   (Var v) =>
   Reference ->
@@ -1509,11 +1488,12 @@ emitDataMatching r rns grpr grpn rec ctx cs Nothing =
         Just df -> emitCase rns grpr grpn rec ctx df
    in mkBranch <$> edf <*> traverse (emitCase rns grpr grpn rec ctx) (coerce m)
 
+-- | The pattern-match compiler emits a separate 'branch' for every possible constructor, even if many of those branches
+-- are literally identical. We can benefit slightly by collapsing equivalent branches into a single default branch.
 collapseCases :: (Var v, Ord (ANF.ANormalF v (ABT.Term ANF.ANormalF v))) => EnumMap CTag ([Mem], ANormal v) -> (Maybe (([Mem], ANormal v)), EnumMap CTag ([Mem], (ANormal v)))
 collapseCases cd
   | EC.mapNull cd = (Nothing, cd)
-  | otherwise -- No default case, but do have at least one case.
-    =
+  | otherwise =
       let (def, new) =
             cd
               & EC.mapToList
