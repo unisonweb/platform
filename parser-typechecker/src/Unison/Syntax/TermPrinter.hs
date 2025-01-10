@@ -15,12 +15,15 @@ module Unison.Syntax.TermPrinter
 where
 
 import Control.Lens (unsnoc)
+import Control.Monad.Reader (ask, local)
 import Control.Monad.State (evalState)
 import Control.Monad.State qualified as State
 import Data.Char (isPrint)
+import Data.Foldable qualified as Foldable
 import Data.List
 import Data.List qualified as List
 import Data.Map qualified as Map
+import Data.Sequence qualified as Seq
 import Data.Set qualified as Set
 import Data.Text (unpack)
 import Data.Text qualified as Text
@@ -51,7 +54,7 @@ import Unison.Referent (Referent)
 import Unison.Referent qualified as Referent
 import Unison.Syntax.HashQualified qualified as HQ (unsafeFromVar)
 import Unison.Syntax.Lexer.Unison (showEscapeChar)
-import Unison.Syntax.Name qualified as Name (isSymboly, parseText, parseTextEither, toText, unsafeParseText)
+import Unison.Syntax.Name qualified as Name (isSymboly, parseText, parseTextEither, toText, unsafeParseText, unsafeParseVar)
 import Unison.Syntax.NamePrinter (styleHashQualified'')
 import Unison.Syntax.NameSegment qualified as NameSegment (toEscapedText)
 import Unison.Syntax.Precedence (InfixPrecedence (..), Precedence (..), increment, isTopLevelPrecedence, operatorPrecedence)
@@ -97,7 +100,8 @@ data AmbientContext = AmbientContext
     infixContext :: !InfixContext,
     imports :: !Imports,
     docContext :: !DocLiteralContext,
-    elideUnit :: !Bool -- `True` if a `()` at the end of a block should be elided
+    -- `True` if a `()` at the end of a block should be elided
+    elideUnit :: !Bool
   }
 
 -- Description of the position of this ABT node, when viewed in the
@@ -209,28 +213,30 @@ pretty0
       blockContext = bc,
       infixContext = ic,
       imports = im,
-      docContext = doc,
-      elideUnit = elideUnit
+      docContext = doc
     }
   term =
     specialCases term \case
-      Var' v -> pure . parenIfInfix name ic $ styleHashQualified'' (fmt S.Var) name
-        where
-          -- OK since all term vars are user specified, any freshening was just added during typechecking
-          name = elideFQN im $ HQ.unsafeFromVar (Var.reset v)
+      Var' v -> do
+        env <- ask
+        let name =
+              if Set.member v env.freeTerms && Set.member v env.boundTerms
+                then HQ.fromName (Name.makeAbsolute (Name.unsafeParseVar v))
+                else elideFQN im $ HQ.unsafeFromVar (Var.reset v)
+        pure . parenIfInfix name ic $ styleHashQualified'' (fmt S.Var) name
       Ref' r -> do
-        n <- getPPE
-        let name = elideFQN im $ PrettyPrintEnv.termName n (Referent.Ref r)
+        env <- ask
+        let name = elideFQN im $ PrettyPrintEnv.termName env.ppe (Referent.Ref r)
         pure . parenIfInfix name ic $ styleHashQualified'' (fmt $ S.TermReference (Referent.Ref r)) name
       TermLink' r -> do
-        n <- getPPE
-        let name = elideFQN im $ PrettyPrintEnv.termName n r
+        env <- ask
+        let name = elideFQN im $ PrettyPrintEnv.termName env.ppe r
         pure . paren (p >= Application) $
           fmt S.LinkKeyword "termLink "
             <> parenIfInfix name ic (styleHashQualified'' (fmt $ S.TermReference r) name)
       TypeLink' r -> do
-        n <- getPPE
-        let name = elideFQN im $ PrettyPrintEnv.typeName n r
+        env <- ask
+        let name = elideFQN im $ PrettyPrintEnv.typeName env.ppe r
         pure . paren (p >= Application) $
           fmt S.LinkKeyword "typeLink "
             <> parenIfInfix name ic (styleHashQualified'' (fmt $ S.TypeReference r) name)
@@ -276,13 +282,13 @@ pretty0
           Nothing -> '?' : [c]
       Blank' id -> pure $ fmt S.Blank $ l "_" <> l (fromMaybe "" (Blank.nameb id))
       Constructor' ref -> do
-        n <- getPPE
-        let name = elideFQN im $ PrettyPrintEnv.termName n conRef
+        env <- ask
+        let name = elideFQN im $ PrettyPrintEnv.termName env.ppe conRef
             conRef = Referent.Con ref CT.Data
         pure $ styleHashQualified'' (fmt $ S.TermReference conRef) name
       Request' ref -> do
-        n <- getPPE
-        let name = elideFQN im $ PrettyPrintEnv.termName n conRef
+        env <- ask
+        let name = elideFQN im $ PrettyPrintEnv.termName env.ppe conRef
             conRef = Referent.Con ref CT.Effect
         pure $ styleHashQualified'' (fmt $ S.TermReference conRef) name
       Handle' h body -> do
@@ -360,7 +366,7 @@ pretty0
                       ]
       LetBlock bs e ->
         let (im', uses) = calcImports im term
-         in printLet elideUnit bc bs e im' uses
+         in printLet a {imports = im'} bc bs e uses
       -- Some matches are rendered as a destructuring bind, like
       --   match foo with (a,b) -> blah
       -- becomes
@@ -369,12 +375,12 @@ pretty0
       -- See `isDestructuringBind` definition.
       Match' scrutinee cs@[MatchCase pat guard (AbsN' vs body)]
         | p <= Control && isDestructuringBind scrutinee cs -> do
-            n <- getPPE
+            env <- ask
             let letIntro = case bc of
                   Block -> id
                   Normal -> \x -> fmt S.ControlKeyword "let" `PP.hang` x
             lhs <- do
-              let (lhs, _) = prettyPattern n (ac Annotation Block im doc) Application vs pat
+              let (lhs, _) = prettyPattern env.ppe (ac Annotation Block im doc) Application vs pat
               guard' <- printGuard guard
               pure $ PP.group lhs `PP.hang` guard'
             let eq = fmt S.BindingEquals "="
@@ -409,26 +415,25 @@ pretty0
     where
       goNormal prec tm = pretty0 (ac prec Normal im doc) tm
       specialCases term go = do
-        doc <- prettyDoc2 a term
-        case doc of
+        prettyDoc2 a term >>= \case
           Just d -> pure d
           Nothing -> notDoc go
         where
           notDoc go = do
-            n <- getPPE
+            env <- ask
             let -- This predicate controls which binary functions we render as infix
                 -- operators. At the moment the policy is just to render symbolic
                 -- operators as infix.
                 binaryOpsPred :: Term3 v PrintAnnotation -> Bool
                 binaryOpsPred = \case
-                  Ref' r -> isSymbolic $ PrettyPrintEnv.termName n (Referent.Ref r)
+                  Ref' r -> isSymbolic $ PrettyPrintEnv.termName env.ppe (Referent.Ref r)
                   Var' v -> isSymbolic $ HQ.unsafeFromVar v
                   _ -> False
                 -- Gets the precedence of an infix operator, if it has one.
                 termPrecedence :: Term3 v PrintAnnotation -> Maybe Precedence
                 termPrecedence = \case
                   Ref' r ->
-                    HQ.toName (PrettyPrintEnv.termName n (Referent.Ref r))
+                    HQ.toName (PrettyPrintEnv.termName env.ppe (Referent.Ref r))
                       >>= operatorPrecedence
                         . NameSegment.toEscapedText
                         . Name.lastSegment
@@ -523,11 +528,14 @@ pretty0
               (DD.Doc, _)
                 | doc == MaybeDoc ->
                     if isDocLiteral term
-                      then applyPPE3 prettyDoc im term
+                      then do
+                        env <- ask
+                        pure (prettyDoc env.ppe im term)
                       else pretty0 (a {docContext = NoDoc}) term
               (TupleTerm' [x], _) -> do
                 let conRef = DD.pairCtorRef
-                name <- elideFQN im <$> applyPPE2 PrettyPrintEnv.termName conRef
+                env <- ask
+                let name = elideFQN im (PrettyPrintEnv.termName env.ppe conRef)
                 let pair = parenIfInfix name ic $ styleHashQualified'' (fmt (S.TermReference conRef)) name
                 x' <- pretty0 (ac Application Normal im doc) x
                 pure . paren (p >= Application) $
@@ -641,29 +649,6 @@ pretty0
       sepList' f sep xs = fold . intersperse sep <$> traverse f xs
       varList = runIdentity . sepList' (Identity . PP.text . Var.name) PP.softbreak
 
-      printLet ::
-        Bool -> -- elideUnit
-        BlockContext ->
-        [(v, Term3 v PrintAnnotation)] ->
-        Term3 v PrintAnnotation ->
-        Imports ->
-        [Pretty SyntaxText] ->
-        m (Pretty SyntaxText)
-      printLet elideUnit sc bs e im uses = do
-        bs <- traverse printBinding bs
-        body <- body e
-        pure . paren (sc /= Block && p >= Top) . letIntro $ PP.lines (uses <> bs <> body)
-        where
-          body (Constructor' (ConstructorReference DD.UnitRef 0)) | elideUnit = pure []
-          body e = (: []) <$> pretty0 (ac Annotation Normal im doc) e
-          printBinding (v, binding) =
-            if Var.isAction v
-              then pretty0 (ac Bottom Normal im doc) binding
-              else renderPrettyBinding <$> prettyBinding0' (ac Bottom Normal im doc) (HQ.unsafeFromVar v) binding
-          letIntro = case sc of
-            Block -> id
-            Normal -> \x -> fmt S.ControlKeyword "let" `PP.hang` x
-
       nonForcePred :: Term3 v PrintAnnotation -> Bool
       nonForcePred = \case
         Constructor' (ConstructorReference DD.DocRef _) -> False
@@ -671,6 +656,52 @@ pretty0
 
       nonUnitArgPred :: (Var v) => v -> Bool
       nonUnitArgPred v = Var.name v /= "()"
+
+printLet ::
+  (MonadPretty v m) =>
+  AmbientContext ->
+  BlockContext ->
+  [LetBindings v (Term3 v PrintAnnotation)] ->
+  Term3 v PrintAnnotation ->
+  [Pretty SyntaxText] ->
+  m (Pretty SyntaxText)
+printLet context sc bs e uses = do
+  bs <- traverse (printLetBindings bindingContext) bs
+  body <- body e
+  pure . paren (sc /= Block && context.precedence >= Top) . letIntro $ PP.lines (uses <> concat bs <> body)
+  where
+    bindingContext :: AmbientContext
+    bindingContext =
+      ac Bottom Normal context.imports context.docContext
+    body = \case
+      Constructor' (ConstructorReference DD.UnitRef 0) | context.elideUnit -> pure []
+      e -> List.singleton <$> pretty0 (ac Annotation Normal context.imports context.docContext) e
+    letIntro = case sc of
+      Block -> id
+      Normal -> (fmt S.ControlKeyword "let" `PP.hang`)
+
+printLetBindings ::
+  (MonadPretty v m) =>
+  AmbientContext ->
+  LetBindings v (Term3 v PrintAnnotation) ->
+  m [Pretty SyntaxText]
+printLetBindings context = \case
+  LetBindings bindings -> traverse (printLetBinding context) bindings
+  LetrecBindings bindings ->
+    let boundVars = map fst bindings
+     in traverse (printLetrecBinding context boundVars) bindings
+
+printLetBinding :: (MonadPretty v m) => AmbientContext -> (v, Term3 v PrintAnnotation) -> m (Pretty SyntaxText)
+printLetBinding context (v, binding)
+  | Var.isAction v = pretty0 context binding
+  | otherwise =
+      renderPrettyBinding <$> withBoundTerm v (prettyBinding0' context (HQ.unsafeFromVar v1) binding)
+  where
+    v1 = Var.reset v
+
+printLetrecBinding :: (MonadPretty v m) => AmbientContext -> [v] -> (v, Term3 v PrintAnnotation) -> m (Pretty SyntaxText)
+printLetrecBinding context vs (v, binding) =
+  renderPrettyBinding <$> withBoundTerms vs (prettyBinding0' context (HQ.unsafeFromVar (Var.reset v)) binding)
 
 prettyPattern ::
   forall v loc.
@@ -695,7 +726,7 @@ prettyPattern n c@AmbientContext {imports = im} p vs patt = case patt of
   Pattern.Unbound _ -> (fmt S.DelimiterChar $ l "_", vs)
   Pattern.Var _ ->
     case vs of
-      (v : tail_vs) -> (fmt S.Var $ l $ Var.nameStr v, tail_vs)
+      (v : tail_vs) -> (fmt S.Var $ l $ Var.nameStr (Var.reset v), tail_vs)
       _ -> error "prettyPattern: Expected at least one var"
   Pattern.Boolean _ b -> (fmt S.BooleanLiteral $ if b then l "true" else l "false", vs)
   Pattern.Int _ i -> (fmt S.NumericLiteral $ (if i >= 0 then l "+" else mempty) <> l (show i), vs)
@@ -724,7 +755,7 @@ prettyPattern n c@AmbientContext {imports = im} p vs patt = case patt of
     case vs of
       (v : tail_vs) ->
         let (printed, eventual_tail) = prettyPattern n c Prefix tail_vs pat
-         in (paren (p >= Prefix) (fmt S.Var (l $ Var.nameStr v) <> fmt S.DelimiterChar (l "@") <> printed), eventual_tail)
+         in (paren (p >= Prefix) (fmt S.Var (l $ Var.nameStr (Var.reset v)) <> fmt S.DelimiterChar (l "@") <> printed), eventual_tail)
       _ -> error "prettyPattern: Expected at least one var"
   Pattern.EffectPure _ pat ->
     let (printed, eventual_tail) = prettyPattern n c Bottom vs pat
@@ -786,28 +817,28 @@ arity1Branches bs = [([pat], guard, body) | MatchCase pat guard body <- bs]
 groupCases ::
   (Ord v) =>
   [MatchCase' () (Term3 v ann)] ->
-  [([Pattern ()], [v], [(Maybe (Term3 v ann), Term3 v ann)])]
-groupCases ms = go0 ms
+  [([Pattern ()], [v], [(Maybe (Term3 v ann), ([v], Term3 v ann))])]
+groupCases = \cases
+    [] -> []
+    ms@((p1, _, AbsN' vs1 _) : _) -> go (p1, vs1) [] ms
   where
-    go0 [] = []
-    go0 ms@((p1, _, AbsN' vs1 _) : _) = go2 (p1, vs1) [] ms
-    go2 (p0, vs0) acc [] = [(p0, vs0, reverse acc)]
-    go2 (p0, vs0) acc ms@((p1, g1, AbsN' vs body) : tl)
-      | p0 == p1 && vs == vs0 = go2 (p0, vs0) ((g1, body) : acc) tl
-      | otherwise = (p0, vs0, reverse acc) : go0 ms
+    go (p0, vs0) acc [] = [(p0, vs0, reverse acc)]
+    go (p0, vs0) acc ms@((p1, g1, AbsN' vs body) : tl)
+      | p0 == p1 && vs == vs0 = go (p0, vs0) ((g1, (vs, body)) : acc) tl
+      | otherwise = (p0, vs0, reverse acc) : groupCases ms
 
 printCase ::
+  forall m v.
   (MonadPretty v m) =>
   Imports ->
   DocLiteralContext ->
   [MatchCase' () (Term3 v PrintAnnotation)] ->
   m (Pretty SyntaxText)
-printCase im doc ms0 =
+printCase im doc ms =
   PP.orElse
     <$> (PP.lines . alignGrid True <$> grid)
     <*> (PP.lines . alignGrid False <$> grid)
   where
-    ms = groupCases ms0
     justify rows =
       zip (fmap fst . PP.align' $ fmap alignPatterns rows) $ fmap gbs rows
       where
@@ -836,19 +867,19 @@ printCase im doc ms0 =
                   )
                   justified
             justified = PP.leftJustify $ fmap (\(g, b) -> (g, (arrow, b))) gbs
-    grid = traverse go ms
-    patLhs env vs pats =
-      case pats of
-        [pat] -> PP.group (fst (prettyPattern env (ac Annotation Block im doc) Bottom vs pat))
-        pats -> PP.group
-          . PP.sep (PP.indentAfterNewline "  " $ "," <> PP.softbreak)
-          . (`evalState` vs)
-          . for pats
-          $ \pat -> do
-            vs <- State.get
-            let (p, rem) = prettyPattern env (ac Annotation Block im doc) Bottom vs pat
-            State.put rem
-            pure p
+    grid = traverse go (groupCases ms)
+    patLhs :: PrettyPrintEnv -> [v] -> [Pattern ()] -> Pretty SyntaxText
+    patLhs ppe vs = \cases
+      [pat] -> PP.group (fst (prettyPattern ppe (ac Annotation Block im doc) Bottom vs pat))
+      pats -> PP.group
+        . PP.sep (PP.indentAfterNewline "  " $ "," <> PP.softbreak)
+        . (`evalState` vs)
+        . for pats
+        $ \pat -> do
+          vs <- State.get
+          let (p, rem) = prettyPattern ppe (ac Annotation Block im doc) Bottom vs pat
+          State.put rem
+          pure p
     arrow = fmt S.ControlKeyword "->"
     -- If there's multiple guarded cases for this pattern, prints as:
     -- MyPattern x y
@@ -858,8 +889,8 @@ printCase im doc ms0 =
     go (pats, vs, unzip -> (guards, bodies)) = do
       guards' <- traverse printGuard guards
       bodies' <- traverse printBody bodies
-      ppe <- getPPE
-      pure (patLhs ppe vs pats, guards', bodies')
+      env <- ask
+      pure (patLhs env.ppe vs pats, guards', bodies')
       where
         noGuards = all (== Nothing) guards
         printGuard Nothing | noGuards = pure mempty
@@ -870,7 +901,7 @@ printCase im doc ms0 =
           -- like any other variable, ex: case Foo x y | x < y -> ...
           PP.spaceIfNeeded (fmt S.DelimiterChar "|")
             <$> pretty0 (ac Control Normal im doc) g
-        printBody = pretty0 (ac Annotation Block im doc)
+        printBody (vs, body) = withBoundTerms vs (pretty0 (ac Annotation Block im doc) body)
 
 -- A pretty term binding, split into the type signature (possibly empty) and the term.
 data PrettyBinding = PrettyBinding
@@ -948,8 +979,8 @@ prettyBinding0 ::
   Term2 v at ap v a ->
   m PrettyBinding
 prettyBinding0 ac v tm = do
-  ppe <- getPPE
-  prettyBinding0' ac v (printAnnotate ppe tm)
+  env <- ask
+  local (set #freeTerms (ABT.freeVars tm)) (prettyBinding0' ac v (printAnnotate env.ppe tm))
 
 prettyBinding0' ::
   (MonadPretty v m) =>
@@ -1312,7 +1343,7 @@ printAnnotate n tm =
       Set.fromList [n | v <- ABT.allVars tm, n <- varToName v]
     usedTypeNames =
       Set.fromList [n | Ann' _ ty <- ABT.subterms tm, v <- ABT.allVars ty, n <- varToName v]
-    varToName v = toList (Name.parseText (Var.name v))
+    varToName = toList . Name.parseText . Var.name . Var.reset
     go :: (Ord v) => Term2 v at ap v b -> Term2 v () () v b
     go = extraMap' id (const ()) (const ())
 
@@ -1563,14 +1594,18 @@ allInSubBlock tm p s i =
 -- statement, need to be emitted also by this function, otherwise the `use`
 -- statement may come out at an enclosing scope instead.
 immediateChildBlockTerms ::
-  (Var vt, Var v) => Term2 vt at ap v a -> [Term2 vt at ap v a]
+  forall a ap at v vt. (Var vt, Var v) => Term2 vt at ap v a -> [Term2 vt at ap v a]
 immediateChildBlockTerms = \case
   LetBlock bs e -> concatMap doLet bs ++ handleDelay e
   _ -> []
   where
     handleDelay (Delay' b) | isLet b = [b]
     handleDelay _ = []
-    doLet (v, Ann' tm _) = doLet (v, tm)
+    doLet :: LetBindings v (Term2 vt at ap v a) -> [Term2 vt at ap v a]
+    doLet = \case
+      LetBindings bindings -> concatMap doLet2 bindings
+      LetrecBindings bindings -> concatMap doLet2 bindings
+    doLet2 (v, Ann' tm _) = doLet2 (v, tm)
     -- we don't consider 'body' to be a place we can insert a `use`
     -- clause unless it's already a let block. This avoids silliness like:
     --   x = 1 + 1
@@ -1578,8 +1613,8 @@ immediateChildBlockTerms = \case
     --   x =
     --    use Nat +
     --    1 + 1
-    doLet (v, LamsNamedOpt' _ body) = [body | not (Var.isAction v), isLet body]
-    doLet t = error (show t) []
+    doLet2 (v, LamsNamedOpt' _ body) = [body | not (Var.isAction v), isLet body]
+    doLet2 t = error (show t) []
 
 isSoftHangable :: (Var v) => Term2 vt at ap v a -> Bool
 -- isSoftHangable (Delay' d) = isLet d || isSoftHangable d || case d of
@@ -1638,42 +1673,131 @@ isBlock tm =
     Delay' _ -> True
     _ -> False
 
+-- A `LetBindings` is either:
+--
+
+-- * A list of nonrecusrive lets (e.g. let x = ... in let y = ... in let z = ... in ...), where each binding is in
+
+--   scope for all subsequent bindings.
+--
+--   In made-up syntax:
+--
+--     let
+--       x = ...
+--     in
+--       let
+--         y = ...
+--       in
+--         let
+--           z = ...
+--         in
+--           body
+--
+
+-- * A single letrec's bindings, where each binding is in scope for all subsequent bindings.
+
+--
+--   In made-up syntax:
+--
+--     letrec
+--       x = ...
+--       y = ...
+--       z = ...
+--     in
+--       body
+data LetBindings v term
+  = LetBindings [(v, term)]
+  | LetrecBindings [(v, term)]
+
+-- | A group of let bindings (with all bound variables cached at the top level for efficiency).
+--
+-- The sequence has an invariant: no two `LetBindings` in a row (that would be a single `LetBindings`).
+--
+-- For example, the bindings
+--
+--   a = ...
+--   b = ...
+--   c = ...
+--   d = ...
+--   e = ...
+--   f = ...
+--   body
+--
+-- might be two lets `a` and `b`, followed by a letrec `c` and `d`, followed by a different letrec `e`, `f`:
+--
+--   let
+--     a = ...
+--   in
+--     let
+--       b = ...
+--     in
+--       letrec
+--         c = ...
+--         d = ...
+--       in
+--         letrec
+--           e = ...
+--           f = ...
+--         in
+--           body
+data LetBindingsGroups v term
+  = LetBindingsGroups (Set v) (Seq (LetBindings v term))
+
+instance (Ord v) => Semigroup (LetBindingsGroups v term) where
+  LetBindingsGroups vs1 bs1 <> LetBindingsGroups vs2 bs2 =
+    LetBindingsGroups (Set.union vs1 vs2) (bs1 <> bs2)
+
+letBindingsToLetBindingsGroups :: (Ord v) => [(v, term)] -> LetBindingsGroups v term
+letBindingsToLetBindingsGroups bindings =
+  LetBindingsGroups (Set.fromList (map fst bindings)) (Seq.singleton (LetBindings bindings))
+
+letrecBindingsToLetBindingsGroups :: (Ord v) => [(v, term)] -> LetBindingsGroups v term
+letrecBindingsToLetBindingsGroups bindings =
+  LetBindingsGroups (Set.fromList (map fst bindings)) (Seq.singleton (LetrecBindings bindings))
+
 pattern LetBlock ::
   (Ord v) =>
-  [(v, Term2 vt at ap v a)] ->
+  [LetBindings v (Term2 vt at ap v a)] ->
   Term2 vt at ap v a ->
   Term2 vt at ap v a
-pattern LetBlock bindings body <- (unLetBlock -> Just (bindings, body))
+pattern LetBlock bindings body <-
+  (unLetBlock -> Just (LetBindingsGroups _ (Foldable.toList @Seq -> bindings), body))
 
 -- Collects nested let/let rec blocks into one minimally nested block.
 -- Handy because `let` and `let rec` blocks get rendered the same way.
 -- We preserve nesting when the inner block shadows definitions in the
 -- outer block.
 unLetBlock ::
+  forall a ap at v vt.
   (Ord v) =>
   Term2 vt at ap v a ->
-  Maybe ([(v, Term2 vt at ap v a)], Term2 vt at ap v a)
-unLetBlock t = rec t
+  Maybe (LetBindingsGroups v (Term2 vt at ap v a), Term2 vt at ap v a)
+unLetBlock = rec
   where
-    dontIntersect v1s v2s =
-      all (`Set.notMember` v2set) (fst <$> v1s)
-      where
-        v2set = Set.fromList (fst <$> v2s)
+    dontIntersect :: LetBindingsGroups v term -> LetBindingsGroups v term -> Bool
+    dontIntersect (LetBindingsGroups xs _) (LetBindingsGroups ys _) =
+      Set.disjoint xs ys
+
+    rec :: Term2 vt at ap v a -> Maybe (LetBindingsGroups v (Term2 vt at ap v a), Term2 vt at ap v a)
     rec t = case unLetRecNamed t of
       Nothing -> nonrec t
-      Just (_isTop, bindings, body) -> case rec body of
-        Just (innerBindings, innerBody)
-          | dontIntersect bindings innerBindings ->
-              Just (bindings ++ innerBindings, innerBody)
-        _ -> Just (bindings, body)
-    nonrec t = case unLet t of
-      Nothing -> Nothing
-      Just (bindings0, body) ->
-        let bindings = [(v, b) | (_, v, b) <- bindings0]
+      Just (_isTop, bindings0, body) ->
+        let bindings = letrecBindingsToLetBindingsGroups bindings0
          in case rec body of
               Just (innerBindings, innerBody)
                 | dontIntersect bindings innerBindings ->
-                    Just (bindings ++ innerBindings, innerBody)
+                    Just (bindings <> innerBindings, innerBody)
+              _ -> Just (bindings, body)
+
+    nonrec :: Term2 vt at ap v a -> Maybe (LetBindingsGroups v (Term2 vt at ap v a), Term2 vt at ap v a)
+    nonrec t = case unLet t of
+      Nothing -> Nothing
+      Just (bindings0, body) ->
+        let bindings = letBindingsToLetBindingsGroups [(v, b) | (_, v, b) <- bindings0]
+         in case rec body of
+              Just (innerBindings, innerBody)
+                | dontIntersect bindings innerBindings ->
+                    Just (bindings <> innerBindings, innerBody)
               _ -> Just (bindings, body)
 
 pattern LamsNamedMatch' ::
@@ -1777,7 +1901,7 @@ prettyDoc2 ::
   Term3 v PrintAnnotation ->
   m (Maybe (Pretty SyntaxText))
 prettyDoc2 ac tm = do
-  ppe <- getPPE
+  env <- ask
   let brace p =
         if PP.isMultiLine p
           then fmt S.DocDelimiter "{{" <> PP.newline <> p <> PP.newline <> fmt S.DocDelimiter "}}"
@@ -1797,11 +1921,11 @@ prettyDoc2 ac tm = do
       makeFence inner = PP.string $ replicate (max 3 $ longestRun '`' inner) '`'
       go :: Width -> Term3 v PrintAnnotation -> m (Pretty SyntaxText)
       go hdr = \case
-        (toDocTransclude ppe -> Just d) ->
+        (toDocTransclude env.ppe -> Just d) ->
           bail d
-        (toDocUntitledSection ppe -> Just ds) ->
+        (toDocUntitledSection env.ppe -> Just ds) ->
           sepBlankline ds
-        (toDocSection ppe -> Just (title, ds)) -> do
+        (toDocSection env.ppe -> Just (title, ds)) -> do
           prettyTitle <- rec title
           prettyDs <- intercalateMapM "\n\n" (go (hdr + 1)) ds
           pure $
@@ -1810,19 +1934,19 @@ prettyDoc2 ac tm = do
                 "",
                 PP.indentN (hdr + 1) prettyDs
               ]
-        (toDocParagraph ppe -> Just ds) ->
+        (toDocParagraph env.ppe -> Just ds) ->
           PP.wrap . mconcat <$> traverse rec ds
-        (toDocBulletedList ppe -> Just ds) -> do
+        (toDocBulletedList env.ppe -> Just ds) -> do
           PP.lines <$> traverse item ds
           where
             item d = ("* " <>) . PP.indentAfterNewline "  " <$> rec d
-        (toDocNumberedList ppe -> Just (n, ds)) ->
+        (toDocNumberedList env.ppe -> Just (n, ds)) ->
           PP.column2 <$> traverse item (zip [n ..] ds)
           where
             item (n, d) = (PP.group (PP.shown n <> "."),) <$> rec d
-        (toDocWord ppe -> Just t) ->
+        (toDocWord env.ppe -> Just t) ->
           pure $ PP.text t
-        (toDocCode ppe -> Just d) -> do
+        (toDocCode env.ppe -> Just d) -> do
           inner <- rec d
           let quotes =
                 -- Prefer ` if there aren't any in the inner text,
@@ -1831,67 +1955,67 @@ prettyDoc2 ac tm = do
                   then PP.string $ oneMore '\'' inner
                   else PP.string "`"
           pure $ PP.group $ quotes <> inner <> quotes
-        (toDocJoin ppe -> Just ds) -> foldMapM rec ds
-        (toDocItalic ppe -> Just d) -> do
+        (toDocJoin env.ppe -> Just ds) -> foldMapM rec ds
+        (toDocItalic env.ppe -> Just d) -> do
           inner <- rec d
           let underscores = PP.string $ oneMore '_' inner
           pure $ PP.group $ underscores <> inner <> underscores
-        (toDocBold ppe -> Just d) -> do
+        (toDocBold env.ppe -> Just d) -> do
           inner <- rec d
           let stars = PP.string $ oneMore '*' inner
           pure $ PP.group $ stars <> inner <> stars
-        (toDocStrikethrough ppe -> Just d) -> do
+        (toDocStrikethrough env.ppe -> Just d) -> do
           inner <- rec d
           let quotes = PP.string $ oneMore '~' inner
           pure $ PP.group $ quotes <> inner <> quotes
-        (toDocGroup ppe -> Just d) ->
+        (toDocGroup env.ppe -> Just d) ->
           PP.group <$> rec d
-        (toDocColumn ppe -> Just ds) ->
+        (toDocColumn env.ppe -> Just ds) ->
           PP.lines <$> traverse rec ds
-        (toDocNamedLink ppe -> Just (name, target)) ->
+        (toDocNamedLink env.ppe -> Just (name, target)) ->
           do
             name' <- rec name
             target' <- rec target
             pure $ PP.group $ "[" <> name' <> "](" <> target' <> ")"
-        (toDocLink ppe -> Just e) -> pure . PP.group $ case e of
+        (toDocLink env.ppe -> Just e) -> pure . PP.group $ case e of
           Left r -> "{type " <> tyName r <> "}"
           Right r -> "{" <> tmName r <> "}"
-        (toDocEval ppe -> Just tm) ->
+        (toDocEval env.ppe -> Just tm) ->
           do
             inner <- pretty0 ac tm
             let fence = makeFence inner
             pure $ PP.lines [fence, inner, fence]
-        (toDocEvalInline ppe -> Just tm) ->
+        (toDocEvalInline env.ppe -> Just tm) ->
           do
             inner <- pretty0 ac tm
             pure $ "@eval{" <> inner <> "}"
-        (toDocExample ppe -> Just tm) ->
+        (toDocExample env.ppe -> Just tm) ->
           do
             inner <- pretty0 ac tm
             pure $ "``" <> inner <> "``"
-        (toDocExampleBlock ppe -> Just tm) ->
+        (toDocExampleBlock env.ppe -> Just tm) ->
           do
             inner <- pretty0 ac' tm
             let fence = makeFence inner
             pure $ PP.lines ["@typecheck " <> fence, inner, fence]
           where
             ac' = ac {elideUnit = True}
-        (toDocSource ppe -> Just es) ->
+        (toDocSource env.ppe -> Just es) ->
           pure . PP.group $ "    @source{" <> intercalateMap ", " go es <> "}"
           where
             go (Left r, _anns) = "type " <> tyName r
             go (Right r, _anns) = tmName r
-        (toDocFoldedSource ppe -> Just es) ->
+        (toDocFoldedSource env.ppe -> Just es) ->
           pure . PP.group $ "    @foldedSource{" <> intercalateMap ", " go es <> "}"
           where
             go (Left r, _anns) = "type " <> tyName r
             go (Right r, _anns) = tmName r
-        (toDocSignatureInline ppe -> Just tm) ->
+        (toDocSignatureInline env.ppe -> Just tm) ->
           pure . PP.group $ "@inlineSignature{" <> tmName tm <> "}"
-        (toDocSignature ppe -> Just tms) ->
+        (toDocSignature env.ppe -> Just tms) ->
           let name = if length tms == 1 then "@signature" else "@signatures"
            in pure . PP.group $ "    " <> name <> "{" <> intercalateMap ", " tmName tms <> "}"
-        (toDocCodeBlock ppe -> Just (typ, txt)) ->
+        (toDocCodeBlock env.ppe -> Just (typ, txt)) ->
           pure $
             let txt' = PP.text txt
                 fence = makeFence txt'
@@ -1901,7 +2025,7 @@ prettyDoc2 ac tm = do
                       PP.group txt',
                       fence
                     ]
-        (toDocVerbatim ppe -> Just txt) ->
+        (toDocVerbatim env.ppe -> Just txt) ->
           pure $
             PP.group $
               PP.lines
@@ -1913,15 +2037,15 @@ prettyDoc2 ac tm = do
         tm -> bail tm
         where
           im = imports ac
-          tyName r = styleHashQualified'' (fmt $ S.TypeReference r) . elideFQN im $ PrettyPrintEnv.typeName ppe r
-          tmName r = styleHashQualified'' (fmt $ S.TermReference r) . elideFQN im $ PrettyPrintEnv.termName ppe r
+          tyName r = styleHashQualified'' (fmt $ S.TypeReference r) . elideFQN im $ PrettyPrintEnv.typeName env.ppe r
+          tmName r = styleHashQualified'' (fmt $ S.TermReference r) . elideFQN im $ PrettyPrintEnv.termName env.ppe r
           rec = go hdr
           sepBlankline = intercalateMapM "\n\n" rec
   case tm of
     -- these patterns can introduce a {{ .. }} block
-    (toDocUntitledSection ppe -> Just _) -> Just . brace <$> go 1 tm
-    (toDocSection ppe -> Just _) -> Just . brace <$> go 1 tm
-    (toDocParagraph ppe -> Just _) -> Just . brace <$> go 1 tm
+    (toDocUntitledSection env.ppe -> Just _) -> Just . brace <$> go 1 tm
+    (toDocSection env.ppe -> Just _) -> Just . brace <$> go 1 tm
+    (toDocParagraph env.ppe -> Just _) -> Just . brace <$> go 1 tm
     _ -> pure Nothing
 
 toDocJoin :: PrettyPrintEnv -> Term3 v PrintAnnotation -> Maybe [Term3 v PrintAnnotation]
@@ -2208,7 +2332,7 @@ avoidShadowing tm (PrettyPrintEnv terms types) =
            in (HQ'.NameOnly fullName, HQ'.NameOnly resuffixifiedName)
     tweak _ p = p
     varToName :: (Var v) => v -> [Name]
-    varToName = toList . Name.parseText . Var.name
+    varToName = toList . Name.parseText . Var.name . Var.reset
 
 isLeaf :: Term2 vt at ap v a -> Bool
 isLeaf (Var' {}) = True

@@ -15,7 +15,7 @@ import Unison.Util.Recursion
 
 test :: Test ()
 test =
-  scope "Doc parser" . tests $
+  scope "DocParser" . tests $
     [ t "# Hello" [Doc.Section (Doc.Paragraph $ docWord "Hello" :| []) []],
       t
         ( unlines

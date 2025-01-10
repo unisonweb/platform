@@ -109,17 +109,16 @@ import Unison.Runtime.Exception
 import Unison.Runtime.MCode
   ( Args (..),
     CombIx (..),
-    GCombs,
     GInstr (..),
     GSection (..),
     RCombs,
     RefNums (..),
     absurdCombs,
-    combDeps,
     combTypes,
     emitComb,
     emptyRNs,
     resolveCombs,
+    sanitizeCombsOfForeignFuncs,
   )
 import Unison.Runtime.MCode.Serialize
 import Unison.Runtime.Machine
@@ -1255,9 +1254,9 @@ tryM =
     hRE (PE _ e) = pure $ Just e
     hRE (BU _ _ _) = pure $ Just "impossible"
 
-runStandalone :: StoredCache -> CombIx -> IO (Either (Pretty ColorText) ())
-runStandalone sc init =
-  restoreCache sc >>= executeMainComb init
+runStandalone :: Bool -> StoredCache -> CombIx -> IO (Either (Pretty ColorText) ())
+runStandalone sandboxed sc init =
+  restoreCache sandboxed sc >>= executeMainComb init
 
 -- | A version of the Code Cache designed to be serialized to disk as
 -- standalone bytecode.
@@ -1319,10 +1318,10 @@ tabulateErrors errs =
       : P.wrap "The following errors occured while decompiling:"
       : (listErrors errs)
 
-restoreCache :: StoredCache -> IO CCache
-restoreCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
+restoreCache :: Bool -> StoredCache -> IO CCache
+restoreCache sandboxed (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
   cc <-
-    CCache builtinForeigns False debugText
+    CCache sandboxed debugText
       <$> newTVarIO srcCombs
       <*> newTVarIO combs
       <*> newTVarIO (crs <> builtinTermBackref)
@@ -1336,6 +1335,7 @@ restoreCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
       <*> newTVarIO (sbs <> baseSandboxInfo)
   let (unresolvedCacheableCombs, unresolvedNonCacheableCombs) =
         srcCombs
+          & sanitizeCombsOfForeignFuncs sandboxed sandboxedForeignFuncs
           & absurdCombs
           & EC.mapToList
           & foldMap
@@ -1369,25 +1369,27 @@ restoreCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
     combs :: EnumMap Word64 (RCombs Val)
     combs =
       srcCombs
+        & sanitizeCombsOfForeignFuncs sandboxed sandboxedForeignFuncs
         & absurdCombs
         & resolveCombs Nothing
 
 traceNeeded ::
-  Word64 ->
-  EnumMap Word64 (GCombs clos comb) ->
-  IO (EnumMap Word64 (GCombs clos comb))
-traceNeeded init src = fmap (`withoutKeys` ks) $ go mempty init
+  Reference ->
+  Map Reference (SuperGroup Symbol) ->
+  IO (Map Reference (SuperGroup Symbol))
+traceNeeded init src = go mempty init
   where
-    ks = keysSet numberedTermLookup
-    go acc w
-      | hasKey w acc = pure acc
-      | Just co <- EC.lookup w src =
-          foldlM go (mapInsert w co acc) (foldMap combDeps co)
-      | otherwise = die $ "traceNeeded: unknown combinator: " ++ show w
+    go acc nx
+      | RF.isBuiltin nx = pure acc
+      | Map.member nx acc = pure acc
+      | Just co <- Map.lookup nx src =
+          foldlM go (Map.insert nx co acc) (groupTermLinks co)
+      | otherwise =
+          die $ "traceNeeded: unknown combinator: " ++ show nx
 
 buildSCache ::
-  EnumMap Word64 Combs ->
   EnumMap Word64 Reference ->
+  EnumMap Word64 Combs ->
   EnumSet Word64 ->
   EnumMap Word64 Reference ->
   Word64 ->
@@ -1397,7 +1399,7 @@ buildSCache ::
   Map Reference Word64 ->
   Map Reference (Set Reference) ->
   StoredCache
-buildSCache cs crsrc cacheableCombs trsrc ftm fty intsrc rtmsrc rtysrc sndbx =
+buildSCache crsrc cssrc cacheableCombs trsrc ftm fty int rtmsrc rtysrc sndbx =
   SCache
     cs
     crs
@@ -1405,19 +1407,31 @@ buildSCache cs crsrc cacheableCombs trsrc ftm fty intsrc rtmsrc rtysrc sndbx =
     trs
     ftm
     fty
-    (restrictTmR intsrc)
-    (restrictTmR rtmsrc)
+    int
+    rtm
     (restrictTyR rtysrc)
     (restrictTmR sndbx)
   where
-    combKeys = keysSet cs
+    termRefs = Map.keysSet int
+
+    -- Retain just the Reference->Word mappings for needed code
+    rtm :: Map Reference Word64
+    rtm = restrictTmR rtmsrc
+
+    -- Retain numbers that correspond to the above termRefs
+    combKeys :: EnumSet Word64
+    combKeys = foldMap setSingleton rtm
+
     crs = restrictTmW crsrc
-    termRefs = foldMap Set.singleton crs
+
+    cs :: EnumMap Word64 Combs
+    cs = restrictTmW cssrc
 
     typeKeys = setFromList $ (foldMap . foldMap) combTypes cs
     trs = restrictTyW trsrc
     typeRefs = foldMap Set.singleton trs
 
+    restrictTmW :: EnumMap Word64 a -> EnumMap Word64 a
     restrictTmW m = restrictKeys m combKeys
     restrictTmR :: Map Reference a -> Map Reference a
     restrictTmR m = Map.restrictKeys m termRefs
@@ -1426,15 +1440,18 @@ buildSCache cs crsrc cacheableCombs trsrc ftm fty intsrc rtmsrc rtysrc sndbx =
     restrictTyR m = Map.restrictKeys m typeRefs
 
 standalone :: CCache -> Word64 -> IO StoredCache
-standalone cc init =
-  buildSCache
-    <$> (readTVarIO (srcCombs cc) >>= traceNeeded init)
-    <*> readTVarIO (combRefs cc)
-    <*> readTVarIO (cacheableCombs cc)
-    <*> readTVarIO (tagRefs cc)
-    <*> readTVarIO (freshTm cc)
-    <*> readTVarIO (freshTy cc)
-    <*> readTVarIO (intermed cc)
-    <*> readTVarIO (refTm cc)
-    <*> readTVarIO (refTy cc)
-    <*> readTVarIO (sandbox cc)
+standalone cc init = readTVarIO (combRefs cc) >>= \crs ->
+  case EC.lookup init crs of
+    Just rinit ->
+      buildSCache crs
+        <$> readTVarIO (srcCombs cc)
+        <*> readTVarIO (cacheableCombs cc)
+        <*> readTVarIO (tagRefs cc)
+        <*> readTVarIO (freshTm cc)
+        <*> readTVarIO (freshTy cc)
+        <*> (readTVarIO (intermed cc) >>= traceNeeded rinit)
+        <*> readTVarIO (refTm cc)
+        <*> readTVarIO (refTy cc)
+        <*> readTVarIO (sandbox cc)
+    Nothing ->
+      die $ "standalone: unknown combinator: " ++ show init

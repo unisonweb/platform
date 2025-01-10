@@ -198,14 +198,14 @@ data TermDefinitionDiff = TermDefinitionDiff
     right :: TermDefinition,
     diff :: DisplayObjectDiff
   }
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Ord, Show, Generic)
 
 data TypeDefinitionDiff = TypeDefinitionDiff
   { left :: TypeDefinition,
     right :: TypeDefinition,
     diff :: DisplayObjectDiff
   }
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Ord, Show, Generic)
 
 newtype Suffixify = Suffixify {suffixified :: Bool}
   deriving (Eq, Ord, Show, Generic)
@@ -218,7 +218,7 @@ data TermDefinition = TermDefinition
     signature :: Syntax.SyntaxText,
     termDocs :: [(HashQualifiedName, UnisonHash, Doc)]
   }
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Show, Ord, Generic)
 
 data TypeDefinition = TypeDefinition
   { typeNames :: [HashQualifiedName],
@@ -227,14 +227,14 @@ data TypeDefinition = TypeDefinition
     typeDefinition :: DisplayObject Syntax.SyntaxText Syntax.SyntaxText,
     typeDocs :: [(HashQualifiedName, UnisonHash, Doc)]
   }
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Show, Ord, Generic)
 
 data DefinitionDisplayResults = DefinitionDisplayResults
   { termDefinitions :: Map UnisonHash TermDefinition,
     typeDefinitions :: Map UnisonHash TypeDefinition,
     missingDefinitions :: [HashQualifiedName]
   }
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Show, Ord, Generic)
 
 instance Semigroup DefinitionDisplayResults where
   DefinitionDisplayResults terms1 types1 missing1 <> DefinitionDisplayResults terms2 types2 missing2 =
@@ -260,7 +260,7 @@ data SemanticSyntaxDiff
     SegmentChange (String, String) (Maybe Syntax.Element)
   | -- (shared segment) (fromAnnotation, toAnnotation)
     AnnotationChange String (Maybe Syntax.Element, Maybe Syntax.Element)
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Show, Ord, Generic)
 
 deriving instance ToSchema SemanticSyntaxDiff
 
@@ -303,7 +303,7 @@ instance ToJSON SemanticSyntaxDiff where
 data DisplayObjectDiff
   = DisplayObjectDiff (DisplayObject [SemanticSyntaxDiff] [SemanticSyntaxDiff])
   | MismatchedDisplayObjects (DisplayObject Syntax.SyntaxText Syntax.SyntaxText) (DisplayObject Syntax.SyntaxText Syntax.SyntaxText)
-  deriving stock (Show, Eq, Generic)
+  deriving stock (Show, Eq, Ord, Generic)
 
 deriving instance ToSchema DisplayObjectDiff
 
@@ -324,7 +324,7 @@ data NamedTerm = NamedTerm
     termType :: Maybe Syntax.SyntaxText,
     termTag :: TermTag
   }
-  deriving (Eq, Generic, Show)
+  deriving (Eq, Ord, Generic, Show)
 
 instance ToJSON NamedTerm where
   toJSON (NamedTerm n h typ tag) =
@@ -350,7 +350,7 @@ data NamedType = NamedType
     typeHash :: ShortHash,
     typeTag :: TypeTag
   }
-  deriving (Eq, Generic, Show)
+  deriving (Eq, Ord, Generic, Show)
 
 instance ToJSON NamedType where
   toJSON (NamedType n h tag) =
@@ -474,7 +474,7 @@ data TermDiffResponse = TermDiffResponse
     newTerm :: TermDefinition,
     diff :: DisplayObjectDiff
   }
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Ord, Show, Generic)
 
 deriving instance ToSchema TermDiffResponse
 
@@ -512,7 +512,7 @@ data TypeDiffResponse = TypeDiffResponse
     newType :: TypeDefinition,
     diff :: DisplayObjectDiff
   }
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Ord, Show, Generic)
 
 deriving instance ToSchema TypeDiffResponse
 
