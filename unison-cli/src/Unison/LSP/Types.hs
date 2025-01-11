@@ -28,6 +28,7 @@ import Unison.Codebase.ProjectPath qualified as PP
 import Unison.Codebase.Runtime (Runtime)
 import Unison.Debug qualified as Debug
 import Unison.LSP.Orphans ()
+import Unison.LSP.Util.IntersectionMap (KeyedIntersectionMap)
 import Unison.LabeledDependency (LabeledDependency)
 import Unison.Name (Name)
 import Unison.NameSegment (NameSegment)
@@ -124,6 +125,11 @@ data FileAnalysis = FileAnalysis
     notes :: Seq (Note Symbol Ann),
     diagnostics :: IntervalMap Position [Diagnostic],
     codeActions :: IntervalMap Position [CodeAction],
+    -- | The types of local variable bindings keyed by the span that they're valid.
+    -- There may be many mentions of the same symbol in the file, and their may be several
+    -- bindings which shadow each other, use this map to find the smallest spanning position
+    -- which contains the symbol you're interested in.
+    localBindingTypes :: KeyedIntersectionMap Text Position (Type Symbol Ann),
     typeSignatureHints :: Map Symbol TypeSignatureHint,
     fileSummary :: Maybe FileSummary
   }

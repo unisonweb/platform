@@ -358,6 +358,12 @@ data InfoNote v loc
   = SolvedBlank (B.Recorded loc) v (Type v loc)
   | Decision v loc (Term.Term v loc)
   | TopLevelComponent [(v, Type.Type v loc, RedundantTypeAnnotation)]
+  | -- The inferred type of a let or argument binding, and the scope of that binding as a loc.
+    -- Note that if interpreting the type of a 'v' at a given usage site, it is the caller's
+    -- job to use the binding with the smallest containing scope so as to respect variable
+    -- shadowing.
+    -- This is used in the LSP.
+    VarBinding v loc (Type.Type v loc)
   deriving (Show)
 
 topLevelComponent :: (Var v) => [(v, Type.Type v loc, RedundantTypeAnnotation)] -> InfoNote v loc
@@ -1085,7 +1091,7 @@ noteTopLevelType e binding typ = case binding of
   Term.Ann' strippedBinding _ -> do
     inferred <- (Just <$> synthesizeTop strippedBinding) `orElse` pure Nothing
     case inferred of
-      Nothing ->
+      Nothing -> do
         btw $
           topLevelComponent
             [(Var.reset (ABT.variable e), generalizeAndUnTypeVar typ, False)]
@@ -1095,10 +1101,15 @@ noteTopLevelType e binding typ = case binding of
           topLevelComponent
             [(Var.reset (ABT.variable e), generalizeAndUnTypeVar typ, redundant)]
   -- The signature didn't exist, so was definitely redundant
-  _ ->
+  _ -> do
     btw $
       topLevelComponent
         [(Var.reset (ABT.variable e), generalizeAndUnTypeVar typ, True)]
+-- | Take note of the types and locations of all bindings, including let bindings, letrec
+-- bindings, lambda argument bindings and top-level bindings.
+-- This information is used to provide information to the LSP after typechecking.
+noteVarBinding :: (Var v) => v -> loc -> Type.Type v loc ->  M v loc ()
+noteVarBinding v span t = btw $ VarBinding v span t
 
 synthesizeTop ::
   (Var v) =>
@@ -1207,7 +1218,7 @@ synthesizeWanted (Term.Constructor' r) =
 synthesizeWanted tm@(Term.Request' r) =
   fmap (wantRequest tm) . ungeneralize . Type.purifyArrows
     =<< getEffectConstructorType r
-synthesizeWanted (Term.Let1Top' top binding e) = do
+synthesizeWanted abt@(Term.Let1Top' top binding e) = do
   (tbinding, wb) <- synthesizeBinding top binding
   v' <- ABT.freshen e freshenVar
   when (Var.isAction (ABT.variable e)) $
@@ -1216,14 +1227,15 @@ synthesizeWanted (Term.Let1Top' top binding e) = do
   appendContext [Ann v' tbinding]
   (t, w) <- synthesize (ABT.bindInheritAnnotation e (Term.var () v'))
   t <- applyM t
-  when top $ noteTopLevelType e binding tbinding
+  when top $ noteTopLevelType  e binding tbinding
+  noteVarBinding (ABT.variable e) (ABT.annotation abt) (TypeVar.lowerType tbinding)
   want <- coalesceWanted w wb
   -- doRetract $ Ann v' tbinding
   pure (t, want)
 synthesizeWanted (Term.LetRecNamed' [] body) = synthesizeWanted body
-synthesizeWanted (Term.LetRecTop' isTop letrec) = do
+synthesizeWanted abt@(Term.LetRecTop' isTop letrec) = do
   ((t, want), ctx2) <- markThenRetract (Var.named "let-rec-marker") $ do
-    e <- annotateLetRecBindings isTop letrec
+    e <- annotateLetRecBindings (ABT.annotation abt) isTop letrec
     synthesize e
   want <- substAndDefaultWanted want ctx2
   pure (generalizeExistentials ctx2 t, want)
@@ -1325,6 +1337,9 @@ synthesizeWanted e
         else checkWithAbilities [et] body' ot
       ctx <- getContext
       let t = apply ctx $ Type.arrow l it (Type.effect l [et] ot)
+
+      let solvedInputType = fromMaybe it . fmap Type.getPolytype $ Map.lookup i . solvedExistentials . info $ ctx
+      noteVarBinding i l (TypeVar.lowerType $ solvedInputType)
       pure (t, [])
   | Term.If' cond t f <- e = do
       cwant <- scope InIfCond $ check cond (Type.boolean l)
@@ -1821,10 +1836,11 @@ resetContextAfter x a = do
 -- See usage in `synthesize` and `check` for `LetRec'` case.
 annotateLetRecBindings ::
   (Var v, Ord loc) =>
+    loc ->
   Term.IsTop ->
   ((v -> M v loc v) -> M v loc ([(v, Term v loc)], Term v loc)) ->
   M v loc (Term v loc)
-annotateLetRecBindings isTop letrec =
+annotateLetRecBindings span isTop letrec =
   -- If this is a top-level letrec, then emit a TopLevelComponent note,
   -- which asks if the user-provided type annotations were needed.
   if isTop
@@ -1848,8 +1864,10 @@ annotateLetRecBindings isTop letrec =
           btw $
             topLevelComponent ((\(v, b) -> (Var.reset v, b, False)) . unTypeVar <$> vts)
       pure body
-    else -- If this isn't a top-level letrec, then we don't have to do anything special
-      fst <$> annotateLetRecBindings' True
+    else do -- If this isn't a top-level letrec, then we don't have to do anything special
+      (body, vts) <- annotateLetRecBindings' True
+      for_ vts \(v, t) -> noteVarBinding v span (TypeVar.lowerType t)
+      pure body
   where
     annotateLetRecBindings' useUserAnnotations = do
       (bindings, body) <- letrec freshenVar
@@ -1892,6 +1910,9 @@ annotateLetRecBindings isTop letrec =
           gen bindingType _arity = generalizeExistentials ctx2 bindingType
           bindingTypesGeneralized = zipWith gen bindingTypes bindingArities
           annotations = zipWith Ann vs bindingTypesGeneralized
+      -- TODO: is this right?
+      for_ (zip3 vs bindings bindingTypesGeneralized) \(v, b, t) -> do
+        noteVarBinding v (loc b) (TypeVar.lowerType t)
       appendContext annotations
       pure (body, vs `zip` bindingTypesGeneralized)
 
@@ -2430,7 +2451,7 @@ checkWanted want (Term.Lam' body) (Type.Arrow'' i es o) = do
     body <- pure $ ABT.bindInheritAnnotation body (Term.var () x)
     checkWithAbilities es body o
   pure want
-checkWanted want (Term.Let1Top' top binding m) t = do
+checkWanted want abt@(Term.Let1Top' top binding m) t = do
   (tbinding, wbinding) <- synthesizeBinding top binding
   want <- coalesceWanted wbinding want
   v <- ABT.freshen m freshenVar
@@ -2439,13 +2460,14 @@ checkWanted want (Term.Let1Top' top binding m) t = do
       -- enforce that actions in a block have type ()
       subtype tbinding (DDB.unitType (ABT.annotation binding))
     extendContext (Ann v tbinding)
+    noteVarBinding v (ABT.annotation abt) (TypeVar.lowerType tbinding)
     checkWanted want (ABT.bindInheritAnnotation m (Term.var () v)) t
 checkWanted want (Term.LetRecNamed' [] m) t =
   checkWanted want m t
 -- letrec can't have effects, so it doesn't extend the wanted set
-checkWanted want (Term.LetRecTop' isTop lr) t =
+checkWanted want abt@(Term.LetRecTop' isTop lr) t =
   markThenRetractWanted (Var.named "let-rec-marker") $ do
-    e <- annotateLetRecBindings isTop lr
+    e <- annotateLetRecBindings (ABT.annotation abt) isTop lr
     checkWanted want e t
 checkWanted want e@(Term.Match' scrut cases) t = do
   (scrutType, swant) <- synthesize scrut
