@@ -363,7 +363,7 @@ data InfoNote v loc
     -- job to use the binding with the smallest containing scope so as to respect variable
     -- shadowing.
     -- This is used in the LSP.
-    VarBinding v loc (Type.Type v loc)
+    VarBinding v (Type.Type v loc)
   deriving (Show)
 
 topLevelComponent :: (Var v) => [(v, Type.Type v loc, RedundantTypeAnnotation)] -> InfoNote v loc
@@ -529,7 +529,7 @@ markThenRetract hint body =
     ctx <- retract
     let solvedCtx = substituteSolved ctx
     for_ ctx \case
-      Ann v typ -> noteVarBinding v (error "missing ann") (TypeVar.lowerType typ)
+      Ann v typ -> noteVarBinding v  (TypeVar.lowerType typ)
       _ -> pure ()
     pure ((r, ctx), solvedCtx)
 
@@ -1113,8 +1113,8 @@ noteTopLevelType e binding typ = case binding of
 -- | Take note of the types and locations of all bindings, including let bindings, letrec
 -- bindings, lambda argument bindings and top-level bindings.
 -- This information is used to provide information to the LSP after typechecking.
-noteVarBinding :: (Var v) => v -> loc -> Type.Type v loc ->  M v loc ()
-noteVarBinding v span t = btw $ VarBinding v span t
+noteVarBinding :: (Var v) => v ->  Type.Type v loc ->  M v loc ()
+noteVarBinding v t = btw $ VarBinding v t
 
 synthesizeTop ::
   (Var v) =>

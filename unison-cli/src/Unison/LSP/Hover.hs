@@ -5,6 +5,7 @@ module Unison.LSP.Hover where
 
 import Control.Lens hiding (List)
 import Control.Monad.Reader
+import Data.Map qualified as Map
 import Data.Text qualified as Text
 import Language.LSP.Protocol.Lens
 import Language.LSP.Protocol.Message qualified as Msg
@@ -16,7 +17,6 @@ import Unison.LSP.FileAnalysis (ppedForFile)
 import Unison.LSP.FileAnalysis qualified as FileAnalysis
 import Unison.LSP.Queries qualified as LSPQ
 import Unison.LSP.Types
-import Unison.LSP.Util.IntersectionMap qualified as IM
 import Unison.LSP.VFS qualified as VFS
 import Unison.LabeledDependency qualified as LD
 import Unison.Parser.Ann (Ann)
@@ -106,7 +106,7 @@ hoverInfo uri pos =
             pure $ renderTypeSigForHover pped symAtCursor typ
       pure . Text.unlines $ [markdownify typeSig] <> renderedDocs
 
-    renderTypeSigForHover :: Var v => PPED.PrettyPrintEnvDecl -> Text -> Type.Type v a -> Text
+    renderTypeSigForHover :: (Var v) => PPED.PrettyPrintEnvDecl -> Text -> Type.Type v a -> Text
     renderTypeSigForHover pped name typ =
       let renderedType = Text.pack $ TypePrinter.prettyStr (Just prettyWidth) (PPED.suffixifiedPPE pped) typ
        in (name <> " : " <> renderedType)
@@ -129,19 +129,22 @@ hoverInfo uri pos =
             node <- LSPQ.nodeAtPosition uri pos
             Debug.debugM Debug.Temp "node" node
             case node of
-              LSPQ.TermNode (Term.Var' (Symbol.Symbol _ (Var.User v))) -> pure $ v
+              LSPQ.TermNode (Term.Var' v) -> pure $ v
               LSPQ.TermNode {} -> empty
               LSPQ.TypeNode {} -> empty
               LSPQ.PatternNode _pat -> empty
-      let varFromText = VFS.identifierAtPosition uri pos
-      localVar <- varFromNode <|> varFromText
+      -- let varFromText = VFS.identifierAtPosition uri pos
+      localVar <- varFromNode -- <|> varFromText
       Debug.debugM Debug.Temp "localVar" localVar
       FileAnalysis {localBindingTypes} <- FileAnalysis.getFileAnalysis uri
       Debug.debugM Debug.Temp "pos" pos
       Debug.debugM Debug.Temp "localBindingTypes" localBindingTypes
-      (_range, typ) <- hoistMaybe $ IM.keyedSmallestIntersection localVar pos localBindingTypes
+      typ <- hoistMaybe $ Map.lookup localVar localBindingTypes
       pped <- lift $ ppedForFile uri
-      pure $ renderTypeSigForHover pped localVar typ
+      let varName = case localVar of
+            (Symbol.Symbol _ (Var.User name)) -> name
+            _ -> tShow localVar
+      pure $ renderTypeSigForHover pped varName typ
 
     hoistMaybe :: Maybe a -> MaybeT Lsp a
     hoistMaybe = MaybeT . pure

@@ -24,7 +24,6 @@ import Language.LSP.Protocol.Types
     TextDocumentIdentifier (TextDocumentIdentifier),
     Uri (getUri),
   )
-import Language.LSP.Protocol.Types qualified as LSP
 import Unison.ABT qualified as ABT
 import Unison.Cli.TypeCheck (computeTypecheckingEnvironment)
 import Unison.Cli.UniqueTypeGuidLookup qualified as Cli
@@ -40,7 +39,6 @@ import Unison.LSP.Diagnostics (DiagnosticSeverity (..), mkDiagnostic, reportDiag
 import Unison.LSP.FileAnalysis.UnusedBindings qualified as UnusedBindings
 import Unison.LSP.Orphans ()
 import Unison.LSP.Types
-import Unison.LSP.Util.IntersectionMap (keyedSingleton)
 import Unison.LSP.VFS qualified as VFS
 import Unison.Name (Name)
 import Unison.Names (Names)
@@ -114,8 +112,8 @@ checkFile doc = runMaybeT do
                 & Foldable.toList
                 & reverse -- Type notes that come later in typechecking have more information filled in.
                 & foldMap \case
-                  Result.TypeInfo (Context.VarBinding (Symbol.Symbol _ (Var.User v)) loc typ) ->
-                    Cv.annToRange loc & foldMap (\(LSP.Range start end) -> (keyedSingleton v (start, end) typ))
+                  Result.TypeInfo (Context.VarBinding (Symbol.Symbol _ (Var.User n)) typ) ->
+                    Map.singleton (Symbol.Symbol 0 (Var.User n)) typ
                   _ -> mempty
                 & pure
             pure (localBindings, typecheckingNotes, Just parsedFile, maybeTypecheckedFile)
