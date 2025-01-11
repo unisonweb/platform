@@ -535,7 +535,8 @@ markThenRetract hint body =
         noteVarBinding v  (TypeVar.lowerType typ)
       v@(Var{}) ->
         Debug.debugM Debug.Temp "Var" v
-      (Solved B.Retain v t) -> do
+      (Solved _ v t) -> do
+        Debug.debugM Debug.Temp "Solved" v
         noteVarBinding v (TypeVar.lowerType $ Type.getPolytype t)
       _ -> pure ()
     pure ((r, ctx), solvedCtx)
