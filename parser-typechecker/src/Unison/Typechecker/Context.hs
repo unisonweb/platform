@@ -105,6 +105,7 @@ import Unison.Typechecker.TypeLookup qualified as TL
 import Unison.Typechecker.TypeVar qualified as TypeVar
 import Unison.Var (Var)
 import Unison.Var qualified as Var
+import qualified Unison.Debug as Debug
 
 type TypeVar v loc = TypeVar.TypeVar (B.Blank loc) v
 
@@ -529,7 +530,13 @@ markThenRetract hint body =
     ctx <- retract
     let solvedCtx = substituteSolved ctx
     for_ ctx \case
-      Ann v typ -> noteVarBinding v  (TypeVar.lowerType typ)
+      var@(Ann v typ) -> do
+        Debug.debugM Debug.Temp "Ann" var
+        noteVarBinding v  (TypeVar.lowerType typ)
+      v@(Var{}) ->
+        Debug.debugM Debug.Temp "Var" v
+      (Solved B.Retain v t) -> do
+        noteVarBinding v (TypeVar.lowerType $ Type.getPolytype t)
       _ -> pure ()
     pure ((r, ctx), solvedCtx)
 
