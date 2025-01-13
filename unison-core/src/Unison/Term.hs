@@ -720,6 +720,15 @@ pattern LetRecTop' ::
   Term2 vt at ap v a
 pattern LetRecTop' top subst <- (unLetRec -> Just (top, subst))
 
+pattern LetRecAnnotatedTop' ::
+  (Monad m, Var v) =>
+  IsTop ->
+  ( (v -> m v) ->
+    m ([((a, v), Term2 vt at ap v a)], Term2 vt at ap v a)
+  ) ->
+  Term2 vt at ap v a
+pattern LetRecAnnotatedTop' top subst <- (unLetRecAnnotated -> Just (top, subst))
+
 pattern LetRecNamedAnnotated' :: a -> [((a, v), Term' vt v a)] -> Term' vt v a -> Term' vt v a
 pattern LetRecNamedAnnotated' ann bs e <- (unLetRecNamedAnnotated -> Just (_, ann, bs, e))
 
@@ -907,12 +916,33 @@ arity (Ann' e _) = arity e
 arity _ = 0
 
 unLetRecNamedAnnotated ::
-  Term' vt v a ->
+  Term2 vt at ap v a ->
   Maybe
-    (IsTop, a, [((a, v), Term' vt v a)], Term' vt v a)
+    (IsTop, a, [((a, v), Term2 vt at ap v a)], Term2 vt at ap v a)
 unLetRecNamedAnnotated (ABT.CycleA' ann avs (ABT.Tm' (LetRec isTop bs e))) =
   Just (isTop, ann, avs `zip` bs, e)
 unLetRecNamedAnnotated _ = Nothing
+
+unLetRecAnnotated ::
+  (Monad m, Var v) =>
+  Term2 vt at ap v a ->
+  Maybe
+    ( IsTop,
+      (v -> m v) ->
+      m
+        ( [((a, v), Term2 vt at ap v a)],
+          Term2 vt at ap v a
+        )
+    )
+unLetRecAnnotated (unLetRecNamedAnnotated -> Just (isTop, _a, bs, e)) =
+  Just
+    ( isTop,
+      \freshen -> do
+        vs <- sequence [(a,) <$> freshen v | ((a, v), _) <- bs]
+        let sub = ABT.substsInheritAnnotation (map (snd . fst) bs `zip` map (ABT.var . snd) vs)
+        pure (vs `zip` [sub b | (_, b) <- bs], sub e)
+    )
+unLetRecAnnotated _ = Nothing
 
 letRec' ::
   (Ord v, Monoid a) =>

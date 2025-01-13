@@ -1238,7 +1238,10 @@ synthesizeWanted (Term.Constructor' r) =
 synthesizeWanted tm@(Term.Request' r) =
   fmap (wantRequest tm) . ungeneralize . Type.purifyArrows
     =<< getEffectConstructorType r
-synthesizeWanted (Term.Let1Top' top binding e) = do
+synthesizeWanted trm@(Term.Let1Top' top binding e) = do
+  case trm of
+    ABT.Term _ loc (ABT.Abs v _) -> noteVarMention v loc
+    _ -> pure ()
   (tbinding, wb) <- synthesizeBinding top binding
   v' <- ABT.freshen e freshenVar
   when (Var.isAction (ABT.variable e)) $
@@ -1252,9 +1255,9 @@ synthesizeWanted (Term.Let1Top' top binding e) = do
   -- doRetract $ Ann v' tbinding
   pure (t, want)
 synthesizeWanted (Term.LetRecNamed' [] body) = synthesizeWanted body
-synthesizeWanted abt@(Term.LetRecTop' isTop letrec) = do
+synthesizeWanted (Term.LetRecAnnotatedTop' isTop letrec) = do
   ((t, want), ctx2) <- markThenRetract (Var.named "let-rec-marker") $ do
-    e <- annotateLetRecBindings (ABT.annotation abt) isTop letrec
+    e <- annotateLetRecBindings isTop letrec
     synthesize e
   want <- substAndDefaultWanted want ctx2
   pure (generalizeExistentials ctx2 t, want)
@@ -1853,11 +1856,10 @@ resetContextAfter x a = do
 -- See usage in `synthesize` and `check` for `LetRec'` case.
 annotateLetRecBindings ::
   (Var v, Ord loc, Semigroup loc) =>
-    loc ->
   Term.IsTop ->
-  ((v -> M v loc v) -> M v loc ([(v, Term v loc)], Term v loc)) ->
+  ((v -> M v loc v) -> M v loc ([((loc, v), Term v loc)], Term v loc)) ->
   M v loc (Term v loc)
-annotateLetRecBindings _span isTop letrec =
+annotateLetRecBindings isTop letrec =
   -- If this is a top-level letrec, then emit a TopLevelComponent note,
   -- which asks if the user-provided type annotations were needed.
   if isTop
@@ -1887,9 +1889,11 @@ annotateLetRecBindings _span isTop letrec =
   where
     annotateLetRecBindings' useUserAnnotations = do
       (bindings, body) <- letrec freshenVar
-      let vs = map fst bindings
+      let vs = map (snd . fst) bindings
+      for bindings \((loc, v), _trm) -> do
+        noteVarMention v loc
       ((bindings, bindingTypes), ctx2) <- markThenRetract Var.inferOther $ do
-        let f (v, binding) = case binding of
+        let f ((_loc, v), binding) = case binding of
               -- If user has provided an annotation, we use that
               Term.Ann' e t | useUserAnnotations -> do
                 -- Arrows in `t` with no ability lists get an attached fresh
@@ -2464,7 +2468,10 @@ checkWanted want (Term.Lam' body) (Type.Arrow'' i es o) = do
     body <- pure $ ABT.bindInheritAnnotation body (Term.var () x)
     checkWithAbilities es body o
   pure want
-checkWanted want (Term.Let1Top' top binding m) t = do
+checkWanted want trm@(Term.Let1Top' top binding m) t = do
+  case trm of
+    ABT.Term _ loc (ABT.Abs v _) -> noteVarMention v loc
+    _ -> pure ()
   (tbinding, wbinding) <- synthesizeBinding top binding
   want <- coalesceWanted wbinding want
   v <- ABT.freshen m freshenVar
@@ -2477,9 +2484,9 @@ checkWanted want (Term.Let1Top' top binding m) t = do
 checkWanted want (Term.LetRecNamed' [] m) t =
   checkWanted want m t
 -- letrec can't have effects, so it doesn't extend the wanted set
-checkWanted want abt@(Term.LetRecTop' isTop lr) t =
+checkWanted want (Term.LetRecAnnotatedTop' isTop lr) t =
   markThenRetractWanted (Var.named "let-rec-marker") $ do
-    e <- annotateLetRecBindings (ABT.annotation abt) isTop lr
+    e <- annotateLetRecBindings  isTop lr
     checkWanted want e t
 checkWanted want e@(Term.Match' scrut cases) t = do
   (scrutType, swant) <- synthesize scrut
