@@ -72,18 +72,18 @@ import Unison.Var qualified as Var
 
 type SyntaxText = S.SyntaxText' Reference
 
-pretty :: (Var v) => PrettyPrintEnv -> Term v a -> Pretty ColorText
+pretty :: (HasCallStack, Var v) => PrettyPrintEnv -> Term v a -> Pretty ColorText
 pretty ppe tm =
   PP.syntaxToColor . runPretty (avoidShadowing tm ppe) $ pretty0 emptyAc $ printAnnotate ppe tm
 
 prettyBlock :: (Var v) => Bool -> PrettyPrintEnv -> Term v a -> Pretty ColorText
 prettyBlock elideUnit ppe = PP.syntaxToColor . prettyBlock' elideUnit ppe
 
-prettyBlock' :: (Var v) => Bool -> PrettyPrintEnv -> Term v a -> Pretty SyntaxText
+prettyBlock' :: (HasCallStack, Var v) => Bool -> PrettyPrintEnv -> Term v a -> Pretty SyntaxText
 prettyBlock' elideUnit ppe tm =
   runPretty (avoidShadowing tm ppe) . pretty0 (emptyBlockAc {elideUnit = elideUnit}) $ printAnnotate ppe tm
 
-pretty' :: (Var v) => Maybe Width -> PrettyPrintEnv -> Term v a -> ColorText
+pretty' :: (HasCallStack, Var v) => Maybe Width -> PrettyPrintEnv -> Term v a -> ColorText
 pretty' (Just width) n t =
   PP.render width . PP.syntaxToColor . runPretty (avoidShadowing t n) $ pretty0 emptyAc (printAnnotate n t)
 pretty' Nothing n t =
@@ -819,8 +819,8 @@ groupCases ::
   [MatchCase' () (Term3 v ann)] ->
   [([Pattern ()], [v], [(Maybe (Term3 v ann), ([v], Term3 v ann))])]
 groupCases = \cases
-    [] -> []
-    ms@((p1, _, AbsN' vs1 _) : _) -> go (p1, vs1) [] ms
+  [] -> []
+  ms@((p1, _, AbsN' vs1 _) : _) -> go (p1, vs1) [] ms
   where
     go (p0, vs0) acc [] = [(p0, vs0, reverse acc)]
     go (p0, vs0) acc ms@((p1, g1, AbsN' vs body) : tl)
@@ -973,7 +973,7 @@ prettyBinding' ppe width v t =
   PP.render width . PP.syntaxToColor $ prettyBinding ppe v t
 
 prettyBinding0 ::
-  (MonadPretty v m) =>
+  (HasCallStack, MonadPretty v m) =>
   AmbientContext ->
   HQ.HashQualified Name ->
   Term2 v at ap v a ->
@@ -1314,7 +1314,7 @@ instance Semigroup PrintAnnotation where
 instance Monoid PrintAnnotation where
   mempty = PrintAnnotation {usages = Map.empty}
 
-suffixCounterTerm :: (Var v) => PrettyPrintEnv -> Set Name -> Set Name -> Term2 v at ap v a -> PrintAnnotation
+suffixCounterTerm :: (HasCallStack, Var v) => PrettyPrintEnv -> Set Name -> Set Name -> Term2 v at ap v a -> PrintAnnotation
 suffixCounterTerm n usedTm usedTy = \case
   Ref' r -> countHQ usedTm $ PrettyPrintEnv.termName n (Referent.Ref r)
   Constructor' r | noImportRefs (r ^. ConstructorReference.reference_) -> mempty
@@ -1326,14 +1326,14 @@ suffixCounterTerm n usedTm usedTy = \case
      in foldMap (countPatternUsages n usedTm . pat) bs
   _ -> mempty
 
-suffixCounterType :: (Var v) => PrettyPrintEnv -> Set Name -> Type v a -> PrintAnnotation
+suffixCounterType :: (HasCallStack, Var v) => PrettyPrintEnv -> Set Name -> Type v a -> PrintAnnotation
 suffixCounterType n used = \case
   Type.Var' v -> countHQ used $ HQ.unsafeFromVar v
   Type.Ref' r | noImportRefs r || r == Type.listRef -> mempty
   Type.Ref' r -> countHQ used $ PrettyPrintEnv.typeName n r
   _ -> mempty
 
-printAnnotate :: (Var v, Ord v) => PrettyPrintEnv -> Term2 v at ap v a -> Term3 v PrintAnnotation
+printAnnotate :: (HasCallStack, Var v, Ord v) => PrettyPrintEnv -> Term2 v at ap v a -> Term3 v PrintAnnotation
 printAnnotate n tm =
   fmap snd (go (reannotateUp (suffixCounterTerm n usedTermNames usedTypeNames) tm))
   where
@@ -1350,7 +1350,7 @@ printAnnotate n tm =
 countTypeUsages :: (Var v, Ord v) => PrettyPrintEnv -> Set Name -> Type v a -> PrintAnnotation
 countTypeUsages n usedTy t = snd $ annotation $ reannotateUp (suffixCounterType n usedTy) t
 
-countPatternUsages :: PrettyPrintEnv -> Set Name -> Pattern loc -> PrintAnnotation
+countPatternUsages :: (HasCallStack) => PrettyPrintEnv -> Set Name -> Pattern loc -> PrintAnnotation
 countPatternUsages n usedTm = Pattern.foldMap' f
   where
     f = \case
@@ -1372,22 +1372,23 @@ countPatternUsages n usedTm = Pattern.foldMap' f
           then mempty
           else countHQ usedTm $ PrettyPrintEnv.patternName n r
 
-countHQ :: Set Name -> HQ.HashQualified Name -> PrintAnnotation
+countHQ :: (HasCallStack) => Set Name -> HQ.HashQualified Name -> PrintAnnotation
 countHQ used (HQ.NameOnly n)
   -- Names that are marked 'used' aren't considered for `use` clause insertion
   -- So if a variable 'foo' is used, then we won't insert a `use` clause for
   -- the reference `Qux.quaffle.foo`.
   | Just n' <- Set.lookupLE n used, Name.endsWith n n' = mempty
-countHQ _ hq = foldMap countName (HQ.toName hq)
-
-countName :: Name -> PrintAnnotation
-countName n =
-  PrintAnnotation
-    { usages =
-        Map.fromList do
-          (p, s) <- Name.splits n
-          pure (Name.toText s, Map.singleton (map NameSegment.toEscapedText p) 1)
-    }
+countHQ _ hq =
+  HQ.toName hq & foldMap \n ->
+    if Name.isRelative n
+      then
+        PrintAnnotation
+          { usages =
+              Map.fromList do
+                (p, s) <- Name.splits n
+                pure (Name.toText s, Map.singleton (map NameSegment.toEscapedText p) 1)
+          }
+      else mempty
 
 joinName :: Prefix -> Suffix -> Name
 joinName p s = Name.unsafeParseText $ dotConcat $ p ++ [s]
