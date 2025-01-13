@@ -5,7 +5,7 @@ module Unison.LSP.Hover where
 
 import Control.Lens hiding (List)
 import Control.Monad.Reader
-import Data.Map qualified as Map
+import Data.IntervalMap.Lazy qualified as IM
 import Data.Text qualified as Text
 import Language.LSP.Protocol.Lens
 import Language.LSP.Protocol.Message qualified as Msg
@@ -139,7 +139,7 @@ hoverInfo uri pos =
       FileAnalysis {localBindingTypes} <- FileAnalysis.getFileAnalysis uri
       Debug.debugM Debug.Temp "pos" pos
       Debug.debugM Debug.Temp "localBindingTypes" localBindingTypes
-      typ <- hoistMaybe $ Map.lookup localVar localBindingTypes
+      (_range, typ) <- hoistMaybe $ IM.lookupMin $ IM.intersecting localBindingTypes (IM.ClosedInterval pos pos)
       pped <- lift $ ppedForFile uri
       let varName = case localVar of
             (Symbol.Symbol _ (Var.User name)) -> name

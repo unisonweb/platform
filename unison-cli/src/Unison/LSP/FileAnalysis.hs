@@ -57,7 +57,6 @@ import Unison.Referent qualified as Referent
 import Unison.Result (Note)
 import Unison.Result qualified as Result
 import Unison.Symbol (Symbol)
-import Unison.Symbol qualified as Symbol
 import Unison.Syntax.HashQualifiedPrime qualified as HQ' (toText)
 import Unison.Syntax.Lexer.Unison qualified as L
 import Unison.Syntax.Name qualified as Name
@@ -107,20 +106,36 @@ checkFile doc = runMaybeT do
           Result.Result _ (Just parsedFile) -> do
             typecheckingEnv <- computeTypecheckingEnvironment (ShouldUseTndr'Yes parsingEnv) cb ambientAbilities parsedFile
             let Result.Result typecheckingNotes maybeTypecheckedFile = FileParsers.synthesizeFile typecheckingEnv parsedFile
-            localBindings <-
+            for maybeTypecheckedFile \tf -> do
+              let parsedVars =
+                    UF.terms parsedFile
+                      & foldMap (ABT.allVars . snd)
+              let typeCheckvars =
+                    UF.hashTermsId tf
+                      & foldMap (\(_a, _tr, _wk, trm, _typ) -> ABT.allVars trm)
+              Debug.debugM Debug.Temp "Parsed Vars" $ parsedVars
+              Debug.debugM Debug.Temp "Typecheck Vars" $ typeCheckvars
+
+            symbolTypes <-
               typecheckingNotes
                 & Foldable.toList
                 & reverse -- Type notes that come later in typechecking have more information filled in.
                 & foldMap \case
-                  Result.TypeInfo (Context.VarBinding (Symbol.Symbol _ (Var.User n)) typ) ->
-                    Map.singleton (Symbol.Symbol 0 (Var.User n)) typ
+                  Result.TypeInfo (Context.VarBinding v typ) -> Map.singleton v typ
                   _ -> mempty
                 & pure
+            let localBindings =
+                  typecheckingNotes
+                    & Foldable.toList
+                    & reverse -- Type notes that come later in typechecking have more information filled in.
+                    & foldMap \case
+                      Result.TypeInfo (Context.VarMention v loc) ->
+                        case Map.lookup v symbolTypes of
+                          Just typ -> (annToInterval loc) & foldMap \interval -> (IM.singleton interval typ)
+                          _ -> mempty
+                      _ -> mempty
             pure (localBindings, typecheckingNotes, Just parsedFile, maybeTypecheckedFile)
 
-  Debug.debugM Debug.Temp "BEFORE Local Bindings" ()
-  Debug.debugM Debug.Temp "My Local Bindings" localBindingTypes
-  Debug.debugM Debug.Temp "AFTER Local Bindings" ()
   filePPED <- lift $ ppedForFileHelper parsedFile typecheckedFile
   (errDiagnostics, codeActions) <- lift $ analyseFile fileUri srcText filePPED notes
   let codeActionRanges =

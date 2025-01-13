@@ -365,6 +365,8 @@ data InfoNote v loc
     -- shadowing.
     -- This is used in the LSP.
     VarBinding v (Type.Type v loc)
+  | -- | The usage of a particular variable. We report the variable and its location so we can match a given source location with a specific symbol later in the LSP.
+    VarMention v loc
   deriving (Show)
 
 topLevelComponent :: (Var v) => [(v, Type.Type v loc, RedundantTypeAnnotation)] -> InfoNote v loc
@@ -1004,7 +1006,7 @@ withEffects handled act = do
   pruneWanted [] want handled
 
 synthesizeApps ::
-  (Foldable f, Var v, Ord loc) =>
+  (Foldable f, Var v, Ord loc, Semigroup loc) =>
   Term v loc ->
   Type v loc ->
   f (Term v loc) ->
@@ -1022,7 +1024,7 @@ synthesizeApps fun ft args =
 -- the process.
 -- e.g. in `(f:t) x` -- finds the type of (f x) given t and x.
 synthesizeApp ::
-  (Var v, Ord loc) =>
+  (Var v, Ord loc, Semigroup loc) =>
   Term v loc ->
   Type v loc ->
   (Term v loc, Int) ->
@@ -1094,7 +1096,7 @@ generalizeExistentials' t =
     isExistential _ = False
 
 noteTopLevelType ::
-  (Ord loc, Var v) =>
+  (Ord loc, Var v, Semigroup loc) =>
   ABT.Subst f v a ->
   Term v loc ->
   Type v loc ->
@@ -1124,8 +1126,12 @@ noteTopLevelType e binding typ = case binding of
 noteVarBinding :: (Var v) => v ->  Type.Type v loc ->  M v loc ()
 noteVarBinding v t = btw $ VarBinding v t
 
+noteVarMention :: (Var v) => v -> loc -> M v loc ()
+noteVarMention v loc = do
+  btw $ VarMention v loc
+
 synthesizeTop ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Term v loc ->
   M v loc (Type v loc)
@@ -1146,7 +1152,7 @@ synthesizeTop tm = do
 -- the process.  Also collect wanted abilities.
 -- | Figure 11 from the paper
 synthesize ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Term v loc ->
   M v loc (Type v loc, Wanted v loc)
@@ -1179,11 +1185,12 @@ wantRequest loc ty =
 -- The return value is the synthesized type together with a list of
 -- wanted abilities.
 synthesizeWanted ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Term v loc ->
   M v loc (Type v loc, Wanted v loc)
-synthesizeWanted (Term.Var' v) =
+synthesizeWanted trm@(Term.Var' v) = do
+  noteVarMention v (ABT.annotation trm)
   getContext >>= \ctx ->
     case lookupAnn ctx v of -- Var
       Nothing -> compilerCrash $ UndeclaredTermVariable v ctx
@@ -1415,7 +1422,7 @@ synthesizeWanted _e = compilerCrash PatternMatchFailure
 -- can be refined later. This is a bit unusual for the algorithm we
 -- use, but it seems like it should be safe.
 synthesizeBinding ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Bool ->
   Term v loc ->
@@ -1556,7 +1563,7 @@ ensurePatternCoverage theMatch _theMatchType _scrutinee scrutineeType cases = do
   checkUncovered *> checkRedundant
 
 checkCases ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Type v loc ->
   Type v loc ->
@@ -1621,7 +1628,7 @@ requestType ps =
 
 checkCase ::
   forall v loc.
-  (Var v, Ord loc) =>
+  (Var v, Ord loc, Semigroup loc) =>
   Type v loc ->
   Type v loc ->
   Term.MatchCase loc (Term v loc) ->
@@ -1845,7 +1852,7 @@ resetContextAfter x a = do
 -- their type. Also returns the freshened version of `body`.
 -- See usage in `synthesize` and `check` for `LetRec'` case.
 annotateLetRecBindings ::
-  (Var v, Ord loc) =>
+  (Var v, Ord loc, Semigroup loc) =>
     loc ->
   Term.IsTop ->
   ((v -> M v loc v) -> M v loc ([(v, Term v loc)], Term v loc)) ->
@@ -2146,7 +2153,7 @@ variableP _ = Nothing
 -- See its usage in `synthesize` and `annotateLetRecBindings`.
 checkScoped ::
   forall v loc.
-  (Var v, Ord loc) =>
+  (Var v, Ord loc, Semigroup loc) =>
   Term v loc ->
   Type v loc ->
   M v loc (Type v loc, Wanted v loc)
@@ -2163,7 +2170,7 @@ checkScoped e t = do
   (t,) <$> check e t
 
 checkScopedWith ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Term v loc ->
   Type v loc ->
@@ -2425,7 +2432,7 @@ relax' nonArrow v t
     tv = Type.var loc (TypeVar.Existential B.Blank v)
 
 checkWantedScoped ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Wanted v loc ->
   Term v loc ->
@@ -2435,7 +2442,7 @@ checkWantedScoped want m ty =
   scope (InCheck m ty) $ checkWanted want m ty
 
 checkWanted ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Wanted v loc ->
   Term v loc ->
@@ -2497,7 +2504,7 @@ checkWanted want e t = do
 --     `m` has type `t` with abilities `es`,
 -- updating the context in the process.
 checkWithAbilities ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   [Type v loc] ->
   Term v loc ->
@@ -2513,7 +2520,7 @@ checkWithAbilities es m t = do
 --     `m` has type `t`
 -- updating the context in the process.
 check ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Term v loc ->
   Type v loc ->
@@ -3219,7 +3226,7 @@ verifyDataDeclarations decls = forM_ (Map.toList decls) $ \(_ref, decl) -> do
 
 -- | public interface to the typechecker
 synthesizeClosed ::
-  (BuiltinAnnotation loc, Var v, Ord loc, Show loc) =>
+  (BuiltinAnnotation loc, Var v, Ord loc, Show loc, Semigroup loc) =>
   PrettyPrintEnv ->
   PatternMatchCoverageCheckAndKindInferenceSwitch ->
   [Type v loc] ->
@@ -3308,7 +3315,7 @@ run ppe pmcSwitch datas effects m =
     $ Env 1 context0
 
 synthesizeClosed' ::
-  (Var v, Ord loc) =>
+  (Var v, Ord loc, Semigroup loc) =>
   [Type v loc] ->
   Term v loc ->
   M v loc (Type v loc)

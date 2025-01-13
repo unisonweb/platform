@@ -124,11 +124,8 @@ data FileAnalysis = FileAnalysis
     notes :: Seq (Note Symbol Ann),
     diagnostics :: IntervalMap Position [Diagnostic],
     codeActions :: IntervalMap Position [CodeAction],
-    -- | The types of local variable bindings keyed by the span that they're valid.
-    -- There may be many mentions of the same symbol in the file, and their may be several
-    -- bindings which shadow each other, use this map to find the smallest spanning position
-    -- which contains the symbol you're interested in.
-    localBindingTypes :: Map Symbol (Type Symbol Ann),
+    -- | The types of local variable bindings keyed by the mention's location.
+    localBindingTypes :: IntervalMap Position (Type Symbol Ann),
     typeSignatureHints :: Map Symbol TypeSignatureHint,
     fileSummary :: Maybe FileSummary
   }

@@ -99,7 +99,7 @@ data Env v loc = Env
 -- a function to resolve the type of @Ref@ constructors
 -- contained in that term.
 synthesize ::
-  (Monad f, Var v, BuiltinAnnotation loc, Ord loc, Show loc) =>
+  (Monad f, Var v, BuiltinAnnotation loc, Ord loc, Show loc, Semigroup loc) =>
   PrettyPrintEnv ->
   Context.PatternMatchCoverageCheckAndKindInferenceSwitch ->
   Env v loc ->
@@ -353,7 +353,7 @@ typeDirectedNameResolution ppe oldNotes oldType env = do
 -- contained in the term. Returns @typ@ if successful,
 -- and a note about typechecking failure otherwise.
 check ::
-  (Monad f, Var v, BuiltinAnnotation loc, Ord loc, Show loc) =>
+  (Monad f, Var v, BuiltinAnnotation loc, Ord loc, Show loc, Semigroup loc) =>
   PrettyPrintEnv ->
   Env v loc ->
   Term v loc ->
@@ -376,7 +376,7 @@ check ppe env term typ =
 --     tweak (Type.ForallNamed' v body) = Type.forall() v (tweak body)
 --     tweak t = Type.arrow() t t
 -- | Returns `True` if the expression is well-typed, `False` otherwise
-wellTyped :: (Monad f, Var v, BuiltinAnnotation loc, Ord loc, Show loc) => PrettyPrintEnv -> Env v loc -> Term v loc -> f Bool
+wellTyped :: (Monad f, Var v, BuiltinAnnotation loc, Ord loc, Show loc, Semigroup loc) => PrettyPrintEnv -> Env v loc -> Term v loc -> f Bool
 wellTyped ppe env term = go <$> runResultT (synthesize ppe Context.PatternMatchCoverageCheckAndKindInferenceSwitch'Enabled env term)
   where
     go (may, _) = isJust may
