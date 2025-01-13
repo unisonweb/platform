@@ -38,6 +38,7 @@ import Unison.Runtime.Builtin.Types
 import Unison.Runtime.Foreign.Function.Type (ForeignFunc (..), foreignFuncBuiltinName)
 import Unison.Runtime.Stack (UnboxedTypeTag (..), Val (..), unboxedTypeTagToInt)
 import Unison.Runtime.Stack qualified as Closure
+import Unison.Runtime.TypeTags qualified as TT
 import Unison.Symbol
 import Unison.Type qualified as Ty
 import Unison.Util.EnumContainers as EC
@@ -1709,7 +1710,7 @@ declareForeign sand op func = do
      in (Map.insert func (sand, code) funcs)
 
 unitValue :: Val
-unitValue = BoxedVal $ Closure.Enum Ty.unitRef (PackedTag 0)
+unitValue = BoxedVal $ Closure.Enum Ty.unitRef TT.unitTag
 
 natValue :: Word64 -> Val
 natValue w = NatVal w
