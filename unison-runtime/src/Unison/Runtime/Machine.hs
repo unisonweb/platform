@@ -285,7 +285,7 @@ unitValue = BoxedVal $ unitClosure
 {-# NOINLINE unitValue #-}
 
 unitClosure :: Closure
-unitClosure = Enum Ty.unitRef (PackedTag 0)
+unitClosure = Enum Ty.unitRef TT.unitTag
 {-# NOINLINE unitClosure #-}
 
 litToVal :: MLit -> Val
@@ -691,7 +691,7 @@ eval env !denv !activeThreads !stk !k r (NMatch _mr i br) = do
   eval env denv activeThreads stk k r $ selectBranch n br
 eval env !denv !activeThreads !stk !k r (RMatch i pu br) = do
   (t, stk) <- dumpDataNoTag Nothing stk =<< peekOff stk i
-  if t == PackedTag 0
+  if t == TT.pureEffectTag
     then eval env denv activeThreads stk k r pu
     else case ANF.unpackTags t of
       (ANF.rawTag -> e, ANF.rawTag -> t)

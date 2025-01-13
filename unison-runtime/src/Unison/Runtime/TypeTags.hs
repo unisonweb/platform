@@ -15,6 +15,8 @@ module Unison.Runtime.TypeTags
     rightTag,
     falseTag,
     trueTag,
+    pairTag,
+    pureEffectTag,
   )
 where
 
@@ -142,6 +144,17 @@ leftTag, rightTag :: PackedTag
     rt <- toEnum (fromIntegral Ty.eitherRightId) =
       (packTags et lt, packTags et rt)
   | otherwise = error "internal error: either tags"
+
+pairTag :: PackedTag
+pairTag
+  | Just n <- Map.lookup Ty.pairRef builtinTypeNumbering,
+    pt <- toEnum (fromIntegral n) =
+      packTags pt 0
+  | otherwise = internalBug "internal error: pairTag"
+
+-- | A tag we use to represent the 'pure' effect case.
+pureEffectTag :: PackedTag
+pureEffectTag = PackedTag 0
 
 -- | Construct a tag for a single-constructor builtin type
 mkSimpleTag :: String -> Reference -> PackedTag
