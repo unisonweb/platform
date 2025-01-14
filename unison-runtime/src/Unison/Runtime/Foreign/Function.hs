@@ -175,12 +175,12 @@ import UnliftIO qualified
 -- unbox all of 'foreignCallHelper' when we write it this way, but it's way less work to use the regular lifted stack
 -- in its implementation.
 {-# NOINLINE foreignCall #-}
-foreignCall :: ForeignFunc -> Args -> XStack -> IOXStack
+foreignCall :: ForeignFunc -> Args -> XStack -> IOEXStack
 foreignCall !ff !args !xstk =
-  stackIOToIOX $ foreignCallHelper ff args (packXStack xstk)
+  estackIOToIOX $ foreignCallHelper ff args (packXStack xstk)
 
 {-# INLINE foreignCallHelper #-}
-foreignCallHelper :: ForeignFunc -> Args -> Stack -> IO Stack
+foreignCallHelper :: ForeignFunc -> Args -> Stack -> IO (Bool, Stack)
 foreignCallHelper = \case
   IO_UDP_clientSocket_impl_v1 -> mkForeignIOF $ \(host :: Util.Text.Text, port :: Util.Text.Text) ->
     let hostStr = Util.Text.toString host
@@ -483,7 +483,7 @@ foreignCallHelper = \case
       pure $ Bytes.fromArray bs
   Tls_terminate_impl_v3 -> mkForeignTls $
     \(tls :: TLS.Context) -> TLS.bye tls
-  Code_validateLinks -> mkForeign $
+  Code_validateLinks -> mkForeignExn $
     \(lsgs0 :: [(Referent, ANF.Code)]) -> do
       let f (msg, rs) =
             F.Failure Ty.miscFailureRef (Util.Text.fromText msg) rs
@@ -598,7 +598,7 @@ foreignCallHelper = \case
   Bytes_encodeNat32le -> mkForeign $ pure . Bytes.encodeNat32le
   Bytes_encodeNat16be -> mkForeign $ pure . Bytes.encodeNat16be
   Bytes_encodeNat16le -> mkForeign $ pure . Bytes.encodeNat16le
-  MutableArray_copyTo_force -> mkForeign $
+  MutableArray_copyTo_force -> mkForeignExn $
     \(dst, doff, src, soff, l) ->
       let name = "MutableArray.copyTo!"
        in if l == 0
@@ -613,7 +613,7 @@ foreignCallHelper = \case
                       src
                       (fromIntegral soff)
                       (fromIntegral l)
-  MutableByteArray_copyTo_force -> mkForeign $
+  MutableByteArray_copyTo_force -> mkForeignExn $
     \(dst, doff, src, soff, l) ->
       let name = "MutableByteArray.copyTo!"
        in if l == 0
@@ -628,7 +628,7 @@ foreignCallHelper = \case
                       src
                       (fromIntegral soff)
                       (fromIntegral l)
-  ImmutableArray_copyTo_force -> mkForeign $
+  ImmutableArray_copyTo_force -> mkForeignExn $
     \(dst, doff, src, soff, l) ->
       let name = "ImmutableArray.copyTo!"
        in if l == 0
@@ -655,7 +655,7 @@ foreignCallHelper = \case
   MutableByteArray_size ->
     mkForeign $
       pure . fromIntegral @Int @Word64 . PA.sizeofMutableByteArray @PA.RealWorld
-  ImmutableByteArray_copyTo_force -> mkForeign $
+  ImmutableByteArray_copyTo_force -> mkForeignExn $
     \(dst, doff, src, soff, l) ->
       let name = "ImmutableByteArray.copyTo!"
        in if l == 0
@@ -671,61 +671,61 @@ foreignCallHelper = \case
                       (fromIntegral soff)
                       (fromIntegral l)
   MutableArray_read ->
-    mkForeign $
+    mkForeignExn $
       checkedRead "MutableArray.read"
   MutableByteArray_read8 ->
-    mkForeign $
+    mkForeignExn $
       checkedRead8 "MutableByteArray.read8"
   MutableByteArray_read16be ->
-    mkForeign $
+    mkForeignExn $
       checkedRead16 "MutableByteArray.read16be"
   MutableByteArray_read24be ->
-    mkForeign $
+    mkForeignExn $
       checkedRead24 "MutableByteArray.read24be"
   MutableByteArray_read32be ->
-    mkForeign $
+    mkForeignExn $
       checkedRead32 "MutableByteArray.read32be"
   MutableByteArray_read40be ->
-    mkForeign $
+    mkForeignExn $
       checkedRead40 "MutableByteArray.read40be"
   MutableByteArray_read64be ->
-    mkForeign $
+    mkForeignExn $
       checkedRead64 "MutableByteArray.read64be"
   MutableArray_write ->
-    mkForeign $
+    mkForeignExn $
       checkedWrite "MutableArray.write"
   MutableByteArray_write8 ->
-    mkForeign $
+    mkForeignExn $
       checkedWrite8 "MutableByteArray.write8"
   MutableByteArray_write16be ->
-    mkForeign $
+    mkForeignExn $
       checkedWrite16 "MutableByteArray.write16be"
   MutableByteArray_write32be ->
-    mkForeign $
+    mkForeignExn $
       checkedWrite32 "MutableByteArray.write32be"
   MutableByteArray_write64be ->
-    mkForeign $
+    mkForeignExn $
       checkedWrite64 "MutableByteArray.write64be"
   ImmutableArray_read ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex "ImmutableArray.read"
   ImmutableByteArray_read8 ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex8 "ImmutableByteArray.read8"
   ImmutableByteArray_read16be ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex16 "ImmutableByteArray.read16be"
   ImmutableByteArray_read24be ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex24 "ImmutableByteArray.read24be"
   ImmutableByteArray_read32be ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex32 "ImmutableByteArray.read32be"
   ImmutableByteArray_read40be ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex40 "ImmutableByteArray.read40be"
   ImmutableByteArray_read64be ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex64 "ImmutableByteArray.read64be"
   MutableByteArray_freeze_force ->
     mkForeign $
@@ -885,17 +885,17 @@ foreignCallHelper = \case
         Right a -> Right a
 
 {-# INLINE mkHashAlgorithm #-}
-mkHashAlgorithm :: forall alg. (Hash.HashAlgorithm alg) => Data.Text.Text -> alg -> Args -> Stack -> IO Stack
+mkHashAlgorithm :: forall alg. (Hash.HashAlgorithm alg) => Data.Text.Text -> alg -> Args -> Stack -> IO (Bool, Stack)
 mkHashAlgorithm txt alg =
   let algoRef = Builtin ("crypto.HashAlgorithm." <> txt)
    in mkForeign $ \() -> pure (HashAlgorithm algoRef alg)
 
 {-# INLINE mkForeign #-}
-mkForeign :: (ForeignConvention a, ForeignConvention b) => (a -> IO b) -> Args -> Stack -> IO Stack
+mkForeign :: (ForeignConvention a, ForeignConvention b) => (a -> IO b) -> Args -> Stack -> IO (Bool, Stack)
 mkForeign !f !args !stk = do
   r <- f =<< readsAt stk args
   stk <- bump stk
-  stk <$ writeBack stk r
+  (False, stk) <$ writeBack stk r
 
 {-# INLINE mkForeignIOF #-}
 mkForeignIOF ::
@@ -903,7 +903,7 @@ mkForeignIOF ::
   (a -> IO r) ->
   Args ->
   Stack ->
-  IO Stack
+  IO (Bool, Stack)
 mkForeignIOF f = mkForeign $ \a -> tryIOE (f a)
   where
     tryIOE :: IO a -> IO (Either (F.Failure Val) a)
@@ -912,6 +912,22 @@ mkForeignIOF f = mkForeign $ \a -> tryIOE (f a)
     handleIOE (Left e) = Left $ F.Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue
     handleIOE (Right a) = Right a
 
+{-# inline mkForeignExn #-}
+mkForeignExn ::
+  (ForeignConvention a, ForeignConvention e, ForeignConvention r) =>
+  (a -> IO (Either (F.Failure e) r)) ->
+  Args ->
+  Stack ->
+  IO (Bool, Stack)
+mkForeignExn f args stk =
+  readsAt stk args >>= f >>= \case
+    Left e -> do
+      stk <- bump stk
+      (True, stk) <$ writeBack stk e
+    Right r -> do
+      stk <- bump stk
+      (False, stk) <$ writeBack stk r
+
 {-# INLINE mkForeignTls #-}
 mkForeignTls ::
   forall a r.
@@ -919,7 +935,7 @@ mkForeignTls ::
   (a -> IO r) ->
   Args ->
   Stack ->
-  IO Stack
+  IO (Bool, Stack)
 mkForeignTls f = mkForeign $ \a -> fmap flatten (tryIO2 (tryIO1 (f a)))
   where
     tryIO1 :: IO r -> IO (Either TLS.TLSException r)
@@ -938,7 +954,7 @@ mkForeignTlsE ::
   (a -> IO (Either Failure r)) ->
   Args ->
   Stack ->
-  IO Stack
+  IO (Bool, Stack)
 mkForeignTlsE f = mkForeign $ \a -> fmap flatten (tryIO2 (tryIO1 (f a)))
   where
     tryIO1 :: IO (Either Failure r) -> IO (Either TLS.TLSException (Either Failure r))

@@ -36,7 +36,10 @@ module Unison.Runtime.Stack
     unpackXStack,
     xStackIOToIO,
     stackIOToIOX,
+    estackIOToIOX,
+    exStackIOToIO,
     IOXStack,
+    IOEXStack,
     apX,
     fpX,
     spX,
@@ -667,6 +670,9 @@ type XStack = (# Int#, Int#, Int#, MutableByteArray# (PrimState IO), MutableArra
 
 type IOXStack = State# RealWorld -> (# State# RealWorld, XStack #)
 
+type IOEXStack =
+  State# RealWorld -> (# State# RealWorld, Bool, XStack #)
+
 pattern XStack :: Int# -> Int# -> Int# -> MutableByteArray# RealWorld -> MutableArray# RealWorld Closure -> Stack
 pattern XStack {apX, fpX, spX, ustkX, bstkX} = Stack (I# apX) (I# fpX) (I# spX) (MutableByteArray ustkX) (MutableArray bstkX)
 
@@ -689,6 +695,14 @@ xStackIOToIO f = IO $ \s -> case f s of (# s', x #) -> (# s', packXStack x #)
 stackIOToIOX :: IO Stack -> IOXStack
 stackIOToIOX (IO f) = \s -> case f s of (# s', x #) -> (# s', unpackXStack x #)
 {-# INLINE stackIOToIOX #-}
+
+estackIOToIOX :: IO (Bool, Stack) -> IOEXStack
+estackIOToIOX (IO f) = \s -> case f s of
+  (# s', (b, x) #) -> (# s', b, unpackXStack x #)
+
+exStackIOToIO :: IOEXStack -> IO (Bool, Stack)
+exStackIOToIO f = IO $ \s -> case f s of
+  (# s , b, x #) -> (# s, (b, packXStack x) #)
 
 instance Show Stack where
   show (Stack ap fp sp _ _) =
