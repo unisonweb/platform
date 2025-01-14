@@ -259,12 +259,16 @@ main dir welcome ppIds initialInputs runtime sbRuntime nRuntime codebase serverB
           lspCheckForChanges (NEL.head $ Cli.projectPathStack s0)
           let step = do
                 input <- awaitInput s0
+                let locker = case input of
+                      Left {} -> fmap Just
+                      Right {} -> \action -> FL.withTryFileLock (lockfilePath (Codebase.codebasePath codebase)) FL.Exclusive (const action)
                 (!result, resultState) <-
-                  FL.withTryFileLock (lockfilePath (Codebase.codebasePath codebase)) FL.Exclusive (\_flock -> do Cli.runCli env s0 (HandleInput.loop input))
+                  (locker do Cli.runCli env s0 (HandleInput.loop input))
                     >>= \case
-                      Nothing -> pure (Cli.Continue, s0)
-                      Just (result, s1) -> do
+                      Nothing -> do
                         hPutStrLn stderr $ "Another client is running a command on this codebase, please close the other process or wait for it to finish. If issues persist, try deleting the lockfile at " <> lockfilePath (Codebase.codebasePath codebase)
+                        pure (Cli.Continue, s0)
+                      Just (result, s1) -> do
                         pure (result, s1)
                 let sNext = case input of
                       Left _ -> resultState

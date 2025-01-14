@@ -63,7 +63,7 @@ testBuilder ::
 testBuilder expectFailure replaceOriginal recordFailure runtimePath inputDir outputDir prelude transcript =
   scope transcript do
     outputs <-
-      io $ withTemporaryUcmCodebase SC.init Verbosity.Silent "transcript" SC.DoLock \(codebasePath, codebase) ->
+      io $ withTemporaryUcmCodebase SC.init Verbosity.Silent "transcript" SC.DontLock \(codebasePath, codebase) ->
         let isTest = True
          in Transcript.withRunner isTest Verbosity.Silent "TODO: pass version here" runtimePath \runTranscript ->
               for files \filePath -> do

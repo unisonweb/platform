@@ -55,7 +55,7 @@ initCodebase fmt = do
   tmp <-
     Temp.getCanonicalTemporaryDirectory
       >>= flip Temp.createTempDirectory "ucm-test"
-  result <- Codebase.Init.withCreatedCodebase cbInit "ucm-test" tmp SC.DoLock (const $ pure ())
+  result <- Codebase.Init.withCreatedCodebase cbInit "ucm-test" tmp SC.DontLock (const $ pure ())
   case result of
     Left CreateCodebaseAlreadyExists -> fail $ P.toANSI 80 "Codebase already exists"
     Right _ -> pure $ Codebase tmp fmt
@@ -70,7 +70,7 @@ runTranscript (Codebase codebasePath fmt) transcript = do
       isTest = True
   Transcript.withRunner isTest Verbosity.Silent "Unison.Test.Ucm.runTranscript Invalid Version String" rtp $
     \runner -> do
-      result <- Codebase.Init.withOpenCodebase cbInit "transcript" codebasePath SC.DoLock SC.DontMigrate \codebase -> do
+      result <- Codebase.Init.withOpenCodebase cbInit "transcript" codebasePath SC.DontLock SC.DontMigrate \codebase -> do
         Codebase.runTransaction codebase (Codebase.installUcmDependencies codebase)
         let transcriptSrc = stripMargin . Text.pack $ unTranscript transcript
         output <-
@@ -87,7 +87,7 @@ runTranscript (Codebase codebasePath fmt) transcript = do
 lowLevel :: Codebase -> (Codebase.Codebase IO Symbol Ann -> IO a) -> IO a
 lowLevel (Codebase root fmt) action = do
   let cbInit = case fmt of CodebaseFormat2 -> SC.init
-  result <- Codebase.Init.withOpenCodebase cbInit "lowLevel" root SC.DoLock SC.DontMigrate action
+  result <- Codebase.Init.withOpenCodebase cbInit "lowLevel" root SC.DontLock SC.DontMigrate action
   case result of
     Left e -> PT.putPrettyLn (P.shown e) *> pure (error "This really should have loaded")
     Right a -> pure a

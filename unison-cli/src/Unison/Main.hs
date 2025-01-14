@@ -392,7 +392,7 @@ prepareTranscriptDir verbosity shouldFork mCodePathOption shouldSaveCodebase = d
       Path.copyDir (CodebaseInit.codebasePath cbInit path) (CodebaseInit.codebasePath cbInit tmp)
     DontFork -> do
       PT.putPrettyLn . P.wrap $ "Transcript will be run on a new, empty codebase."
-      CodebaseInit.withNewUcmCodebaseOrExit cbInit verbosity "main.transcript" tmp SC.DoLock (const $ pure ())
+      CodebaseInit.withNewUcmCodebaseOrExit cbInit verbosity "main.transcript" tmp SC.DontLock (const $ pure ())
   pure tmp
 
 runTranscripts' ::
@@ -553,7 +553,7 @@ getCodebaseOrExit :: Maybe CodebasePathOption -> SC.MigrationStrategy -> ((InitR
 getCodebaseOrExit codebasePathOption migrationStrategy action = do
   initOptions <- argsToCodebaseInitOptions codebasePathOption
   let cbInit = SC.init
-  result <- CodebaseInit.withOpenOrCreateCodebase cbInit "main" initOptions SC.DoLock migrationStrategy \case
+  result <- CodebaseInit.withOpenOrCreateCodebase cbInit "main" initOptions SC.DontLock migrationStrategy \case
     cbInit@(CreatedCodebase, dir, _) -> do
       pDir <- prettyDir dir
       PT.putPrettyLn' ""
