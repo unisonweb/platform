@@ -19,6 +19,7 @@ module Unison.Sqlite
     Transaction,
     runTransaction,
     runTransactionWithRollback,
+    runTransactionExceptT,
     runReadOnlyTransaction,
     runWriteTransaction,
     cacheTransaction,

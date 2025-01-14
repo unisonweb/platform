@@ -49,6 +49,7 @@ newtype LocallyIndexedComponent' t d = LocallyIndexedComponent
 
 newtype SyncLocallyIndexedComponent' t d
   = SyncLocallyIndexedComponent (Vector (LocalIds' t d, ByteString))
+  deriving stock (Eq, Show)
 
 {-
 message = "hello, world"     -> ABT { ... { Term.F.Text "hello, world" } }    -> hashes to (#abc, 0)
@@ -127,6 +128,7 @@ data TermFormat' t d = Term (LocallyIndexedComponent' t d)
 type SyncTermFormat = SyncTermFormat' TextId ObjectId
 
 data SyncTermFormat' t d = SyncTerm (SyncLocallyIndexedComponent' t d)
+  deriving stock (Eq, Show)
 
 data WatchResultFormat
   = WatchResult WatchLocalIds Term

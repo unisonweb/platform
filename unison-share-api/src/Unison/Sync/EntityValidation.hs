@@ -4,6 +4,7 @@
 -- | Module for validating hashes of entities received/sent via sync.
 module Unison.Sync.EntityValidation
   ( validateEntity,
+    validateTempEntity,
   )
 where
 
@@ -21,6 +22,7 @@ import U.Codebase.Sqlite.HashHandle qualified as HH
 import U.Codebase.Sqlite.Orphans ()
 import U.Codebase.Sqlite.Patch.Format qualified as PatchFormat
 import U.Codebase.Sqlite.Serialization qualified as Serialization
+import U.Codebase.Sqlite.TempEntity (TempEntity)
 import U.Codebase.Sqlite.Term.Format qualified as TermFormat
 import U.Codebase.Sqlite.V2.HashHandle (v2HashHandle)
 import Unison.Hash (Hash)
@@ -35,7 +37,13 @@ import Unison.Sync.Types qualified as Share
 -- We should add more validation as more entities are shared.
 validateEntity :: Hash32 -> Share.Entity Text Hash32 Hash32 -> Maybe Share.EntityValidationError
 validateEntity expectedHash32 entity = do
-  case Share.entityToTempEntity id entity of
+  validateTempEntity expectedHash32 $ Share.entityToTempEntity id entity
+
+-- | Note: We currently only validate Namespace hashes.
+-- We should add more validation as more entities are shared.
+validateTempEntity :: Hash32 -> TempEntity -> Maybe Share.EntityValidationError
+validateTempEntity expectedHash32 tempEntity = do
+  case tempEntity of
     Entity.TC (TermFormat.SyncTerm localComp) -> do
       validateTerm expectedHash localComp
     Entity.DC (DeclFormat.SyncDecl localComp) -> do

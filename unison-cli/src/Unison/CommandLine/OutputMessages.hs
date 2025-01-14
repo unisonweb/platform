@@ -2258,6 +2258,9 @@ notifyUser dir = \case
                 <> "it. Then try the update again."
           ]
   Literal message -> pure message
+  SyncPullError syncErr ->
+    -- TODO: Better error message
+    pure (P.shown syncErr)
 
 prettyShareError :: ShareError -> Pretty
 prettyShareError =
@@ -2363,6 +2366,11 @@ prettyTransportError = \case
   Share.Timeout -> "The code server timed-out when responding to your request. Please try again later or report an issue if the problem persists."
   Share.UnexpectedResponse resp ->
     unexpectedServerResponse resp
+  Share.StreamingError err ->
+     P.lines
+       [ ( "We encountered an error while streaming data from the code server: " <> P.text err),
+         P.red (P.text err)
+       ]
 
 unexpectedServerResponse :: Servant.ResponseF LazyByteString.ByteString -> P.Pretty Unison.Util.ColorText.ColorText
 unexpectedServerResponse resp =
