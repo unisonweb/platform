@@ -36,6 +36,7 @@ module Unison.Runtime.TypeTags
     stdInTag,
     stdOutTag,
     stdErrTag,
+    pureEffectTag,
   )
 where
 
@@ -155,9 +156,6 @@ falseTag = mkEnumTag "falseTag" Ty.booleanRef 0
 trueTag :: PackedTag
 trueTag = mkEnumTag "trueTag" Ty.booleanRef 1
 
-pairTag :: PackedTag
-pairTag = mkEnumTag "pairTag" Ty.pairRef 0
-
 anyTag :: PackedTag
 anyTag = mkEnumTag "anyTag" Ty.anyRef 0
 
@@ -224,6 +222,17 @@ exceptionRaiseTag :: PackedTag
     rt <- toEnum $ fromIntegral Ty.exceptionRaiseId =
       (n, packTags et rt)
   | otherwise = internalBug $ "internal error: Exception tag"
+
+pairTag :: PackedTag
+pairTag
+  | Just n <- Map.lookup Ty.pairRef builtinTypeNumbering,
+    pt <- toEnum (fromIntegral n) =
+      packTags pt 0
+  | otherwise = internalBug "internal error: pairTag"
+
+-- | A tag we use to represent the 'pure' effect case.
+pureEffectTag :: PackedTag
+pureEffectTag = PackedTag 0
 
 -- | Construct a tag for a single-constructor builtin type
 mkSimpleTag :: String -> Reference -> PackedTag
