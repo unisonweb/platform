@@ -1484,14 +1484,26 @@ instance ForeignConvention () where
   readAtIndex _ _ = pure ()
   writeBack stk _ = bpoke stk $ unitClo
 
+pattern ConsC :: Val -> Val -> Closure
+pattern ConsC x y <- Data2 _ _ x y
+  where
+    ConsC x y = Data2 Ty.pairRef pairTag x y
+
+pattern ConsV x y = BoxedVal (ConsC x y)
+
+pattern Tup2C :: Val -> Val -> Closure
+pattern Tup2C x y <- ConsC x (ConsV y _)
+  where
+    Tup2C x y = ConsC x (ConsV y unitVal)
+
+pattern Tup2V x y = BoxedVal (Tup2C x y)
+
 decodeTup2 :: (ForeignConvention a, ForeignConvention b) => Closure -> IO (a, b)
-decodeTup2 (Data2 _ _ x (BoxedVal (Data2 _ _ y _))) =
-  (,) <$> decodeVal x <*> decodeVal y
+decodeTup2 (Tup2C x y) = (,) <$> decodeVal x <*> decodeVal y
 decodeTup2 c = foreignConventionError "Pair" (BoxedVal c)
 
 encodeTup2 :: (ForeignConvention a, ForeignConvention b) => (a, b) -> Closure
-encodeTup2 (x,y) =
-  Data2 Ty.pairRef pairTag (encodeVal x) (encodeVal y)
+encodeTup2 (x,y) = Tup2C (encodeVal x) (encodeVal y)
 
 instance
   ( ForeignConvention a,
@@ -1509,14 +1521,16 @@ instance
   readAtIndex stk i = bpeekOff stk i >>= decodeTup2
   writeBack stk p = bpoke stk $ encodeTup2 p
 
+pattern Tup3C x y z = ConsC x (Tup2V y z)
+pattern Tup3V x y z = BoxedVal (Tup3C x y z)
+
 decodeTup3 :: (ForeignConvention a, ForeignConvention b, ForeignConvention c) => Closure -> IO (a, b, c)
-decodeTup3 (Data2 _ _ x (BoxedVal (Data2 _ _ y (BoxedVal (Data2 _ _ z _))))) =
+decodeTup3 (Tup3C x y z) =
   (,,) <$> decodeVal x <*> decodeVal y <*> decodeVal z
 decodeTup3 c = foreignConventionError "Triple" (BoxedVal c)
 
 encodeTup3 :: (ForeignConvention a, ForeignConvention b, ForeignConvention c) => (a, b, c) -> Closure
-encodeTup3 (x,y,z) =
-  Data2 Ty.pairRef pairTag (encodeVal x) (BoxedVal $ encodeTup2 (y,z))
+encodeTup3 (x,y,z) = Tup3C (encodeVal x) (encodeVal y) (encodeVal z)
 
 instance
   ( ForeignConvention a,
@@ -1536,14 +1550,17 @@ instance
   readAtIndex stk i = bpeekOff stk i >>= decodeTup3
   writeBack stk p = bpoke stk $ encodeTup3 p
 
+pattern Tup4C w x y z = ConsC w (Tup3V x y z)
+pattern Tup4V w x y z = BoxedVal (Tup4C w x y z)
+
 decodeTup4 :: (ForeignConvention a, ForeignConvention b, ForeignConvention c, ForeignConvention d) => Closure -> IO (a, b, c, d)
-decodeTup4 (Data2 _ _ w (BoxedVal (Data2 _ _ x (BoxedVal (Data2 _ _ y (BoxedVal (Data2 _ _ z _))))))) =
+decodeTup4 (Tup4C w x y z) =
   (,,,) <$> decodeVal w <*> decodeVal x <*> decodeVal y <*> decodeVal z
 decodeTup4 c = foreignConventionError "Quadruple" (BoxedVal c)
 
 encodeTup4 :: (ForeignConvention a, ForeignConvention b, ForeignConvention c, ForeignConvention d) => (a, b, c, d) -> Closure
 encodeTup4 (w,x,y,z) =
-  Data2 Ty.pairRef pairTag (encodeVal w) (BoxedVal $ encodeTup3 (x,y,z))
+  Tup4C (encodeVal w) (encodeVal x) (encodeVal y) (encodeVal z)
 
 instance
   ( ForeignConvention a,
@@ -1566,14 +1583,16 @@ instance
   readAtIndex stk i = bpeekOff stk i >>= decodeTup4
   writeBack stk p = bpoke stk $ encodeTup4 p
 
+pattern Tup5C v w x y z = ConsC v (Tup4V w x y z)
+
 decodeTup5 :: (ForeignConvention a, ForeignConvention b, ForeignConvention c, ForeignConvention d, ForeignConvention e) => Closure -> IO (a, b, c, d, e)
-decodeTup5 (Data2 _ _ v (BoxedVal (Data2 _ _ w (BoxedVal (Data2 _ _ x (BoxedVal (Data2 _ _ y (BoxedVal (Data2 _ _ z _))))))))) =
+decodeTup5 (Tup5C v w x y z) =
   (,,,,) <$> decodeVal v <*> decodeVal w <*> decodeVal x <*> decodeVal y <*> decodeVal z
 decodeTup5 c = foreignConventionError "Quintuple" (BoxedVal c)
 
 encodeTup5 :: (ForeignConvention a, ForeignConvention b, ForeignConvention c, ForeignConvention d, ForeignConvention e) => (a, b, c, d, e) -> Closure
 encodeTup5 (v,w,x,y,z) =
-  Data2 Ty.pairRef pairTag (encodeVal v) (BoxedVal $ encodeTup4 (w,x,y,z))
+  Tup5C (encodeVal v) (encodeVal w) (encodeVal x) (encodeVal y) (encodeVal z)
 
 instance
   ( ForeignConvention a,
