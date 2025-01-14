@@ -164,6 +164,9 @@ seekModeAbsoluteId = Maybe.fromJust $ constructorId seekModeRef "io2.SeekMode.Ab
 seekModeRelativeId = Maybe.fromJust $ constructorId seekModeRef "io2.SeekMode.RelativeSeek"
 seekModeEndId = Maybe.fromJust $ constructorId seekModeRef "io2.SeekMode.SeekFromEnd"
 
+exceptionRaiseId :: ConstructorId
+exceptionRaiseId = Maybe.fromJust $ constructorId exceptionRef "Exception.raise"
+
 okConstructorReferent, failConstructorReferent :: Referent.Referent
 okConstructorReferent = Referent.Con (ConstructorReference testResultRef okConstructorId) CT.Data
 failConstructorReferent = Referent.Con (ConstructorReference testResultRef failConstructorId) CT.Data

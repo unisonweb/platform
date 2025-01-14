@@ -31,6 +31,8 @@ module Unison.Runtime.TypeTags
     seekAbsoluteTag,
     seekRelativeTag,
     seekEndTag,
+    exceptionTag,
+    exceptionRaiseTag,
   )
 where
 
@@ -201,6 +203,15 @@ seekAbsoluteTag, seekRelativeTag, seekEndTag :: PackedTag
           Ty.seekModeRelativeId,
           Ty.seekModeEndId ] = (at, rt, et)
   | otherwise = error "internal error: seek mode tags"
+
+exceptionTag :: Word64
+exceptionRaiseTag :: PackedTag
+(exceptionTag, exceptionRaiseTag)
+  | Just n <- Map.lookup Ty.exceptionRef builtinTypeNumbering,
+    et <- toEnum $ fromIntegral n,
+    rt <- toEnum $ fromIntegral Ty.exceptionRaiseId =
+      (n, packTags et rt)
+  | otherwise = internalBug $ "internal error: Exception tag"
 
 -- | Construct a tag for a single-constructor builtin type
 mkSimpleTag :: String -> Reference -> PackedTag
