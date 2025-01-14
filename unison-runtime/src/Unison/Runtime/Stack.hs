@@ -1181,7 +1181,7 @@ peekOffBool stk i = do
   b <- bpeekOff stk i
   pure $ case b of
     Enum _ t -> t /= TT.falseTag
-    _ -> error "peekBool: not a boolean"
+    _ -> error "peekOffBool: not a boolean"
 {-# INLINE peekOffBool #-}
 
 peekOffS :: Stack -> Int -> IO USeq

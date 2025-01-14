@@ -137,7 +137,7 @@ import Unison.Builtin.Decls qualified as Ty
 import Unison.Prelude hiding (Text, some)
 import Unison.Reference
 import Unison.Referent (Referent, pattern Ref)
-import Unison.Runtime.ANF (Code, PackedTag (..), Value, internalBug)
+import Unison.Runtime.ANF (Code, Value, internalBug)
 import Unison.Runtime.ANF qualified as ANF
 import Unison.Runtime.ANF.Rehash (checkGroupHashes)
 import Unison.Runtime.ANF.Serialize qualified as ANF
@@ -150,6 +150,7 @@ import Unison.Runtime.Foreign qualified as F
 import Unison.Runtime.Foreign.Function.Type (ForeignFunc (..))
 import Unison.Runtime.MCode
 import Unison.Runtime.Stack
+import Unison.Runtime.TypeTags qualified as TT
 import Unison.Symbol
 import Unison.Type
   ( iarrayRef,
@@ -1764,10 +1765,10 @@ toUnisonPair ::
 toUnisonPair (x, y) =
   DataC
     Ty.pairRef
-    (PackedTag 0)
-    [BoxedVal $ wr x, BoxedVal $ DataC Ty.pairRef (PackedTag 0) [BoxedVal $ wr y, BoxedVal $ un]]
+    TT.pairTag
+    [BoxedVal $ wr x, BoxedVal $ DataC Ty.pairRef TT.pairTag [BoxedVal $ wr y, BoxedVal $ un]]
   where
-    un = DataC Ty.unitRef (PackedTag 0) []
+    un = DataC Ty.unitRef TT.unitTag []
     wr z = Foreign $ wrapBuiltin z
 
 unwrapForeignClosure :: Closure -> a
