@@ -48,6 +48,12 @@ import Unison.SyncV2.Types qualified as SyncV2
 import Unison.Util.Servant.CBOR qualified as CBOR
 import Unison.Util.Timing qualified as Timing
 import UnliftIO qualified as IO
+import Unison.SyncV2.API (Routes (downloadEntitiesStream))
+import Unison.SyncV2.API qualified as SyncV2
+import Data.Attoparsec.ByteString qualified as A
+import Data.Attoparsec.ByteString.Char8 qualified as A8
+import Data.Conduit.Attoparsec qualified as C
+
 
 type Stream i o = ConduitT i o StreamM ()
 
@@ -281,6 +287,23 @@ withCodebaseEntityStream conn rootHash mayBranchRef callback = do
               lift . Sqlite.unsafeIO $ counter 1
               traverseOf_ Sync.entityHashes_ expandEntities entity
 
+-- | Gets the framed chunks from a NetString framed stream.
+_unNetString :: ConduitT ByteString ByteString StreamM ()
+_unNetString = do
+  bs <- C.sinkParser $ do
+    len <- A8.decimal
+    _ <- A8.char ':'
+    bs <- A.take len
+    _ <- A8.char ','
+    pure bs
+  C.yield bs
+
+_decodeFramedEntity :: ByteString -> StreamM SyncV2.DownloadEntitiesChunk
+_decodeFramedEntity bs = do
+  case CBOR.deserialiseOrFail (BL.fromStrict bs) of
+    Left err -> throwError . SyncError . SyncV2.PullError'Sync $ SyncV2.SyncErrorDeserializationFailure err
+    Right chunk -> pure chunk
+
 -- Expects a stream of tightly-packed CBOR entities without any framing/separators.
 decodeUnframedEntities :: Stream ByteString SyncV2.DownloadEntitiesChunk
 decodeUnframedEntities = C.transPipe (mapExceptT (lift . stToIO)) $ do
@@ -328,6 +351,78 @@ decodeUnframedEntities = C.transPipe (mapExceptT (lift . stToIO)) $ do
               -- We have leftovers, start a new decoder and use those.
               k <- newDecoder
               loop rem k
+
+------------------------------------------------------------------------------------------------------------------------
+-- Servant stuff
+
+type SyncAPI = ("ucm" Servant.:> "v2" Servant.:> "sync" Servant.:> SyncV2.API)
+
+syncAPI :: Proxy SyncAPI
+syncAPI = Proxy @SyncAPI
+
+downloadEntitiesStreamClientM :: SyncV2.DownloadEntitiesRequest -> Servant.ClientM (Servant.SourceT IO SyncV2.DownloadEntitiesChunk)
+SyncV2.Routes
+  { downloadEntitiesStream = downloadEntitiesStreamClientM
+  } = Servant.client syncAPI
+
+-- -- | Helper for running clientM that returns a stream of entities.
+-- -- You MUST consume the stream within the callback, it will be closed when the callback returns.
+-- handleStream :: forall m o. (MonadUnliftIO m) => Servant.ClientEnv -> (o -> m ()) -> Servant.ClientM (Servant.SourceIO o) -> m (Either CodeserverTransportError ())
+-- handleStream clientEnv callback clientM = do
+--   handleSourceT clientEnv (SourceT.foreach (throwError . StreamingError . Text.pack) callback) clientM
+
+-- | Helper for running clientM that returns a stream of entities.
+-- You MUST consume the stream within the callback, it will be closed when the callback returns.
+withConduit :: forall r. Servant.ClientEnv -> (Stream () SyncV2.DownloadEntitiesChunk -> StreamM r) -> Servant.ClientM (Servant.SourceIO SyncV2.DownloadEntitiesChunk) -> StreamM r
+withConduit clientEnv callback clientM = do
+  Debug.debugLogM Debug.Temp $ "Running clientM"
+  ExceptT $ withRunInIO \runInIO -> do
+    Servant.withClientM clientM clientEnv $ \case
+      Left err -> pure . Left . TransportError $ (handleClientError clientEnv err)
+      Right sourceT -> do
+        Debug.debugLogM Debug.Temp $ "Converting sourceIO to conduit"
+        conduit <- liftIO $ Servant.fromSourceIO sourceT
+        (runInIO . runExceptT $ callback conduit)
+
+handleClientError :: Servant.ClientEnv -> Servant.ClientError -> CodeserverTransportError
+handleClientError clientEnv err =
+  case err of
+    Servant.FailureResponse _req resp ->
+      case HTTP.statusCode $ Servant.responseStatusCode resp of
+        401 -> Unauthenticated (Servant.baseUrl clientEnv)
+        -- The server should provide semantically relevant permission-denied messages
+        -- when possible, but this should catch any we miss.
+        403 -> PermissionDenied (Text.Lazy.toStrict . Text.Lazy.decodeUtf8 $ Servant.responseBody resp)
+        408 -> Timeout
+        429 -> RateLimitExceeded
+        504 -> Timeout
+        _ -> UnexpectedResponse resp
+    Servant.DecodeFailure msg resp -> DecodeFailure msg resp
+    Servant.UnsupportedContentType _ct resp -> UnexpectedResponse resp
+    Servant.InvalidContentTypeHeader resp -> UnexpectedResponse resp
+    Servant.ConnectionError _ -> UnreachableCodeserver (Servant.baseUrl clientEnv)
+
+httpStreamEntities ::
+  forall.
+  Auth.AuthenticatedHttpClient ->
+  Servant.BaseUrl ->
+  SyncV2.DownloadEntitiesRequest ->
+  (SyncV2.StreamInitInfo -> Stream () SyncV2.EntityChunk -> StreamM ()) ->
+  StreamM ()
+httpStreamEntities (Auth.AuthenticatedHttpClient httpClient) unisonShareUrl req callback = do
+  let clientEnv =
+        (Servant.mkClientEnv httpClient unisonShareUrl)
+          { Servant.makeClientRequest = \url request ->
+              -- Disable client-side timeouts
+              (Servant.defaultMakeClientRequest url request)
+                <&> \r ->
+                  r
+                    { Http.Client.responseTimeout = Http.Client.responseTimeoutNone
+                    }
+          }
+  (downloadEntitiesStreamClientM req) & withConduit clientEnv \stream -> do
+    (init, entityStream) <- initializeStream stream
+    callback init entityStream
 
 -- | Peel the header off the stream and parse the remaining entity chunks into EntityChunks
 initializeStream :: Stream () SyncV2.DownloadEntitiesChunk -> StreamM (SyncV2.StreamInitInfo, Stream () SyncV2.EntityChunk)

@@ -56,7 +56,8 @@ create table if not exists temp_entity (
 create table if not exists temp_entity_missing_dependency (
   dependent text not null references temp_entity(hash),
   dependency text not null,
-  dependencyJwt text not null,
+  -- TODO: this is just for testing
+  dependencyJwt text null,
   unique (dependent, dependency)
 );
 create index if not exists temp_entity_missing_dependency_ix_dependent on temp_entity_missing_dependency (dependent);

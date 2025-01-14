@@ -228,6 +228,7 @@ module U.Codebase.Sqlite.Queries
     expectEntity,
     syncToTempEntity,
     insertTempEntity,
+    insertTempEntityV2,
     saveTempEntityInMain,
     expectTempEntity,
     deleteTempEntity,
@@ -315,6 +316,7 @@ import Data.Map.NonEmpty qualified as NEMap
 import Data.Maybe qualified as Maybe
 import Data.Sequence qualified as Seq
 import Data.Set qualified as Set
+import Data.Set.NonEmpty (NESet)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Data.Text.Lazy qualified as Text.Lazy
@@ -532,23 +534,18 @@ countWatches = queryOneCol [sql| SELECT COUNT(*) FROM watch |]
 
 saveHash :: Hash32 -> Transaction HashId
 saveHash hash = do
-  execute
-    [sql|
-      INSERT INTO hash (base32) VALUES (:hash)
-      ON CONFLICT DO NOTHING
-    |]
-  expectHashId hash
+  loadHashId hash >>= \case
+    Just h -> pure h
+    Nothing -> do
+      queryOneCol
+        [sql|
+          INSERT INTO hash (base32) VALUES (:hash)
+          RETURNING id
+        |]
 
 saveHashes :: Traversable f => f Hash32 -> Transaction (f HashId)
 saveHashes hashes = do
-  for_ hashes \hash ->
-    execute
-      [sql|
-        INSERT INTO hash (base32)
-        VALUES (:hash)
-        ON CONFLICT DO NOTHING
-      |]
-  traverse expectHashId hashes
+  for hashes saveHash
 
 saveHashHash :: Hash -> Transaction HashId
 saveHashHash = saveHash . Hash32.fromHash
@@ -623,13 +620,15 @@ expectBranchHashForCausalHash ch = do
 
 saveText :: Text -> Transaction TextId
 saveText t = do
-  execute
-    [sql|
-      INSERT INTO text (text)
-      VALUES (:t)
-      ON CONFLICT DO NOTHING
-    |]
-  expectTextId t
+  loadTextId t >>= \case
+    Just h -> pure h
+    Nothing -> do
+      queryOneCol
+        [sql|
+          INSERT INTO text (text)
+          VALUES (:t)
+          RETURNING id
+        |]
 
 saveTexts :: Traversable f => f Text -> Transaction (f TextId)
 saveTexts =
@@ -686,7 +685,7 @@ saveObject ::
   ObjectType ->
   ByteString ->
   Transaction ObjectId
-saveObject hh h t blob = do
+saveObject _hh h t blob = do
   execute
     [sql|
       INSERT INTO object (primary_hash_id, type_id, bytes)
@@ -697,9 +696,9 @@ saveObject hh h t blob = do
   saveHashObject h oId 2 -- todo: remove this from here, and add it to other relevant places once there are v1 and v2 hashes
   rowsModified >>= \case
     0 -> pure ()
-    _ -> do
-      hash <- expectHash32 h
-      tryMoveTempEntityDependents hh hash
+    _ -> pure ()
+      -- hash <- expectHash32 h
+      -- tryMoveTempEntityDependents hh hash
   pure oId
 
 expectObject :: SqliteExceptionReason e => ObjectId -> (ByteString -> Either e a) -> Transaction a
@@ -957,7 +956,7 @@ saveCausal ::
   BranchHashId ->
   [CausalHashId] ->
   Transaction ()
-saveCausal hh self value parents = do
+saveCausal _hh self value parents = do
   execute
     [sql|
       INSERT INTO causal (self_hash_id, value_hash_id)
@@ -973,15 +972,15 @@ saveCausal hh self value parents = do
             INSERT INTO causal_parent (causal_id, parent_id)
             VALUES (:self, :parent)
           |]
-      flushCausalDependents hh self
+      -- flushCausalDependents hh self
 
-flushCausalDependents ::
+_flushCausalDependents ::
   HashHandle ->
   CausalHashId ->
   Transaction ()
-flushCausalDependents hh chId = do
+_flushCausalDependents hh chId = do
   hash <- expectHash32 (unCausalHashId chId)
-  tryMoveTempEntityDependents hh hash
+  _tryMoveTempEntityDependents hh hash
 
 -- | `tryMoveTempEntityDependents #foo` does this:
 --    0. Precondition: We just inserted object #foo.
@@ -989,11 +988,11 @@ flushCausalDependents hh chId = do
 --    2. Delete #foo as dependency from temp_entity_missing_dependency. e.g. (#bar, #foo), (#baz, #foo)
 --    3. For each like #bar and #baz with no more rows in temp_entity_missing_dependency,
 --        insert_entity them.
-tryMoveTempEntityDependents ::
+_tryMoveTempEntityDependents ::
   HashHandle ->
   Hash32 ->
   Transaction ()
-tryMoveTempEntityDependents hh dependency = do
+_tryMoveTempEntityDependents hh dependency = do
   dependents <-
     queryListCol
       [sql|
@@ -2983,6 +2982,35 @@ insertTempEntity entityHash entity missingDependencies = do
       [sql|
         INSERT INTO temp_entity_missing_dependency (dependent, dependency, dependencyJwt)
         VALUES (:entityHash, :depHash, :depHashJwt)
+      |]
+  where
+    entityBlob :: ByteString
+    entityBlob =
+      runPutS (Serialization.putTempEntity entity)
+
+    entityType :: TempEntityType
+    entityType =
+      Entity.entityType entity
+
+-- | Insert a new `temp_entity` row, and its associated 1+ `temp_entity_missing_dependency` rows.
+--
+-- Preconditions:
+--   1. The entity does not already exist in "main" storage (`object` / `causal`)
+--   2. The entity does not already exist in `temp_entity`.
+insertTempEntityV2 :: Hash32 -> TempEntity -> NESet Hash32 -> Transaction ()
+insertTempEntityV2 entityHash entity missingDependencies = do
+  execute
+    [sql|
+      INSERT INTO temp_entity (hash, blob, type_id)
+      VALUES (:entityHash, :entityBlob, :entityType)
+      ON CONFLICT DO NOTHING
+    |]
+
+  for_ missingDependencies \depHash ->
+    execute
+      [sql|
+        INSERT INTO temp_entity_missing_dependency (dependent, dependency)
+        VALUES (:entityHash, :depHash)
       |]
   where
     entityBlob :: ByteString

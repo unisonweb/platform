@@ -58,6 +58,7 @@ module Unison.Sqlite.Connection
   )
 where
 
+import Data.Map qualified as Map
 import Database.SQLite.Simple qualified as Sqlite
 import Database.SQLite.Simple.FromField qualified as Sqlite
 import Database.SQLite3 qualified as Direct.Sqlite
@@ -71,7 +72,10 @@ import Unison.Sqlite.Connection.Internal (Connection (..))
 import Unison.Sqlite.Exception
 import Unison.Sqlite.Sql (Sql (..))
 import Unison.Sqlite.Sql qualified as Sql
+import UnliftIO (atomically)
 import UnliftIO.Exception
+import UnliftIO.STM (readTVar)
+import UnliftIO.STM qualified as STM
 
 -- | Perform an action with a connection to a SQLite database.
 --
@@ -103,19 +107,47 @@ openConnection name file = do
       Just "" -> file
       _ -> "file:" <> file <> "?mode=ro"
   conn0 <- Sqlite.open sqliteURI `catch` rethrowAsSqliteConnectException name file
-  let conn = Connection {conn = conn0, file, name}
+  statementCache <- STM.newTVarIO Map.empty
+  let conn = Connection {conn = conn0, file, name, statementCache}
   execute conn [Sql.sql| PRAGMA foreign_keys = ON |]
   execute conn [Sql.sql| PRAGMA busy_timeout = 60000 |]
+  execute conn [Sql.sql| PRAGMA synchronous = normal |]
+  execute conn [Sql.sql| PRAGMA journal_size_limit = 6144000 |]
+  execute conn [Sql.sql| PRAGMA cache_size = -64000 |]
+  execute conn [Sql.sql| PRAGMA temp_store = 2 |]
+
   pure conn
 
 -- Close a connection opened with 'openConnection'.
 closeConnection :: Connection -> IO ()
-closeConnection (Connection _ _ conn) =
+closeConnection conn@(Connection {conn = conn0}) = do
   -- FIXME if this throws an exception, it won't be under `SomeSqliteException`
   -- Possible fixes:
   --   1. Add close exception to the hierarchy, e.g. `SqliteCloseException`
   --   2. Always ignore exceptions thrown by `close` (Mitchell prefers this one)
-  Sqlite.close conn
+  closeAllStatements conn
+  Sqlite.close conn0
+
+withStatement :: Connection -> Text -> (Sqlite.Statement -> IO a) -> IO a
+withStatement conn sql action = do
+  bracket (prepareStatement conn sql) Sqlite.reset action
+  where
+    prepareStatement :: Connection -> Text -> IO Sqlite.Statement
+    prepareStatement Connection {conn, statementCache} sql = do
+      cached <- atomically $ do
+        cache <- STM.readTVar statementCache
+        pure $ Map.lookup sql cache
+      case cached of
+        Just stmt -> pure stmt
+        Nothing -> do
+          stmt <- Sqlite.openStatement conn (coerce @Text @Sqlite.Query sql)
+          atomically $ STM.modifyTVar statementCache (Map.insert sql stmt)
+          pure stmt
+
+closeAllStatements :: Connection -> IO ()
+closeAllStatements Connection {statementCache} = do
+  cache <- atomically $ readTVar statementCache
+  for_ cache Sqlite.closeStatement
 
 -- An internal type, for making prettier debug logs
 
@@ -152,7 +184,7 @@ logQuery (Sql sql params) result =
 -- Without results
 
 execute :: (HasCallStack) => Connection -> Sql -> IO ()
-execute conn@(Connection _ _ conn0) sql@(Sql s params) = do
+execute conn sql@(Sql s params) = do
   logQuery sql Nothing
   doExecute `catch` \(exception :: Sqlite.SQLError) ->
     throwSqliteQueryException
@@ -163,16 +195,16 @@ execute conn@(Connection _ _ conn0) sql@(Sql s params) = do
         }
   where
     doExecute :: IO ()
-    doExecute =
-      Sqlite.withStatement conn0 (coerce s) \(Sqlite.Statement statement) -> do
-        bindParameters statement params
-        void (Direct.Sqlite.step statement)
+    doExecute = do
+      withStatement conn s \statement -> do
+        bindParameters (coerce statement) params
+        void (Direct.Sqlite.step $ coerce statement)
 
 -- | Execute one or more semicolon-delimited statements.
 --
 -- This function does not support parameters, and is mostly useful for executing DDL and migrations.
 executeStatements :: (HasCallStack) => Connection -> Text -> IO ()
-executeStatements conn@(Connection _ _ (Sqlite.Connection database _tempNameCounter)) sql = do
+executeStatements conn@(Connection {conn = Sqlite.Connection database _tempNameCounter}) sql = do
   logQuery (Sql sql []) Nothing
   Direct.Sqlite.exec database sql `catch` \(exception :: Sqlite.SQLError) ->
     throwSqliteQueryException
@@ -185,7 +217,7 @@ executeStatements conn@(Connection _ _ (Sqlite.Connection database _tempNameCoun
 -- With results, without checks
 
 queryStreamRow :: (HasCallStack, Sqlite.FromRow a) => Connection -> Sql -> (IO (Maybe a) -> IO r) -> IO r
-queryStreamRow conn@(Connection _ _ conn0) sql@(Sql s params) callback =
+queryStreamRow conn sql@(Sql s params) callback =
   run `catch` \(exception :: Sqlite.SQLError) ->
     throwSqliteQueryException
       SqliteQueryExceptionInfo
@@ -194,8 +226,8 @@ queryStreamRow conn@(Connection _ _ conn0) sql@(Sql s params) callback =
           sql
         }
   where
-    run =
-      bracket (Sqlite.openStatement conn0 (coerce s)) Sqlite.closeStatement \statement -> do
+    run = do
+      withStatement conn s \statement -> do
         Sqlite.bind statement params
         callback (Sqlite.nextRow statement)
 
@@ -213,7 +245,7 @@ queryStreamCol =
     queryStreamRow
 
 queryListRow :: forall a. (Sqlite.FromRow a, HasCallStack) => Connection -> Sql -> IO [a]
-queryListRow conn@(Connection _ _ conn0) sql@(Sql s params) = do
+queryListRow conn sql@(Sql s params) = do
   result <-
     doQuery
       `catch` \(exception :: Sqlite.SQLError) ->
@@ -228,7 +260,7 @@ queryListRow conn@(Connection _ _ conn0) sql@(Sql s params) = do
   where
     doQuery :: IO [a]
     doQuery =
-      Sqlite.withStatement conn0 (coerce s) \statement -> do
+      withStatement conn (coerce s) \statement -> do
         bindParameters (coerce statement) params
         let loop :: [a] -> IO [a]
             loop rows =
@@ -347,7 +379,7 @@ queryOneColCheck conn s check =
 -- Rows modified
 
 rowsModified :: Connection -> IO Int
-rowsModified (Connection _ _ conn) =
+rowsModified (Connection {conn}) =
   Sqlite.changes conn
 
 -- Vacuum

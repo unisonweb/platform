@@ -59,6 +59,7 @@ handlePull unresolvedSourceAndTarget pullMode = do
       ReadShare'LooseCode repo -> downloadLooseCodeFromShare repo & onLeftM (Cli.returnEarly . Output.ShareError)
       ReadShare'ProjectBranch remoteBranch ->
         downloadProjectBranchFromShare
+          SyncV1
           ( case pullMode of
               Input.PullWithHistory -> Share.NoSquashedHead
               Input.PullWithoutHistory -> Share.IncludeSquashedHead

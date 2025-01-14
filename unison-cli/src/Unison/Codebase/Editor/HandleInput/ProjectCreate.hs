@@ -13,7 +13,7 @@ import U.Codebase.Sqlite.Project (Project (..))
 import U.Codebase.Sqlite.ProjectBranch (ProjectBranch (..))
 import U.Codebase.Sqlite.Queries (expectCausalHashIdByCausalHash)
 import U.Codebase.Sqlite.Queries qualified as Queries
-import Unison.Cli.DownloadUtils (downloadProjectBranchFromShare)
+import Unison.Cli.DownloadUtils (SyncVersion (..), downloadProjectBranchFromShare)
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.Share.Projects qualified as Share
@@ -108,7 +108,7 @@ projectCreate tryDownloadingBase maybeProjectName = do
                 Share.GetProjectBranchResponseBranchNotFound -> done Nothing
                 Share.GetProjectBranchResponseProjectNotFound -> done Nothing
                 Share.GetProjectBranchResponseSuccess branch -> pure branch
-            downloadProjectBranchFromShare Share.NoSquashedHead baseLatestReleaseBranch
+            downloadProjectBranchFromShare SyncV1 Share.NoSquashedHead baseLatestReleaseBranch
               & onLeftM (Cli.returnEarly . Output.ShareError)
             Cli.Env {codebase} <- ask
             baseLatestReleaseBranchObject <-
