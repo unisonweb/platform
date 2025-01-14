@@ -18,6 +18,7 @@ import Ki qualified
 import System.Console.Haskeline (Settings (autoAddHistory))
 import System.Console.Haskeline qualified as Line
 import System.Console.Haskeline.History qualified as Line
+import System.FileLock qualified as FL
 import System.IO (hGetEcho, hPutStrLn, hSetEcho, stderr, stdin)
 import System.IO.Error (isDoesNotExistError)
 import Unison.Auth.CredentialManager (newCredentialManager)
@@ -36,6 +37,7 @@ import Unison.Codebase.Editor.Output (NumberedArgs, Output)
 import Unison.Codebase.Editor.UCMVersion (UCMVersion)
 import Unison.Codebase.ProjectPath qualified as PP
 import Unison.Codebase.Runtime qualified as Runtime
+import Unison.Codebase.SqliteCodebase.Paths (lockfilePath)
 import Unison.CommandLine
 import Unison.CommandLine.Completion (haskelineTabComplete)
 import Unison.CommandLine.InputPatterns qualified as IP
@@ -257,7 +259,13 @@ main dir welcome ppIds initialInputs runtime sbRuntime nRuntime codebase serverB
           lspCheckForChanges (NEL.head $ Cli.projectPathStack s0)
           let step = do
                 input <- awaitInput s0
-                (!result, resultState) <- Cli.runCli env s0 (HandleInput.loop input)
+                (!result, resultState) <-
+                  FL.withTryFileLock (lockfilePath (Codebase.codebasePath codebase)) FL.Exclusive (\_flock -> do Cli.runCli env s0 (HandleInput.loop input))
+                    >>= \case
+                      Nothing -> pure (Cli.Continue, s0)
+                      Just (result, s1) -> do
+                        hPutStrLn stderr $ "Another client is running a command on this codebase, please close the other process or wait for it to finish. If issues persist, try deleting the lockfile at " <> lockfilePath (Codebase.codebasePath codebase)
+                        pure (result, s1)
                 let sNext = case input of
                       Left _ -> resultState
                       Right inp -> resultState & #lastInput ?~ inp

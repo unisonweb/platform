@@ -1,5 +1,6 @@
 module Unison.Codebase
   ( Codebase,
+    codebasePath,
 
     -- * UCM session state
     expectCurrentProjectPath,

@@ -291,7 +291,8 @@ sqliteCodebase debugName root localOrRemote lockOption migrationStrategy action 
                   termReferentsByPrefix = referentsByPrefix,
                   withConnection = withConn,
                   withConnectionIO = withConnection debugName root,
-                  preloadBranch
+                  preloadBranch,
+                  codebasePath = root
                 }
         Right <$> action codebase
   where
