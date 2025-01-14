@@ -1112,7 +1112,7 @@ declareUdpForeigns = do
 declareForeigns :: FDecl Symbol ()
 declareForeigns = do
   declareUdpForeigns
-  declareForeign Tracked 1 IO_openFile_impl_v3
+  declareForeign Tracked 2 IO_openFile_impl_v3
 
   declareForeign Tracked 1 IO_closeFile_impl_v3
   declareForeign Tracked 1 IO_isFileEOF_impl_v3

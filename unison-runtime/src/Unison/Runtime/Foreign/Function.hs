@@ -214,13 +214,8 @@ foreignCallHelper = \case
   IO_UDP_ListenSocket_sendTo_impl_v1 -> mkForeignIOF $
     \(socket :: ListenSocket, bytes :: Bytes.Bytes, addr :: ClientSockAddr) ->
       UDP.sendTo socket (Bytes.toArray bytes) addr
-  IO_openFile_impl_v3 -> mkForeignIOF $ \(fnameText :: Util.Text.Text, n :: Int) ->
+  IO_openFile_impl_v3 -> mkForeignIOF $ \(fnameText :: Util.Text.Text, mode :: IOMode) ->
     let fname = Util.Text.toString fnameText
-        mode = case n of
-          0 -> ReadMode
-          1 -> WriteMode
-          2 -> AppendMode
-          _ -> ReadWriteMode
      in openFile fname mode
   IO_closeFile_impl_v3 -> mkForeignIOF hClose
   IO_isFileEOF_impl_v3 -> mkForeignIOF hIsEOF
@@ -336,11 +331,10 @@ foreignCallHelper = \case
   IO_kill_impl_v3 -> mkForeignIOF killThread
   IO_delay_impl_v3 -> mkForeignIOF customDelay
   IO_stdHandle -> mkForeign $
-    \(n :: Int) -> case n of
-      0 -> pure SYS.stdin
-      1 -> pure SYS.stdout
-      2 -> pure SYS.stderr
-      _ -> die "IO.stdHandle: invalid input."
+    \case
+      StdIn -> pure SYS.stdin
+      StdOut -> pure SYS.stdout
+      StdErr -> pure SYS.stderr
   IO_process_call -> mkForeign $
     \(exe, map Util.Text.unpack -> args) ->
       withCreateProcess (proc exe args) $ \_ _ _ p ->
@@ -1757,8 +1751,8 @@ decodeBufferMode (Enum _ t)
   | t == noBufTag = pure NoBuffering
   | t == lineBufTag = pure LineBuffering
   | t == blockBufTag = pure $ BlockBuffering Nothing
-decodeBufferMode (Data1 _ t (IntVal i))
-  | t == sizedBlockBufTag = pure . BlockBuffering $ Just i
+decodeBufferMode (Data1 _ t (NatVal i))
+  | t == sizedBlockBufTag = pure . BlockBuffering $ Just (fromIntegral i)
 decodeBufferMode c = foreignConventionError "BufferMode" (BoxedVal c)
 
 encodeBufferMode :: BufferMode -> Closure
@@ -1836,6 +1830,34 @@ instance ForeignConvention SeekMode where
 
   readAtIndex stk i = bpeekOff stk i >>= decodeSeekMode
   writeBack stk sm = bpoke stk (encodeSeekMode sm)
+
+data StdHnd = StdIn | StdOut | StdErr
+
+decodeStdHnd :: Closure -> IO StdHnd
+decodeStdHnd (Enum _ t)
+  | t == stdInTag = pure StdIn
+  | t == stdOutTag = pure StdOut
+  | t == stdErrTag = pure StdErr
+decodeStdHnd c = foreignConventionError "StdHandle" (BoxedVal c)
+
+encodeStdHnd :: StdHnd -> Closure
+encodeStdHnd StdIn = std'in
+encodeStdHnd StdOut = std'out
+encodeStdHnd StdErr = std'err
+
+std'in, std'out, std'err :: Closure
+std'in = Enum Ty.stdHandleRef stdInTag
+std'out = Enum Ty.stdHandleRef stdOutTag
+std'err = Enum Ty.stdHandleRef stdErrTag
+
+instance ForeignConvention StdHnd where
+  decodeVal (BoxedVal c) = decodeStdHnd c
+  decodeVal v = foreignConventionError "StdHandle" v
+
+  encodeVal = BoxedVal . encodeStdHnd
+
+  readAtIndex stk i = bpeekOff stk i >>= decodeStdHnd
+  writeBack stk = bpoke stk . encodeStdHnd
 
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.

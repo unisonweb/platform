@@ -33,6 +33,9 @@ module Unison.Runtime.TypeTags
     seekEndTag,
     exceptionTag,
     exceptionRaiseTag,
+    stdInTag,
+    stdOutTag,
+    stdErrTag,
   )
 where
 
@@ -203,6 +206,15 @@ seekAbsoluteTag, seekRelativeTag, seekEndTag :: PackedTag
           Ty.seekModeRelativeId,
           Ty.seekModeEndId ] = (at, rt, et)
   | otherwise = error "internal error: seek mode tags"
+
+stdInTag, stdOutTag, stdErrTag :: PackedTag
+(stdInTag, stdOutTag, stdErrTag)
+  | [it, ot, et] <-
+      mkTags "standard handle tags" Ty.stdHandleRef
+        [ Ty.stdInId,
+          Ty.stdOutId,
+          Ty.stdErrId ] = (it, ot, et)
+  | otherwise = error "internal error: standard handle tags"
 
 exceptionTag :: Word64
 exceptionRaiseTag :: PackedTag
