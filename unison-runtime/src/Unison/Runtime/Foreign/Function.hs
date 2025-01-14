@@ -733,7 +733,7 @@ foreignCallHelper = \case
   MutableArray_freeze_force ->
     mkForeign $
       PA.unsafeFreezeArray @IO @Val
-  MutableByteArray_freeze -> mkForeign $
+  MutableByteArray_freeze -> mkForeignExn $
     \(src, off, len) ->
       if len == 0
         then fmap Right . PA.unsafeFreezeByteArray =<< PA.newByteArray 0
@@ -744,7 +744,7 @@ foreignCallHelper = \case
             (off + len)
             0
             $ Right <$> PA.freezeByteArray src (fromIntegral off) (fromIntegral len)
-  MutableArray_freeze -> mkForeign $
+  MutableArray_freeze -> mkForeignExn $
     \(src :: PA.MutableArray PA.RealWorld Val, off, len) ->
       if len == 0
         then fmap Right . PA.unsafeFreezeArray =<< PA.newArray 0 emptyVal
