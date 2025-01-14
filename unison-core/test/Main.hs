@@ -20,27 +20,29 @@ main =
 projectTests :: [Test ()]
 projectTests =
   [ scope "project name" do
-      let t s = scope (Text.unpack s) (void (expectRight (tryFrom @Text @ProjectName s)))
-      t "project"
-      t "project/"
-      t "@user/project"
-      t "@user/project/",
+      let t s expected =
+            scope (Text.unpack s) $
+              expectEqual (UnsafeProjectName expected) =<< expectRight' (tryFrom @Text @ProjectName s)
+      t "project" "project"
+      t "project/" "project"
+      t "@user/project" "@user/project"
+      t "@user/project/" "@user/project",
     scope "project branch name" do
-      let t s = scope (Text.unpack s) (void (expectRight (tryFrom @Text @ProjectBranchName s)))
-      t "branch"
-      t "/branch"
-      t "@user/branch"
-      t "/@user/branch"
-      t "releases/1.2.3"
-      t "/releases/1.2.3"
-      t "releases/drafts/1.2.3"
-      t "/releases/drafts/1.2.3",
+      let t s expected =
+            scope (Text.unpack s) $
+              expectEqual (UnsafeProjectBranchName expected) =<< expectRight' (tryFrom @Text @ProjectBranchName s)
+      t "branch" "branch"
+      t "/branch" "branch"
+      t "@user/branch" "@user/branch"
+      t "/@user/branch" "@user/branch"
+      t "releases/1.2.3" "releases/1.2.3"
+      t "/releases/1.2.3" "releases/1.2.3"
+      t "releases/drafts/1.2.3" "releases/drafts/1.2.3"
+      t "/releases/drafts/1.2.3" "releases/drafts/1.2.3",
     scope "project name, project branch name, or both" do
       let t input expected =
             scope (Text.unpack input) $
-              expectEqual
-                (Just expected)
-                (either (const Nothing) Just (tryFrom @Text @(These ProjectName ProjectBranchName) input))
+              expectEqual expected =<< expectRight' (tryFrom @Text @(These ProjectName ProjectBranchName) input)
       t "project" (This "project")
       t "project/" (This "project")
       t "@user/project" (This "@user/project")
@@ -60,9 +62,7 @@ projectTests =
     scope "project name, project branch name, or both, take 2" do
       let t input expected =
             scope (Text.unpack input) $
-              expectEqual
-                (Just expected)
-                (either (const Nothing) Just (tryFrom @Text @ProjectAndBranchNames input))
+              expectEqual expected =<< expectRight' (tryFrom @Text @ProjectAndBranchNames input)
       t "project" (ProjectAndBranchNames'Ambiguous "project" "project")
       t "project/" (ProjectAndBranchNames'Unambiguous (This "project"))
       t "@user/project" (ProjectAndBranchNames'Ambiguous "@user/project" "@user/project")
@@ -84,9 +84,8 @@ projectTests =
     scope "project name with optional project branch name" do
       let t input project branch =
             scope (Text.unpack input) $
-              expectEqual
-                (Just (ProjectAndBranch project branch))
-                (either (const Nothing) Just (tryFrom @Text @(ProjectAndBranch ProjectName (Maybe ProjectBranchName)) input))
+              expectEqual (ProjectAndBranch project branch)
+                =<< expectRight' (tryFrom @Text @(ProjectAndBranch ProjectName (Maybe ProjectBranchName)) input)
       t "project" "project" Nothing
       t "project/" "project" Nothing
       t "project/branch" "project" (Just "branch")
@@ -102,9 +101,8 @@ projectTests =
     scope "project branch name with optional project name" do
       let t input project branch =
             scope (Text.unpack input) $
-              expectEqual
-                (Just (ProjectAndBranch project branch))
-                (either (const Nothing) Just (tryFrom @Text @(ProjectAndBranch (Maybe ProjectName) ProjectBranchName) input))
+              expectEqual (ProjectAndBranch project branch)
+                =<< expectRight' (tryFrom @Text @(ProjectAndBranch (Maybe ProjectName) ProjectBranchName) input)
       t "branch" Nothing "branch"
       t "@user/branch" Nothing "@user/branch"
       t "releases/1.2.3" Nothing "releases/1.2.3"
