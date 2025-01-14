@@ -755,8 +755,7 @@ mergeBuiltins =
     "Adds the builtins (excluding `io` and misc) to the specified namespace. Defaults to `builtin.`"
     \case
       [] -> pure . Input.MergeBuiltinsI $ Nothing
-      [p] -> Input.MergeBuiltinsI . Just <$> handlePathArg p
-      args -> wrongArgsLength "no more than one argument" args
+      p : _ -> Input.MergeBuiltinsI . Just <$> handlePathArg p
 
 mergeIOBuiltins :: InputPattern
 mergeIOBuiltins =
@@ -768,8 +767,7 @@ mergeIOBuiltins =
     "Adds all the builtins, including `io` and misc., to the specified namespace. Defaults to `builtin.`"
     \case
       [] -> pure . Input.MergeIOBuiltinsI $ Nothing
-      [p] -> Input.MergeIOBuiltinsI . Just <$> handlePathArg p
-      args -> wrongArgsLength "no more than one argument" args
+      p : _ -> Input.MergeIOBuiltinsI . Just <$> handlePathArg p
 
 updateBuiltins :: InputPattern
 updateBuiltins =
@@ -817,8 +815,7 @@ load =
     )
     \case
       [] -> pure $ Input.LoadI Nothing
-      [file] -> Input.LoadI . Just <$> unsupportedStructuredArgument load "a file name" file
-      args -> wrongArgsLength "no more than one argument" args
+      file : _ -> Input.LoadI . Just <$> unsupportedStructuredArgument load "a file name" file
 
 clear :: InputPattern
 clear =
@@ -1073,8 +1070,7 @@ ui =
       help = P.wrap "`ui` opens the Local UI in the default browser.",
       parse = \case
         [] -> pure $ Input.UiI Path.relativeEmpty'
-        [path] -> Input.UiI <$> handlePath'Arg path
-        args -> wrongArgsLength "no more than one argument" args
+        path : _ -> Input.UiI <$> handlePath'Arg path
     }
 
 undo :: InputPattern
@@ -1097,7 +1093,6 @@ textfind allowLib =
         then ("text.find.all", ["grep.all"], "Use `text.find` to exclude `lib` from search.")
         else ("text.find", ["grep"], "Use `text.find.all` to include search of `lib`.")
     parse = \case
-      [] -> Left (P.text "Please supply at least one token.")
       words -> pure $ Input.TextFindI allowLib (untokenize $ [e | Left e <- words])
     msg =
       P.lines
@@ -1139,7 +1134,7 @@ sfind =
     parse
   where
     parse = \case
-      [q] -> Input.StructuredFindI (Input.FindLocal Path.relativeEmpty') <$> handleHashQualifiedNameArg q
+      q : _ -> Input.StructuredFindI (Input.FindLocal Path.relativeEmpty') <$> handleHashQualifiedNameArg q
       args -> wrongArgsLength "exactly one argument" args
     msg =
       P.lines
@@ -1176,7 +1171,7 @@ sfindReplace =
     msg
     parse
   where
-    parse [q] = Input.StructuredFindReplaceI <$> handleHashQualifiedNameArg q
+    parse (q : _) = Input.StructuredFindReplaceI <$> handleHashQualifiedNameArg q
     parse args = wrongArgsLength "exactly one argument" args
     msg :: P.Pretty CT.ColorText
     msg =
@@ -1288,8 +1283,7 @@ findShallow =
     )
     ( fmap Input.FindShallowI . \case
         [] -> pure Path.relativeEmpty'
-        [path] -> handlePath'Arg path
-        args -> wrongArgsLength "no more than one argument" args
+        path : _ -> handlePath'Arg path
     )
 
 findVerbose :: InputPattern
@@ -1327,7 +1321,7 @@ renameTerm =
     )
     "`move.term foo bar` renames `foo` to `bar`."
     \case
-      [oldName, newName] -> Input.MoveTermI <$> handleHashQualifiedSplit'Arg oldName <*> handleNewName newName
+      oldName : newName : _ -> Input.MoveTermI <$> handleHashQualifiedSplit'Arg oldName <*> handleNewName newName
       _ -> Left $ P.wrap "`rename.term` takes two arguments, like `rename.term oldname newname`."
 
 moveAll :: InputPattern
@@ -1339,7 +1333,7 @@ moveAll =
     (Parameters [("definition to move", namespaceOrDefinitionArg), ("new location", newNameArg)] $ Optional [] Nothing)
     "`move foo bar` renames the term, type, and namespace foo to bar."
     \case
-      [oldName, newName] -> Input.MoveAllI <$> handlePath'Arg oldName <*> handleNewPath newName
+      oldName : newName : _ -> Input.MoveAllI <$> handlePath'Arg oldName <*> handleNewPath newName
       _ -> Left $ P.wrap "`move` takes two arguments, like `move oldname newname`."
 
 renameType :: InputPattern
@@ -1351,7 +1345,7 @@ renameType =
     (Parameters [("type to move", exactDefinitionTypeQueryArg), ("new location", newNameArg)] $ Optional [] Nothing)
     "`move.type foo bar` renames `foo` to `bar`."
     \case
-      [oldName, newName] -> Input.MoveTypeI <$> handleHashQualifiedSplit'Arg oldName <*> handleNewName newName
+      oldName : newName : _ -> Input.MoveTypeI <$> handleHashQualifiedSplit'Arg oldName <*> handleNewName newName
       _ ->
         Left $ P.wrap "`rename.type` takes two arguments, like `rename.type oldname newname`."
 
@@ -1379,22 +1373,13 @@ deleteGen suffix queryCompletionArg target mkTarget =
               ""
             )
           ]
-      warning =
-        P.sep
-          " "
-          [ backtick (P.string cmd),
-            "takes an argument, like",
-            backtick (P.sep " " [P.string cmd, "name"]) <> "."
-          ]
    in InputPattern
         cmd
         []
         I.Visible
         (Parameters [] $ OnePlus ("definition to delete", queryCompletionArg))
         info
-        \case
-          [] -> Left $ P.wrap warning
-          queries -> Input.DeleteI . mkTarget <$> traverse handleHashQualifiedSplit'Arg queries
+        $ fmap (Input.DeleteI . mkTarget) . traverse handleHashQualifiedSplit'Arg
 
 delete :: InputPattern
 delete = deleteGen Nothing exactDefinitionTypeOrTermQueryArg "term or type" (DeleteTarget'TermOrType DeleteOutput'NoDiff)
@@ -1426,7 +1411,7 @@ deleteProject =
           [ ("`delete.project foo`", "deletes the local project `foo`")
           ],
       parse = \case
-        [name] -> Input.DeleteI . DeleteTarget'Project <$> handleProjectArg name
+        name : _ -> Input.DeleteI . DeleteTarget'Project <$> handleProjectArg name
         args -> wrongArgsLength "exactly one argument" args
     }
 
@@ -1443,7 +1428,7 @@ deleteBranch =
             ("`delete.branch /bar`", "deletes the branch `bar` in the current project")
           ],
       parse = \case
-        [name] -> Input.DeleteI . DeleteTarget'ProjectBranch <$> handleMaybeProjectBranchArg name
+        name : _ -> Input.DeleteI . DeleteTarget'ProjectBranch <$> handleMaybeProjectBranchArg name
         args -> wrongArgsLength "exactly one argument" args
     }
   where
@@ -1464,7 +1449,7 @@ aliasTerm =
         Parameters [("term to alias", exactDefinitionTermQueryArg), ("alias name", newNameArg)] $ Optional [] Nothing,
       help = "`alias.term foo bar` introduces `bar` with the same definition as `foo`.",
       parse = \case
-        [oldName, newName] -> Input.AliasTermI False <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
+        oldName : newName : _ -> Input.AliasTermI False <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
         _ -> Left $ P.wrap "`alias.term` takes two arguments, like `alias.term oldname newname`."
     }
 
@@ -1478,7 +1463,7 @@ debugAliasTermForce =
         Parameters [("term to alias", exactDefinitionTermQueryArg), ("alias name", newNameArg)] $ Optional [] Nothing,
       help = "`debug.alias.term.force foo bar` introduces `bar` with the same definition as `foo`.",
       parse = \case
-        [oldName, newName] -> Input.AliasTermI True <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
+        oldName : newName : _ -> Input.AliasTermI True <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
         _ ->
           Left $
             P.wrap "`debug.alias.term.force` takes two arguments, like `debug.alias.term.force oldname newname`."
@@ -1493,7 +1478,7 @@ aliasType =
     (Parameters [("type to alias", exactDefinitionTypeQueryArg), ("alias name", newNameArg)] $ Optional [] Nothing)
     "`alias.type Foo Bar` introduces `Bar` with the same definition as `Foo`."
     \case
-      [oldName, newName] -> Input.AliasTypeI False <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
+      oldName : newName : _ -> Input.AliasTypeI False <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
       _ -> Left $ P.wrap "`alias.type` takes two arguments, like `alias.type oldname newname`."
 
 debugAliasTypeForce :: InputPattern
@@ -1648,9 +1633,8 @@ history =
         ]
     )
     \case
-      [src] -> Input.HistoryI (Just 10) (Just 10) <$> handleBranchIdArg src
       [] -> pure $ Input.HistoryI (Just 10) (Just 10) (BranchAtPath Path.currentPath)
-      args -> wrongArgsLength "no more than one argument" args
+      src : _ -> Input.HistoryI (Just 10) (Just 10) <$> handleBranchIdArg src
 
 forkLocal :: InputPattern
 forkLocal =
@@ -1802,7 +1786,7 @@ pullImpl name aliases pullMode addendum = do
             [sourceArg] -> do
               source <- handlePullSourceArg sourceArg
               pure (Input.PullI (Input.PullSourceTarget1 source) pullMode)
-            [sourceArg, targetArg] ->
+            sourceArg : targetArg : _ ->
               -- You used to be able to pull into a path, so this arg parser is a little complicated, because
               -- we want to provide helpful suggestions if you are doing a deprecated or invalid thing.
               case ( handlePullSourceArg sourceArg,
@@ -1855,7 +1839,6 @@ pullImpl name aliases pullMode addendum = do
                       <> " namespace, but the "
                       <> makeExample' pull
                       <> " command only supports merging into the top level of a local project branch."
-            args -> wrongArgsLength "no more than two arguments" args
         }
 
 debugTabCompletion :: InputPattern
@@ -1921,10 +1904,8 @@ debugFormat =
           makeExample' debugFormat
         ]
     )
-    ( \case
-        [] -> Right Input.DebugFormatI
-        args -> wrongArgsLength "no arguments" args
-    )
+    . const
+    $ pure Input.DebugFormatI
 
 push :: InputPattern
 push =
@@ -1972,9 +1953,8 @@ push =
       . \case
         [] -> pure Input.PushSourceTarget0
         [targetStr] -> Input.PushSourceTarget1 <$> handlePushTargetArg targetStr
-        [targetStr, sourceStr] ->
+        targetStr : sourceStr : _ ->
           Input.PushSourceTarget2 <$> handlePushSourceArg sourceStr <*> handlePushTargetArg targetStr
-        args -> wrongArgsLength "no more than two arguments" args
   where
     suggestionsConfig =
       ProjectBranchSuggestionsConfig
@@ -2026,9 +2006,8 @@ pushCreate =
       . \case
         [] -> pure Input.PushSourceTarget0
         [targetStr] -> Input.PushSourceTarget1 <$> handlePushTargetArg targetStr
-        [targetStr, sourceStr] ->
+        targetStr : sourceStr : _ ->
           Input.PushSourceTarget2 <$> handlePushSourceArg sourceStr <*> handlePushTargetArg targetStr
-        args -> wrongArgsLength "no more than two arguments" args
   where
     suggestionsConfig =
       ProjectBranchSuggestionsConfig
@@ -2060,9 +2039,8 @@ pushForce =
       . \case
         [] -> pure Input.PushSourceTarget0
         [targetStr] -> Input.PushSourceTarget1 <$> handlePushTargetArg targetStr
-        [targetStr, sourceStr] ->
+        targetStr : sourceStr : _ ->
           Input.PushSourceTarget2 <$> handlePushSourceArg sourceStr <*> handlePushTargetArg targetStr
-        args -> wrongArgsLength "no more than two arguments" args
   where
     suggestionsConfig =
       ProjectBranchSuggestionsConfig
@@ -2104,9 +2082,8 @@ pushExhaustive =
       . \case
         [] -> pure Input.PushSourceTarget0
         [targetStr] -> Input.PushSourceTarget1 <$> handlePushTargetArg targetStr
-        [targetStr, sourceStr] ->
+        targetStr : sourceStr : _ ->
           Input.PushSourceTarget2 <$> handlePushSourceArg sourceStr <*> handlePushTargetArg targetStr
-        args -> wrongArgsLength "no more than two arguments" args
   where
     suggestionsConfig =
       ProjectBranchSuggestionsConfig
@@ -2283,11 +2260,10 @@ diffNamespace =
           )
         ]
     )
-    ( \case
-        [before, after] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> handleBranchId2Arg after
-        [before] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> pure (Right . UnqualifiedPath $ Path.currentPath)
-        args -> wrongArgsLength "one or two arguments" args
-    )
+    \case
+      [before, after] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> handleBranchId2Arg after
+      [before] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> pure (Right . UnqualifiedPath $ Path.currentPath)
+      args -> wrongArgsLength "one or two arguments" args
   where
     suggestionsConfig =
       ProjectBranchSuggestionsConfig
@@ -2314,12 +2290,11 @@ mergeOldPreviewInputPattern =
           )
         ]
     )
-    ( \case
-        [src] -> Input.PreviewMergeLocalBranchI <$> handleBranchRelativePathArg src <*> pure Nothing
-        [src, dest] ->
-          Input.PreviewMergeLocalBranchI <$> handleBranchRelativePathArg src <*> (Just <$> handleBranchRelativePathArg dest)
-        args -> wrongArgsLength "one or two arguments" args
-    )
+    \case
+      [src] -> Input.PreviewMergeLocalBranchI <$> handleBranchRelativePathArg src <*> pure Nothing
+      [src, dest] ->
+        Input.PreviewMergeLocalBranchI <$> handleBranchRelativePathArg src <*> (Just <$> handleBranchRelativePathArg dest)
+      args -> wrongArgsLength "one or two arguments" args
   where
     suggestionsConfig =
       ProjectBranchSuggestionsConfig
@@ -2354,11 +2329,9 @@ branchReflog =
           "`reflog /mybranch` lists all the changes that have affected /mybranch."
         ]
     )
-    ( \case
-        [] -> pure $ Input.ShowProjectBranchReflogI Nothing
-        [branchRef] -> Input.ShowProjectBranchReflogI <$> (Just <$> handleMaybeProjectBranchArg branchRef)
-        _ -> Left (I.help branchReflog)
-    )
+    \case
+      [] -> pure $ Input.ShowProjectBranchReflogI Nothing
+      branchRef : _ -> Input.ShowProjectBranchReflogI <$> (Just <$> handleMaybeProjectBranchArg branchRef)
 
 projectReflog :: InputPattern
 projectReflog =
@@ -2372,11 +2345,9 @@ projectReflog =
           "`project.reflog myproject` lists all the changes that have affected any branches in myproject."
         ]
     )
-    ( \case
-        [] -> pure $ Input.ShowProjectReflogI Nothing
-        [projectRef] -> Input.ShowProjectReflogI <$> (Just <$> handleProjectArg projectRef)
-        _ -> Left (I.help projectReflog)
-    )
+    \case
+      [] -> pure $ Input.ShowProjectReflogI Nothing
+      projectRef : _ -> Input.ShowProjectReflogI <$> (Just <$> handleProjectArg projectRef)
 
 globalReflog :: InputPattern
 globalReflog =
@@ -2487,13 +2458,12 @@ helpTopics =
     (Parameters [] $ Optional [("topic", topicNameArg)] Nothing)
     ("`help-topics` lists all topics and `help-topics <topic>` shows an explanation of that topic.")
     \case
-        [] -> Right $ Input.CreateMessage topics
-        [topic] -> do
-          topic <- unsupportedStructuredArgument helpTopics "a help topic" topic
-          case Map.lookup topic helpTopicsMap of
-            Nothing -> Left $ "I don't know of that topic. Try `help-topics`."
-            Just t -> Right $ Input.CreateMessage t
-        _ -> Left $ "Use `help-topics <topic>` or `help-topics`."
+      [] -> Right $ Input.CreateMessage topics
+      topic : _ -> do
+        topic <- unsupportedStructuredArgument helpTopics "a help topic" topic
+        case Map.lookup topic helpTopicsMap of
+          Nothing -> Left $ "I don't know of that topic. Try `help-topics`."
+          Just t -> Right $ Input.CreateMessage t
   where
     topics =
       P.callout "🌻" $
@@ -2670,13 +2640,8 @@ help =
     (Parameters [] $ Optional [("command", commandNameArg)] Nothing)
     "`help` shows general help and `help <cmd>` shows help for one command."
     $ \case
-      [] ->
-        Right . Input.CreateMessage $
-          intercalateMap
-            "\n\n"
-            showPatternHelp
-            visibleInputs
-      [cmd] -> do
+      [] -> Right . Input.CreateMessage $ intercalateMap "\n\n" showPatternHelp visibleInputs
+      cmd : _ -> do
         cmd <- unsupportedStructuredArgument help "a command" cmd
         case (Map.lookup cmd commandsByName, isHelp cmd) of
           (Nothing, Just msg) -> Right $ Input.CreateMessage msg
@@ -2695,7 +2660,6 @@ help =
                          <> "use"
                          <> makeExample helpTopics [P.string cmd]
                    )
-      _ -> Left "Use `help <cmd>` or `help`."
   where
     commandsByName =
       Map.fromList $ do
@@ -2723,7 +2687,7 @@ names isGlobal =
     I.Visible
     (Parameters [("name or hash", definitionQueryArg)] $ Optional [] Nothing)
     (P.wrap $ makeExample (names isGlobal) ["foo"] <> description)
-    $ \case
+    \case
       [thing] -> Input.NamesI isGlobal <$> handleHashQualifiedNameArg thing
       args -> wrongArgsLength "exactly one argument" args
   where
@@ -2740,7 +2704,7 @@ dependents =
     I.Visible
     (Parameters [("definition", definitionQueryArg)] $ Optional [] Nothing)
     "List the named dependents of the specified definition."
-    $ \case
+    \case
       [thing] -> Input.ListDependentsI <$> handleHashQualifiedNameArg thing
       args -> wrongArgsLength "exactly one argument" args
 dependencies =
@@ -2750,7 +2714,7 @@ dependencies =
     I.Visible
     (Parameters [("definition", definitionQueryArg)] $ Optional [] Nothing)
     "List the dependencies of the specified definition."
-    $ \case
+    \case
       [thing] -> Input.ListDependenciesI <$> handleHashQualifiedNameArg thing
       args -> wrongArgsLength "exactly one argument" args
 
@@ -2762,10 +2726,9 @@ namespaceDependencies =
     I.Visible
     (Parameters [] $ Optional [("namespace", namespaceArg)] Nothing)
     "List the external dependencies of the specified namespace."
-    $ \case
-      [p] -> Input.NamespaceDependenciesI . pure <$> handlePath'Arg p
+    \case
       [] -> pure (Input.NamespaceDependenciesI Nothing)
-      args -> wrongArgsLength "no more than one argument" args
+      p : _ -> Input.NamespaceDependenciesI . pure <$> handlePath'Arg p
 
 debugNumberedArgs :: InputPattern
 debugNumberedArgs =
@@ -2819,10 +2782,9 @@ debugTerm =
     I.Hidden
     (Parameters [("term", exactDefinitionTermQueryArg)] $ Optional [] Nothing)
     "View debugging information for a given term."
-    ( \case
-        [thing] -> Input.DebugTermI False <$> handleHashQualifiedNameArg thing
-        args -> wrongArgsLength "exactly one argument" args
-    )
+    \case
+      [thing] -> Input.DebugTermI False <$> handleHashQualifiedNameArg thing
+      args -> wrongArgsLength "exactly one argument" args
 
 debugTermVerbose :: InputPattern
 debugTermVerbose =
@@ -2832,10 +2794,9 @@ debugTermVerbose =
     I.Hidden
     (Parameters [("term", exactDefinitionTermQueryArg)] $ Optional [] Nothing)
     "View verbose debugging information for a given term."
-    ( \case
-        [thing] -> Input.DebugTermI True <$> handleHashQualifiedNameArg thing
-        args -> wrongArgsLength "exactly one argument" args
-    )
+    \case
+      [thing] -> Input.DebugTermI True <$> handleHashQualifiedNameArg thing
+      args -> wrongArgsLength "exactly one argument" args
 
 debugType :: InputPattern
 debugType =
@@ -2845,10 +2806,9 @@ debugType =
     I.Hidden
     (Parameters [("type", exactDefinitionTypeQueryArg)] $ Optional [] Nothing)
     "View debugging information for a given type."
-    ( \case
-        [thing] -> Input.DebugTypeI <$> handleHashQualifiedNameArg thing
-        args -> wrongArgsLength "exactly one argument" args
-    )
+    \case
+      [thing] -> Input.DebugTypeI <$> handleHashQualifiedNameArg thing
+      args -> wrongArgsLength "exactly one argument" args
 
 debugLSPFoldRanges :: InputPattern
 debugLSPFoldRanges =
@@ -2922,8 +2882,7 @@ test =
           )
           . \case
             [] -> pure Path.empty
-            [pathString] -> handlePathArg pathString
-            args -> wrongArgsLength "no more than one argument" args
+            pathString : _ -> handlePathArg pathString
     }
 
 testNative :: InputPattern
@@ -2954,8 +2913,7 @@ testNative =
           )
           . \case
             [] -> pure Path.empty
-            [pathString] -> handlePathArg pathString
-            args -> wrongArgsLength "no more than one argument" args
+            pathString : _ -> handlePathArg pathString
     }
 
 testAll :: InputPattern
@@ -3069,7 +3027,7 @@ saveExecuteResult =
     ( "`add.run name` adds to the codebase the result of the most recent `run` command"
         <> " as `name`."
     )
-    $ \case
+    \case
       [w] -> Input.SaveExecuteResultI <$> handleNameArg w
       args -> wrongArgsLength "exactly one argument" args
 
@@ -3207,7 +3165,7 @@ compileScheme =
           )
         ]
     )
-    $ \case
+    \case
       [main, file] -> mkCompileScheme False file main
       [main, file, prof] -> do
         unsupportedStructuredArgument compileScheme "profile" prof
@@ -3300,8 +3258,7 @@ projectCreate =
           ],
       parse = \case
         [] -> pure $ Input.ProjectCreateI True Nothing
-        [name] -> Input.ProjectCreateI True . pure <$> handleProjectArg name
-        args -> wrongArgsLength "no more than one argument" args
+        name : _ -> Input.ProjectCreateI True . pure <$> handleProjectArg name
     }
 
 projectCreateEmptyInputPattern :: InputPattern
@@ -3318,8 +3275,7 @@ projectCreateEmptyInputPattern =
           ],
       parse = \case
         [] -> pure $ Input.ProjectCreateI False Nothing
-        [name] -> Input.ProjectCreateI False . pure <$> handleProjectArg name
-        args -> wrongArgsLength "no more than one argument" args
+        name : _ -> Input.ProjectCreateI False . pure <$> handleProjectArg name
     }
 
 projectRenameInputPattern :: InputPattern
@@ -3391,8 +3347,7 @@ branchesInputPattern =
           ],
       parse = \case
         [] -> Right (Input.BranchesI Nothing)
-        [nameString] -> Input.BranchesI . pure <$> handleProjectArg nameString
-        args -> wrongArgsLength "no more than one argument" args
+        nameString : _ -> Input.BranchesI . pure <$> handleProjectArg nameString
     }
 
 branchInputPattern :: InputPattern
