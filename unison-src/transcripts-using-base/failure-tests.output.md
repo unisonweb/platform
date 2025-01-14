@@ -18,55 +18,53 @@ test2 = do
   [Ok "test2"]
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       test1 : '{IO, Exception} [Result]
       test2 : '{IO, Exception} [Result]
-
 ```
+
 ``` ucm
 scratch/main> add
 
   ⍟ I've added these definitions:
-  
+
     test1 : '{IO, Exception} [Result]
     test2 : '{IO, Exception} [Result]
-
 ```
-``` ucm
+
+``` ucm :error
 scratch/main> io.test test1
 
   💔💥
-  
+
   The program halted with an unhandled exception:
-  
+
     Failure
       (typeLink IOFailure)
       "Cannot decode byte '\\xee': Data.Text.Encoding: Invalid UTF-8 stream"
       (Any ())
-  
+
   Stack trace:
     ##raise
-
 ```
-``` ucm
+
+``` ucm :error
 scratch/main> io.test test2
 
   💔💥
-  
+
   The program halted with an unhandled exception:
-  
+
     Failure (typeLink RuntimeFailure) "builtin.bug" (Any "whoa")
-  
+
   Stack trace:
     ##raise
-
 ```

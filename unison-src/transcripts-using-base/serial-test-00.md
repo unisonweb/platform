@@ -1,4 +1,4 @@
-```unison
+``` unison
 structural type Tree a = Leaf | Node (Tree a) a (Tree a)
 
 foldMap  : r -> (r -> r -> r) -> (a -> r) -> Tree a -> r
@@ -67,7 +67,7 @@ mkTestCase = do
   saveTestCase "case-00" "v4" f tup
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> run mkTestCase
 ```

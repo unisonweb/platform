@@ -89,3 +89,5 @@ The format for this list: name, GitHub handle
 * Eduard Nicodei (@neduard)
 * Brian McKenna (@puffnfresh)
 * Ruslan Simchuk (@SimaDovakin)
+* Brandon Barker (@bbarker)
+* Manish Bhasin (@xmbhasin)

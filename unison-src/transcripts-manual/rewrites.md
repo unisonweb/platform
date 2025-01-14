@@ -1,5 +1,4 @@
-
-```ucm:hide
+``` ucm :hide
 scratch/main> builtins.mergeio
 scratch/main> load unison-src/transcripts-using-base/base.u
 scratch/main> add
@@ -9,7 +8,7 @@ scratch/main> add
 
 Here's a scratch file with some rewrite rules:
 
-```unison:hide
+``` unison :hide
 ex1 = List.map (x -> x + 1) [1,2,3,4,5,6,7]
 
 eitherToOptional e a =
@@ -36,25 +35,25 @@ rule2 x = @rewrite signature Optional ==> Optional2
 
 Let's rewrite these:
 
-```ucm
+``` ucm
 scratch/main> rewrite rule1
 scratch/main> rewrite eitherToOptional
 ```
 
-```ucm:hide
+``` ucm :hide
 scratch/main> load
 scratch/main> add
 ```
 
 After adding to the codebase, here's the rewritten source:
 
-```ucm
+``` ucm
 scratch/main> view ex1 Either.mapRight rule1
 ```
 
 Another example, showing that we can rewrite to definitions that only exist in the file:
 
-```unison:hide
+``` unison :hide
 unique ability Woot1 where woot1 : () -> Nat
 unique ability Woot2 where woot2 : () -> Nat
 
@@ -74,24 +73,24 @@ blah2 = 456
 
 Let's apply the rewrite `woot1to2`:
 
-```ucm
+``` ucm
 scratch/main> rewrite woot1to2
 ```
 
-```ucm:hide
+``` ucm :hide
 scratch/main> load
 scratch/main> add
 ```
 
 After adding the rewritten form to the codebase, here's the rewritten `Woot1` to `Woot2`:
 
-```ucm
+``` ucm
 scratch/main> view wootEx
 ```
 
 This example shows that rewrite rules can to refer to term definitions that only exist in the file:
 
-```unison:hide
+``` unison :hide
 foo1 =
   b = "b"
   123
@@ -110,7 +109,7 @@ sameFileEx =
   foo1
 ```
 
-```ucm:hide
+``` ucm :hide
 scratch/main> rewrite rule
 scratch/main> load
 scratch/main> add
@@ -118,13 +117,13 @@ scratch/main> add
 
 After adding the rewritten form to the codebase, here's the rewritten definitions:
 
-```ucm
+``` ucm
 scratch/main> view foo1 foo2 sameFileEx
 ```
 
 ## Capture avoidance
 
-```unison:hide
+``` unison :hide
 bar1 =
   b = "bar"
   123
@@ -144,19 +143,19 @@ sameFileEx =
 
 In the above example, `bar2` is locally bound by the rule, so when applied, it should not refer to the `bar2` top level binding.
 
-```ucm
+``` ucm
 scratch/main> rewrite rule
 ```
 
 Instead, it should be an unbound free variable, which doesn't typecheck:
 
-```ucm:error
+``` ucm :error
 scratch/main> load
 ```
 
 In this example, the `a` is locally bound by the rule, so it shouldn't capture the `a = 39494` binding which is in scope at the point of the replacement:
 
-```unison:hide
+``` unison :hide
 bar2 =
   a = 39494
   233
@@ -166,32 +165,32 @@ rule a = @rewrite
   term 233 ==> a
 ```
 
-```ucm
+``` ucm
 scratch/main> rewrite rule
 ```
 
 The `a` introduced will be freshened to not capture the `a` in scope, so it remains as an unbound variable and is a type error:
 
-```ucm:error
+``` ucm :error
 scratch/main> load
 ```
 
 ## Structural find
 
-```unison:hide
+``` unison :hide
 eitherEx = Left ("hello", "there")
 ```
 
-```ucm:hide
+``` ucm :hide
 scratch/main> add
 ```
 
-```unison:hide
+``` unison :hide
 findEitherEx x = @rewrite term Left ("hello", x) ==> Left ("hello" Text.++ x)
 findEitherFailure = @rewrite signature a . Either Failure a ==> ()
 ```
 
-```ucm
+``` ucm
 scratch/main> sfind findEitherEx
 scratch/main> sfind findEitherFailure
 scratch/main> find 1-5

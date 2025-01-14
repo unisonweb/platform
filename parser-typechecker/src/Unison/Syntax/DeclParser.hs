@@ -1,17 +1,18 @@
 module Unison.Syntax.DeclParser
-  ( declarations,
+  ( synDeclsP,
+    SynDecl (..),
+    synDeclConstructors,
+    synDeclName,
+    SynDataDecl (..),
+    SynEffectDecl (..),
   )
 where
 
 import Control.Lens
-import Control.Monad.Reader (MonadReader (..))
 import Data.List.NonEmpty (pattern (:|))
 import Data.List.NonEmpty qualified as NonEmpty
-import Data.Map qualified as Map
-import Text.Megaparsec qualified as P
 import Unison.ABT qualified as ABT
-import Unison.DataDeclaration (DataDeclaration, EffectDeclaration)
-import Unison.DataDeclaration qualified as DD
+import Unison.DataDeclaration qualified as DataDeclaration
 import Unison.Name qualified as Name
 import Unison.Parser.Ann (Ann)
 import Unison.Prelude
@@ -27,45 +28,47 @@ import Unison.Var (Var)
 import Unison.Var qualified as Var (name, named)
 import Prelude hiding (readFile)
 
--- The parsed form of record accessors, as in:
---
--- type Additive a = { zero : a, (+) : a -> a -> a }
---
--- The `Token v` is the variable name and location (here `zero` and `(+)`) of
--- each field, and the type is the type of that field
-type Accessors v = [(L.Token v, [(L.Token v, Type v Ann)])]
+data SynDecl v
+  = SynDecl'Data !(SynDataDecl v)
+  | SynDecl'Effect !(SynEffectDecl v)
 
-declarations ::
-  (Monad m, Var v) =>
-  P
-    v
-    m
-    ( Map v (DataDeclaration v Ann),
-      Map v (EffectDeclaration v Ann),
-      Accessors v
-    )
-declarations = do
-  declarations <- many $ declaration <* optional semi
-  let (dataDecls0, effectDecls) = partitionEithers declarations
-      dataDecls = [(a, b) | (a, b, _) <- dataDecls0]
-      multimap :: (Ord k) => [(k, v)] -> Map k [v]
-      multimap = foldl' mi Map.empty
-      mi m (k, v) = Map.insertWith (++) k [v] m
-      mds = multimap dataDecls
-      mes = multimap effectDecls
-      mdsBad = Map.filter (\xs -> length xs /= 1) mds
-      mesBad = Map.filter (\xs -> length xs /= 1) mes
-  if Map.null mdsBad && Map.null mesBad
-    then
-      pure
-        ( Map.fromList dataDecls,
-          Map.fromList effectDecls,
-          join . map (view _3) $ dataDecls0
-        )
-    else
-      P.customFailure . DuplicateTypeNames $
-        [(v, DD.annotation <$> ds) | (v, ds) <- Map.toList mdsBad]
-          <> [(v, DD.annotation . DD.toDataDecl <$> es) | (v, es) <- Map.toList mesBad]
+instance Annotated (SynDecl v) where
+  ann = \case
+    SynDecl'Data decl -> decl.annotation
+    SynDecl'Effect decl -> decl.annotation
+
+synDeclConstructors :: SynDecl v -> [(Ann, v, Type v Ann)]
+synDeclConstructors = \case
+  SynDecl'Data decl -> decl.constructors
+  SynDecl'Effect decl -> decl.constructors
+
+synDeclName :: SynDecl v -> L.Token v
+synDeclName = \case
+  SynDecl'Data decl -> decl.name
+  SynDecl'Effect decl -> decl.name
+
+data SynDataDecl v = SynDataDecl
+  { annotation :: !Ann,
+    constructors :: ![(Ann, v, Type v Ann)],
+    fields :: !(Maybe [(L.Token v, Type v Ann)]),
+    modifier :: !DataDeclaration.Modifier,
+    name :: !(L.Token v),
+    tyvars :: ![v]
+  }
+  deriving stock (Generic)
+
+data SynEffectDecl v = SynEffectDecl
+  { annotation :: !Ann,
+    constructors :: ![(Ann, v, Type v Ann)],
+    modifier :: !DataDeclaration.Modifier,
+    name :: !(L.Token v),
+    tyvars :: ![v]
+  }
+  deriving stock (Generic)
+
+synDeclsP :: (Monad m, Var v) => P v m [SynDecl v]
+synDeclsP =
+  many (synDeclP <* optional semi)
 
 -- | When we first walk over the modifier, it may be a `unique`, in which case we want to use a function in the parsing
 -- environment to map the type's name (which we haven't parsed yet) to a GUID to reuse (if any).
@@ -75,80 +78,32 @@ declarations = do
 data UnresolvedModifier
   = UnresolvedModifier'Structural
   | UnresolvedModifier'UniqueWithGuid !Text
-  | -- The Text here is a random GUID that we *may not end up using*, as in the case when we instead have a GUID to
-    -- reuse (which we will discover soon, once we parse this unique type's name and pass it into the `uniqueTypeGuid`
-    -- function in the parser environment).
-    --
-    -- However, we generate this GUID anyway for backwards-compatibility with *transcripts*. Since the GUID we assign
-    -- is a function of the current source location in the parser state, if we generate it later (after moving a few
-    -- tokens ahead to the type's name), then we'll get a different value.
-    --
-    -- This is only done to make the transcript diff smaller and easier to review, as the PR that adds this GUID-reuse
-    -- feature ought not to change any hashes. However, at any point after it lands in trunk, this Text could be
-    -- removed from this constructor, the generation of these GUIDs could be delayed until we actually need them, and
-    -- the transcripts could all be re-generated.
-    UnresolvedModifier'UniqueWithoutGuid !Text
-
-resolveUnresolvedModifier :: (Monad m, Var v) => L.Token UnresolvedModifier -> v -> P v m (L.Token DD.Modifier)
-resolveUnresolvedModifier unresolvedModifier var =
-  case L.payload unresolvedModifier of
-    UnresolvedModifier'Structural -> pure (DD.Structural <$ unresolvedModifier)
-    UnresolvedModifier'UniqueWithGuid guid -> pure (DD.Unique guid <$ unresolvedModifier)
-    UnresolvedModifier'UniqueWithoutGuid guid0 -> do
-      unique <- resolveUniqueModifier var guid0
-      pure $ unique <$ unresolvedModifier
-
-resolveUniqueModifier :: (Monad m, Var v) => v -> Text -> P v m DD.Modifier
-resolveUniqueModifier var guid0 = do
-  ParsingEnv {uniqueTypeGuid} <- ask
-  guid <- fromMaybe guid0 <$> lift (lift (uniqueTypeGuid (Name.unsafeParseVar var)))
-  pure $ DD.Unique guid
-
-defaultUniqueModifier :: (Monad m, Var v) => v -> P v m DD.Modifier
-defaultUniqueModifier var =
-  uniqueName 32 >>= resolveUniqueModifier var
+  | UnresolvedModifier'UniqueWithoutGuid
 
 -- unique[someguid] type Blah = ...
-modifier :: (Monad m, Var v) => P v m (Maybe (L.Token UnresolvedModifier))
-modifier = do
+modifierP :: (Monad m, Var v) => P v m (Maybe (L.Token UnresolvedModifier))
+modifierP = do
   optional (unique <|> structural)
   where
     unique = do
       tok <- openBlockWith "unique"
       optional (openBlockWith "[" *> importWordyId <* closeBlock) >>= \case
-        Nothing -> do
-          guid <- uniqueName 32
-          pure (UnresolvedModifier'UniqueWithoutGuid guid <$ tok)
+        Nothing -> pure (UnresolvedModifier'UniqueWithoutGuid <$ tok)
         Just guid -> pure (UnresolvedModifier'UniqueWithGuid (Name.toText (L.payload guid)) <$ tok)
     structural = do
       tok <- openBlockWith "structural"
       pure (UnresolvedModifier'Structural <$ tok)
 
-declaration ::
-  (Monad m, Var v) =>
-  P
-    v
-    m
-    ( Either
-        (v, DataDeclaration v Ann, Accessors v)
-        (v, EffectDeclaration v Ann)
-    )
-declaration = do
-  mod <- modifier
-  fmap Right (effectDeclaration mod) <|> fmap Left (dataDeclaration mod)
+synDeclP :: (Monad m, Var v) => P v m (SynDecl v)
+synDeclP = do
+  modifier <- modifierP
+  SynDecl'Effect <$> synEffectDeclP modifier <|> SynDecl'Data <$> synDataDeclP modifier
 
-dataDeclaration ::
-  forall m v.
-  (Monad m, Var v) =>
-  Maybe (L.Token UnresolvedModifier) ->
-  P v m (v, DataDeclaration v Ann, Accessors v)
-dataDeclaration maybeUnresolvedModifier = do
+synDataDeclP :: forall m v. (Monad m, Var v) => Maybe (L.Token UnresolvedModifier) -> P v m (SynDataDecl v)
+synDataDeclP modifier0 = do
   typeToken <- fmap void (reserved "type") <|> openBlockWith "type"
-  (name, typeArgs) <-
-    (,)
-      <$> TermParser.verifyRelativeVarName prefixDefinitionName
-      <*> many (TermParser.verifyRelativeVarName prefixDefinitionName)
-  let typeArgVs = L.payload <$> typeArgs
+  (name, typeArgs) <- (,) <$> prefixVar <*> many prefixVar
+  let tyvars = L.payload <$> typeArgs
   eq <- reserved "="
   let -- go gives the type of the constructor, given the types of
       -- the constructor arguments, e.g. Cons becomes forall a . a -> List a -> List a
@@ -161,127 +116,115 @@ dataDeclaration maybeUnresolvedModifier = do
             -- ctorType e.g. `a -> Optional a`
             --    or just `Optional a` in the case of `None`
             ctorType = foldr arrow ctorReturnType ctorArgs
-            ctorAnn = ann ctorName <> maybe (ann ctorName) ann (lastMay ctorArgs)
+            ctorAnn = ann ctorName <> maybe mempty ann (lastMay ctorArgs)
          in ( ctorAnn,
               ( ann ctorName,
                 Var.namespaced (L.payload name :| [L.payload ctorName]),
-                Type.foralls ctorAnn typeArgVs ctorType
+                Type.foralls ctorAnn tyvars ctorType
               )
             )
-      prefixVar = TermParser.verifyRelativeVarName prefixDefinitionName
-      dataConstructor :: P v m (Ann, (Ann, v, Type v Ann))
-      dataConstructor = go <$> prefixVar <*> many TypeParser.valueTypeLeaf
-      record :: P v m ([(Ann, (Ann, v, Type v Ann))], [(L.Token v, [(L.Token v, Type v Ann)])], Ann)
+      record :: P v m ((Ann, v, Type v Ann), Maybe [(L.Token v, Type v Ann)], Ann)
       record = do
         _ <- openBlockWith "{"
         let field :: P v m [(L.Token v, Type v Ann)]
             field = do
               f <- liftA2 (,) (prefixVar <* reserved ":") TypeParser.valueType
-              optional (reserved ",")
-                >>= ( \case
-                        Nothing -> pure [f]
-                        Just _ -> maybe [f] (f :) <$> (optional semi *> optional field)
-                    )
+              optional (reserved ",") >>= \case
+                Nothing -> pure [f]
+                Just _ -> maybe [f] (f :) <$> (optional semi *> optional field)
         fields <- field
         closingToken <- closeBlock
         let lastSegment = name <&> (\v -> Var.named (Name.toText $ Name.unqualified (Name.unsafeParseVar v)))
-        pure ([go lastSegment (snd <$> fields)], [(name, fields)], ann closingToken)
-  (constructors, accessors, closingAnn) <-
-    msum [Left <$> record, Right <$> sepBy (reserved "|") dataConstructor] <&> \case
-      Left (constructors, accessors, closingAnn) -> (constructors, accessors, closingAnn)
-      Right constructors -> do
-        let closingAnn :: Ann
-            closingAnn = NonEmpty.last (ann eq NonEmpty.:| ((\(constrSpanAnn, _) -> constrSpanAnn) <$> constructors))
-         in (constructors, [], closingAnn)
-  _ <- closeBlock
-  case maybeUnresolvedModifier of
+        pure (snd (go lastSegment (snd <$> fields)), Just fields, ann closingToken)
+  optional record >>= \case
     Nothing -> do
-      modifier <- defaultUniqueModifier (L.payload name)
-      -- ann spanning the whole Decl.
-      let declSpanAnn = ann typeToken <> closingAnn
+      constructors <- sepBy (reserved "|") (go <$> prefixVar <*> many TypeParser.valueTypeLeaf)
+      _ <- closeBlock
+      let closingAnn :: Ann
+          closingAnn = NonEmpty.last (ann eq NonEmpty.:| ((\(constrSpanAnn, _) -> constrSpanAnn) <$> constructors))
+      modifier <- resolveModifier name modifier0
       pure
-        ( L.payload name,
-          DD.mkDataDecl' modifier declSpanAnn typeArgVs (snd <$> constructors),
-          accessors
-        )
-    Just unresolvedModifier -> do
-      modifier <- resolveUnresolvedModifier unresolvedModifier (L.payload name)
-      -- ann spanning the whole Decl.
-      -- Technically the typeToken is redundant here, but this is more future proof.
-      let declSpanAnn = ann typeToken <> ann modifier <> closingAnn
+        SynDataDecl
+          { annotation = maybe (ann typeToken) ann modifier0 <> closingAnn,
+            constructors = snd <$> constructors,
+            fields = Nothing,
+            modifier,
+            name,
+            tyvars
+          }
+    Just (constructor, fields, closingAnn) -> do
+      _ <- closeBlock
+      modifier <- resolveModifier name modifier0
       pure
-        ( L.payload name,
-          DD.mkDataDecl' (L.payload modifier) declSpanAnn typeArgVs (snd <$> constructors),
-          accessors
-        )
+        SynDataDecl
+          { annotation = maybe (ann typeToken) ann modifier0 <> closingAnn,
+            constructors = [constructor],
+            fields,
+            modifier,
+            name,
+            tyvars
+          }
+  where
+    prefixVar :: P v m (L.Token v)
+    prefixVar =
+      TermParser.verifyRelativeVarName prefixDefinitionName
 
-effectDeclaration ::
-  forall m v.
-  (Monad m, Var v) =>
-  Maybe (L.Token UnresolvedModifier) ->
-  P v m (v, EffectDeclaration v Ann)
-effectDeclaration maybeUnresolvedModifier = do
+synEffectDeclP :: forall m v. (Monad m, Var v) => Maybe (L.Token UnresolvedModifier) -> P v m (SynEffectDecl v)
+synEffectDeclP modifier0 = do
   abilityToken <- fmap void (reserved "ability") <|> openBlockWith "ability"
   name <- TermParser.verifyRelativeVarName prefixDefinitionName
   typeArgs <- many (TermParser.verifyRelativeVarName prefixDefinitionName)
-  let typeArgVs = L.payload <$> typeArgs
   blockStart <- openBlockWith "where"
-  constructors <- sepBy semi (constructor typeArgs name)
+  constructors <- sepBy semi (effectConstructorP typeArgs name)
   -- `ability` opens a block, as does `where`
   _ <- closeBlock <* closeBlock
   let closingAnn =
         last $ ann blockStart : ((\(_, _, t) -> ann t) <$> constructors)
+  modifier <- resolveModifier name modifier0
+  pure
+    SynEffectDecl
+      { annotation = maybe (ann abilityToken) ann modifier0 <> closingAnn,
+        constructors,
+        modifier,
+        name,
+        tyvars = L.payload <$> typeArgs
+      }
 
-  case maybeUnresolvedModifier of
-    Nothing -> do
-      modifier <- defaultUniqueModifier (L.payload name)
-      -- ann spanning the whole ability declaration.
-      let abilitySpanAnn = ann abilityToken <> closingAnn
-      pure
-        ( L.payload name,
-          DD.mkEffectDecl' modifier abilitySpanAnn typeArgVs constructors
-        )
-    Just unresolvedModifier -> do
-      modifier <- resolveUnresolvedModifier unresolvedModifier (L.payload name)
-      -- ann spanning the whole ability declaration.
-      -- Technically the abilityToken is redundant here, but this is more future proof.
-      let abilitySpanAnn = ann abilityToken <> ann modifier <> closingAnn
-      pure
-        ( L.payload name,
-          DD.mkEffectDecl'
-            (L.payload modifier)
-            abilitySpanAnn
-            typeArgVs
-            constructors
+effectConstructorP :: (Monad m, Var v) => [L.Token v] -> L.Token v -> P v m (Ann, v, Type v Ann)
+effectConstructorP typeArgs name =
+  explodeToken
+    <$> TermParser.verifyRelativeVarName prefixDefinitionName
+    <* reserved ":"
+    <*> ( Type.generalizeLowercase mempty
+            . ensureEffect
+            <$> TypeParser.computationType
         )
   where
-    constructor :: [L.Token v] -> L.Token v -> P v m (Ann, v, Type v Ann)
-    constructor typeArgs name =
-      explodeToken
-        <$> TermParser.verifyRelativeVarName prefixDefinitionName
-        <* reserved ":"
-        <*> ( Type.generalizeLowercase mempty
-                . ensureEffect
-                <$> TypeParser.computationType
-            )
-      where
-        explodeToken v t = (ann v, Var.namespaced (L.payload name :| [L.payload v]), t)
-        -- If the effect is not syntactically present in the constructor types,
-        -- add them after parsing.
-        ensureEffect t = case t of
-          Type.Effect' _ _ -> modEffect t
-          x -> Type.editFunctionResult modEffect x
-        modEffect t = case t of
-          Type.Effect' es t -> go es t
-          t -> go [] t
-        toTypeVar t = Type.av' (ann t) (Var.name $ L.payload t)
-        headIs t v = case t of
-          Type.Apps' (Type.Var' x) _ -> x == v
-          Type.Var' x -> x == v
-          _ -> False
-        go es t =
-          let es' =
-                if any (`headIs` L.payload name) es
-                  then es
-                  else Type.apps' (toTypeVar name) (toTypeVar <$> typeArgs) : es
-           in Type.cleanupAbilityLists $ Type.effect (ABT.annotation t) es' t
+    explodeToken v t = (ann v, Var.namespaced (L.payload name :| [L.payload v]), t)
+    -- If the effect is not syntactically present in the constructor types,
+    -- add them after parsing.
+    ensureEffect t = case t of
+      Type.Effect' _ _ -> modEffect t
+      x -> Type.editFunctionResult modEffect x
+    modEffect t = case t of
+      Type.Effect' es t -> go es t
+      t -> go [] t
+    toTypeVar t = Type.av' (ann t) (Var.name $ L.payload t)
+    headIs t v = case t of
+      Type.Apps' (Type.Var' x) _ -> x == v
+      Type.Var' x -> x == v
+      _ -> False
+    go es t =
+      let es' =
+            if any (`headIs` L.payload name) es
+              then es
+              else Type.apps' (toTypeVar name) (toTypeVar <$> typeArgs) : es
+       in Type.cleanupAbilityLists $ Type.effect (ABT.annotation t) es' t
+
+resolveModifier :: (Monad m, Var v) => L.Token v -> Maybe (L.Token UnresolvedModifier) -> P v m DataDeclaration.Modifier
+resolveModifier name modifier =
+  case L.payload <$> modifier of
+    Just UnresolvedModifier'Structural -> pure DataDeclaration.Structural
+    Just (UnresolvedModifier'UniqueWithGuid guid) -> pure (DataDeclaration.Unique guid)
+    Just UnresolvedModifier'UniqueWithoutGuid -> resolveUniqueTypeGuid name.payload
+    Nothing -> resolveUniqueTypeGuid name.payload

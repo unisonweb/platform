@@ -20,7 +20,7 @@ import Unison.Var (Var)
 
 type Term v = Tm.Term v ()
 
-traceComb :: Bool -> Word64 -> Comb -> Bool
+traceComb :: (Show clos, Show comb) => Bool -> Word64 -> GComb clos comb -> Bool
 traceComb False _ _ = True
 traceComb True w c = trace (prettyComb w 0 c "\n") True
 

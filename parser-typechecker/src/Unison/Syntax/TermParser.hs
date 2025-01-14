@@ -1,3 +1,4 @@
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 
 module Unison.Syntax.TermParser
@@ -12,8 +13,9 @@ module Unison.Syntax.TermParser
   )
 where
 
-import Control.Comonad.Cofree (Cofree ((:<)))
+import Control.Comonad.Trans.Cofree (CofreeF ((:<)))
 import Control.Monad.Reader (asks, local)
+import Data.Bitraversable (bitraverse)
 import Data.Char qualified as Char
 import Data.Foldable (foldrM)
 import Data.List qualified as List
@@ -25,7 +27,6 @@ import Data.Sequence qualified as Sequence
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Tuple.Extra qualified as TupleE
-import Data.Void (absurd, vacuous)
 import Text.Megaparsec qualified as P
 import U.Codebase.Reference (ReferenceType (..))
 import U.Core.ABT qualified as ABT
@@ -65,6 +66,7 @@ import Unison.Type qualified as Type
 import Unison.Typechecker.Components qualified as Components
 import Unison.Util.Bytes qualified as Bytes
 import Unison.Util.List (intercalateMapWith, quenchRuns)
+import Unison.Util.Recursion
 import Unison.Var (Var)
 import Unison.Var qualified as Var
 import Prelude hiding (and, or, seq)
@@ -146,10 +148,12 @@ link' :: (Monad m, Var v) => P v m (Either (L.Token TypeReference) (L.Token Refe
 link' = do
   id <- hqPrefixId
   ns <- asks names
-  case (Names.lookupHQTerm Names.IncludeSuffixes (L.payload id) ns, Names.lookupHQType Names.IncludeSuffixes (L.payload id) ns) of
-    (s, s2) | Set.size s == 1 && Set.null s2 -> pure . Right $ const (Set.findMin s) <$> id
-    (s, s2) | Set.size s2 == 1 && Set.null s -> pure . Left $ const (Set.findMin s2) <$> id
-    (s, s2) -> customFailure $ UnknownId id s s2
+  let s = Names.lookupHQTerm Names.IncludeSuffixes (L.payload id) ns
+  let s2 = Names.lookupHQType Names.IncludeSuffixes (L.payload id) ns
+  if
+    | Set.size s == 1 && Set.null s2 -> pure . Right $ Set.findMin s <$ id
+    | Set.size s2 == 1 && Set.null s -> pure . Left $ Set.findMin s2 <$ id
+    | True -> customFailure $ UnknownId id s s2
 
 link :: (Monad m, Var v) => TermP v m
 link = termLink <|> typeLink
@@ -602,10 +606,9 @@ doc2Block :: forall m v. (Monad m, Var v) => P v m (Ann {- Annotation for the wh
 doc2Block = do
   L.Token docContents startDoc endDoc <- doc
   let docAnn = Ann startDoc endDoc
-  (docAnn,) . docUntitledSection (gann docAnn) <$> traverse (cata $ docTop <=< sequenceA) docContents
+  (docAnn,) . docUntitledSection (gann docAnn) <$> traverse foldTop docContents
   where
-    cata :: (Functor f) => (f a -> a) -> Cofree f x -> a
-    cata fn (_ :< fx) = fn $ cata fn <$> fx
+    foldTop = cataM \(a :< top) -> docTop a =<< bitraverse (cataM \(a :< leaf) -> docLeaf a leaf) pure top
 
     gann :: (Annotated a) => a -> Ann
     gann = Ann.GeneratedFrom . ann
@@ -620,9 +623,9 @@ doc2Block = do
     docUntitledSection ann (Doc.UntitledSection tops) =
       Term.app ann (f ann "UntitledSection") $ Term.list (gann tops) tops
 
-    docTop :: Doc.Top (ReferenceType, HQ'.HashQualified Name) [L.Token L.Lexeme] (Term v Ann) -> TermP v m
-    docTop d = case d of
-      Doc.Section title body -> pure $ Term.apps' (f d "Section") [title, Term.list (gann body) body]
+    docTop :: Ann -> Doc.Top [L.Token L.Lexeme] (Term v Ann) (Term v Ann) -> TermP v m
+    docTop d = \case
+      Doc.Section title body -> pure $ Term.apps' (f d "Section") [docParagraph d title, Term.list (gann body) body]
       Doc.Eval code ->
         Term.app (gann d) (f d "Eval") . addDelay . snd
           <$> subParse (block' False False "syntax.docEval" (pure $ pure ()) $ Ann.External <$ P.eof) code
@@ -633,25 +636,29 @@ doc2Block = do
         pure $
           Term.apps'
             (f d "CodeBlock")
-            [Term.text (ann label) . Text.pack $ L.payload label, Term.text (ann body) . Text.pack $ L.payload body]
+            [Term.text d $ Text.pack label, Term.text d $ Text.pack body]
+      Doc.List' list -> pure $ docList d list
+      Doc.Paragraph' para -> pure $ docParagraph d para
+
+    docParagraph d leaves = Term.app (gann d) (f d "Paragraph") . Term.list d $ toList leaves
+
+    docList :: Ann -> Doc.List (Term v Ann) -> Term v Ann
+    docList d = \case
       Doc.BulletedList items ->
-        pure $ Term.app (gann d) (f d "BulletedList") . Term.list (gann items) . toList $ docColumn <$> items
+        Term.app (gann d) (f d "BulletedList") . Term.list (gann d) . toList $ docColumn d <$> items
       Doc.NumberedList items@((n, _) :| _) ->
-        pure $
-          Term.apps'
-            (f d "NumberedList")
-            [Term.nat (ann d) $ L.payload n, Term.list (gann $ snd <$> items) . toList $ docColumn . snd <$> items]
-      Doc.Paragraph leaves ->
-        Term.app (gann d) (f d "Paragraph") . Term.list (ann leaves) . toList <$> traverse docLeaf leaves
+        Term.apps'
+          (f d "NumberedList")
+          [Term.nat (ann d) $ n, Term.list (gann d) . toList $ docColumn d . snd <$> items]
 
-    docColumn :: Doc.Column (Term v Ann) -> Term v Ann
-    docColumn d@(Doc.Column para sublist) =
-      Term.app (gann d) (f d "Column") . Term.list (gann d) $ para : toList sublist
+    docColumn :: Ann -> Doc.Column (Term v Ann) -> Term v Ann
+    docColumn d (Doc.Column para sublist) =
+      Term.app (gann d) (f d "Column") . Term.list (gann d) $ docParagraph d para : toList (docList d <$> sublist)
 
-    docLeaf :: Doc.Leaf (ReferenceType, HQ'.HashQualified Name) [L.Token L.Lexeme] (Term v Ann) -> TermP v m
-    docLeaf d = case d of
-      Doc.Link link -> Term.app (gann d) (f d "Link") <$> docEmbedLink link
-      Doc.NamedLink para target -> Term.apps' (f d "NamedLink") . (para :) . pure <$> docLeaf (vacuous target)
+    docLeaf :: Ann -> Doc.Leaf (L.Token (ReferenceType, HQ'.HashQualified Name)) [L.Token L.Lexeme] (Term v Ann) -> TermP v m
+    docLeaf d = \case
+      Doc.Link link -> Term.app (gann d) (f d "Link") <$> docEmbedLink d link
+      Doc.NamedLink para group -> pure $ Term.apps' (f d "NamedLink") [docParagraph d para, docGroup d group]
       Doc.Example code -> do
         trm <- subParse term code
         pure . Term.apps' (f d "Example") $ case trm of
@@ -661,56 +668,56 @@ doc2Block = do
                 lam = addDelay $ Term.lam' (ann tm) ((mempty,) <$> fvs) tm
              in [n, lam]
           tm -> [Term.nat (ann tm) 0, addDelay tm]
-      Doc.Transclude code -> Term.app (gann d) (f d "Transclude") <$> subParse term code
-      Doc.Bold para -> pure $ Term.app (gann d) (f d "Bold") para
-      Doc.Italic para -> pure $ Term.app (gann d) (f d "Italic") para
-      Doc.Strikethrough para -> pure $ Term.app (gann d) (f d "Strikethrough") para
-      Doc.Verbatim leaf -> Term.app (gann d) (f d "Verbatim") <$> docLeaf (bimap absurd absurd leaf)
-      Doc.Code leaf -> Term.app (gann d) (f d "Code") <$> docLeaf (bimap absurd absurd leaf)
+      Doc.Transclude' trans -> docTransclude d trans
+      Doc.Bold para -> pure . Term.app (gann d) (f d "Bold") $ docParagraph d para
+      Doc.Italic para -> pure . Term.app (gann d) (f d "Italic") $ docParagraph d para
+      Doc.Strikethrough para -> pure . Term.app (gann d) (f d "Strikethrough") $ docParagraph d para
+      Doc.Verbatim leaf -> pure . Term.app (gann d) (f d "Verbatim") $ docWord d leaf
+      Doc.Code leaf -> pure . Term.app (gann d) (f d "Code") $ docWord d leaf
       Doc.Source elems ->
-        Term.app (gann d) (f d "Source") . Term.list (ann elems) . toList <$> traverse docSourceElement elems
+        Term.app (gann d) (f d "Source") . Term.list d . toList <$> traverse (docSourceElement d) elems
       Doc.FoldedSource elems ->
-        Term.app (gann d) (f d "FoldedSource") . Term.list (ann elems) . toList <$> traverse docSourceElement elems
+        Term.app (gann d) (f d "FoldedSource") . Term.list d . toList <$> traverse (docSourceElement d) elems
       Doc.EvalInline code -> Term.app (gann d) (f d "EvalInline") . addDelay <$> subParse term code
       Doc.Signature links ->
-        Term.app (gann d) (f d "Signature") . Term.list (ann links) . toList <$> traverse docEmbedSignatureLink links
-      Doc.SignatureInline link -> Term.app (gann d) (f d "SignatureInline") <$> docEmbedSignatureLink link
-      Doc.Word txt -> pure . Term.app (gann d) (f d "Word") . Term.text (ann txt) . Text.pack $ L.payload txt
-      Doc.Group (Doc.Join leaves) ->
-        Term.app (gann d) (f d "Group") . Term.app (gann d) (f d "Join") . Term.list (ann leaves) . toList
-          <$> traverse docLeaf leaves
+        Term.app (gann d) (f d "Signature") . Term.list d . toList <$> traverse (docEmbedSignatureLink d) links
+      Doc.SignatureInline link -> Term.app (gann d) (f d "SignatureInline") <$> docEmbedSignatureLink d link
+      Doc.Word' word -> pure $ docWord d word
+      Doc.Group' group -> pure $ docGroup d group
 
-    docEmbedLink :: Doc.EmbedLink (ReferenceType, HQ'.HashQualified Name) -> TermP v m
-    docEmbedLink d@(Doc.EmbedLink (L.Token (level, ident) start end)) = case level of
+    docEmbedLink :: Ann -> Doc.EmbedLink (L.Token (ReferenceType, HQ'.HashQualified Name)) -> TermP v m
+    docEmbedLink d (Doc.EmbedLink (L.Token (level, ident) start end)) = case level of
       RtType ->
         Term.app (gann d) (f d "EmbedTypeLink") . Term.typeLink (ann d) . L.payload
           <$> findUniqueType (L.Token (HQ'.toHQ ident) start end)
       RtTerm ->
         Term.app (gann d) (f d "EmbedTermLink") . addDelay <$> resolveHashQualified (L.Token (HQ'.toHQ ident) start end)
 
-    docSourceElement ::
-      Doc.SourceElement
-        (ReferenceType, HQ'.HashQualified Name)
-        (Doc.Leaf (ReferenceType, HQ'.HashQualified Name) [L.Token L.Lexeme] Void) ->
-      TermP v m
-    docSourceElement d@(Doc.SourceElement link anns) = do
-      link' <- docEmbedLink link
-      anns' <- traverse docEmbedAnnotation anns
-      pure $ Term.apps' (f d "SourceElement") [link', Term.list (ann anns) anns']
+    docTransclude :: Ann -> Doc.Transclude [L.Token L.Lexeme] -> TermP v m
+    docTransclude d (Doc.Transclude code) = Term.app (gann d) (f d "Transclude") <$> subParse term code
 
-    docEmbedSignatureLink :: Doc.EmbedSignatureLink (ReferenceType, HQ'.HashQualified Name) -> TermP v m
-    docEmbedSignatureLink d@(Doc.EmbedSignatureLink (L.Token (level, ident) start end)) = case level of
+    docSourceElement ::
+      Ann ->
+      Doc.SourceElement (L.Token (ReferenceType, HQ'.HashQualified Name)) (Doc.Transclude [L.Token L.Lexeme]) ->
+      TermP v m
+    docSourceElement d (Doc.SourceElement link anns) = do
+      link' <- docEmbedLink d link
+      anns' <- traverse (docEmbedAnnotation d) anns
+      pure $ Term.apps' (f d "SourceElement") [link', Term.list d anns']
+
+    docEmbedSignatureLink ::
+      Ann -> Doc.EmbedSignatureLink (L.Token (ReferenceType, HQ'.HashQualified Name)) -> TermP v m
+    docEmbedSignatureLink d (Doc.EmbedSignatureLink (L.Token (level, ident) start end)) = case level of
       RtType -> P.customFailure . TypeNotAllowed $ L.Token (HQ'.toHQ ident) start end
       RtTerm ->
         Term.app (gann d) (f d "EmbedSignatureLink") . addDelay
           <$> resolveHashQualified (L.Token (HQ'.toHQ ident) start end)
 
     docEmbedAnnotation ::
-      Doc.EmbedAnnotation
-        (ReferenceType, HQ'.HashQualified Name)
-        (Doc.Leaf (ReferenceType, HQ'.HashQualified Name) [L.Token L.Lexeme] Void) ->
+      Ann ->
+      Doc.EmbedAnnotation (L.Token (ReferenceType, HQ'.HashQualified Name)) (Doc.Transclude [L.Token L.Lexeme]) ->
       TermP v m
-    docEmbedAnnotation d@(Doc.EmbedAnnotation a) =
+    docEmbedAnnotation d (Doc.EmbedAnnotation a) =
       -- This is the only place I’m not sure we’re doing the right thing. In the lexer, this can be an identifier or a
       -- DocLeaf, but here it could be either /text/ or a Doc element. And I don’t think there’s any way the lexemes
       -- produced for an identifier and the lexemes consumed for text line up. So, I think this is a bugfix I can’t
@@ -721,8 +728,15 @@ doc2Block = do
               RtType -> P.customFailure . TypeNotAllowed $ L.Token (HQ'.toHQ ident) start end
               RtTerm -> resolveHashQualified $ L.Token (HQ'.toHQ ident) start end
           )
-          (docLeaf . vacuous)
+          (docTransclude d)
           a
+
+    docWord :: Ann -> Doc.Word -> Term v Ann
+    docWord d (Doc.Word txt) = Term.app (gann d) (f d "Word") . Term.text d $ Text.pack txt
+
+    docGroup :: Ann -> Doc.Group (Term v Ann) -> Term v Ann
+    docGroup d (Doc.Group (Doc.Join leaves)) =
+      Term.app d (f d "Group") . Term.app d (f d "Join") . Term.list (ann leaves) $ toList leaves
 
 docBlock :: (Monad m, Var v) => TermP v m
 docBlock = do
@@ -1230,22 +1244,20 @@ verifyRelativeName' name = do
 
 -- example:
 --   (x, y)   = foo
---   hd +: tl | hd < 10 = [1,2,3]
 --   stuff
 --
 -- desugars to:
 --
 --   match foo with
---     (x,y) -> match [1,2,3] with
---       hd +: tl | hd < 10 -> stuff
+--     (x,y) -> stuff
 --
 destructuringBind :: forall m v. (Monad m, Var v) => P v m (Ann, Term v Ann -> Term v Ann)
 destructuringBind = do
   -- We have to look ahead as far as the `=` to know if this is a bind or
   -- just an action, for instance:
-  --   Some 42
+  --   (Some 42)
   --   vs
-  --   Some 42 = List.head elems
+  --   (Some 42) = List.head elems
   (p, boundVars) <- P.try do
     (p, boundVars) <- parsePattern
     let boundVars' = snd <$> boundVars

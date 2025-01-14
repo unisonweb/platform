@@ -1,12 +1,12 @@
 # Integration test: transcript
 
-```ucm:hide
+``` ucm :hide
 scratch/main> builtins.mergeio lib.builtins
 scratch/main> load ./unison-src/transcripts-using-base/base.u
 scratch/main> add
 ```
 
-```unison
+``` unison
 use lib.builtins
 
 unique type MyBool = MyTrue | MyFalse
@@ -33,7 +33,7 @@ main = do
     _ -> ()
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> compile main ./unison-cli-integration/integration-tests/IntegrationTests/main
 ```

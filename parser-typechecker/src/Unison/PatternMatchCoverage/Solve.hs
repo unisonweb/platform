@@ -28,7 +28,6 @@ import Unison.PatternMatchCoverage.Class
 import Unison.PatternMatchCoverage.Constraint (Constraint)
 import Unison.PatternMatchCoverage.Constraint qualified as C
 import Unison.PatternMatchCoverage.EffectHandler
-import Unison.PatternMatchCoverage.Fix
 import Unison.PatternMatchCoverage.GrdTree
 import Unison.PatternMatchCoverage.IntervalSet (IntervalSet)
 import Unison.PatternMatchCoverage.IntervalSet qualified as IntervalSet
@@ -42,6 +41,7 @@ import Unison.Prelude
 import Unison.Type (Type)
 import Unison.Type qualified as Type
 import Unison.Util.Pretty qualified as P
+import Unison.Util.Recursion
 import Unison.Var (Var)
 
 -- | top-down traversal of the 'GrdTree' that produces:

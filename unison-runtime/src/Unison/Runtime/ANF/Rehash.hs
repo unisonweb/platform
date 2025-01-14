@@ -1,7 +1,7 @@
 module Unison.Runtime.ANF.Rehash where
 
 import Crypto.Hash
-import Data.Bifunctor (bimap, first, second)
+import Data.Bifunctor (bimap, second)
 import Data.ByteArray (convert)
 import Data.ByteString (cons)
 import Data.ByteString.Lazy (toChunks)
@@ -16,25 +16,23 @@ import Unison.Reference as Reference
 import Unison.Referent as Referent
 import Unison.Runtime.ANF as ANF
 import Unison.Runtime.ANF.Serialize as ANF
-import Unison.Var (Var)
+import Unison.Symbol (Symbol)
 
 checkGroupHashes ::
-  (Var v) =>
-  [(Referent, SuperGroup v)] ->
+  [(Referent, Code)] ->
   Either (Text, [Referent]) (Either [Referent] [Referent])
 checkGroupHashes rgs = case checkMissing rgs of
   Left err -> Left err
   Right [] ->
-    case rehashGroups . Map.fromList $ first toReference <$> rgs of
+    case rehashGroups . Map.fromList $ bimap toReference codeGroup <$> rgs of
       Left err -> Left err
       Right (rrs, _) ->
         Right . Right . fmap (Ref . fst) . filter (uncurry (/=)) $ Map.toList rrs
   Right ms -> Right (Left $ Ref <$> ms)
 
 rehashGroups ::
-  (Var v) =>
-  Map.Map Reference (SuperGroup v) ->
-  Either (Text, [Referent]) (Map.Map Reference Reference, Map.Map Reference (SuperGroup v))
+  Map.Map Reference (SuperGroup Symbol) ->
+  Either (Text, [Referent]) (Map.Map Reference Reference, Map.Map Reference (SuperGroup Symbol))
 rehashGroups m
   | badsccs <- filter (not . checkSCC) sccs,
     not $ null badsccs =
@@ -56,12 +54,11 @@ rehashGroups m
         (rm, sgs) = rehashSCC scc
 
 checkMissing ::
-  (Var v) =>
-  [(Referent, SuperGroup v)] ->
+  [(Referent, Code)] ->
   Either (Text, [Referent]) [Reference]
-checkMissing (unzip -> (rs, gs)) = do
+checkMissing (unzip -> (rs, cs)) = do
   is <- fmap Set.fromList . traverse f $ rs
-  pure . nub . foldMap (filter (p is) . groupTermLinks) $ gs
+  pure . nub . foldMap (filter (p is) . groupTermLinks . codeGroup) $ cs
   where
     f (Ref (DerivedId i)) = pure i
     f r@Ref {} =
@@ -74,9 +71,8 @@ checkMissing (unzip -> (rs, gs)) = do
     p _ _ = False
 
 rehashSCC ::
-  (Var v) =>
-  SCC (Reference, SuperGroup v) ->
-  (Map.Map Reference Reference, Map.Map Reference (SuperGroup v))
+  SCC (Reference, SuperGroup Symbol) ->
+  (Map.Map Reference Reference, Map.Map Reference (SuperGroup Symbol))
 rehashSCC scc
   | checkSCC scc = (refreps, newSGs)
   where
@@ -103,7 +99,7 @@ rehashSCC scc
     refreps = Map.fromList $ fmap (\(r, _) -> (r, replace r)) ps
 rehashSCC scc = error $ "unexpected SCC:\n" ++ show scc
 
-checkSCC :: SCC (Reference, SuperGroup v) -> Bool
+checkSCC :: SCC (Reference, a) -> Bool
 checkSCC AcyclicSCC {} = True
 checkSCC (CyclicSCC []) = True
 checkSCC (CyclicSCC (p : ps)) = all (same p) ps

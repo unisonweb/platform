@@ -141,44 +141,67 @@ checkIBArray name a f arr i
 checkIMBArray
   :: CheckCtx
   => Prim a
+  => PrimMonad m
   => String
   -> a
-  -> (MutableByteArray s -> Int -> r)
-  -> MutableByteArray s -> Int -> r
-checkIMBArray name a f arr i
-  | i < 0 || sizeofMutableByteArray arr `quot` sizeOf a <= i
-  = error $ name ++ " unsafe check out of bounds: " ++ show i
-  | otherwise = f arr i
+  -> (MutableByteArray (PrimState m) -> Int ->  m r)
+  -> MutableByteArray (PrimState m) -> Int ->  m r
+checkIMBArray name a f arr i = do
+  sz <- getSizeofMutableByteArray arr
+  if (i < 0 || sz `quot` sizeOf a <= i)
+     then error $ name ++ " unsafe check out of bounds: " ++ show i
+     else f arr i
 {-# inline checkIMBArray #-}
+
+-- check write mutable byte array
+checkWMBArray
+  :: CheckCtx
+  => Prim a
+  => PrimMonad m
+  => String
+  -> (MutableByteArray (PrimState m) -> Int -> a -> m r)
+  -> MutableByteArray (PrimState m) -> Int -> a -> m r
+checkWMBArray name f arr i a = do
+  sz <- getSizeofMutableByteArray arr
+  if (i < 0 || sz `quot` sizeOf a <= i)
+     then error $ name ++ " unsafe check out of bounds: " ++ show i
+     else f arr i a
+{-# inline checkWMBArray #-}
+
 
 -- check copy byte array
 checkCBArray
   :: CheckCtx
+  => PrimMonad m
   => String
-  -> (MBA s -> Int -> BA -> Int -> Int -> r)
-  -> MBA s -> Int -> BA -> Int -> Int -> r
-checkCBArray name f dst d src s l
-  | d < 0
-  || s < 0
-  || sizeofMutableByteArray dst < d + l
-  || sizeofByteArray src < s + l
-  = error $ name ++ " unsafe check out of bounds: " ++ show (d, s, l)
-  | otherwise = f dst d src s l
+  -> (MBA (PrimState m) -> Int -> BA -> Int -> Int -> m r)
+  -> MBA (PrimState m) -> Int -> BA -> Int -> Int -> m r
+checkCBArray name f dst d src s l = do
+  szd <- getSizeofMutableByteArray dst
+  if (d < 0
+      || s < 0
+      || szd < d + l
+      || sizeofByteArray src < s + l
+      ) then error $ name ++ " unsafe check out of bounds: " ++ show (d, s, l)
+      else f dst d src s l
 {-# inline checkCBArray #-}
 
 -- check copy mutable byte array
 checkCMBArray
   :: CheckCtx
+  => PrimMonad m
   => String
-  -> (MBA s -> Int -> MBA s -> Int -> Int -> r)
-  -> MBA s -> Int -> MBA s -> Int -> Int -> r
-checkCMBArray name f dst d src s l
-  | d < 0
-  || s < 0
-  || sizeofMutableByteArray dst < d + l
-  || sizeofMutableByteArray src < s + l
-  = error $ name ++ " unsafe check out of bounds: " ++ show (d, s, l)
-  | otherwise = f dst d src s l
+  -> (MBA (PrimState m) -> Int -> MBA (PrimState m) -> Int -> Int -> m r)
+  -> MBA (PrimState m) -> Int -> MBA (PrimState m) -> Int -> Int -> m r
+checkCMBArray name f dst d src s l = do
+  szd <- getSizeofMutableByteArray dst
+  szs <- getSizeofMutableByteArray src
+  if ( d < 0
+      || s < 0
+      || szd < d + l
+      || szs < s + l
+    ) then error $ name ++ " unsafe check out of bounds: " ++ show (d, s, l)
+      else f dst d src s l
 {-# inline checkCMBArray #-}
 
 -- check index prim array
@@ -197,35 +220,57 @@ checkIPArray name f arr i
 -- check index mutable prim array
 checkIMPArray
   :: CheckCtx
+  => PrimMonad m
   => Prim a
   => String
-  -> (MutablePrimArray s a -> Int -> r)
-  -> MutablePrimArray s a -> Int -> r
-checkIMPArray name f arr i
-  | i < 0 || sizeofMutablePrimArray arr <= i
-  = error $ name ++ " unsafe check out of bounds: " ++ show i
-  | otherwise = f arr i
+  -> (MutablePrimArray (PrimState m) a -> Int -> m r)
+  -> MutablePrimArray (PrimState m) a -> Int -> m r
+checkIMPArray name f arr i = do
+  asz <- getSizeofMutablePrimArray arr
+  if (i < 0 || asz <= i)
+     then error $ name ++ " unsafe check out of bounds: " ++ show i
+     else f arr i
 {-# inline checkIMPArray #-}
+
+-- check write mutable prim array
+checkWMPArray
+  :: CheckCtx
+  => PrimMonad m
+  => Prim a
+  => String
+  -> (MutablePrimArray (PrimState m) a -> Int -> a -> m r)
+  -> MutablePrimArray (PrimState m) a -> Int -> a -> m r
+checkWMPArray name f arr i a = do
+  asz <- getSizeofMutablePrimArray arr
+  if (i < 0 || asz <= i)
+    then error $ name ++ " unsafe check out of bounds: " ++ show i
+    else f arr i a
+{-# inline checkWMPArray #-}
+
 
 #else
 type CheckCtx :: Constraint
 type CheckCtx = ()
 
-checkIMArray, checkIMPArray, checkIPArray :: String -> r -> r
+checkIMArray, checkIMPArray, checkWMPArray, checkIPArray :: String -> r -> r
 checkCArray, checkCMArray, checkRMArray :: String -> r -> r
 checkIMArray _ = id
 checkIMPArray _ = id
+checkWMPArray _ = id
 checkCArray _ = id
 checkCMArray _ = id
 checkRMArray _ = id
 checkIPArray _ = id
 
-checkIBArray, checkIMBArray :: String -> a -> r -> r
+checkIBArray, checkIMBArray:: String -> a -> r -> r
 checkCBArray, checkCMBArray :: String -> r -> r
 checkIBArray _ _ = id
 checkIMBArray _ _ = id
 checkCBArray _ = id
 checkCMBArray _ = id
+
+checkWMBArray :: String -> r -> r
+checkWMBArray _ = id
 #endif
 
 readArray ::
@@ -301,7 +346,7 @@ writeByteArray ::
   Int ->
   a ->
   m ()
-writeByteArray = checkIMBArray @a "writeByteArray" undefined PA.writeByteArray
+writeByteArray = checkWMBArray "writeByteArray" PA.writeByteArray
 {-# INLINE writeByteArray #-}
 
 indexByteArray ::
@@ -368,7 +413,7 @@ writePrimArray ::
   Int ->
   a ->
   m ()
-writePrimArray = checkIMPArray "writePrimArray" PA.writePrimArray
+writePrimArray = checkWMPArray "writePrimArray" PA.writePrimArray
 {-# INLINE writePrimArray #-}
 
 indexPrimArray ::

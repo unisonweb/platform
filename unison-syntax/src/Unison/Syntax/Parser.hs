@@ -38,6 +38,7 @@ module Unison.Syntax.Parser
     prefixTermName,
     queryToken,
     reserved,
+    resolveUniqueTypeGuid,
     root,
     rootFile,
     run',
@@ -59,7 +60,7 @@ module Unison.Syntax.Parser
   )
 where
 
-import Control.Monad.Reader (ReaderT (..))
+import Control.Monad.Reader (ReaderT (..), ask)
 import Control.Monad.Reader.Class (asks)
 import Crypto.Random qualified as Random
 import Data.Bool (bool)
@@ -76,6 +77,7 @@ import Text.Megaparsec qualified as P
 import U.Codebase.Reference (ReferenceType (..))
 import U.Util.Base32Hex qualified as Base32Hex
 import Unison.ABT qualified as ABT
+import Unison.DataDeclaration (Modifier (Unique))
 import Unison.Hash qualified as Hash
 import Unison.HashQualified qualified as HQ
 import Unison.HashQualifiedPrime qualified as HQ'
@@ -92,9 +94,10 @@ import Unison.Prelude
 import Unison.Reference (Reference)
 import Unison.Referent (Referent)
 import Unison.Syntax.Lexer.Unison qualified as L
-import Unison.Syntax.Name qualified as Name (toVar)
+import Unison.Syntax.Name qualified as Name (toVar, unsafeParseVar)
 import Unison.Syntax.Parser.Doc qualified as Doc
 import Unison.Syntax.Parser.Doc.Data qualified as Doc
+import Unison.Syntax.Var qualified as Var
 import Unison.Term (MatchCase (..))
 import Unison.UnisonFile.Error qualified as UF
 import Unison.Util.Bytes (Bytes)
@@ -142,6 +145,9 @@ data ParsingEnv (m :: Type -> Type) = ParsingEnv
     -- And for term links we are certainly out of luck: we can't look up a resolved file-bound term by hash *during
     -- parsing*. That's an issue with term links in general, unrelated to namespaces, but perhaps complicated by
     -- namespaces nonetheless.
+    --
+    -- New development: this namespace is now also used during decl parsing, because in order to accurately reuse a
+    -- unique type guid we need to look up by namespaced name.
     maybeNamespace :: Maybe Name,
     localNamespacePrefixedTypesAndConstructors :: Names
   }
@@ -179,6 +185,16 @@ uniqueName lenInBase32Hex = do
   pos <- L.start <$> P.lookAhead anyToken
   let none = Base32Hex.toText . Base32Hex.fromByteString . encodeUtf8 . Text.pack $ show pos
   pure . fromMaybe none $ mkName pos lenInBase32Hex
+
+resolveUniqueTypeGuid :: (Monad m, Var v) => v -> P v m Modifier
+resolveUniqueTypeGuid name0 = do
+  ParsingEnv {maybeNamespace, uniqueTypeGuid} <- ask
+  let name = Name.unsafeParseVar (maybe id (Var.namespaced2 . Name.toVar) maybeNamespace name0)
+  guid <-
+    lift (lift (uniqueTypeGuid name)) >>= \case
+      Nothing -> uniqueName 32
+      Just guid -> pure guid
+  pure (Unique guid)
 
 data Error v
   = SignatureNeedsAccompanyingBody (L.Token v)
@@ -435,7 +451,8 @@ string = queryToken getString
     getString _ = Nothing
 
 doc ::
-  (Ord v) => P v m (L.Token (Doc.UntitledSection (Doc.Tree (ReferenceType, HQ'.HashQualified Name) [L.Token L.Lexeme])))
+  (Ord v) =>
+  P v m (L.Token (Doc.UntitledSection (Doc.Tree (L.Token (ReferenceType, HQ'.HashQualified Name)) [L.Token L.Lexeme])))
 doc = queryToken \case
   L.Doc d -> pure d
   _ -> Nothing

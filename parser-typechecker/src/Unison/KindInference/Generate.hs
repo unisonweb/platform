@@ -27,6 +27,7 @@ import Unison.Prelude
 import Unison.Reference (Reference)
 import Unison.Term qualified as Term
 import Unison.Type qualified as Type
+import Unison.Util.Recursion
 import Unison.Var (Type (User), Var (typed), freshIn)
 
 --------------------------------------------------------------------------------
@@ -160,7 +161,7 @@ instantiateType type0 k =
 -- | Process type annotations depth-first. Allows processing
 -- annotations with lexical scoping.
 dfAnns :: (loc -> Type.Type v loc -> b -> b) -> (b -> b -> b) -> b -> Term.Term v loc -> b
-dfAnns annAlg cons nil = ABT.cata \ann abt0 -> case abt0 of
+dfAnns annAlg cons nil = cata \(ABT.Term' _ ann abt0) -> case abt0 of
   ABT.Var _ -> nil
   ABT.Cycle x -> x
   ABT.Abs _ x -> x
@@ -173,7 +174,7 @@ dfAnns annAlg cons nil = ABT.cata \ann abt0 -> case abt0 of
 -- annotations.
 hackyStripAnns :: (Ord v) => Term.Term v loc -> Term.Term v loc
 hackyStripAnns =
-  snd . ABT.cata \ann abt0 -> case abt0 of
+  snd . cata \(ABT.Term' _ ann abt0) -> case abt0 of
     ABT.Var v -> (False, ABT.var ann v)
     ABT.Cycle (_, x) -> (False, ABT.cycle ann x)
     ABT.Abs v (_, x) -> (False, ABT.abs ann v x)
@@ -188,7 +189,7 @@ hackyStripAnns =
          in (isHack, Term.constructor ann cref)
       t -> (False, ABT.tm ann (snd <$> t))
   where
-    stripAnns = ABT.cata \ann abt0 -> case abt0 of
+    stripAnns = cata \(ABT.Term' _ ann abt0) -> case abt0 of
       ABT.Var v -> ABT.var ann v
       ABT.Cycle x -> ABT.cycle ann x
       ABT.Abs v x -> ABT.abs ann v x

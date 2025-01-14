@@ -52,16 +52,16 @@ echo "Kicking off release workflow in unisonweb/unison"
 git fetch origin trunk
 git tag "${tag}" "${src}"
 git push origin "${tag}"
-gh workflow run release --repo unisonweb/unison \
+gh workflow run release.yaml --repo unisonweb/unison \
   --ref "${tag}" \
   --field "version=${version}"
 
 echo "Kicking off Homebrew update task"
-gh workflow run release --repo unisonweb/homebrew-unison --field "version=${version}"
+gh workflow run release.yaml --repo unisonweb/homebrew-unison --field "version=${version}"
 
 echo "Opening relevant workflows in browser"
-gh workflow view release --web --repo unisonweb/homebrew-unison || true
-gh workflow view release --web --repo unisonweb/unison || true
+gh workflow view release.yaml --web --repo unisonweb/homebrew-unison || true
+gh workflow view release.yaml --web --repo unisonweb/unison || true
 
 echo "Okay! All the work has been kicked off, it may take several hours to complete."
 echo "Run '$0 --status' to see job status."

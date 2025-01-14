@@ -50,32 +50,31 @@ testMvars _ =
   runTest test
 ```
 
-``` ucm
-
+``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
   I found and typechecked these definitions in scratch.u. If you
   do an `add` or `update`, here's how your codebase would
   change:
-  
+
     ⍟ These new definitions are ok to `add`:
     
       eitherCk  : (a ->{g} Boolean) -> Either e a ->{g} Boolean
       testMvars : '{IO} [Result]
-
 ```
+
 ``` ucm
 scratch/main> add
 
   ⍟ I've added these definitions:
-  
+
     eitherCk  : (a ->{g} Boolean) -> Either e a ->{g} Boolean
     testMvars : '{IO} [Result]
 
 scratch/main> io.test testMvars
 
     New test results:
-  
+
     1. testMvars   ◉ ma should not be empty
                    ◉ should read what you sow
                    ◉ should reap what you sow
@@ -89,9 +88,8 @@ scratch/main> io.test testMvars
                    ◉ ma2 should be empty
                    ◉ tryTake should fail when empty
                    ◉ tryRead should fail when empty
-  
-  ✅ 13 test(s) passing
-  
-  Tip: Use view 1 to view the source of a test.
 
+  ✅ 13 test(s) passing
+
+  Tip: Use view 1 to view the source of a test.
 ```

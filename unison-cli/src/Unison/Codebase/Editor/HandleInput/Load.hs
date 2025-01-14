@@ -20,6 +20,7 @@ import Unison.Cli.NamesUtils qualified as Cli
 import Unison.Cli.TypeCheck (computeTypecheckingEnvironment)
 import Unison.Cli.UniqueTypeGuidLookup qualified as Cli
 import Unison.Codebase qualified as Codebase
+import Unison.Codebase.Editor.HandleInput.RuntimeUtils (EvalMode (..))
 import Unison.Codebase.Editor.HandleInput.RuntimeUtils qualified as RuntimeUtils
 import Unison.Codebase.Editor.Output qualified as Output
 import Unison.Codebase.Editor.Slurp qualified as Slurp
@@ -76,11 +77,13 @@ loadUnisonFile sourceName text = do
 
   when (not . null $ UF.watchComponents unisonFile) do
     Timing.time "evaluating watches" do
-      (bindings, e) <- evalUnisonFile Permissive ppe unisonFile []
-      let e' = Map.map go e
-          go (ann, kind, _hash, _uneval, eval, isHit) = (ann, kind, eval, isHit)
-      when (not (null e')) do
-        Cli.respond $ Output.Evaluated text ppe bindings e'
+      evalUnisonFile Permissive ppe unisonFile [] >>= \case
+        Right (bindings, e) -> do
+          when (not (null e)) do
+            let f (ann, kind, _hash, _uneval, eval, isHit) = (ann, kind, eval, isHit)
+            Cli.respond $ Output.Evaluated text ppe bindings (Map.map f e)
+        Left err -> Cli.respond (Output.EvaluationFailure err)
+
   #latestTypecheckedFile .= Just (Right unisonFile)
   where
     withFile ::
@@ -151,8 +154,6 @@ loadUnisonFile sourceName text = do
           Cli.respond (Output.CompilerBugs text suffixifiedPPE cbs)
         Cli.returnEarlyWithoutOutput
 
-data EvalMode = Sandboxed | Permissive | Native
-
 -- | Evaluate all watched expressions in a UnisonFile and return
 -- their results, keyed by the name of the watch variable. The tuple returned
 -- has the form:
@@ -175,29 +176,34 @@ evalUnisonFile ::
   TypecheckedUnisonFile Symbol Ann ->
   [String] ->
   Cli
-    ( [(Symbol, Term Symbol ())],
-      Map Symbol (Ann, WK.WatchKind, Reference.Id, Term Symbol (), Term Symbol (), Bool)
+    ( Either
+        Runtime.Error
+        ( [(Symbol, Term Symbol ())],
+          Map Symbol (Ann, WK.WatchKind, Reference.Id, Term Symbol (), Term Symbol (), Bool)
+        )
     )
 evalUnisonFile mode ppe unisonFile args = do
-  Cli.Env {codebase, runtime, sandboxedRuntime, nativeRuntime} <- ask
+  env <- ask
+
   let theRuntime = case mode of
-        Sandboxed -> sandboxedRuntime
-        Permissive -> runtime
-        Native -> nativeRuntime
+        Sandboxed -> env.sandboxedRuntime
+        Permissive -> env.runtime
+        Native -> env.nativeRuntime
 
   let watchCache :: Reference.Id -> IO (Maybe (Term Symbol ()))
       watchCache ref = do
-        maybeTerm <- Codebase.runTransaction codebase (Codebase.lookupWatchCache codebase ref)
+        maybeTerm <- Codebase.runTransaction env.codebase (Codebase.lookupWatchCache env.codebase ref)
         pure (Term.amap (\(_ :: Ann) -> ()) <$> maybeTerm)
 
   Cli.with_ (withArgs args) do
-    (nts, errs, map) <-
-      Cli.ioE (Runtime.evaluateWatches (Codebase.codebaseToCodeLookup codebase) ppe watchCache theRuntime unisonFile) \err -> do
-        Cli.returnEarly (Output.EvaluationFailure err)
-    when (not $ null errs) (RuntimeUtils.displayDecompileErrors errs)
-    for_ (Map.elems map) \(_loc, kind, hash, _src, value, isHit) -> do
-      -- only update the watch cache when there are no errors
-      when (not isHit && null errs) do
-        let value' = Term.amap (\() -> Ann.External) value
-        Cli.runTransaction (Codebase.putWatch kind hash value')
-    pure (nts, map)
+    let codeLookup = Codebase.codebaseToCodeLookup env.codebase
+    liftIO (Runtime.evaluateWatches codeLookup ppe watchCache theRuntime unisonFile) >>= \case
+      Right (nts, errs, map) -> do
+        when (not $ null errs) (RuntimeUtils.displayDecompileErrors errs)
+        for_ (Map.elems map) \(_loc, kind, hash, _src, value, isHit) -> do
+          -- only update the watch cache when there are no errors
+          when (not isHit && null errs) do
+            let value' = Term.amap (\() -> Ann.External) value
+            Cli.runTransaction (Codebase.putWatch kind hash value')
+        pure (Right (nts, map))
+      Left err -> pure (Left err)

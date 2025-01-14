@@ -39,6 +39,8 @@ module Unison.Name
     preferShallowLibDepth,
     searchByRankedSuffix,
     searchBySuffix,
+    filterBySuffix,
+    filterByRankedSuffix,
     suffixifyByName,
     suffixifyByHash,
     suffixifyByHashName,
@@ -335,6 +337,13 @@ searchBySuffix suffix rel =
   where
     orElse s1 s2 = if Set.null s1 then s2 else s1
 
+-- | Like 'searchBySuffix', but also keeps the names around.
+filterBySuffix :: (Ord r) => Name -> R.Relation Name r -> R.Relation Name r
+filterBySuffix suffix rel =
+  case Map.lookup suffix (R.domain rel) of
+    Just refs -> R.fromManyRan suffix refs
+    Nothing -> R.searchDomG R.fromManyRan (compareSuffix suffix) rel
+
 -- Like `searchBySuffix`, but prefers local (outside `lib`) and direct (one `lib` deep) names to indirect (two or more
 -- `lib` deep) names.
 searchByRankedSuffix :: (Ord r) => Name -> R.Relation Name r -> Set r
@@ -346,6 +355,19 @@ searchByRankedSuffix suffix rel =
           let ok name = compareSuffix suffix name == EQ
               withNames = map (\r -> (filter ok (toList (R.lookupRan r rel)), r)) (toList rs)
            in preferShallowLibDepth withNames
+
+-- | Like 'searchByRankedSuffix', but also keeps the names around.
+filterByRankedSuffix :: (Ord r) => Name -> R.Relation Name r -> R.Relation Name r
+filterByRankedSuffix suffix rel =
+  let matches = filterBySuffix suffix rel
+      highestNamePriority = foldMap prio (R.dom matches)
+      keep (name, _) = prio name <= highestNamePriority
+   in -- Keep only names that are at or less than the highest name priority. This effectively throws out all indirect
+      -- dependencies (NamePriorityTwo) if there are any direct dependencies (NamePriorityOne) or local definitions
+      -- (also NamePriorityOne).
+      R.filter keep matches
+  where
+    prio = nameLocationPriority . classifyNameLocation
 
 -- | precondition: input list is deduped, and so is the Name list in
 -- the tuple
@@ -431,11 +453,14 @@ sortNames toText =
 -- /Precondition/: the name is relative.
 splits :: (HasCallStack) => Name -> [([NameSegment], Name)]
 splits (Name p ss0) =
-  ss0
-    & List.NonEmpty.toList
-    & reverse
-    & splits0
-    & over (mapped . _2) (Name p . List.NonEmpty.reverse)
+  case p of
+    Absolute -> error (reportBug "E243149" ("Name.splits called with an absolute name: " ++ show ss0))
+    Relative ->
+      ss0
+        & List.NonEmpty.toList
+        & reverse
+        & splits0
+        & over (mapped . _2) (Name p . List.NonEmpty.reverse)
   where
     -- splits a.b.c
     -- ([], a.b.c) : over (mapped . _1) (a.) (splits b.c)
@@ -464,7 +489,7 @@ stripNamePrefix (Name p0 ss0) (Name p1 ss1) = do
   s : ss <- List.stripPrefix (reverse (toList ss0)) (reverse (toList ss1))
   pure (Name Relative (List.NonEmpty.reverse (s :| ss)))
 
--- | Return all relative suffixes of a name, in descending-length order. The returned list will always be non-empty.
+-- | Return all relative suffixes of a name, in ascending-length order. The returned list will always be non-empty.
 --
 -- >>> suffixes "a.b.c"
 -- ["a.b.c", "a.b", "c"]
@@ -472,13 +497,7 @@ stripNamePrefix (Name p0 ss0) (Name p1 ss1) = do
 -- >>> suffixes ".a.b.c"
 -- ["a.b.c", "a.b", "c"]
 suffixes :: Name -> [Name]
-suffixes =
-  reverse . suffixes'
-
--- Like `suffixes`, but returns names in ascending-length order. Currently unexported, as it's only used in the
--- implementation of `shortestUniqueSuffix`.
-suffixes' :: Name -> [Name]
-suffixes' (Name _ ss0) = do
+suffixes (Name _ ss0) = do
   ss <- List.NonEmpty.tail (List.NonEmpty.inits ss0)
   -- fromList is safe here because all elements of `tail . inits` are non-empty
   pure (Name Relative (List.NonEmpty.fromList ss))
@@ -541,7 +560,7 @@ isUnqualified = \case
 -- NB: Only works if the `Ord` instance for `Name` orders based on `Name.reverseSegments`.
 suffixifyByName :: forall r. (Ord r) => Name -> R.Relation Name r -> Name
 suffixifyByName fqn rel =
-  fromMaybe fqn (List.find isOk (suffixes' fqn))
+  fromMaybe fqn (List.find isOk (suffixes fqn))
   where
     isOk :: Name -> Bool
     isOk suffix = matchingNameCount == 1
@@ -567,7 +586,7 @@ suffixifyByName fqn rel =
 -- NB: Only works if the `Ord` instance for `Name` orders based on `Name.reverseSegments`.
 suffixifyByHash :: forall r. (Ord r) => Name -> R.Relation Name r -> Name
 suffixifyByHash fqn rel =
-  fromMaybe fqn (List.find isOk (suffixes' fqn))
+  fromMaybe fqn (List.find isOk (suffixes fqn))
   where
     allRefs :: Set r
     allRefs =
@@ -575,7 +594,7 @@ suffixifyByHash fqn rel =
 
     isOk :: Name -> Bool
     isOk suffix =
-      Set.size matchingRefs == 1 || matchingRefs == allRefs
+      matchingRefs == allRefs
       where
         matchingRefs :: Set r
         matchingRefs =
@@ -590,7 +609,7 @@ suffixifyByHash fqn rel =
 -- edited in a scratch file, where "suffixify by hash" doesn't work.
 suffixifyByHashName :: forall r. (Ord r) => Name -> R.Relation Name r -> Name
 suffixifyByHashName fqn rel =
-  fromMaybe fqn (List.find isOk (suffixes' fqn))
+  fromMaybe fqn (List.find isOk (suffixes fqn))
   where
     allRefs :: Set r
     allRefs =
@@ -598,7 +617,7 @@ suffixifyByHashName fqn rel =
 
     isOk :: Name -> Bool
     isOk suffix =
-      (Set.size matchingRefs == 1 || matchingRefs == allRefs)
+      matchingRefs == allRefs
         -- Don't use a suffix of 2+ aliases if any of then are non-local names
         && case numLocalNames of
           0 -> True

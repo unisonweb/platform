@@ -6,6 +6,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE UnboxedTuples #-}
 
 module Unison.Runtime.Interface
   ( startRuntime,
@@ -13,18 +14,23 @@ module Unison.Runtime.Interface
     startNativeRuntime,
     standalone,
     runStandalone,
-    StoredCache,
+    StoredCache
+      ( -- Exported for tests
+        SCache
+      ),
     decodeStandalone,
     RuntimeHost (..),
     Runtime (..),
+
+    -- * Exported for tests
+    getStoredCache,
+    putStoredCache,
   )
 where
 
 import Control.Concurrent.STM as STM
 import Control.Exception (throwIO)
 import Control.Monad
--- import Data.Bits (shiftL)
-
 import Control.Monad.State
 import Data.Binary.Get (runGetOrFail)
 import Data.ByteString qualified as BS
@@ -48,6 +54,7 @@ import Data.Set as Set
   )
 import Data.Set qualified as Set
 import Data.Text as Text (isPrefixOf, pack, unpack)
+import Data.Void (absurd)
 import GHC.IO.Exception (IOErrorType (NoSuchThing, OtherError, PermissionDenied), IOException (ioe_description, ioe_type))
 import GHC.Stack (callStack)
 import Network.Simple.TCP (Socket, acceptFork, listen, recv, send)
@@ -71,6 +78,7 @@ import System.Process
     waitForProcess,
     withCreateProcess,
   )
+import Unison.ABT qualified as ABT
 import Unison.Builtin.Decls qualified as RF
 import Unison.Codebase.CodeLookup (CodeLookup (..))
 import Unison.Codebase.MainTerm (builtinIOTestTypes, builtinMain)
@@ -101,22 +109,22 @@ import Unison.Runtime.Exception
 import Unison.Runtime.MCode
   ( Args (..),
     CombIx (..),
-    Combs,
     GInstr (..),
     GSection (..),
     RCombs,
     RefNums (..),
-    combDeps,
+    absurdCombs,
     combTypes,
     emitComb,
     emptyRNs,
-    rCombIx,
     resolveCombs,
+    sanitizeCombsOfForeignFuncs,
   )
 import Unison.Runtime.MCode.Serialize
 import Unison.Runtime.Machine
   ( ActiveThreads,
     CCache (..),
+    Combs,
     Tracer (..),
     apply0,
     baseCCache,
@@ -124,6 +132,7 @@ import Unison.Runtime.Machine
     cacheAdd0,
     eval0,
     expandSandbox,
+    preEvalTopLevelConstants,
     refLookup,
     refNumTm,
     refNumsTm,
@@ -134,34 +143,51 @@ import Unison.Runtime.Machine
 import Unison.Runtime.Pattern
 import Unison.Runtime.Serialize as SER
 import Unison.Runtime.Stack
+import Unison.Runtime.TypeTags qualified as TT
 import Unison.Symbol (Symbol)
 import Unison.Syntax.HashQualified qualified as HQ (toText)
 import Unison.Syntax.NamePrinter (prettyHashQualified)
 import Unison.Syntax.TermPrinter
 import Unison.Term qualified as Tm
+import Unison.Type qualified as Type
 import Unison.Util.EnumContainers as EC
 import Unison.Util.Monoid (foldMapM)
 import Unison.Util.Pretty as P
+import Unison.Util.Recursion qualified as Rec
 import UnliftIO qualified
 import UnliftIO.Concurrent qualified as UnliftIO
 
 type Term v = Tm.Term v ()
 
-data Remapping = Remap
-  { remap :: Map.Map Reference Reference,
-    backmap :: Map.Map Reference Reference
+type Type v = Type.Type v ()
+
+-- Note that these annotations are suggestions at best, since in many places codebase refs, intermediate refs, and
+-- floated refs are all intermingled.
+type CodebaseReference = Reference
+
+-- Note that these annotations are suggestions at best, since in many places codebase refs, intermediate refs, and
+-- floated refs are all intermingled.
+type IntermediateReference = Reference
+
+-- Note that these annotations are suggestions at best, since in many places codebase refs, intermediate refs, and
+-- floated refs are all intermingled.
+type FloatedReference = Reference
+
+data Remapping from to = Remap
+  { remap :: Map.Map from to,
+    backmap :: Map.Map to from
   }
 
-instance Semigroup Remapping where
+instance (Ord from, Ord to) => Semigroup (Remapping from to) where
   Remap r1 b1 <> Remap r2 b2 = Remap (r1 <> r2) (b1 <> b2)
 
-instance Monoid Remapping where
+instance (Ord from, Ord to) => Monoid (Remapping from to) where
   mempty = Remap mempty mempty
 
 data EvalCtx = ECtx
   { dspec :: DataSpec,
-    floatRemap :: Remapping,
-    intermedRemap :: Remapping,
+    floatRemap :: Remapping CodebaseReference FloatedReference,
+    intermedRemap :: Remapping FloatedReference IntermediateReference,
     decompTm :: Map.Map Reference (Map.Map Word64 (Term Symbol)),
     ccache :: CCache
   }
@@ -326,7 +352,7 @@ backrefAdd ::
 backrefAdd m ctx@ECtx {decompTm} =
   ctx {decompTm = m <> decompTm}
 
-remapAdd :: Map.Map Reference Reference -> Remapping -> Remapping
+remapAdd :: (Ord from, Ord to) => Map.Map from to -> Remapping from to -> Remapping from to
 remapAdd m Remap {remap, backmap} =
   Remap {remap = m <> remap, backmap = tm <> backmap}
   where
@@ -340,31 +366,31 @@ intermedRemapAdd :: Map.Map Reference Reference -> EvalCtx -> EvalCtx
 intermedRemapAdd m ctx@ECtx {intermedRemap} =
   ctx {intermedRemap = remapAdd m intermedRemap}
 
-baseToIntermed :: EvalCtx -> Reference -> Maybe Reference
+baseToIntermed :: EvalCtx -> CodebaseReference -> Maybe IntermediateReference
 baseToIntermed ctx r = do
   r <- Map.lookup r . remap $ floatRemap ctx
   Map.lookup r . remap $ intermedRemap ctx
 
 -- Runs references through the forward maps to get intermediate
 -- references. Works on both base and floated references.
-toIntermed :: EvalCtx -> Reference -> Reference
+toIntermed :: EvalCtx -> Reference -> IntermediateReference
 toIntermed ctx r
   | r <- Map.findWithDefault r r . remap $ floatRemap ctx,
     Just r <- Map.lookup r . remap $ intermedRemap ctx =
       r
 toIntermed _ r = r
 
-floatToIntermed :: EvalCtx -> Reference -> Maybe Reference
+floatToIntermed :: EvalCtx -> FloatedReference -> Maybe IntermediateReference
 floatToIntermed ctx r =
   Map.lookup r . remap $ intermedRemap ctx
 
-intermedToBase :: EvalCtx -> Reference -> Maybe Reference
+intermedToBase :: EvalCtx -> IntermediateReference -> Maybe CodebaseReference
 intermedToBase ctx r = do
   r <- Map.lookup r . backmap $ intermedRemap ctx
   Map.lookup r . backmap $ floatRemap ctx
 
 -- Runs references through the backmaps with defaults at all steps.
-backmapRef :: EvalCtx -> Reference -> Reference
+backmapRef :: EvalCtx -> Reference -> CodebaseReference
 backmapRef ctx r0 = r2
   where
     r1 = Map.findWithDefault r0 r0 . backmap $ intermedRemap ctx
@@ -430,7 +456,7 @@ loadDeps ::
   EvalCtx ->
   [(Reference, Either [Int] [Int])] ->
   [Reference] ->
-  IO (EvalCtx, [(Reference, SuperGroup Symbol)])
+  IO (EvalCtx, [(Reference, Code)])
 loadDeps cl ppe ctx tyrs tmrs = do
   let cc = ccache ctx
   sand <- readTVarIO (sandbox cc)
@@ -442,22 +468,52 @@ loadDeps cl ppe ctx tyrs tmrs = do
       _ -> False
   ctx <- foldM (uncurry . allocType) ctx $ Prelude.filter p tyrs
   let tyAdd = Set.fromList $ fst <$> tyrs
-  out@(_, rgrp) <- loadCode cl ppe ctx tmrs
-  out <$ cacheAdd0 tyAdd rgrp (expandSandbox sand rgrp) cc
+  (ctx', rgrp) <- loadCode cl ppe ctx tmrs
+  crgrp <- traverse (checkCacheability cl ctx') rgrp
+  (ctx', crgrp) <$ cacheAdd0 tyAdd crgrp (expandSandbox sand rgrp) cc
 
-compileValue :: Reference -> [(Reference, SuperGroup Symbol)] -> Value
+checkCacheability ::
+  CodeLookup Symbol IO () ->
+  EvalCtx ->
+  (IntermediateReference, SuperGroup Symbol) ->
+  IO (IntermediateReference, Code)
+checkCacheability cl ctx (r, sg) =
+  getTermType codebaseRef >>= \case
+    -- A term's result is cacheable iff it has no arrows in its type,
+    -- this is sufficient since top-level definitions can't have effects without a delay.
+    Just typ
+      | not (Rec.cata hasArrows typ) ->
+          pure (r, CodeRep sg Cacheable)
+    _ -> pure (r, CodeRep sg Uncacheable)
+  where
+    codebaseRef = backmapRef ctx r
+    getTermType :: CodebaseReference -> IO (Maybe (Type Symbol))
+    getTermType = \case
+      (RF.DerivedId i) ->
+        getTypeOfTerm cl i >>= \case
+          Just t -> pure $ Just t
+          Nothing -> pure Nothing
+      RF.Builtin {} -> pure $ Nothing
+    hasArrows :: Type.TypeF v a Bool -> Bool
+    hasArrows abt = case ABT.out' abt of
+      (ABT.Tm f) -> case f of
+        Type.Arrow _ _ -> True
+        other -> or other
+      t -> or t
+
+compileValue :: Reference -> [(Reference, Code)] -> Value
 compileValue base =
   flip pair (rf base) . ANF.BLit . List . Seq.fromList . fmap cpair
   where
     rf = ANF.BLit . TmLink . RF.Ref
-    cons x y = Data RF.pairRef 0 [] [x, y]
-    tt = Data RF.unitRef 0 [] []
+    cons x y = Data RF.pairRef 0 [x, y]
+    tt = Data RF.unitRef 0 []
     code sg = ANF.BLit (Code sg)
     pair x y = cons x (cons y tt)
     cpair (r, sg) = pair (rf r) (code sg)
 
 decompileCtx ::
-  EnumMap Word64 Reference -> EvalCtx -> Closure -> DecompResult Symbol
+  EnumMap Word64 Reference -> EvalCtx -> Val -> DecompResult Symbol
 decompileCtx crs ctx = decompile ib $ backReferenceTm crs fr ir dt
   where
     ib = intermedToBase ctx
@@ -781,34 +837,36 @@ prepareEvaluation ::
   PrettyPrintEnv ->
   Term Symbol ->
   EvalCtx ->
-  IO (EvalCtx, [(Reference, SuperGroup Symbol)], Reference)
+  IO (EvalCtx, [(Reference, Code)], Reference)
 prepareEvaluation ppe tm ctx = do
-  missing <- cacheAdd rgrp (ccache ctx')
+  missing <- cacheAdd rcode (ccache ctx')
   when (not . null $ missing) . fail $
     reportBug "E029347" $
       "Error in prepareEvaluation, cache is missing: " <> show missing
-  pure (backrefAdd rbkr ctx', rgrp, rmn)
+  pure (backrefAdd rbkr ctx', rcode, rmn)
   where
+    uncacheable g = CodeRep g Uncacheable
     (rmn0, frem, rgrp0, rbkr) = intermediateTerm ppe ctx tm
     int b r
       | b || Map.member r rgrp0 = r
       | otherwise = toIntermed ctx r
     (ctx', rrefs, rgrp) =
       performRehash
-        ((fmap . overGroupLinks) int rgrp0)
+        ((fmap . overGroupLinks) int $ rgrp0)
         (floatRemapAdd frem ctx)
+    rcode = second uncacheable <$> rgrp
     rmn = case Map.lookup rmn0 rrefs of
       Just r -> r
       Nothing -> error "prepareEvaluation: could not remap main ref"
 
-watchHook :: IORef Closure -> Stack 'UN -> Stack 'BX -> IO ()
-watchHook r _ bstk = peek bstk >>= writeIORef r
+watchHook :: IORef Val -> XStack -> IO ()
+watchHook r xstk = peek (packXStack xstk) >>= writeIORef r
 
 backReferenceTm ::
   EnumMap Word64 Reference ->
-  Remapping ->
-  Remapping ->
-  Map.Map Reference (Map.Map Word64 (Term Symbol)) ->
+  Remapping IntermediateReference CodebaseReference ->
+  Remapping FloatedReference IntermediateReference ->
+  Map.Map CodebaseReference (Map.Map Word64 (Term Symbol)) ->
   Word64 ->
   Word64 ->
   Maybe (Term Symbol)
@@ -879,7 +937,7 @@ nativeEvalInContext ::
   EvalCtx ->
   Socket ->
   PortNumber ->
-  [(Reference, SuperGroup Symbol)] ->
+  [(Reference, Code)] ->
   Reference ->
   IO (Either Error ([Error], Term Symbol))
 nativeEvalInContext executable ppe ctx serv port codes base = do
@@ -931,7 +989,7 @@ nativeEvalInContext executable ppe ctx serv port codes base = do
 nativeCompileCodes ::
   CompileOpts ->
   FilePath ->
-  [(Reference, SuperGroup Symbol)] ->
+  [(Reference, Code)] ->
   Reference ->
   FilePath ->
   IO ()
@@ -972,7 +1030,7 @@ evalInContext ::
   Word64 ->
   IO (Either Error ([Error], Term Symbol))
 evalInContext ppe ctx activeThreads w = do
-  r <- newIORef BlackHole
+  r <- newIORef (boxedVal BlackHole)
   crs <- readTVarIO (combRefs $ ccache ctx)
   let hook = watchHook r
       decom = decompileCtx crs ctx
@@ -984,14 +1042,14 @@ evalInContext ppe ctx activeThreads w = do
         where
           tr = first (backmapRef ctx) <$> tr0
 
-      debugText fancy c = case decom c of
+      debugText fancy val = case decom val of
         (errs, dv)
           | null errs ->
               SimpleTrace . debugTextFormat fancy $ pretty ppe dv
           | otherwise ->
               MsgTrace
                 (debugTextFormat fancy $ tabulateErrors errs)
-                (show c)
+                (show val)
                 (debugTextFormat fancy $ pretty ppe dv)
 
   result <-
@@ -1006,7 +1064,7 @@ executeMainComb ::
   CCache ->
   IO (Either (Pretty ColorText) ())
 executeMainComb init cc = do
-  rSection <- resolveSection cc $ Ins (Pack RF.unitRef 0 ZArgs) $ Call True init (BArg1 0)
+  rSection <- resolveSection cc $ Ins (Pack RF.unitRef TT.unitTag ZArgs) $ Call True init init (VArg1 0)
   result <-
     UnliftIO.try . eval0 cc Nothing $ rSection
   case result of
@@ -1197,9 +1255,9 @@ tryM =
     hRE (PE _ e) = pure $ Just e
     hRE (BU _ _ _) = pure $ Just "impossible"
 
-runStandalone :: StoredCache -> CombIx -> IO (Either (Pretty ColorText) ())
-runStandalone sc init =
-  restoreCache sc >>= executeMainComb init
+runStandalone :: Bool -> StoredCache -> CombIx -> IO (Either (Pretty ColorText) ())
+runStandalone sandboxed sc init =
+  restoreCache sandboxed sc >>= executeMainComb init
 
 -- | A version of the Code Cache designed to be serialized to disk as
 -- standalone bytecode.
@@ -1207,6 +1265,7 @@ data StoredCache
   = SCache
       (EnumMap Word64 Combs)
       (EnumMap Word64 Reference)
+      (EnumSet Word64)
       (EnumMap Word64 Reference)
       Word64
       Word64
@@ -1214,12 +1273,13 @@ data StoredCache
       (Map Reference Word64)
       (Map Reference Word64)
       (Map Reference (Set Reference))
-  deriving (Show)
+  deriving (Show, Eq)
 
 putStoredCache :: (MonadPut m) => StoredCache -> m ()
-putStoredCache (SCache cs crs trs ftm fty int rtm rty sbs) = do
-  putEnumMap putNat (putEnumMap putNat (putComb putCombIx)) cs
+putStoredCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
+  putEnumMap putNat (putEnumMap putNat (putComb absurd)) cs
   putEnumMap putNat putReference crs
+  putEnumSet putNat cacheableCombs
   putEnumMap putNat putReference trs
   putNat ftm
   putNat fty
@@ -1231,8 +1291,9 @@ putStoredCache (SCache cs crs trs ftm fty int rtm rty sbs) = do
 getStoredCache :: (MonadGet m) => m StoredCache
 getStoredCache =
   SCache
-    <$> getEnumMap getNat (getEnumMap getNat (getComb getCombIx))
+    <$> getEnumMap getNat (getEnumMap getNat getComb)
     <*> getEnumMap getNat getReference
+    <*> getEnumSet getNat
     <*> getEnumMap getNat getReference
     <*> getNat
     <*> getNat
@@ -1258,18 +1319,34 @@ tabulateErrors errs =
       : P.wrap "The following errors occured while decompiling:"
       : (listErrors errs)
 
-restoreCache :: StoredCache -> IO CCache
-restoreCache (SCache cs crs trs ftm fty int rtm rty sbs) =
-  CCache builtinForeigns False debugText
-    <$> newTVarIO combs
-    <*> newTVarIO (crs <> builtinTermBackref)
-    <*> newTVarIO (trs <> builtinTypeBackref)
-    <*> newTVarIO ftm
-    <*> newTVarIO fty
-    <*> newTVarIO int
-    <*> newTVarIO (rtm <> builtinTermNumbering)
-    <*> newTVarIO (rty <> builtinTypeNumbering)
-    <*> newTVarIO (sbs <> baseSandboxInfo)
+restoreCache :: Bool -> StoredCache -> IO CCache
+restoreCache sandboxed (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
+  cc <-
+    CCache sandboxed debugText
+      <$> newTVarIO srcCombs
+      <*> newTVarIO combs
+      <*> newTVarIO (crs <> builtinTermBackref)
+      <*> newTVarIO cacheableCombs
+      <*> newTVarIO (trs <> builtinTypeBackref)
+      <*> newTVarIO ftm
+      <*> newTVarIO fty
+      <*> newTVarIO int
+      <*> newTVarIO (rtm <> builtinTermNumbering)
+      <*> newTVarIO (rty <> builtinTypeNumbering)
+      <*> newTVarIO (sbs <> baseSandboxInfo)
+  let (unresolvedCacheableCombs, unresolvedNonCacheableCombs) =
+        srcCombs
+          & sanitizeCombsOfForeignFuncs sandboxed sandboxedForeignFuncs
+          & absurdCombs
+          & EC.mapToList
+          & foldMap
+            ( \(k, v) ->
+                if k `member` cacheableCombs
+                  then (EC.mapSingleton k v, mempty)
+                  else (mempty, EC.mapSingleton k v)
+            )
+  preEvalTopLevelConstants unresolvedCacheableCombs unresolvedNonCacheableCombs cc
+  pure cc
   where
     decom =
       decompile
@@ -1286,28 +1363,35 @@ restoreCache (SCache cs crs trs ftm fty int rtm rty sbs) =
               (debugTextFormat fancy $ pretty PPE.empty dv)
     rns = emptyRNs {dnum = refLookup "ty" builtinTypeNumbering}
     rf k = builtinTermBackref ! k
-    combs :: EnumMap Word64 RCombs
-    combs =
+    srcCombs :: EnumMap Word64 Combs
+    srcCombs =
       let builtinCombs = mapWithKey (\k v -> emitComb @Symbol rns (rf k) k mempty (0, v)) numberedTermLookup
        in builtinCombs <> cs
-            & resolveCombs Nothing
+    combs :: EnumMap Word64 (RCombs Val)
+    combs =
+      srcCombs
+        & sanitizeCombsOfForeignFuncs sandboxed sandboxedForeignFuncs
+        & absurdCombs
+        & resolveCombs Nothing
 
 traceNeeded ::
-  Word64 ->
-  EnumMap Word64 RCombs ->
-  IO (EnumMap Word64 RCombs)
-traceNeeded init src = fmap (`withoutKeys` ks) $ go mempty init
+  Reference ->
+  Map Reference (SuperGroup Symbol) ->
+  IO (Map Reference (SuperGroup Symbol))
+traceNeeded init src = go mempty init
   where
-    ks = keysSet numberedTermLookup
-    go acc w
-      | hasKey w acc = pure acc
-      | Just co <- EC.lookup w src =
-          foldlM go (mapInsert w co acc) (foldMap (combDeps . fmap rCombIx) co)
-      | otherwise = die $ "traceNeeded: unknown combinator: " ++ show w
+    go acc nx
+      | RF.isBuiltin nx = pure acc
+      | Map.member nx acc = pure acc
+      | Just co <- Map.lookup nx src =
+          foldlM go (Map.insert nx co acc) (groupTermLinks co)
+      | otherwise =
+          die $ "traceNeeded: unknown combinator: " ++ show nx
 
 buildSCache ::
-  EnumMap Word64 Combs ->
   EnumMap Word64 Reference ->
+  EnumMap Word64 Combs ->
+  EnumSet Word64 ->
   EnumMap Word64 Reference ->
   Word64 ->
   Word64 ->
@@ -1316,26 +1400,39 @@ buildSCache ::
   Map Reference Word64 ->
   Map Reference (Set Reference) ->
   StoredCache
-buildSCache cs crsrc trsrc ftm fty intsrc rtmsrc rtysrc sndbx =
+buildSCache crsrc cssrc cacheableCombs trsrc ftm fty int rtmsrc rtysrc sndbx =
   SCache
     cs
     crs
+    cacheableCombs
     trs
     ftm
     fty
-    (restrictTmR intsrc)
-    (restrictTmR rtmsrc)
+    int
+    rtm
     (restrictTyR rtysrc)
     (restrictTmR sndbx)
   where
-    combKeys = keysSet cs
+    termRefs = Map.keysSet int
+
+    -- Retain just the Reference->Word mappings for needed code
+    rtm :: Map Reference Word64
+    rtm = restrictTmR rtmsrc
+
+    -- Retain numbers that correspond to the above termRefs
+    combKeys :: EnumSet Word64
+    combKeys = foldMap setSingleton rtm
+
     crs = restrictTmW crsrc
-    termRefs = foldMap Set.singleton crs
+
+    cs :: EnumMap Word64 Combs
+    cs = restrictTmW cssrc
 
     typeKeys = setFromList $ (foldMap . foldMap) combTypes cs
     trs = restrictTyW trsrc
     typeRefs = foldMap Set.singleton trs
 
+    restrictTmW :: EnumMap Word64 a -> EnumMap Word64 a
     restrictTmW m = restrictKeys m combKeys
     restrictTmR :: Map Reference a -> Map Reference a
     restrictTmR m = Map.restrictKeys m termRefs
@@ -1345,16 +1442,18 @@ buildSCache cs crsrc trsrc ftm fty intsrc rtmsrc rtysrc sndbx =
 
 standalone :: CCache -> Word64 -> IO StoredCache
 standalone cc init =
-  buildSCache
-    <$> (readTVarIO (combs cc) >>= traceNeeded init >>= pure . unTieRCombs)
-    <*> readTVarIO (combRefs cc)
-    <*> readTVarIO (tagRefs cc)
-    <*> readTVarIO (freshTm cc)
-    <*> readTVarIO (freshTy cc)
-    <*> readTVarIO (intermed cc)
-    <*> readTVarIO (refTm cc)
-    <*> readTVarIO (refTy cc)
-    <*> readTVarIO (sandbox cc)
-  where
-    unTieRCombs :: EnumMap Word64 RCombs -> EnumMap Word64 Combs
-    unTieRCombs = fmap . fmap . fmap $ rCombIx
+  readTVarIO (combRefs cc) >>= \crs ->
+    case EC.lookup init crs of
+      Just rinit ->
+        buildSCache crs
+          <$> readTVarIO (srcCombs cc)
+          <*> readTVarIO (cacheableCombs cc)
+          <*> readTVarIO (tagRefs cc)
+          <*> readTVarIO (freshTm cc)
+          <*> readTVarIO (freshTy cc)
+          <*> (readTVarIO (intermed cc) >>= traceNeeded rinit)
+          <*> readTVarIO (refTm cc)
+          <*> readTVarIO (refTy cc)
+          <*> readTVarIO (sandbox cc)
+      Nothing ->
+        die $ "standalone: unknown combinator: " ++ show init

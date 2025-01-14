@@ -1,10 +1,9 @@
-
 Test for code serialization operations.
 
 Define a function, serialize it, then deserialize it back to an actual
 function. Also ask for its dependencies for display later.
 
-```unison
+``` unison
 save : a -> Bytes
 save x = Value.serialize (Value.value x)
 
@@ -152,11 +151,11 @@ swapped name link =
   rejected ("swapped " ++ name) rco
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 ```
 
-```unison
+``` unison
 structural ability Zap where
   zap : Three Nat Nat Nat
 
@@ -235,13 +234,13 @@ This simply runs some functions to make sure there isn't a crash. Once
 we gain the ability to capture output in a transcript, it can be modified
 to actual show that the serialization works.
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> io.test tests
 scratch/main> io.test badLoad
 ```
 
-```unison
+``` unison
 codeTests : '{io2.IO} [Result]
 codeTests =
   '[ idempotence "idem f" (termLink f)
@@ -277,12 +276,12 @@ codeTests =
    ]
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> io.test codeTests
 ```
 
-```unison
+``` unison
 validateTest : Link.Term ->{IO} Result
 validateTest l = match Code.lookup l with
   None -> Fail "Couldn't look up link"
@@ -308,7 +307,7 @@ vtests _ =
     ]
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> io.test vtests
 ```

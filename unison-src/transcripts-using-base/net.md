@@ -1,4 +1,4 @@
-```unison:hide
+``` unison :hide
 serverSocket = compose2 reraise IO.serverSocket.impl
 socketPort = compose reraise socketPort.impl
 listen = compose reraise listen.impl
@@ -9,7 +9,7 @@ socketReceive = compose2 reraise socketReceive.impl
 socketAccept = compose reraise socketAccept.impl
 ```
 
-```ucm:hide
+``` ucm :hide
 scratch/main> add
 ```
 
@@ -92,14 +92,14 @@ testDefaultPort _ =
 
   runTest test
 ```
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> io.test testDefaultPort
 ```
 
 This example demonstrates connecting a TCP client socket to a TCP server socket. A thread is started for both client and server. The server socket asks for any availalbe port (by passing "0" as the port number). The server thread then queries for the actual assigned port number, and puts that into an MVar which the client thread can read. The client thread then reads a string from the server and reports it back to the main thread via a different MVar.
 
-```unison
+``` unison
 
 serverThread: MVar Nat -> Text -> '{io2.IO}()
 serverThread portVar toSend = 'let
@@ -147,7 +147,7 @@ testTcpConnect = 'let
   runTest test
 
 ```
-```ucm
+``` ucm
 
 scratch/main> add
 scratch/main> io.test testTcpConnect

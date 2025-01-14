@@ -333,18 +333,18 @@ completionItemResolveHandler message respond = do
           LD.TermReferent ref -> do
             typ <- LSPQ.getTypeOfReferent fileUri ref
             let renderedType = ": " <> (Text.pack $ TypePrinter.prettyStr (Just typeWidth) (PPED.suffixifiedPPE pped) typ)
-            let doc = toMarkup (Text.unlines $ ["```unison", Name.toText fullyQualifiedName, "```"] ++ renderedDocs)
+            let doc = toMarkup (Text.unlines $ ["``` unison", Name.toText fullyQualifiedName, "```"] ++ renderedDocs)
             pure $ (completion {_detail = Just renderedType, _documentation = Just doc} :: CompletionItem)
           LD.TypeReference ref ->
             case ref of
               Reference.Builtin {} -> do
                 let renderedBuiltin = ": <builtin>"
-                let doc = toMarkup (Text.unlines $ ["```unison", Name.toText fullyQualifiedName, "```"] ++ renderedDocs)
+                let doc = toMarkup (Text.unlines $ ["``` unison", Name.toText fullyQualifiedName, "```"] ++ renderedDocs)
                 pure $ (completion {_detail = Just renderedBuiltin, _documentation = Just doc} :: CompletionItem)
               Reference.DerivedId refId -> do
                 decl <- LSPQ.getTypeDeclaration fileUri refId
                 let renderedDecl = ": " <> (Text.pack . Pretty.toPlain typeWidth . Pretty.syntaxToColor $ DeclPrinter.prettyDecl pped ref (HQ.NameOnly relativeName) decl)
-                let doc = toMarkup (Text.unlines $ ["```unison", Name.toText fullyQualifiedName, "```"] ++ renderedDocs)
+                let doc = toMarkup (Text.unlines $ ["``` unison", Name.toText fullyQualifiedName, "```"] ++ renderedDocs)
                 pure $ (completion {_detail = Just renderedDecl, _documentation = Just doc} :: CompletionItem)
       _ -> empty
   where

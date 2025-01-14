@@ -51,6 +51,7 @@ module Unison.CommandLine.InputPatterns
     docs,
     docsToHtml,
     edit,
+    editDependents,
     editNamespace,
     execute,
     find,
@@ -66,7 +67,9 @@ module Unison.CommandLine.InputPatterns
     helpTopics,
     history,
     ioTest,
+    ioTestNative,
     ioTestAll,
+    ioTestAllNative,
     libInstallInputPattern,
     load,
     makeStandalone,
@@ -106,7 +109,9 @@ module Unison.CommandLine.InputPatterns
     sfindReplace,
     textfind,
     test,
+    testNative,
     testAll,
+    testAllNative,
     todo,
     ui,
     undo,
@@ -141,6 +146,7 @@ where
 
 import Control.Lens.Cons qualified as Cons
 import Data.Bitraversable (bitraverse)
+import Data.Char (isSpace)
 import Data.List (intercalate)
 import Data.List.Extra qualified as List
 import Data.List.NonEmpty qualified as NE
@@ -148,7 +154,6 @@ import Data.Map qualified as Map
 import Data.Maybe (fromJust)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
-import Data.Char (isSpace)
 import Data.These (These (..))
 import Network.URI qualified as URI
 import System.Console.Haskeline.Completion (Completion (Completion))
@@ -1026,10 +1031,10 @@ displayTo =
       file : defs ->
         maybe
           (wrongArgsLength "at least two arguments" [file])
-          ( \defs ->
-              Input.DisplayI . Input.FileLocation
-                <$> unsupportedStructuredArgument displayTo "a file name" file
-                <*> traverse handleHashQualifiedNameArg defs
+          ( \defs -> do
+              file <- unsupportedStructuredArgument displayTo "a file name" file
+              names <- traverse handleHashQualifiedNameArg defs
+              pure (Input.DisplayI (Input.FileLocation file Input.AboveFold) names)
           )
           $ NE.nonEmpty defs
       [] -> wrongArgsLength "at least two arguments" []
@@ -1086,14 +1091,13 @@ textfind :: Bool -> InputPattern
 textfind allowLib =
   InputPattern cmdName aliases I.Visible [("token", OnePlus, noCompletionsArg)] msg parse
   where
-    (cmdName, aliases, alternate) = 
-      if allowLib then 
-        ("text.find.all", ["grep.all"], "Use `text.find` to exclude `lib` from search.")
-      else
-        ("text.find", ["grep"], "Use `text.find.all` to include search of `lib`.")
+    (cmdName, aliases, alternate) =
+      if allowLib
+        then ("text.find.all", ["grep.all"], "Use `text.find` to exclude `lib` from search.")
+        else ("text.find", ["grep"], "Use `text.find.all` to include search of `lib`.")
     parse = \case
       [] -> Left (P.text "Please supply at least one token.")
-      words -> pure $ Input.TextFindI allowLib (untokenize $ [ e | Left e <- words ])
+      words -> pure $ Input.TextFindI allowLib (untokenize $ [e | Left e <- words])
     msg =
       P.lines
         [ P.wrap $
@@ -1101,26 +1105,27 @@ textfind allowLib =
               <> " finds terms with literals (text or numeric) containing"
               <> "`token1`, `99`, and `token2`.",
           "",
-          P.wrap $ "Numeric literals must be quoted (ex: \"42\")" <>
-                   "but single words need not be quoted.",
+          P.wrap $
+            "Numeric literals must be quoted (ex: \"42\")"
+              <> "but single words need not be quoted.",
           "",
           P.wrap alternate
         ]
 
--- | Reinterprets `"` in the expected way, combining tokens until reaching 
--- the closing quote. 
+-- | Reinterprets `"` in the expected way, combining tokens until reaching
+-- the closing quote.
 -- Example: `untokenize ["\"uno", "dos\""]` becomes `["uno dos"]`.
 untokenize :: [String] -> [String]
 untokenize words = go (unwords words)
   where
-  go words = case words of
-    [] -> []
-    '"' : quoted -> takeWhile (/= '"') quoted : go (drop 1 . dropWhile (/= '"') $ quoted)
-    unquoted -> case span ok unquoted of 
-      ("", rem) -> go (dropWhile isSpace rem)
-      (tok, rem) -> tok : go (dropWhile isSpace rem) 
-      where
-        ok ch = ch /= '"' && not (isSpace ch)
+    go words = case words of
+      [] -> []
+      '"' : quoted -> takeWhile (/= '"') quoted : go (drop 1 . dropWhile (/= '"') $ quoted)
+      unquoted -> case span ok unquoted of
+        ("", rem) -> go (dropWhile isSpace rem)
+        (tok, rem) -> tok : go (dropWhile isSpace rem)
+        where
+          ok ch = ch /= '"' && not (isSpace ch)
 
 sfind :: InputPattern
 sfind =
@@ -2017,10 +2022,10 @@ pushForce :: InputPattern
 pushForce =
   InputPattern
     "unsafe.force-push"
-    []
-    I.Hidden
+    ["push.unsafe-force"]
+    I.Visible
     [("remote destination", Optional, remoteNamespaceArg), ("local source", Optional, namespaceOrProjectBranchArg suggestionsConfig)]
-    (P.wrap "Like `push`, but overwrites any remote namespace.")
+    (P.wrap "Like `push`, but forcibly overwrites the remote namespace.")
     $ fmap
       ( \sourceTarget ->
           Input.PushRemoteBranchI
@@ -2377,10 +2382,40 @@ edit =
       parse =
         maybe
           (wrongArgsLength "at least one argument" [])
-          ( fmap (Input.ShowDefinitionI Input.LatestFileLocation Input.ShowDefinitionLocal)
+          ( fmap (Input.ShowDefinitionI (Input.LatestFileLocation Input.WithinFold) Input.ShowDefinitionLocal)
               . traverse handleHashQualifiedNameArg
           )
           . NE.nonEmpty
+    }
+
+editNew :: InputPattern
+editNew =
+  InputPattern
+    { patternName = "edit.new",
+      aliases = [],
+      visibility = I.Visible,
+      args = [("definition to edit", OnePlus, definitionQueryArg)],
+      help = "Like `edit`, but adds a new fold line below the definitions.",
+      parse =
+        maybe
+          (wrongArgsLength "at least one argument" [])
+          ( fmap (Input.ShowDefinitionI (Input.LatestFileLocation Input.AboveFold) Input.ShowDefinitionLocal)
+              . traverse handleHashQualifiedNameArg
+          )
+          . NE.nonEmpty
+    }
+
+editDependents :: InputPattern
+editDependents =
+  InputPattern
+    { patternName = "edit.dependents",
+      aliases = [],
+      visibility = I.Visible,
+      args = [("definition to edit", Required, definitionQueryArg)],
+      help = "Like `edit`, but also includes all transitive dependents in the current project.",
+      parse = \case
+        [name] -> Input.EditDependentsI <$> handleHashQualifiedNameArg name
+        args -> wrongArgsLength "exactly one argument" args
     }
 
 editNamespace :: InputPattern
@@ -2840,6 +2875,39 @@ test =
         fmap
           ( \path ->
               Input.TestI
+                False
+                Input.TestInput
+                  { includeLibNamespace = False,
+                    path,
+                    showFailures = True,
+                    showSuccesses = True
+                  }
+          )
+          . \case
+            [] -> pure Path.empty
+            [pathString] -> handlePathArg pathString
+            args -> wrongArgsLength "no more than one argument" args
+    }
+
+testNative :: InputPattern
+testNative =
+  InputPattern
+    { patternName = "test.native",
+      aliases = [],
+      visibility = I.Hidden,
+      args = [("namespace", Optional, namespaceArg)],
+      help =
+        P.wrapColumn2
+          [ ( "`test.native`",
+              "runs unit tests for the current branch on the native runtime"
+            ),
+            ("`test foo`", "runs unit tests for the current branch defined in namespace `foo` on the native runtime")
+          ],
+      parse =
+        fmap
+          ( \path ->
+              Input.TestI
+                True
                 Input.TestInput
                   { includeLibNamespace = False,
                     path,
@@ -2864,6 +2932,27 @@ testAll =
     ( const $
         pure $
           Input.TestI
+            False
+            Input.TestInput
+              { includeLibNamespace = True,
+                path = Path.empty,
+                showFailures = True,
+                showSuccesses = True
+              }
+    )
+
+testAllNative :: InputPattern
+testAllNative =
+  InputPattern
+    "test.native.all"
+    ["test.all.native"]
+    I.Hidden
+    []
+    "`test.native.all` runs unit tests for the current branch (including the `lib` namespace) on the native runtime."
+    ( const $
+        pure $
+          Input.TestI
+            True
             Input.TestInput
               { includeLibNamespace = True,
                 path = Path.empty,
@@ -2963,7 +3052,27 @@ ioTest =
             )
           ],
       parse = \case
-        [thing] -> Input.IOTestI <$> handleHashQualifiedNameArg thing
+        [thing] -> Input.IOTestI False <$> handleHashQualifiedNameArg thing
+        args -> wrongArgsLength "exactly one argument" args
+    }
+
+ioTestNative :: InputPattern
+ioTestNative =
+  InputPattern
+    { patternName = "io.test.native",
+      aliases = ["test.io.native", "test.native.io"],
+      visibility = I.Hidden,
+      args = [("test to run", Required, exactDefinitionTermQueryArg)],
+      help =
+        P.wrapColumn2
+          [ ( "`io.test.native mytest`",
+              "Runs `!mytest` on the native runtime, where `mytest` "
+                <> "is a delayed test that can use the `IO` and "
+                <> "`Exception` abilities."
+            )
+          ],
+      parse = \case
+        [thing] -> Input.IOTestI True <$> handleHashQualifiedNameArg thing
         args -> wrongArgsLength "exactly one argument" args
     }
 
@@ -2981,7 +3090,25 @@ ioTestAll =
             )
           ],
       parse = \case
-        [] -> Right Input.IOTestAllI
+        [] -> Right (Input.IOTestAllI False)
+        args -> wrongArgsLength "no arguments" args
+    }
+
+ioTestAllNative :: InputPattern
+ioTestAllNative =
+  InputPattern
+    { patternName = "io.test.native.all",
+      aliases = ["test.io.native.all", "test.native.io.all"],
+      visibility = I.Hidden,
+      args = [],
+      help =
+        P.wrapColumn2
+          [ ( "`io.test.native.all`",
+              "runs unit tests for the current branch that use IO"
+            )
+          ],
+      parse = \case
+        [] -> Right (Input.IOTestAllI True)
         args -> wrongArgsLength "no arguments" args
     }
 
@@ -3488,7 +3615,9 @@ validInputs =
       docs,
       docsToHtml,
       edit,
+      editDependents,
       editNamespace,
+      editNew,
       execute,
       find,
       findIn,
@@ -3507,7 +3636,9 @@ validInputs =
       helpTopics,
       history,
       ioTest,
+      ioTestNative,
       ioTestAll,
+      ioTestAllNative,
       libInstallInputPattern,
       load,
       makeStandalone,
@@ -3545,7 +3676,9 @@ validInputs =
       runScheme,
       saveExecuteResult,
       test,
+      testNative,
       testAll,
+      testAllNative,
       todo,
       ui,
       undo,

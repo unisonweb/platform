@@ -32,10 +32,12 @@ import Unison.Runtime.Foreign
     maybeUnwrapForeign,
   )
 import Unison.Runtime.IOSource (iarrayFromListRef, ibarrayFromBytesRef)
-import Unison.Runtime.MCode (CombIx (..), pattern RCombIx, pattern RCombRef)
+import Unison.Runtime.MCode (CombIx (..))
 import Unison.Runtime.Stack
-  ( Closure,
-    GClosure (..),
+  ( Closure (..),
+    USeq,
+    UnboxedTypeTag (..),
+    Val (..),
     pattern DataC,
     pattern PApV,
   )
@@ -63,21 +65,16 @@ import Unison.Term qualified as Term
 import Unison.Type
   ( anyRef,
     booleanRef,
-    charRef,
-    floatRef,
     iarrayRef,
     ibytearrayRef,
-    intRef,
     listRef,
-    natRef,
     termLinkRef,
     typeLinkRef,
   )
 import Unison.Util.Bytes qualified as By
-import Unison.Util.Pretty (indentN, lines, lit, syntaxToColor, wrap)
+import Unison.Util.Pretty (indentN, lines, lit, shown, syntaxToColor, wrap)
 import Unison.Util.Text qualified as Text
 import Unison.Var (Var)
-import Unsafe.Coerce -- for Int -> Double
 import Prelude hiding (lines)
 
 con :: (Var v) => Reference -> Word64 -> Term v ()
@@ -91,7 +88,7 @@ err err x = (singleton err, x)
 
 data DecompError
   = BadBool !Word64
-  | BadUnboxed !Reference
+  | BadUnboxed !UnboxedTypeTag
   | BadForeign !Reference
   | BadData !Reference
   | BadPAp !Reference
@@ -106,16 +103,19 @@ type DecompResult v = (Set DecompError, Term v ())
 prf :: Reference -> Error
 prf = syntaxToColor . prettyReference 10
 
+printUnboxedTypeTag :: UnboxedTypeTag -> Error
+printUnboxedTypeTag = shown
+
 renderDecompError :: DecompError -> Error
 renderDecompError (BadBool n) =
   lines
     [ wrap "A boolean value had an unexpected constructor tag:",
       indentN 2 . lit . fromString $ show n
     ]
-renderDecompError (BadUnboxed rf) =
+renderDecompError (BadUnboxed tt) =
   lines
-    [ wrap "An apparent numeric type had an unrecognized reference:",
-      indentN 2 $ prf rf
+    [ wrap "An apparent numeric type had an unrecognized packed tag:",
+      indentN 2 $ printUnboxedTypeTag tt
     ]
 renderDecompError (BadForeign rf) =
   lines
@@ -148,38 +148,45 @@ renderDecompError Cont = "A continuation value was encountered"
 renderDecompError Exn = "An exception value was encountered"
 
 decompile ::
+  forall v.
   (Var v) =>
   (Reference -> Maybe Reference) ->
   (Word64 -> Word64 -> Maybe (Term v ())) ->
-  Closure ->
+  Val ->
   DecompResult v
-decompile _ _ (DataC rf (maskTags -> ct) [] [])
-  | rf == booleanRef = tag2bool ct
-decompile _ _ (DataC rf (maskTags -> ct) [i] []) =
-  decompileUnboxed rf ct i
-decompile backref topTerms (DataC rf _ [] [b])
-  | rf == anyRef =
-      app () (builtin () "Any.Any") <$> decompile backref topTerms b
-decompile backref topTerms (DataC rf (maskTags -> ct) [] bs) =
-  apps' (con rf ct) <$> traverse (decompile backref topTerms) bs
-decompile backref topTerms (PApV (RCombIx (CIx rf rt k)) [] bs)
-  | rf == Builtin "jumpCont" = err Cont $ bug "<Continuation>"
-  | Builtin nm <- rf =
-      apps' (builtin () nm) <$> traverse (decompile backref topTerms) bs
-  | Just t <- topTerms rt k =
-      Term.etaReduceEtaVars . substitute t
-        <$> traverse (decompile backref topTerms) bs
-  | k > 0,
-    Just _ <- topTerms rt 0 =
-      err (UnkLocal rf k) $ bug "<Unknown>"
-  | otherwise = err (UnkComb rf) $ ref () rf
-decompile _ _ (PAp (RCombRef rf) _ _) =
-  err (BadPAp rf) $ bug "<Unknown>"
-decompile _ _ (DataC rf _ _ _) = err (BadData rf) $ bug "<Data>"
-decompile _ _ BlackHole = err Exn $ bug "<Exception>"
-decompile _ _ (Captured {}) = err Cont $ bug "<Continuation>"
-decompile backref topTerms (Foreign f) =
-  decompileForeign backref topTerms f
+decompile backref topTerms = \case
+  CharVal c -> pure (char () c)
+  NatVal n -> pure (nat () n)
+  IntVal i -> pure (int () (fromIntegral i))
+  DoubleVal f -> pure (float () f)
+  Val i (UnboxedTypeTag tt) ->
+    err (BadUnboxed tt) . nat () $ fromIntegral $ i
+  Val _u clos -> case clos of
+    DataC rf (maskTags -> ct) []
+      | rf == booleanRef -> tag2bool ct
+    (DataC rf _ [b])
+      | rf == anyRef ->
+          app () (builtin () "Any.Any") <$> decompile backref topTerms b
+    (DataC rf (maskTags -> ct) vs) ->
+      apps' (con rf ct) <$> traverse (decompile backref topTerms) vs
+    (PApV (CIx rf rt k) _ vs)
+      | rf == Builtin "jumpCont" ->
+          err Cont $ bug "<Continuation>"
+      | Builtin nm <- rf ->
+          apps' (builtin () nm) <$> traverse (decompile backref topTerms) vs
+      | Just t <- topTerms rt k ->
+          Term.etaReduceEtaVars . substitute t
+            <$> traverse (decompile backref topTerms) vs
+      | k > 0,
+        Just _ <- topTerms rt 0 ->
+          err (UnkLocal rf k) $ bug "<Unknown>"
+      | otherwise -> err (UnkComb rf) $ ref () rf
+    (PAp (CIx rf _ _) _ _) ->
+      err (BadPAp rf) $ bug "<Unknown>"
+    BlackHole -> err Exn $ bug "<Exception>"
+    (Captured {}) -> err Cont $ bug "<Continuation>"
+    (Foreign f) ->
+      decompileForeign backref topTerms f
 
 tag2bool :: (Var v) => Word64 -> DecompResult v
 tag2bool 0 = pure (boolean () False)
@@ -193,15 +200,6 @@ substitute = align []
     align vts tm [] = substs vts tm
     -- this should not happen
     align vts tm ts = apps' (substs vts tm) ts
-
-decompileUnboxed ::
-  (Var v) => Reference -> Word64 -> Int -> DecompResult v
-decompileUnboxed r _ i
-  | r == natRef = pure . nat () $ fromIntegral i
-  | r == intRef = pure . int () $ fromIntegral i
-  | r == floatRef = pure . float () $ unsafeCoerce i
-  | r == charRef = pure . char () $ toEnum i
-  | otherwise = err (BadUnboxed r) . nat () $ fromIntegral i
 
 decompileForeign ::
   (Var v) =>
@@ -219,7 +217,7 @@ decompileForeign backref topTerms f
         _ -> l
   | Just l <- maybeUnwrapForeign typeLinkRef f =
       pure $ typeLink () l
-  | Just (a :: Array Closure) <- maybeUnwrapForeign iarrayRef f =
+  | Just (a :: Array Val) <- maybeUnwrapForeign iarrayRef f =
       app () (ref () iarrayFromListRef) . list ()
         <$> traverse (decompile backref topTerms) (toList a)
   | Just (a :: ByteArray) <- maybeUnwrapForeign ibytearrayRef f =
@@ -247,5 +245,5 @@ decompileBytes =
 decompileHashAlgorithm :: (Var v) => HashAlgorithm -> Term v ()
 decompileHashAlgorithm (HashAlgorithm r _) = ref () r
 
-unwrapSeq :: Foreign -> Maybe (Seq Closure)
+unwrapSeq :: Foreign -> Maybe USeq
 unwrapSeq = maybeUnwrapForeign listRef

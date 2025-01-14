@@ -1,6 +1,6 @@
 # Tests for TLS builtins
 
-```unison:hide
+``` unison :hide
 -- generated with:
 -- openssl req -newkey rsa:2048 -subj '/CN=test.unison.cloud/O=Unison/C=US' -nodes -keyout key.pem -x509 -days 3650 -out cert.pem
 
@@ -11,7 +11,7 @@ self_signed_cert_pem2 = "-----BEGIN CERTIFICATE-----\nMIIDVTCCAj2gAwIBAgIUdMNT5s
 not_a_cert = "-----BEGIN SCHERMIFICATE-----\n-----END SCHERMIFICATE-----"
 ```
 
-```ucm:hide
+``` ucm :hide
 scratch/main> add
 ```
 
@@ -19,7 +19,7 @@ scratch/main> add
 
 First lets make sure we can load our cert and private key
 
-```unison
+``` unison
 this_should_work=match (decodeCert.impl (toUtf8 self_signed_cert_pem2) with
   Left (Failure _ t _) -> [Fail t]
   Right _ -> [Ok "succesfully decoded self_signed_pem"]
@@ -31,7 +31,7 @@ this_should_not_work=match (decodeCert.impl (toUtf8 not_a_cert) with
 what_should_work _ = this_should_work ++ this_should_not_work
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> io.test what_should_work
 ```
@@ -44,7 +44,7 @@ We'll create a server and a client, and start threads for each.
 The server will report the port it is bound to via a passed MVar which
 the client can read.
 
-```unison
+``` unison
 serverThread: MVar Nat -> Text -> '{io2.IO}()
 serverThread portVar toSend = 'let
   go: '{io2.IO, Exception}()
@@ -190,7 +190,7 @@ testCNReject _ =
   runTest test
 ```
 
-```ucm
+``` ucm
 scratch/main> add
 scratch/main> io.test testConnectSelfSigned
 scratch/main> io.test testCAReject

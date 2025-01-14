@@ -68,6 +68,10 @@ execute codebase runtime mainPath =
 
 codebaseToCodeLookup :: (MonadIO m) => Codebase m Symbol Parser.Ann -> CL.CodeLookup Symbol m Parser.Ann
 codebaseToCodeLookup c =
-  CL.CodeLookup (Codebase.runTransaction c . getTerm c) (Codebase.runTransaction c . getTypeDeclaration c)
+  CL.CodeLookup goGetTerm goGetTypeOfTerm goGetTypeDecl
     <> Builtin.codeLookup
     <> IOSource.codeLookupM
+  where
+    goGetTerm = (Codebase.runTransaction c . getTerm c)
+    goGetTypeOfTerm = (Codebase.runTransaction c . getTypeOfTermImpl c)
+    goGetTypeDecl = (Codebase.runTransaction c . getTypeDeclaration c)

@@ -40,6 +40,8 @@ module Unison.Names
     termsNamed,
     typesNamed,
     shadowing,
+    shadowing1,
+    preferring,
     namesForReference,
     namesForReferent,
     shadowTerms,
@@ -52,6 +54,7 @@ module Unison.Names
     fromTermsAndTypes,
     lenientToNametree,
     resolveName,
+    resolveNameIncludingNames,
   )
 where
 
@@ -208,16 +211,31 @@ restrictReferences refs Names {..} = Names terms' types'
     terms' = R.filterRan ((`Set.member` refs) . Referent.toReference) terms
     types' = R.filterRan (`Set.member` refs) types
 
--- | Prefer names in the first argument, falling back to names in the second.
--- This can be used to shadow names in the codebase with names in a unison file for instance:
--- e.g. @shadowing scratchFileNames codebaseNames@
+-- | Construct names from a left-biased map union of the domains of the input names. That is, for each distinct name,
+-- if it refers to *any* references in the left argument, use those (ignoring the right).
+--
+-- This is appropriate for shadowing names in the codebase with names in a Unison file, for instance:
+--
+-- @shadowing scratchFileNames codebaseNames@
 shadowing :: Names -> Names -> Names
 shadowing a b =
   Names (shadowing1 a.terms b.terms) (shadowing1 a.types b.types)
 
 shadowing1 :: (Ord a, Ord b) => Relation a b -> Relation a b -> Relation a b
-shadowing1 xs ys =
-  Relation.fromMultimap (Map.unionWith (\x _ -> x) (Relation.domain xs) (Relation.domain ys))
+shadowing1 =
+  Relation.unionDomainWith (\_ x _ -> x)
+
+-- | Construct names from a left-biased map union of the ranges of the input names. That is, for each distinct
+-- reference, if it is referred to by *any* names in the left argument, use those (ignoring the right).
+--
+-- This is appropriate for biasing a PPE towards picking names in the left argument.
+preferring :: Names -> Names -> Names
+preferring xs ys =
+  Names (preferring1 xs.terms ys.terms) (preferring1 xs.types ys.types)
+  where
+    preferring1 :: (Ord a, Ord b) => Relation a b -> Relation a b -> Relation a b
+    preferring1 =
+      Relation.unionRangeWith (\_ x _ -> x)
 
 -- | TODO: get this from database. For now it's a constant.
 numHashChars :: Int
@@ -507,7 +525,7 @@ lenientToNametree names =
 -- Given a namespace and locally-bound names that shadow it (i.e. from a Unison file that hasn't been typechecked yet),
 -- determine what the name resolves to, per the usual suffix-matching rules (where local defnintions and direct
 -- dependencies are preferred to indirect dependencies).
-resolveName :: forall ref. (Ord ref) => Relation Name ref -> Set Name -> Name -> Set (ResolvesTo ref)
+resolveName :: forall ref. (Ord ref, Show ref) => Relation Name ref -> Set Name -> Name -> Set (ResolvesTo ref)
 resolveName namespace locals =
   \name ->
     let exactNamespaceMatches :: Set ref
@@ -519,6 +537,40 @@ resolveName namespace locals =
      in if
           | Set.member name locals -> Set.singleton (ResolvesToLocal name)
           | Set.size exactNamespaceMatches == 1 -> Set.mapMonotonic ResolvesToNamespace exactNamespaceMatches
+          | otherwise -> localsPlusNamespaceSuffixMatches
+  where
+    localsPlusNamespace :: Relation Name (ResolvesTo ref)
+    localsPlusNamespace =
+      shadowing1
+        ( List.foldl'
+            (\acc name -> Relation.insert name (ResolvesToLocal name) acc)
+            Relation.empty
+            (Set.toList locals)
+        )
+        ( Relation.map
+            (over _2 ResolvesToNamespace)
+            namespace
+        )
+
+-- | Like 'resolveName', but include the names in the output.
+resolveNameIncludingNames ::
+  forall ref.
+  (Ord ref, Show ref) =>
+  Relation Name ref ->
+  Set Name ->
+  Name ->
+  Relation Name (ResolvesTo ref)
+resolveNameIncludingNames namespace locals =
+  \name ->
+    let exactNamespaceMatches :: Set ref
+        exactNamespaceMatches =
+          Relation.lookupDom name namespace
+        localsPlusNamespaceSuffixMatches :: Relation Name (ResolvesTo ref)
+        localsPlusNamespaceSuffixMatches =
+          Name.filterByRankedSuffix name localsPlusNamespace
+     in if
+          | Set.member name locals -> Relation.singleton name (ResolvesToLocal name)
+          | Set.size exactNamespaceMatches == 1 -> Relation.singleton name (ResolvesToNamespace (Set.findMin exactNamespaceMatches))
           | otherwise -> localsPlusNamespaceSuffixMatches
   where
     localsPlusNamespace :: Relation Name (ResolvesTo ref)

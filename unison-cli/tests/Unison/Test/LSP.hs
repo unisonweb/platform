@@ -39,6 +39,7 @@ import Unison.Term qualified as Term
 import Unison.Type qualified as Type
 import Unison.UnisonFile qualified as UF
 import Unison.Util.Monoid (foldMapM)
+import Unison.Util.Recursion
 
 test :: Test ()
 test = do
@@ -344,12 +345,12 @@ annotationNestingTest (name, src) = scope name do
 -- within the span of the parent node.
 assertAnnotationsAreNested :: forall f. (Foldable f, Functor f, Show (f (Either String Ann))) => ABT.Term f Symbol Ann -> Test ()
 assertAnnotationsAreNested term = do
-  case ABT.cata alg term of
+  case cata alg term of
     Right _ -> pure ()
     Left err -> crash err
   where
-    alg :: Ann -> ABT.ABT f Symbol (Either String Ann) -> Either String Ann
-    alg ann abt = do
+    alg :: Algebra (ABT.Term' f Symbol Ann) (Either String Ann)
+    alg (ABT.Term' _ ann abt) = do
       childSpan <- abt & foldMapM id
       case abt of
         -- Abs nodes are the only nodes whose annotations are allowed to not contain their children,

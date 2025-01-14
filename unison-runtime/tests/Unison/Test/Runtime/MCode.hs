@@ -10,16 +10,11 @@ import Data.Map.Strict qualified as Map
 import EasyTest
 import Unison.Reference (Reference, Reference' (Builtin))
 import Unison.Runtime.ANF
-  ( SuperGroup (..),
+  ( Cacheability (..),
+    Code (..),
+    SuperGroup (..),
     lamLift,
     superNormalize,
-  )
-import Unison.Runtime.MCode
-  ( Args (..),
-    GBranch (..),
-    GInstr (..),
-    GSection (..),
-    Section,
   )
 import Unison.Runtime.Machine
   ( CCache (..),
@@ -45,20 +40,12 @@ testEval0 :: [(Reference, SuperGroup Symbol)] -> SuperGroup Symbol -> Test ()
 testEval0 env main =
   ok << io do
     cc <- baseCCache False
-    _ <- cacheAdd ((mainRef, main) : env) cc
+    _ <- cacheAdd ((fmap . fmap) uncacheable $ (mainRef, main) : env) cc
     rtm <- readTVarIO (refTm cc)
     apply0 Nothing cc Nothing (rtm Map.! mainRef)
   where
     (<<) = flip (>>)
-
-asrt :: Section
-asrt =
-  Ins (Unpack Nothing 0) $
-    Match 0 $
-      Test1
-        1
-        (Yield (BArg1 0))
-        (Die "assertion failed")
+    uncacheable sg = CodeRep sg Uncacheable
 
 multRec :: String
 multRec =

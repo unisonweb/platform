@@ -21,13 +21,13 @@ import Unison.Util.Monoid (intercalateMap)
 import Unison.Util.Range (Range (..), inRange)
 
 data Segment a = Segment {segment :: String, annotation :: Maybe a}
-  deriving (Eq, Show, Functor, Foldable, Generic)
+  deriving (Eq, Show, Ord, Functor, Foldable, Generic)
 
 toPair :: Segment a -> (String, Maybe a)
 toPair (Segment s a) = (s, a)
 
 newtype AnnotatedText a = AnnotatedText (Seq (Segment a))
-  deriving (Eq, Functor, Foldable, Show, Generic)
+  deriving (Eq, Functor, Foldable, Show, Ord, Generic)
 
 instance Semigroup (AnnotatedText a) where
   AnnotatedText (as :|> Segment "" _) <> bs = AnnotatedText as <> bs
@@ -204,7 +204,6 @@ snipWithContext margin source =
           -- if all annotations so far can be joined without .. separations
           if null rest
             then -- if this one can be joined to the new region without .. separation
-
               if withinMargin r0 r1
                 then -- add it to the first set and grow the compare region
                   (Just $ r0 <> r1, Map.insert r1 a1 taken, mempty)

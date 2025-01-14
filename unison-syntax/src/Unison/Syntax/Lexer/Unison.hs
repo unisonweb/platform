@@ -14,6 +14,9 @@ module Unison.Syntax.Lexer.Unison
     showEscapeChar,
     touches,
 
+    -- * Lexers
+    typeOrTerm,
+
     -- * Character classifiers
     wordyIdChar,
     wordyIdStartChar,
@@ -131,7 +134,7 @@ data Lexeme
   | -- | hash literals
     Hash ShortHash
   | Err Err
-  | Doc (Doc.UntitledSection (Doc.Tree (ReferenceType, HQ'.HashQualified Name) [Token Lexeme]))
+  | Doc (Doc.UntitledSection (Doc.Tree (Token (ReferenceType, HQ'.HashQualified Name)) [Token Lexeme]))
   deriving stock (Eq, Show, Ord)
 
 type IsVirtual = Bool -- is it a virtual semi or an actual semi?
@@ -369,7 +372,7 @@ doc2 = do
   (docTok, closeTok) <- local
     (\env -> env {inLayout = False})
     do
-      body <- Doc.doc typeOrTerm lexemes' . P.lookAhead $ lit "}}"
+      body <- Doc.doc (tokenP typeOrTerm) lexemes' . P.lookAhead $ lit "}}"
       closeStart <- posP
       lit "}}"
       closeEnd <- posP
@@ -397,12 +400,6 @@ doc2 = do
           isTopLevel = length (layout env0) + maybe 0 (const 1) (opening env0) == 1
       _ -> docTok : endToks
   where
-    wordyKw kw = separated wordySep (lit kw)
-    typeOrAbility' = typeOrAbilityAlt (wordyKw . Text.unpack)
-    typeOrTerm = do
-      mtype <- P.optional $ typeOrAbility' <* CP.space
-      ident <- identifierP <* CP.space
-      pure (maybe RtTerm (const RtType) mtype, ident)
     subsequentTypeName = P.lookAhead . P.optional $ do
       let lit' s = lit s <* sp
       let modifier = typeModifiersAlt (lit' . Text.unpack)
@@ -422,6 +419,17 @@ doc2 = do
       pure spaces
       where
         ok s = length [() | '\n' <- s] < 2
+
+typeOrTerm :: (Monad m) => P.ParsecT (Token Err) String m (ReferenceType, HQ'.HashQualified Name)
+typeOrTerm = do
+  mtype <- P.optional $ typeOrAbility' <* CP.space
+  ident <- identifierP <* CP.space
+  pure (maybe RtTerm (const RtType) mtype, ident)
+
+typeOrAbility' :: (Monad m) => P.ParsecT (Token Err) String m String
+typeOrAbility' = typeOrAbilityAlt (wordyKw . Text.unpack)
+  where
+    wordyKw kw = separated wordySep (lit kw)
 
 lexemes' :: P () -> P [Token Lexeme]
 lexemes' eof =

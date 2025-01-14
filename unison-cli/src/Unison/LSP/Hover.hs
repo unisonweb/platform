@@ -52,7 +52,7 @@ hoverInfo uri pos =
   (hoverInfoForRef <|> hoverInfoForLiteral)
   where
     markdownify :: Text -> Text
-    markdownify rendered = Text.unlines ["```unison", rendered, "```"]
+    markdownify rendered = Text.unlines ["``` unison", rendered, "```"]
     prettyWidth :: Pretty.Width
     prettyWidth = 40
     hoverInfoForRef :: MaybeT Lsp Text

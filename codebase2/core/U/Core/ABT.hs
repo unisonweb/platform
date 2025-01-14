@@ -10,6 +10,7 @@ import Debug.RecoverRTTI qualified as RTTI
 import U.Core.ABT.Var (Var (freshIn))
 import Unison.Debug qualified as Debug
 import Unison.Prelude
+import Unison.Util.Recursion
 import Prelude hiding (abs, cycle)
 
 data ABT f v r
@@ -23,6 +24,13 @@ data ABT f v r
 -- a value of type `a`. Variables are of type `v`.
 data Term f v a = Term {freeVars :: Set v, annotation :: a, out :: ABT f v (Term f v a)}
   deriving (Functor, Foldable, Generic, Traversable)
+
+data Term' f v a x = Term' {freeVars' :: Set v, annotation' :: a, out' :: ABT f v x}
+  deriving (Functor)
+
+instance (Functor f) => Recursive (Term f v a) (Term' f v a) where
+  embed (Term' vs a abt) = Term vs a abt
+  project (Term vs a abt) = Term' vs a abt
 
 instance (Foldable f, Functor f, forall a. (Eq a) => Eq (f a), Var v) => Eq (Term f v a) where
   -- alpha equivalence, works by renaming any aligned Abs ctors to use a common fresh variable
@@ -96,24 +104,6 @@ vmapM f (Term _ a out) = case out of
   Tm fa -> tm a <$> traverse (vmapM f) fa
   Cycle r -> cycle a <$> vmapM f r
   Abs v body -> abs a <$> f v <*> vmapM f body
-
-cata ::
-  (Functor f) =>
-  (a -> ABT f v x -> x) ->
-  Term f v a ->
-  x
-cata abtAlg =
-  let go (Term _fvs a out) = abtAlg a (fmap go out)
-   in go
-
-para ::
-  (Functor f) =>
-  (a -> ABT f v (Term f v a, x) -> x) ->
-  Term f v a ->
-  x
-para abtAlg =
-  let go (Term _fvs a out) = abtAlg a (fmap (\x -> (x, go x)) out)
-   in go
 
 transform ::
   (Ord v, Foldable g, Functor g) =>

@@ -53,7 +53,7 @@ testLift :: String -> Test ()
 testLift s = case cs of !_ -> ok
   where
     cs =
-      emitCombs (RN (const 0) (const 0)) (Builtin "Test") 0
+      emitCombs (RN (const 0) (const 0) (const Nothing)) (Builtin "Test") 0
         . superNormalize
         . (\(ll, _, _, _) -> ll)
         . lamLift mempty

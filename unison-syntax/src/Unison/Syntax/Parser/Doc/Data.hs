@@ -13,149 +13,139 @@
 --   line.
 module Unison.Syntax.Parser.Doc.Data where
 
+import Data.Bifoldable (Bifoldable, bifoldr)
+import Data.Bitraversable (Bitraversable, bitraverse)
 import Data.Eq.Deriving (deriveEq1, deriveEq2)
+import Data.Functor.Classes (Eq1 (..), Ord1 (..), Show1 (..))
 import Data.List.NonEmpty (NonEmpty)
 import Data.Ord.Deriving (deriveOrd1, deriveOrd2)
 import Text.Show.Deriving (deriveShow1, deriveShow2)
-import Unison.Parser.Ann (Annotated (..))
-import Unison.Prelude
-import Unison.Syntax.Lexer.Token (Token (..))
+import Unison.Prelude hiding (Word)
+import Prelude hiding (Word)
 
 newtype UntitledSection a = UntitledSection [a]
   deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
 
-data Top ident code a
-  = -- | The first argument is always a `Paragraph`
-    Section a [a]
-  | Eval code
-  | ExampleBlock code
-  | CodeBlock (Token String) (Token String)
-  | BulletedList (NonEmpty (Column a))
-  | NumberedList (NonEmpty (Token Word64, Column a))
-  | Paragraph (NonEmpty (Leaf ident code a))
+newtype Paragraph a = Paragraph (NonEmpty a)
   deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
+
+$(deriveEq1 ''Paragraph)
+$(deriveOrd1 ''Paragraph)
+$(deriveShow1 ''Paragraph)
+
+data List a
+  = BulletedList (NonEmpty (Column a))
+  | NumberedList (NonEmpty (Word64, Column a))
+  deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
+
+instance Eq1 List where
+  liftEq eqA = curry \case
+    (BulletedList as, BulletedList as') -> liftEq (liftEq eqA) as as'
+    (NumberedList as, NumberedList as') -> liftEq (liftEq (liftEq eqA)) as as'
+    (_, _) -> False
+
+instance Ord1 List where
+  liftCompare compareA = curry \case
+    (BulletedList as, BulletedList as') -> liftCompare (liftCompare compareA) as as'
+    (NumberedList as, NumberedList as') -> liftCompare (liftCompare (liftCompare compareA)) as as'
+    (BulletedList _, NumberedList _) -> LT
+    (NumberedList _, BulletedList _) -> GT
+
+instance Show1 List where
+  liftShowsPrec showsPrecA showListA prec =
+    showParen (prec <= 11) . \case
+      BulletedList as ->
+        showString "BulletedList "
+          . liftShowsPrec (liftShowsPrec showsPrecA showListA) (liftShowList showsPrecA showListA) 11 as
+      NumberedList as ->
+        showString "NumberedList "
+          . liftShowsPrec
+            (liftShowsPrec (liftShowsPrec showsPrecA showListA) (liftShowList showsPrecA showListA))
+            (liftShowList (liftShowsPrec showsPrecA showListA) (liftShowList showsPrecA showListA))
+            11
+            as
 
 data Column a
-  = -- | The first is always a `Paragraph`, and the second a `BulletedList` or `NumberedList`
-    Column a (Maybe a)
+  = Column (Paragraph a) (Maybe (List a))
   deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
 
-data Leaf ident code a
-  = Link (EmbedLink ident)
-  | -- | first is a Paragraph, second is always a Group (which contains either a single Term/Type link or list of
-    --   `Transclude`s & `Word`s)
-    NamedLink a (Leaf ident code Void)
-  | Example code
-  | Transclude code
-  | -- | Always a Paragraph
-    Bold a
-  | -- | Always a Paragraph
-    Italic a
-  | -- | Always a Paragraph
-    Strikethrough a
-  | -- | Always a Word
-    Verbatim (Leaf ident Void Void)
-  | -- | Always a Word
-    Code (Leaf ident Void Void)
-  | -- | Always a Transclude
-    Source (NonEmpty (SourceElement ident (Leaf ident code Void)))
-  | -- | Always a Transclude
-    FoldedSource (NonEmpty (SourceElement ident (Leaf ident code Void)))
-  | EvalInline code
-  | Signature (NonEmpty (EmbedSignatureLink ident))
-  | SignatureInline (EmbedSignatureLink ident)
-  | Word (Token String)
-  | Group (Join (Leaf ident code a))
+instance Eq1 Column where
+  liftEq eqA (Column para mlist) (Column para' mlist') =
+    liftEq eqA para para' && liftEq (liftEq eqA) mlist mlist'
+
+instance Ord1 Column where
+  liftCompare compareA (Column para mlist) (Column para' mlist') =
+    liftCompare compareA para para' <> liftCompare (liftCompare compareA) mlist mlist'
+
+instance Show1 Column where
+  liftShowsPrec showsPrecA showListA prec (Column para mlist) =
+    showParen (prec <= 11) $
+      showString "Column "
+        . liftShowsPrec showsPrecA showListA 11 para
+        . liftShowsPrec (liftShowsPrec showsPrecA showListA) (liftShowList showsPrecA showListA) 11 mlist
+
+data Top code leaf a
+  = Section (Paragraph leaf) [a]
+  | Eval code
+  | ExampleBlock code
+  | CodeBlock String String
+  | List' (List leaf)
+  | Paragraph' (Paragraph leaf)
   deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
 
-instance Bifunctor (Leaf ident) where
+instance Bifoldable (Top code) where
+  bifoldr f g z = \case
+    Section para as -> foldr f (foldr g z as) para
+    Eval _ -> z
+    ExampleBlock _ -> z
+    CodeBlock _ _ -> z
+    List' list -> foldr f z list
+    Paragraph' para -> foldr f z para
+
+instance Bifunctor (Top code) where
   bimap f g = \case
-    Link x -> Link x
-    NamedLink a leaf -> NamedLink (g a) $ first f leaf
-    Example code -> Example $ f code
-    Transclude code -> Transclude $ f code
-    Bold a -> Bold $ g a
-    Italic a -> Italic $ g a
-    Strikethrough a -> Strikethrough $ g a
-    Verbatim leaf -> Verbatim leaf
-    Code leaf -> Code leaf
-    Source elems -> Source $ fmap (first f) <$> elems
-    FoldedSource elems -> FoldedSource $ fmap (first f) <$> elems
-    EvalInline code -> EvalInline $ f code
-    Signature x -> Signature x
-    SignatureInline x -> SignatureInline x
-    Word x -> Word x
-    Group join -> Group $ bimap f g <$> join
+    Section para as -> Section (fmap f para) $ fmap g as
+    Eval code -> Eval code
+    ExampleBlock code -> ExampleBlock code
+    CodeBlock title body -> CodeBlock title body
+    List' list -> List' $ fmap f list
+    Paragraph' para -> Paragraph' $ fmap f para
+
+instance Bitraversable (Top code) where
+  bitraverse f g = \case
+    Section para as -> Section <$> traverse f para <*> traverse g as
+    Eval code -> pure $ Eval code
+    ExampleBlock code -> pure $ ExampleBlock code
+    CodeBlock title body -> pure $ CodeBlock title body
+    List' list -> List' <$> traverse f list
+    Paragraph' para -> Paragraph' <$> traverse f para
+
+$(deriveEq1 ''Top)
+$(deriveOrd1 ''Top)
+$(deriveShow1 ''Top)
+$(deriveEq2 ''Top)
+$(deriveOrd2 ''Top)
+$(deriveShow2 ''Top)
 
 -- | This is a deviation from the Unison Doc data model – in Unison, Doc distinguishes between type and term links, but
 --   here Doc knows nothing about what namespaces may exist.
-data EmbedLink ident = EmbedLink (Token ident)
-  deriving (Eq, Ord, Show)
-
-data SourceElement ident a = SourceElement (EmbedLink ident) [EmbedAnnotation ident a]
+data EmbedLink a = EmbedLink a
   deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
 
-newtype EmbedSignatureLink ident = EmbedSignatureLink (Token ident)
-  deriving (Eq, Ord, Show)
+$(deriveEq1 ''EmbedLink)
+$(deriveOrd1 ''EmbedLink)
+$(deriveShow1 ''EmbedLink)
 
-newtype Join a = Join (NonEmpty a)
+newtype Transclude a = Transclude a
   deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
+
+$(deriveEq1 ''Transclude)
+$(deriveOrd1 ''Transclude)
+$(deriveShow1 ''Transclude)
 
 newtype EmbedAnnotation ident a
-  = EmbedAnnotation (Either (Token ident) a)
+  = EmbedAnnotation (Either ident a)
   deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
-
-instance (Annotated code, Annotated a) => Annotated (Top ident code a) where
-  ann = \case
-    Section title body -> ann title <> ann body
-    Eval code -> ann code
-    ExampleBlock code -> ann code
-    CodeBlock label body -> ann label <> ann body
-    BulletedList items -> ann items
-    NumberedList items -> ann $ snd <$> items
-    Paragraph leaves -> ann leaves
-
-instance (Annotated a) => Annotated (Column a) where
-  ann (Column para list) = ann para <> ann list
-
-instance (Annotated code, Annotated a) => Annotated (Leaf ident code a) where
-  ann = \case
-    Link link -> ann link
-    NamedLink label target -> ann label <> ann target
-    Example code -> ann code
-    Transclude code -> ann code
-    Bold para -> ann para
-    Italic para -> ann para
-    Strikethrough para -> ann para
-    Verbatim word -> ann word
-    Code word -> ann word
-    Source elems -> ann elems
-    FoldedSource elems -> ann elems
-    EvalInline code -> ann code
-    Signature links -> ann links
-    SignatureInline link -> ann link
-    Word text -> ann text
-    Group (Join leaves) -> ann leaves
-
-instance Annotated (EmbedLink ident) where
-  ann (EmbedLink name) = ann name
-
-instance (Annotated code) => Annotated (SourceElement ident code) where
-  ann (SourceElement link target) = ann link <> ann target
-
-instance Annotated (EmbedSignatureLink ident) where
-  ann (EmbedSignatureLink name) = ann name
-
-instance (Annotated code) => Annotated (EmbedAnnotation ident code) where
-  ann (EmbedAnnotation a) = either ann ann a
-
-$(deriveEq1 ''Column)
-$(deriveOrd1 ''Column)
-$(deriveShow1 ''Column)
-
-$(deriveEq1 ''Token)
-$(deriveOrd1 ''Token)
-$(deriveShow1 ''Token)
 
 $(deriveEq1 ''EmbedAnnotation)
 $(deriveOrd1 ''EmbedAnnotation)
@@ -164,9 +154,8 @@ $(deriveEq2 ''EmbedAnnotation)
 $(deriveOrd2 ''EmbedAnnotation)
 $(deriveShow2 ''EmbedAnnotation)
 
-$(deriveEq1 ''EmbedLink)
-$(deriveOrd1 ''EmbedLink)
-$(deriveShow1 ''EmbedLink)
+data SourceElement ident a = SourceElement (EmbedLink ident) [EmbedAnnotation ident a]
+  deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
 
 $(deriveEq1 ''SourceElement)
 $(deriveOrd1 ''SourceElement)
@@ -175,9 +164,64 @@ $(deriveEq2 ''SourceElement)
 $(deriveOrd2 ''SourceElement)
 $(deriveShow2 ''SourceElement)
 
+newtype EmbedSignatureLink a = EmbedSignatureLink a
+  deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
+
+newtype Word = Word String
+  deriving (Eq, Ord, Show)
+
+newtype Join a = Join (NonEmpty a)
+  deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
+
 $(deriveEq1 ''Join)
 $(deriveOrd1 ''Join)
 $(deriveShow1 ''Join)
+
+newtype Group a = Group (Join a)
+  deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
+
+$(deriveEq1 ''Group)
+$(deriveOrd1 ''Group)
+$(deriveShow1 ''Group)
+
+data Leaf ident code a
+  = Link (EmbedLink ident)
+  | -- | the Group always contains either a single Term/Type link or list of  `Transclude`s & `Word`s
+    NamedLink (Paragraph a) (Group a)
+  | Example code
+  | Transclude' (Transclude code)
+  | Bold (Paragraph a)
+  | Italic (Paragraph a)
+  | Strikethrough (Paragraph a)
+  | Verbatim Word
+  | Code Word
+  | Source (NonEmpty (SourceElement ident (Transclude code)))
+  | FoldedSource (NonEmpty (SourceElement ident (Transclude code)))
+  | EvalInline code
+  | Signature (NonEmpty (EmbedSignatureLink ident))
+  | SignatureInline (EmbedSignatureLink ident)
+  | Word' Word
+  | Group' (Group a)
+  deriving (Eq, Ord, Show, Foldable, Functor, Traversable)
+
+instance Bifunctor (Leaf ident) where
+  bimap f g = \case
+    Link x -> Link x
+    NamedLink para group -> NamedLink (g <$> para) $ g <$> group
+    Example code -> Example $ f code
+    Transclude' trans -> Transclude' $ f <$> trans
+    Bold para -> Bold $ g <$> para
+    Italic para -> Italic $ g <$> para
+    Strikethrough para -> Strikethrough $ g <$> para
+    Verbatim word -> Verbatim word
+    Code word -> Code word
+    Source elems -> Source $ fmap (fmap f) <$> elems
+    FoldedSource elems -> FoldedSource $ fmap (fmap f) <$> elems
+    EvalInline code -> EvalInline $ f code
+    Signature x -> Signature x
+    SignatureInline x -> SignatureInline x
+    Word' word -> Word' word
+    Group' group -> Group' $ g <$> group
 
 $(deriveEq1 ''Leaf)
 $(deriveOrd1 ''Leaf)
@@ -185,10 +229,3 @@ $(deriveShow1 ''Leaf)
 $(deriveEq2 ''Leaf)
 $(deriveOrd2 ''Leaf)
 $(deriveShow2 ''Leaf)
-
-$(deriveEq1 ''Top)
-$(deriveOrd1 ''Top)
-$(deriveShow1 ''Top)
-$(deriveEq2 ''Top)
-$(deriveOrd2 ''Top)
-$(deriveShow2 ''Top)

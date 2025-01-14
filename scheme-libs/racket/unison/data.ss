@@ -390,7 +390,9 @@
       [(< arity l)
        ; TODO: pending arg annotation if no pure?
        (define-values (now pending) (split-at new-env arity))
-       (apply (apply code now) pending)])))
+       (apply (apply code now) pending)]
+      [else ; still undersaturated
+        (struct-copy unison-closure clo [env new-env])])))
 
 (define (reflect-procedure f)
   (if (unison-closure? f)

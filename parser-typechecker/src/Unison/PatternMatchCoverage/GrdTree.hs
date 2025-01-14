@@ -11,9 +11,9 @@ module Unison.PatternMatchCoverage.GrdTree
 where
 
 import Data.ListLike (ListLike)
-import Unison.PatternMatchCoverage.Fix
 import Unison.Prelude
 import Unison.Util.Pretty
+import Unison.Util.Recursion
 
 -- | A @GrdTree@ is the simple language to desugar matches into. All
 -- pattern matching constructs (/e.g./ structural pattern matching,

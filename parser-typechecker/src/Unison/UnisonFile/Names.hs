@@ -2,10 +2,12 @@ module Unison.UnisonFile.Names
   ( addNamesFromTypeCheckedUnisonFile,
     environmentFor,
     toNames,
+    toTermAndWatchNames,
     typecheckedToNames,
   )
 where
 
+import Control.Lens (_1)
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import Unison.ABT qualified as ABT
@@ -33,6 +35,17 @@ toNames uf = datas <> effects
   where
     datas = foldMap (DD.Names.dataDeclToNames' Name.unsafeParseVar) (Map.toList (UF.dataDeclarationsId uf))
     effects = foldMap (DD.Names.effectDeclToNames' Name.unsafeParseVar) (Map.toList (UF.effectDeclarationsId uf))
+
+-- | The set of all term and test watch names. No constructors.
+toTermAndWatchNames :: (Var v) => UnisonFile v a -> Set v
+toTermAndWatchNames uf =
+  Map.keysSet uf.terms
+    <> foldMap
+      ( \case
+          (WK.TestWatch, xs) -> Set.fromList (map (view _1) xs)
+          _ -> Set.empty
+      )
+      (Map.toList uf.watches)
 
 typecheckedToNames :: (Var v) => TypecheckedUnisonFile v a -> Names
 typecheckedToNames uf = Names (terms <> ctors) types
