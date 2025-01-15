@@ -30,8 +30,7 @@ test = scope "clearWatchCache" $
       ```
     |]
 
-    beforeClear <- listWatches
-    expectNotEqual beforeClear []
+    expectNotEqual [] =<< listWatches
 
     io $
       Ucm.runTranscript
@@ -42,5 +41,4 @@ test = scope "clearWatchCache" $
       ```
     |]
 
-    afterClear <- listWatches
-    expectEqual afterClear []
+    expectEqual [] =<< listWatches

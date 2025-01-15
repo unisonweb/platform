@@ -84,9 +84,19 @@ expectJust :: (HasCallStack) => Maybe a -> Test a
 expectJust Nothing = crash "expected Just, got Nothing"
 expectJust (Just a) = ok >> pure a
 
+-- | This will succeed on any `Right` value. It can be combined with further expectations, like
+--   @`expectEqual` x `<=<` expectRight@.
+--
+--  __NB__: If the `Left` type has a `Show` instance, prefer `expectRight'` for better failure messages.
 expectRight :: (HasCallStack) => Either e a -> Test a
 expectRight (Left _) = crash "expected Right, got Left"
 expectRight (Right a) = ok >> pure a
+
+-- | Like `expectRight`, but will `show` the `Left` when it fails. Use this unless the `Left` type doesn’t have a `Show`
+--   instance.
+expectRight' :: (HasCallStack, Show e) => Either e a -> Test a
+expectRight' (Left e) = crash $ "expected Right, got Left " <> showsPrec 11 e ""
+expectRight' (Right a) = ok >> pure a
 
 expectLeft :: (HasCallStack) => Either e a -> Test e
 expectLeft (Left e) = ok >> pure e

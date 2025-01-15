@@ -4,7 +4,6 @@ module Unison.Test.Util.Text where
 
 import Control.Monad
 import Data.List (foldl', unfoldr)
-import Data.Maybe (isNothing)
 import Data.Text qualified as T
 import EasyTest
 import Unison.Util.Rope qualified as R
@@ -14,20 +13,20 @@ import Unison.Util.Text.Pattern qualified as P
 test :: Test ()
 test =
   scope "util.text" . tests $
-    [ scope "empty ==" . expect $ Text.empty == Text.empty,
-      scope "empty `compare`" . expect $ Text.empty `compare` Text.empty == EQ,
+    [ scope "empty ==" $ expectEqual Text.empty Text.empty,
+      scope "empty `compare`" . expectEqual EQ $ Text.empty `compare` Text.empty,
       scope "==" . expect $
         let a = join (replicate 100 ['a' .. 'z'])
             b = join (replicate 45 ['A' .. 'Z'])
          in (Text.pack a <> Text.pack b) == Text.pack (a ++ b),
       scope "at" $ do
-        expect' (Text.at 0 (Text.pack "abc") == Just 'a')
-        expect' (Text.at 0 mempty == Nothing)
+        expectEqual' (Just 'a') $ Text.at 0 (Text.pack "abc")
+        expectEqual' Nothing $ Text.at 0 mempty
         ok,
       scope "at.cornerCases" $ do
         let b = Text.drop 3 $ "abc" <> "def"
-        expect' (Text.at 0 b == Just 'd')
-        expect' (Text.at 0 (mempty <> "abc") == Just 'a')
+        expectEqual' (Just 'd') $ Text.at 0 b
+        expectEqual' (Just 'a') $ Text.at 0 (mempty <> "abc")
         ok,
       scope "consistency with Text" $ do
         forM_ [(1 :: Int) .. 100] $ \_ -> do
@@ -62,7 +61,7 @@ test =
             let bs = t1s <> t2s <> t3s
                 b = t1 <> t2 <> t3
              in forM_ [0 .. (T.length b - 1)] $ \ind ->
-                  expect' $ Just (T.index b ind) == Text.at ind bs
+                  expectEqual' (Just (T.index b ind)) $ Text.at ind bs
         ok,
       scope "lots of chunks" $ do
         forM_ [(0 :: Int) .. 25] $ \_ -> do
@@ -74,9 +73,9 @@ test =
               b3 = foldl' (<>) mempty (Text.pack <$> chunks)
               b = T.concat (T.pack <$> chunks)
           expect' $ b1 == b2 && b2 == b3
-          expect' $ Text.toText b1 == b
-          expect' $ Text.toText b2 == b
-          expect' $ Text.toText b3 == b
+          expectEqual' b $ Text.toText b1
+          expectEqual' b $ Text.toText b2
+          expectEqual' b $ Text.toText b3
         ok,
       scope "depth checks" $ do
         chunk <- Text.pack <$> replicateM 1000 char
@@ -102,38 +101,58 @@ test =
           expect' (maxDepth < log2 (i * n) * 2)
         ok,
       scope "patterns" $ do
-        expect' (P.run P.Eof "" == Just ([], ""))
-        expect' (P.run (P.Char P.Any) "a" == Just ([], ""))
-        expect' (P.run (P.Char (P.CharRange 'a' 'z')) "a" == Just ([], ""))
-        expect' . isNothing $ P.run (P.Char (P.Not (P.CharRange 'a' 'z'))) "a"
-        expect' (P.run (P.Or (P.Char (P.Not (P.CharRange 'a' 'z'))) (P.Char P.Any)) "abc" == Just ([], "bc"))
+        expectEqual' (Just ([], "")) $ P.run P.Eof ""
+        expectEqual' (Just ([], "")) $ P.run (P.Char P.Any) "a"
+        expectEqual' (Just ([], "")) $ P.run (P.Char (P.CharRange 'a' 'z')) "a"
+        expectEqual' Nothing $ P.run (P.Char (P.Not (P.CharRange 'a' 'z'))) "a"
+        expectEqual' (Just ([], "bc")) $ P.run (P.Or (P.Char (P.Not (P.CharRange 'a' 'z'))) (P.Char P.Any)) "abc"
         -- this shows that we ignore subcaptures
-        expect' (P.run (P.Join [P.Capture (P.Join [P.Capture (P.Char P.Any), P.Capture (P.Char P.Any)]), P.Char P.Any]) "abcdef" == Just (["ab"], "def"))
-        expect' (P.run (P.Char (P.CharSet "0123")) "3ab" == Just ([], "ab"))
-        expect' (P.run (P.Char (P.Not (P.CharSet "0123"))) "a3b" == Just ([], "3b"))
-        expect' (P.run (P.Capture (P.Char (P.Not (P.CharSet "0123")))) "a3b" == Just (["a"], "3b"))
-        expect' (P.run (P.Many True (P.Char (P.CharSet "abcd"))) "babbababac123" == Just ([], "123"))
-        expect' (P.run (P.Capture (P.Many True (P.Char (P.CharSet "abcd")))) "babbababac123" == Just (["babbababac"], "123"))
-        expect' (P.run (P.Capture (P.Many True (P.Char (P.CharClass P.Number)))) "012345abc" == Just (["012345"], "abc"))
-        expect' (P.run (P.Join [P.Capture (P.Many True (P.Char (P.CharClass P.Number))), P.Literal ",", P.Capture (P.Many True (P.Char P.Any))]) "012345,abc" == Just (["012345", "abc"], ""))
-        expect'
-          ( P.run (P.Many True (P.Join [P.Capture (P.Many True (P.Char (P.CharClass P.Number))), P.Many True (P.Char (P.CharClass P.Whitespace))])) "01 10 20 1123 292 110 10"
-              == Just (["01", "10", "20", "1123", "292", "110", "10"], "")
-          )
-        expect' $
+        expectEqual' (Just (["ab"], "def")) $
+          P.run
+            (P.Join [P.Capture (P.Join [P.Capture (P.Char P.Any), P.Capture (P.Char P.Any)]), P.Char P.Any])
+            "abcdef"
+        expectEqual' (Just ([], "ab")) $ P.run (P.Char (P.CharSet "0123")) "3ab"
+        expectEqual' (Just ([], "3b")) $ P.run (P.Char (P.Not (P.CharSet "0123"))) "a3b"
+        expectEqual' (Just (["a"], "3b")) $ P.run (P.Capture (P.Char (P.Not (P.CharSet "0123")))) "a3b"
+        expectEqual' (Just ([], "123")) $ P.run (P.Many True (P.Char (P.CharSet "abcd"))) "babbababac123"
+        expectEqual' (Just (["babbababac"], "123")) $
+          P.run (P.Capture (P.Many True (P.Char (P.CharSet "abcd")))) "babbababac123"
+        expectEqual' (Just (["012345"], "abc")) $
+          P.run (P.Capture (P.Many True (P.Char (P.CharClass P.Number)))) "012345abc"
+        expectEqual' (Just (["012345", "abc"], "")) $
+          P.run
+            ( P.Join
+                [ P.Capture (P.Many True (P.Char (P.CharClass P.Number))),
+                  P.Literal ",",
+                  P.Capture (P.Many True (P.Char P.Any))
+                ]
+            )
+            "012345,abc"
+        expectEqual' (Just (["01", "10", "20", "1123", "292", "110", "10"], "")) $
+          P.run
+            ( P.Many
+                True
+                ( P.Join
+                    [ P.Capture (P.Many True (P.Char (P.CharClass P.Number))),
+                      P.Many True (P.Char (P.CharClass P.Whitespace))
+                    ]
+                )
+            )
+            "01 10 20 1123 292 110 10"
+        expectEqual' (Just (["127", "0", "0", "1"], "")) $
           let part = P.Capture (P.Replicate 1 3 (P.Char (P.CharClass P.Number)))
               dpart = P.Join [P.Literal ".", part]
               ip = P.Join [part, P.Replicate 3 3 dpart, P.Eof]
-           in P.run ip "127.0.0.1" == Just (["127", "0", "0", "1"], "")
-        expect' $
+           in P.run ip "127.0.0.1"
+        expectEqual' (Just (["1", "2", "3", "4", "5"], "")) $
           let p = P.Replicate 5 8 (P.Capture (P.Char (P.CharClass P.Number)))
-           in P.run p "12345" == Just (["1", "2", "3", "4", "5"], "")
-        expect' $
+           in P.run p "12345"
+        expectEqual' (Just ([], "1234")) $
           let p = P.Replicate 5 8 (P.Capture (P.Char (P.CharClass P.Number))) `P.Or` P.Join []
-           in P.run p "1234" == Just ([], "1234")
-        expect' $
+           in P.run p "1234"
+        expectEqual' (Just (["1z", "2z", "3z", "4z", "5z"], "6a")) $
           let p = P.Replicate 5 8 (P.Capture (P.Join [P.Char (P.CharClass P.Number), P.Literal "z"])) `P.Or` P.Join []
-           in P.run p "1z2z3z4z5z6a" == Just (["1z", "2z", "3z", "4z", "5z"], "6a")
+           in P.run p "1z2z3z4z5z6a"
         -- https://github.com/unisonweb/unison/issues/3530
         expectEqual Nothing $
           let p =
@@ -178,26 +197,27 @@ test =
            in P.run p "zzzaaa!!!"
         ok,
       scope "ordinal" do
-        expectEqual (Text.ordinal 1) ("1st" :: String)
-        expectEqual (Text.ordinal 2) ("2nd" :: String)
-        expectEqual (Text.ordinal 3) ("3rd" :: String)
-        expectEqual (Text.ordinal 4) ("4th" :: String)
-        expectEqual (Text.ordinal 5) ("5th" :: String)
-        expectEqual (Text.ordinal 10) ("10th" :: String)
-        expectEqual (Text.ordinal 11) ("11th" :: String)
-        expectEqual (Text.ordinal 12) ("12th" :: String)
-        expectEqual (Text.ordinal 13) ("13th" :: String)
-        expectEqual (Text.ordinal 14) ("14th" :: String)
-        expectEqual (Text.ordinal 21) ("21st" :: String)
-        expectEqual (Text.ordinal 22) ("22nd" :: String)
-        expectEqual (Text.ordinal 23) ("23rd" :: String)
-        expectEqual (Text.ordinal 24) ("24th" :: String)
-        expectEqual (Text.ordinal 111) ("111th" :: String)
-        expectEqual (Text.ordinal 112) ("112th" :: String)
-        expectEqual (Text.ordinal 113) ("113th" :: String)
-        expectEqual (Text.ordinal 121) ("121st" :: String)
-        expectEqual (Text.ordinal 122) ("122nd" :: String)
-        expectEqual (Text.ordinal 123) ("123rd" :: String)
+        let expectOrdinal = \ord -> expectEqual @String ord . Text.ordinal
+        expectOrdinal "1st" 1
+        expectOrdinal "2nd" 2
+        expectOrdinal "3rd" 3
+        expectOrdinal "4th" 4
+        expectOrdinal "5th" 5
+        expectOrdinal "10th" 10
+        expectOrdinal "11th" 11
+        expectOrdinal "12th" 12
+        expectOrdinal "13th" 13
+        expectOrdinal "14th" 14
+        expectOrdinal "21st" 21
+        expectOrdinal "22nd" 22
+        expectOrdinal "23rd" 23
+        expectOrdinal "24th" 24
+        expectOrdinal "111th" 111
+        expectOrdinal "112th" 112
+        expectOrdinal "113th" 113
+        expectOrdinal "121st" 121
+        expectOrdinal "122nd" 122
+        expectOrdinal "123rd" 123
     ]
   where
     log2 :: Int -> Int
