@@ -1706,46 +1706,6 @@ instance ForeignConvention POSIXTime where
   readAtIndex stk i = fromIntegral <$> peekOffI stk i
   writeBack stk pt = pokeI stk (round pt)
 
-
--- mkForeignExn ::
---   ForeignArgs a =>
---   ForeignConvention e =>
---   ForeignConvention r =>
---   (a -> IO (Either (Failure e) r)) ->
---   ForeignFunc
--- mkForeignExn f = FFE f
-
--- TODO: was this ever actually used? Mapping IO exceptions to numbers.
---
--- ioeDecode :: Int -> IOErrorType
--- ioeDecode 0 = AlreadyExists
--- ioeDecode 1 = NoSuchThing
--- ioeDecode 2 = ResourceBusy
--- ioeDecode 3 = ResourceExhausted
--- ioeDecode 4 = EOF
--- ioeDecode 5 = IllegalOperation
--- ioeDecode 6 = PermissionDenied
--- ioeDecode 7 = UserError
--- ioeDecode _ = internalBug "ioeDecode"
-
--- ioeEncode :: IOErrorType -> Int
--- ioeEncode AlreadyExists = 0
--- ioeEncode NoSuchThing = 1
--- ioeEncode ResourceBusy = 2
--- ioeEncode ResourceExhausted = 3
--- ioeEncode EOF = 4
--- ioeEncode IllegalOperation = 5
--- ioeEncode PermissionDenied = 6
--- ioeEncode UserError = 7
--- ioeEncode _ = internalBug "ioeDecode"
-
--- instance ForeignConvention IOException where
---   readForeign = readForeignAs (bld . ioeDecode)
---     where
---       bld t = IOError Nothing t "" "" Nothing Nothing
---
---   writeForeign = writeForeignAs (ioeEncode . ioe_type)
-
 decodeBufferMode :: Closure -> IO BufferMode
 decodeBufferMode (Enum _ t)
   | t == TT.noBufTag = pure NoBuffering
