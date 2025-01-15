@@ -26,6 +26,7 @@ import Data.Conduit.Zlib qualified as C
 import Data.Graph qualified as Graph
 import Data.Map qualified as Map
 import Data.Set qualified as Set
+import Data.Text.IO qualified as Text
 import Servant.Conduit ()
 import System.Console.Regions qualified as Console.Regions
 import U.Codebase.HashTags (CausalHash)
@@ -217,7 +218,9 @@ withEntityStream ::
   (Int -> Stream () SyncV2.DownloadEntitiesChunk -> m r) ->
   m r
 withEntityStream conn rootHash mayBranchRef callback = do
-  entities <- liftIO $ Sqlite.runTransaction conn (depsForCausal rootHash)
+  entities <- liftIO $ withEntityLoadingCallback $ \counter -> do
+    Sqlite.runTransaction conn (depsForCausal rootHash counter)
+  liftIO $ Text.hPutStrLn IO.stderr $ "Finished loading entities, writing sync-file."
   let totalEntities = fromIntegral $ Map.size entities
   let initialChunk =
         SyncV2.InitialC
@@ -256,8 +259,8 @@ syncToFile codebase rootHash mayBranchRef destFilePath = do
           C.runConduit $ stream C..| countC C..| C.map (BL.toStrict . CBOR.serialise) C..| C.transPipe liftIO C.gzip C..| C.sinkFile destFilePath
 
 -- | Collect all dependencies of a given causal hash.
-depsForCausal :: CausalHash -> Sqlite.Transaction (Map Hash32 (Sync.Entity Text Hash32 Hash32))
-depsForCausal causalHash = do
+depsForCausal :: CausalHash -> (Int -> IO ()) -> Sqlite.Transaction (Map Hash32 (Sync.Entity Text Hash32 Hash32))
+depsForCausal causalHash counter = do
   flip execStateT mempty $ expandEntities (causalHashToHash32 causalHash)
   where
     expandEntities :: Hash32 -> ((StateT (Map Hash32 (Sync.Entity Text Hash32 Hash32)) Sqlite.Transaction)) ()
@@ -267,6 +270,7 @@ depsForCausal causalHash = do
         False -> do
           entity <- lift $ Sync.expectEntity hash32
           modify (Map.insert hash32 entity)
+          lift . Sqlite.unsafeIO $ counter 1
           traverseOf_ Sync.entityHashes_ expandEntities entity
 
 -- | Gets the framed chunks from a NetString framed stream.
@@ -374,3 +378,18 @@ withStreamProgressCallback total action = do
         toIO $ action $ C.awaitForever \i -> do
           liftIO $ IO.atomically (IO.modifyTVar' entitiesDownloadedVar (+ 1))
           C.yield i
+
+withEntityLoadingCallback :: (MonadUnliftIO m) => ((Int -> m ()) -> m a) -> m a
+withEntityLoadingCallback action = do
+  counterVar <- IO.newTVarIO (0 :: Int)
+  IO.withRunInIO \toIO -> do
+    Console.Regions.displayConsoleRegions do
+      Console.Regions.withConsoleRegion Console.Regions.Linear \region -> do
+        Console.Regions.setConsoleRegion region do
+          processed <- IO.readTVar counterVar
+          pure $
+            "\n  Loading "
+              <> tShow processed
+              <> " entities...\n\n"
+        toIO $ action $ \i -> do
+          liftIO $ IO.atomically (IO.modifyTVar' counterVar (+ i))
