@@ -10,7 +10,6 @@ module Unison.SyncV2.Types
     EntityKind (..),
     serialiseCBORBytes,
     deserialiseOrFailCBORBytes,
-    UploadEntitiesRequest (..),
     BranchRef (..),
     PullError (..),
     EntitySorting (..),
@@ -267,13 +266,6 @@ instance Serialise DownloadEntitiesChunk where
       InitialChunkTag -> InitialC <$> decode
       EntityChunkTag -> EntityC <$> decode
       ErrorChunkTag -> ErrorC <$> decode
-
--- TODO
-data UploadEntitiesRequest = UploadEntitiesRequest
-
-instance Serialise UploadEntitiesRequest where
-  encode _ = mempty
-  decode = pure UploadEntitiesRequest
 
 -- | An error occurred while pulling code from Unison Share.
 data PullError

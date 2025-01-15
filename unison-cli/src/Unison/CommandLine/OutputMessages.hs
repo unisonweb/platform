@@ -117,7 +117,9 @@ import Unison.Server.Backend (ShallowListEntry (..), TypeEntry (..))
 import Unison.Server.Backend qualified as Backend
 import Unison.Server.SearchResultPrime qualified as SR'
 import Unison.Share.Sync.Types qualified as Share (CodeserverTransportError (..), GetCausalHashByPathError (..), PullError (..))
+import Unison.Share.Sync.Types qualified as Sync
 import Unison.Sync.Types qualified as Share
+import Unison.SyncV2.Types qualified as SyncV2
 import Unison.Syntax.DeclPrinter qualified as DeclPrinter
 import Unison.Syntax.HashQualified qualified as HQ (toText, unsafeFromVar)
 import Unison.Syntax.Name qualified as Name (toText)
@@ -2259,8 +2261,9 @@ notifyUser dir = \case
           ]
   Literal message -> pure message
   SyncPullError syncErr ->
-    -- TODO: Better error message
-    pure (P.shown syncErr)
+    case syncErr of
+      Sync.TransportError te -> pure (prettyTransportError te)
+      Sync.SyncError pullErr -> pure (prettyPullV2Error pullErr)
 
 prettyShareError :: ShareError -> Pretty
 prettyShareError =
@@ -2280,6 +2283,26 @@ prettyDownloadEntitiesError = \case
   Share.DownloadEntitiesProjectNotFound project -> shareProjectNotFound project
   Share.DownloadEntitiesEntityValidationFailure err -> prettyEntityValidationFailure err
 
+prettyBranchRef :: SyncV2.BranchRef -> Pretty
+prettyBranchRef (SyncV2.BranchRef txt) = P.blue (P.text txt)
+
+prettyDownloadEntitiesErrorV2 :: SyncV2.DownloadEntitiesError -> Pretty
+prettyDownloadEntitiesErrorV2 = \case
+  SyncV2.DownloadEntitiesNoReadPermission branchRef -> prettyBranchRef branchRef
+  SyncV2.DownloadEntitiesUserNotFound userHandle -> shareUserNotFound (Share.RepoInfo userHandle)
+  SyncV2.DownloadEntitiesProjectNotFound project -> shareProjectNotFound project
+  SyncV2.DownloadEntitiesEntityValidationFailure err -> prettyEntityValidationFailure err
+  SyncV2.DownloadEntitiesInvalidBranchRef msg ref -> prettyInvalidBranchRef msg ref
+
+prettyInvalidBranchRef :: Text -> SyncV2.BranchRef -> Pretty
+prettyInvalidBranchRef msg (SyncV2.BranchRef txt) =
+  P.wrap $
+    "The server sent an invalid branch reference."
+      <> "The error was:"
+      <> P.text msg
+      <> "The branch reference was:"
+      <> P.text txt
+
 prettyGetCausalHashByPathError :: Share.GetCausalHashByPathError -> Pretty
 prettyGetCausalHashByPathError = \case
   Share.GetCausalHashByPathErrorNoReadPermission sharePath -> noReadPermissionForPath sharePath
@@ -2292,6 +2315,38 @@ prettyPullError = \case
   Share.PullError'GetCausalHash err -> prettyGetCausalHashByPathError err
   Share.PullError'NoHistoryAtPath sharePath ->
     P.wrap $ P.text "The server didn't find anything at" <> prettySharePath sharePath
+
+prettyPullV2Error :: SyncV2.PullError -> Pretty
+prettyPullV2Error = \case
+  SyncV2.PullError'DownloadEntities err -> prettyDownloadEntitiesErrorV2 err
+  SyncV2.PullError'Sync syncErr -> prettySyncErrorV2 syncErr
+
+prettySyncErrorV2 :: SyncV2.SyncError -> Pretty
+prettySyncErrorV2 = \case
+  SyncV2.SyncErrorExpectedResultNotInMain hash ->
+    P.wrap $
+      "The sync finished, but I'm missing an entity I expected."
+        <> "The missing hash is:"
+        <> prettyCausalHash hash
+  SyncV2.SyncErrorDeserializationFailure failure ->
+    P.wrap $
+      "Failed to decode a response from the server."
+        <> "The error was:"
+        <> P.shown failure
+  SyncV2.SyncErrorMissingInitialChunk ->
+    P.wrap "The server didn't send the initial chunk of the response."
+  SyncV2.SyncErrorMisplacedInitialChunk ->
+    P.wrap "The server sent the initial chunk of the response in the wrong place."
+  SyncV2.SyncErrorStreamFailure msg ->
+    P.wrap $
+      "Failed to stream data from the server."
+        <> "The error was:"
+        <> P.text msg
+  SyncV2.SyncErrorUnsupportedVersion version ->
+    P.wrap $
+      "The server sent a response with an unsupported version."
+        <> "The version was:"
+        <> P.shown version
 
 prettyUploadEntitiesError :: Share.UploadEntitiesError -> Pretty
 prettyUploadEntitiesError = \case
@@ -2367,10 +2422,10 @@ prettyTransportError = \case
   Share.UnexpectedResponse resp ->
     unexpectedServerResponse resp
   Share.StreamingError err ->
-     P.lines
-       [ ( "We encountered an error while streaming data from the code server: " <> P.text err),
-         P.red (P.text err)
-       ]
+    P.lines
+      [ ("We encountered an error while streaming data from the code server: " <> P.text err),
+        P.red (P.text err)
+      ]
 
 unexpectedServerResponse :: Servant.ResponseF LazyByteString.ByteString -> P.Pretty Unison.Util.ColorText.ColorText
 unexpectedServerResponse resp =
