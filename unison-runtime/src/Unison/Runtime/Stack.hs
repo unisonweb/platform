@@ -36,7 +36,10 @@ module Unison.Runtime.Stack
     unpackXStack,
     xStackIOToIO,
     stackIOToIOX,
+    estackIOToIOX,
+    exStackIOToIO,
     IOXStack,
+    IOEXStack,
     apX,
     fpX,
     spX,
@@ -66,7 +69,9 @@ module Unison.Runtime.Stack
     USeq,
     traceK,
     frameDataSize,
+    RuntimePanic (..),
     marshalToForeign,
+    marshalUnwrapForeignIO,
     unull,
     bnull,
     nullSeg,
@@ -136,6 +141,8 @@ module Unison.Runtime.Stack
     adjustArgs,
     fsize,
     asize,
+    useg,
+    bseg,
 
     -- * Unboxed type tags
     natTypeTag,
@@ -146,6 +153,7 @@ module Unison.Runtime.Stack
   )
 where
 
+import Control.Exception (throwIO)
 import Control.Monad.Primitive
 import Data.Char qualified as Char
 import Data.IORef (IORef)
@@ -510,6 +518,18 @@ marshalToForeign (Foreign x) = x
 marshalToForeign c =
   error $ "marshalToForeign: unhandled closure: " ++ show c
 
+data RuntimePanic = Panic String (Maybe Val)
+  deriving (Show)
+
+instance Exception RuntimePanic
+
+marshalUnwrapForeignIO :: HasCallStack => Closure -> IO a
+marshalUnwrapForeignIO (Foreign x) = pure $ unwrapForeign x
+marshalUnwrapForeignIO c =
+  throwIO $ Panic "marshalUnwrapForeignIO: unhandled closure" (Just v)
+  where
+    v = BoxedVal c
+
 type Off = Int
 
 type SZ = Int
@@ -650,6 +670,9 @@ type XStack = (# Int#, Int#, Int#, MutableByteArray# (PrimState IO), MutableArra
 
 type IOXStack = State# RealWorld -> (# State# RealWorld, XStack #)
 
+type IOEXStack =
+  State# RealWorld -> (# State# RealWorld, Bool, XStack #)
+
 pattern XStack :: Int# -> Int# -> Int# -> MutableByteArray# RealWorld -> MutableArray# RealWorld Closure -> Stack
 pattern XStack {apX, fpX, spX, ustkX, bstkX} = Stack (I# apX) (I# fpX) (I# spX) (MutableByteArray ustkX) (MutableArray bstkX)
 
@@ -673,6 +696,14 @@ stackIOToIOX :: IO Stack -> IOXStack
 stackIOToIOX (IO f) = \s -> case f s of (# s', x #) -> (# s', unpackXStack x #)
 {-# INLINE stackIOToIOX #-}
 
+estackIOToIOX :: IO (Bool, Stack) -> IOEXStack
+estackIOToIOX (IO f) = \s -> case f s of
+  (# s', (b, x) #) -> (# s', b, unpackXStack x #)
+
+exStackIOToIO :: IOEXStack -> IO (Bool, Stack)
+exStackIOToIO f = IO $ \s -> case f s of
+  (# s , b, x #) -> (# s, (b, packXStack x) #)
+
 instance Show Stack where
   show (Stack ap fp sp _ _) =
     "Stack " ++ show ap ++ " " ++ show fp ++ " " ++ show sp
@@ -686,7 +717,9 @@ data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
   -- See universalEq.
   deriving (Show)
 
-instance BuiltinForeign (IORef Val) where foreignRef = Tagged Ty.refRef
+instance BuiltinForeign (IORef Val) where
+  foreignName = Tagged "IORef"
+  foreignRef = Tagged Ty.refRef
 
 -- | A nulled out value you can use when filling empty arrays, etc.
 emptyVal :: Val

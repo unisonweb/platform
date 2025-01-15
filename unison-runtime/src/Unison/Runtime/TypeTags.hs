@@ -6,6 +6,7 @@ module Unison.Runtime.TypeTags
     packTags,
     unpackTags,
     maskTags,
+    anyTag,
     floatTag,
     natTag,
     intTag,
@@ -13,9 +14,28 @@ module Unison.Runtime.TypeTags
     unitTag,
     leftTag,
     rightTag,
+    noneTag,
+    someTag,
     falseTag,
     trueTag,
     pairTag,
+    failureTag,
+    noBufTag,
+    lineBufTag,
+    blockBufTag,
+    sizedBlockBufTag,
+    readModeTag,
+    writeModeTag,
+    appendModeTag,
+    readWriteModeTag,
+    seekAbsoluteTag,
+    seekRelativeTag,
+    seekEndTag,
+    exceptionTag,
+    exceptionRaiseTag,
+    stdInTag,
+    stdOutTag,
+    stdErrTag,
     pureEffectTag,
   )
 where
@@ -136,14 +156,72 @@ falseTag = mkEnumTag "falseTag" Ty.booleanRef 0
 trueTag :: PackedTag
 trueTag = mkEnumTag "trueTag" Ty.booleanRef 1
 
+anyTag :: PackedTag
+anyTag = mkEnumTag "anyTag" Ty.anyRef 0
+
+failureTag :: PackedTag
+failureTag = mkEnumTag "failureTag" Ty.failureRef 0
+
+noneTag, someTag :: PackedTag
+(noneTag, someTag)
+  | [nt, st] <-
+      mkTags "optional tags" Ty.optionalRef
+        [Ty.noneId, Ty.someId] = (nt, st)
+  | otherwise = error "internal error: optional tags"
+
 leftTag, rightTag :: PackedTag
 (leftTag, rightTag)
-  | Just n <- Map.lookup Ty.eitherRef builtinTypeNumbering,
-    et <- toEnum (fromIntegral n),
-    lt <- toEnum (fromIntegral Ty.eitherLeftId),
-    rt <- toEnum (fromIntegral Ty.eitherRightId) =
-      (packTags et lt, packTags et rt)
+  | [lt, rt] <-
+      mkTags "either tags" Ty.eitherRef
+        [Ty.eitherLeftId, Ty.eitherRightId] = (lt, rt)
   | otherwise = error "internal error: either tags"
+
+noBufTag, lineBufTag, blockBufTag, sizedBlockBufTag :: PackedTag
+(noBufTag, lineBufTag, blockBufTag, sizedBlockBufTag)
+  | [nt,lt,bt,st] <-
+      mkTags "buffer mode tags" Ty.bufferModeRef
+        [ Ty.bufferModeNoBufferingId,
+          Ty.bufferModeLineBufferingId,
+          Ty.bufferModeBlockBufferingId,
+          Ty.bufferModeSizedBlockBufferingId ] = (nt, lt, bt, st)
+  | otherwise = error "internal error: buffer mode tags"
+
+readModeTag, writeModeTag, appendModeTag, readWriteModeTag :: PackedTag
+(readModeTag, writeModeTag, appendModeTag, readWriteModeTag)
+  | [rt,wt,at,rwt] <-
+      mkTags "file mode tags" Ty.fileModeRef
+        [ Ty.fileModeReadId,
+          Ty.fileModeWriteId,
+          Ty.fileModeAppendId,
+          Ty.fileModeReadWriteId ] = (rt, wt, at, rwt)
+  | otherwise = error "internal error: file mode tags"
+
+seekAbsoluteTag, seekRelativeTag, seekEndTag :: PackedTag
+(seekAbsoluteTag, seekRelativeTag, seekEndTag)
+  | [at, rt, et] <-
+      mkTags "seek mode tags" Ty.seekModeRef
+        [ Ty.seekModeAbsoluteId,
+          Ty.seekModeRelativeId,
+          Ty.seekModeEndId ] = (at, rt, et)
+  | otherwise = error "internal error: seek mode tags"
+
+stdInTag, stdOutTag, stdErrTag :: PackedTag
+(stdInTag, stdOutTag, stdErrTag)
+  | [it, ot, et] <-
+      mkTags "standard handle tags" Ty.stdHandleRef
+        [ Ty.stdInId,
+          Ty.stdOutId,
+          Ty.stdErrId ] = (it, ot, et)
+  | otherwise = error "internal error: standard handle tags"
+
+exceptionTag :: Word64
+exceptionRaiseTag :: PackedTag
+(exceptionTag, exceptionRaiseTag)
+  | Just n <- Map.lookup Ty.exceptionRef builtinTypeNumbering,
+    et <- toEnum $ fromIntegral n,
+    rt <- toEnum $ fromIntegral Ty.exceptionRaiseId =
+      (n, packTags et rt)
+  | otherwise = internalBug $ "internal error: Exception tag"
 
 pairTag :: PackedTag
 pairTag
@@ -166,3 +244,10 @@ mkEnumTag msg r i
     rt <- toEnum (fromIntegral n) =
       packTags rt (toEnum i)
   | otherwise = internalBug $ "internal error: " <> msg
+
+mkTags :: String -> Reference -> [Word64] -> [PackedTag]
+mkTags msg r cs
+  | Just n <- Map.lookup r builtinTypeNumbering,
+    tt <- toEnum $ fromIntegral n =
+      packTags tt . toEnum . fromIntegral <$> cs
+  | otherwise = error $ "internal error: " ++ msg
