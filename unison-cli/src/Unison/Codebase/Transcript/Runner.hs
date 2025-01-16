@@ -487,6 +487,7 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
               i <- atomicModifyIORef' seedRef \i -> let !i' = i + 1 in (i', i)
               pure (Parser.uniqueBase32Namegen (Random.drgNewSeed (Random.seedFromInteger (fromIntegral i)))),
             loadSource = loadPreviousUnisonBlock,
+            lspCheckForChanges = \_ -> pure (),
             writeSource,
             notify = print,
             notifyNumbered = printNumbered,

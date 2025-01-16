@@ -306,7 +306,7 @@ main version = do
               currentPP <- Codebase.runTransaction theCodebase do
                 PP.toIds <$> Codebase.expectCurrentProjectPath
               changeSignal <- Signal.newSignalIO (Just currentPP)
-              let lspCheckForChanges pp = Signal.writeSignalIO changeSignal pp
+              let lspCheckForChanges = Signal.writeSignalIO changeSignal
               -- Unfortunately, the windows IO manager on GHC 8.* is prone to just hanging forever
               -- when waiting for input on handles, so if we listen for LSP connections it will
               -- prevent UCM from shutting down properly. Hopefully we can re-enable LSP on

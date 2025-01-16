@@ -433,18 +433,25 @@ updateAndStepAt reason projectBranch updates steps = do
 
 updateProjectBranchRoot :: ProjectBranch -> Text -> (Branch IO -> Cli (Branch IO, r)) -> Cli r
 updateProjectBranchRoot projectBranch reason f = do
-  Cli.Env {codebase} <- ask
+  env <- ask
   Cli.time "updateProjectBranchRoot" do
     old <- getProjectBranchRoot projectBranch
     (new, result) <- f old
     when (old /= new) do
-      liftIO $ Codebase.putBranch codebase new
-      Cli.runTransaction $ do
+      liftIO $ Codebase.putBranch env.codebase new
+      Cli.runTransaction do
         -- TODO: If we transactionally check that the project branch hasn't changed while we were computing the new
         -- branch, and if it has, abort the transaction and return an error, then we can
         -- remove the single UCM per codebase restriction.
         causalHashId <- Q.expectCausalHashIdByCausalHash (Branch.headHash new)
-        Q.setProjectBranchHead reason (projectBranch ^. #projectId) (projectBranch ^. #branchId) causalHashId
+        Q.setProjectBranchHead reason projectBranch.projectId projectBranch.branchId causalHashId
+      -- The input to this function isn't necessarily the *current* project branch, which is what LSP cares about. But
+      -- it might be! There's no harm in unconditionally notifying the LSP that the current project branch may have
+      -- changed, but it is slightly more efficient for us to just do the == comparison here (since otherwise the LSP
+      -- would have to dig around in the database before confirming whether there's a change).
+      projectPathIds <- Cli.getProjectPathIds
+      when ((projectBranch.projectId, projectBranch.branchId) == (projectPathIds.project, projectPathIds.branch)) do
+        liftIO (env.lspCheckForChanges projectPathIds)
     pure result
 
 updateProjectBranchRoot_ :: ProjectBranch -> Text -> (Branch IO -> Branch IO) -> Cli ()
