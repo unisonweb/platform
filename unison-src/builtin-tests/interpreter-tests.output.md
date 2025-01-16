@@ -13,7 +13,7 @@ scratch/main> delete.project runtime-tests
 ```
 
 ``` ucm :hide
-scratch/main> clone @unison/runtime-tests/releases/0.0.1 runtime-tests/selected
+scratch/main> clone @unison/runtime-tests/releases/0.0.3 runtime-tests/selected
 ```
 
 ``` ucm
