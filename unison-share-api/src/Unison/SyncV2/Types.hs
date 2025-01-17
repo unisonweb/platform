@@ -32,7 +32,6 @@ import Data.Word (Word16, Word64)
 import U.Codebase.HashTags (CausalHash)
 import U.Codebase.Sqlite.TempEntity (TempEntity)
 import Unison.Core.Project (ProjectAndBranch (..), ProjectBranchName, ProjectName)
-import Unison.Debug qualified as Debug
 import Unison.Hash32 (Hash32)
 import Unison.Prelude (From (..))
 import Unison.Server.Orphans ()
@@ -186,7 +185,7 @@ optionalDecodeMapKey k m =
     Nothing -> pure Nothing
     Just bs -> Just <$> decodeUnknownCBORBytes bs
 
--- | Serialised as a map to allow for future expansion
+-- | Serialised as a map to be future compatible, allowing for future expansion.
 instance Serialise StreamInitInfo where
   encode (StreamInitInfo {version, entitySorting, numEntities, rootCausalHash, rootBranchRef}) =
     CBOR.encode
@@ -199,18 +198,11 @@ instance Serialise StreamInitInfo where
             <> maybe [] (\br -> [("br", serialiseUnknownCBORBytes br)]) rootBranchRef
       )
   decode = do
-    Debug.debugLogM Debug.Temp "Decoding StreamInitInfo"
-    Debug.debugLogM Debug.Temp "Decoding Map"
     m <- CBOR.decode
-    Debug.debugLogM Debug.Temp "Decoding Version"
     version <- decodeMapKey "v" m
-    Debug.debugLogM Debug.Temp "Decoding Entity Sorting"
     entitySorting <- decodeMapKey "es" m
-    Debug.debugLogM Debug.Temp "Decoding Number of Entities"
     numEntities <- (optionalDecodeMapKey "ne" m)
-    Debug.debugLogM Debug.Temp "Decoding Root Causal Hash"
     rootCausalHash <- decodeMapKey "rc" m
-    Debug.debugLogM Debug.Temp "Decoding Branch Ref"
     rootBranchRef <- optionalDecodeMapKey "br" m
     pure StreamInitInfo {version, entitySorting, numEntities, rootCausalHash, rootBranchRef}
 
