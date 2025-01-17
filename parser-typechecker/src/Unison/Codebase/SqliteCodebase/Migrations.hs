@@ -85,7 +85,8 @@ migrations regionVar getDeclType termBuffer declBuffer rootCodebasePath =
       sqlMigration 15 Q.addSquashResultTableIfNotExists,
       sqlMigration 16 Q.cdToProjectRoot,
       (17 {- This migration takes a raw sqlite connection -}, \conn -> migrateSchema16To17 conn),
-      sqlMigration 18 Q.addProjectBranchLastAccessedColumn
+      sqlMigration 18 Q.addProjectBranchLastAccessedColumn,
+      sqlMigration 19 Q.trackLatestRemoteHead
     ]
   where
     runT :: Sqlite.Transaction () -> Sqlite.Connection -> IO ()
