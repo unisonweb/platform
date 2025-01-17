@@ -165,8 +165,7 @@ newtype Version = Version Word16
   deriving stock (Show)
   deriving newtype (Eq, Ord, Serialise)
 
-data StreamInitInfo
-  = StreamInitInfo
+data StreamInitInfo = StreamInitInfo
   { version :: Version,
     entitySorting :: EntitySorting,
     numEntities :: Maybe Word64,

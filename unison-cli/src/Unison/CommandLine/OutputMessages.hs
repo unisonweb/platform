@@ -65,6 +65,7 @@ import Unison.Codebase.Editor.Output.PushPull qualified as PushPull
 import Unison.Codebase.Editor.SlurpResult qualified as SlurpResult
 import Unison.Codebase.Editor.StructuredArgument (StructuredArgument)
 import Unison.Codebase.Editor.StructuredArgument qualified as SA
+import Unison.Codebase.Init.OpenCodebaseError qualified as CodebaseInit
 import Unison.Codebase.IntegrityCheck (IntegrityResult (..), prettyPrintIntegrityErrors)
 import Unison.Codebase.Patch qualified as Patch
 import Unison.Codebase.Path qualified as Path
@@ -974,6 +975,7 @@ notifyUser dir = \case
       --       defs in the codebase.  In some cases it's fine for bindings to
       --       shadow codebase names, but you don't want it to capture them in
       --       the decompiled output.
+
         let prettyBindings =
               P.bracket . P.lines $
                 P.wrap "The watch expression(s) reference these definitions:"
@@ -2264,6 +2266,31 @@ notifyUser dir = \case
     case syncErr of
       Sync.TransportError te -> pure (prettyTransportError te)
       Sync.SyncError pullErr -> pure (prettyPullV2Error pullErr)
+  SyncFromCodebaseMissingProjectBranch projectBranch ->
+    pure . P.wrap $
+      "I couldn't sync from the codebase because the project branch"
+        <> prettyProjectAndBranchName projectBranch
+        <> "doesn't exist."
+  OpenCodebaseError codebasePath err -> case err of
+    CodebaseInit.OpenCodebaseDoesntExist ->
+      pure . P.wrap $ "I couldn't find a valid codebase at " <> prettyFilePath codebasePath
+    CodebaseInit.OpenCodebaseUnknownSchemaVersion schemaVersion ->
+      pure . P.wrap . P.lines $
+        [ "I couldn't open the codebase at " <> prettyFilePath codebasePath <> ".",
+          "The schema version appears to be newer than the current UCM version can support.",
+          "You may need to upgrade UCM. The codebase is at schema version: " <> P.shown schemaVersion
+        ]
+    CodebaseInit.OpenCodebaseFileLockFailed -> do
+      pure . P.wrap . P.lines $
+        [ "I couldn't open the codebase at " <> prettyFilePath codebasePath,
+          "It appears another process is using that codebase, please close other UCM instances and try again."
+        ]
+    CodebaseInit.OpenCodebaseRequiresMigration currentSV requiredSV ->
+      pure . P.wrap . P.lines $
+        [ "I couldn't open the codebase at " <> prettyFilePath codebasePath,
+          "The codebase is at schema version " <> P.shown currentSV <> " but UCM requires schema version " <> P.shown requiredSV <> ".",
+          "Please open the other codebase with UCM directly to upgrade it to the latest version, then try again."
+        ]
 
 prettyShareError :: ShareError -> Pretty
 prettyShareError =

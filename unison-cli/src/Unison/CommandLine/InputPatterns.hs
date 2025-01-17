@@ -773,6 +773,23 @@ handleBranchWithOptionalProject =
         otherNumArg -> Left $ wrongStructuredArgument "a project branch" otherNumArg
     )
 
+handleBranchWithProject :: I.Argument -> Either (P.Pretty CT.ColorText) (ProjectAndBranch ProjectName ProjectBranchName)
+handleBranchWithProject =
+  either
+    ( \str ->
+        Text.pack str
+          & tryInto @(These ProjectName ProjectBranchName)
+          & first (const $ expectedButActually' "a project branch" str)
+          >>= \case
+            These project branch -> pure $ ProjectAndBranch project branch
+            That _branch -> Left $ expectedButActually' "a project branch" str
+            This _project -> Left $ expectedButActually' "a project branch" str
+    )
+    ( \case
+        SA.ProjectBranch (ProjectAndBranch (Just proj) branch) -> pure $ ProjectAndBranch proj branch
+        otherNumArg -> Left $ wrongStructuredArgument "a project branch" otherNumArg
+    )
+
 mergeBuiltins :: InputPattern
 mergeBuiltins =
   InputPattern
@@ -2192,7 +2209,7 @@ syncFromCodebase =
             ]
         ),
       parse = \case
-        [codebaseLocation, branchToSync, destinationBranch] -> Input.SyncFromCodebaseI <$> unsupportedStructuredArgument makeStandalone "a file name" codebaseLocation <*> handleBranchWithOptionalProject branchToSync <*> handleBranchWithOptionalProject destinationBranch
+        [codebaseLocation, branchToSync, destinationBranch] -> Input.SyncFromCodebaseI <$> unsupportedStructuredArgument makeStandalone "a file name" codebaseLocation <*> handleBranchWithProject branchToSync <*> handleBranchWithOptionalProject destinationBranch
         args -> wrongArgsLength "three arguments" args
     }
   where

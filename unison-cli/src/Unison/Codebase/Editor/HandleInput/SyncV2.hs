@@ -57,13 +57,15 @@ handleSyncFromCodebase description srcCodebasePath srcBranch destBranch = do
           branch <- MaybeT (Q.loadProjectBranchByName (project ^. #projectId) srcBranchName)
           lift $ Project.getProjectBranchCausalHash branch
       case maySrcCausalHash of
-        Nothing -> pure $ Left (error "Todo proper error")
+        Nothing -> pure $ Left (Output.SyncFromCodebaseMissingProjectBranch srcBranch)
         Just srcCausalHash -> do
           let shouldValidate = True
-          fmap (const srcCausalHash) <$> liftIO (SyncV2.syncFromCodebase shouldValidate srcConn codebase srcCausalHash)
+          Right . fmap (const srcCausalHash) <$> liftIO (SyncV2.syncFromCodebase shouldValidate srcConn codebase srcCausalHash)
 
   case r of
-    Left _err -> pure $ error "Todo proper error"
-    Right (Left syncErr) -> Cli.respond (Output.SyncPullError syncErr)
-    Right (Right causalHash) -> do
+    Left openCodebaseErr -> Cli.respond (Output.OpenCodebaseError srcCodebasePath openCodebaseErr)
+    Right (Left errOutput) -> Cli.respond errOutput
+    Right (Right (Right causalHash)) -> do
       Cli.setProjectBranchRootToCausalHash (projectBranch ^. #branch) description causalHash
+    Right (Right (Left syncErr)) -> do
+      Cli.respond (Output.SyncPullError syncErr)

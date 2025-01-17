@@ -1440,18 +1440,19 @@ buildSCache crsrc cssrc cacheableCombs trsrc ftm fty int rtmsrc rtysrc sndbx =
     restrictTyR m = Map.restrictKeys m typeRefs
 
 standalone :: CCache -> Word64 -> IO StoredCache
-standalone cc init = readTVarIO (combRefs cc) >>= \crs ->
-  case EC.lookup init crs of
-    Just rinit ->
-      buildSCache crs
-        <$> readTVarIO (srcCombs cc)
-        <*> readTVarIO (cacheableCombs cc)
-        <*> readTVarIO (tagRefs cc)
-        <*> readTVarIO (freshTm cc)
-        <*> readTVarIO (freshTy cc)
-        <*> (readTVarIO (intermed cc) >>= traceNeeded rinit)
-        <*> readTVarIO (refTm cc)
-        <*> readTVarIO (refTy cc)
-        <*> readTVarIO (sandbox cc)
-    Nothing ->
-      die $ "standalone: unknown combinator: " ++ show init
+standalone cc init =
+  readTVarIO (combRefs cc) >>= \crs ->
+    case EC.lookup init crs of
+      Just rinit ->
+        buildSCache crs
+          <$> readTVarIO (srcCombs cc)
+          <*> readTVarIO (cacheableCombs cc)
+          <*> readTVarIO (tagRefs cc)
+          <*> readTVarIO (freshTm cc)
+          <*> readTVarIO (freshTy cc)
+          <*> (readTVarIO (intermed cc) >>= traceNeeded rinit)
+          <*> readTVarIO (refTm cc)
+          <*> readTVarIO (refTy cc)
+          <*> readTVarIO (sandbox cc)
+      Nothing ->
+        die $ "standalone: unknown combinator: " ++ show init

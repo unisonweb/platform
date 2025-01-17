@@ -695,11 +695,7 @@ loop e = do
               SyncV2.handleSyncFromFile description syncFileSrc projectBranchName
             SyncFromCodebaseI srcCodebasePath srcBranch destBranch -> do
               description <- inputDescription input
-              let srcBranch' =
-                    srcBranch & over #project \case
-                      Nothing -> error "todo"
-                      Just proj -> proj
-              SyncV2.handleSyncFromCodebase description srcCodebasePath srcBranch' destBranch
+              SyncV2.handleSyncFromCodebase description srcCodebasePath srcBranch destBranch
             ListDependentsI hq -> handleDependents hq
             ListDependenciesI hq -> handleDependencies hq
             NamespaceDependenciesI path -> handleNamespaceDependencies path
