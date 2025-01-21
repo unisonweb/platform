@@ -14,6 +14,7 @@ import Data.List qualified as List
 import Data.List.Extra (notNull, nubOrd, nubOrdOn)
 import Data.List.NonEmpty qualified as NEList
 import Data.Map qualified as Map
+import Data.Ord (comparing)
 import Data.Sequence qualified as Seq
 import Data.Set qualified as Set
 import Data.Set.NonEmpty (NESet)
@@ -138,7 +139,6 @@ import Unison.Term (Term)
 import Unison.Term qualified as Term
 import Unison.Type (Type)
 import Unison.UnisonFile qualified as UF
-import Unison.Util.ColorText qualified
 import Unison.Util.Conflicted (Conflicted (..))
 import Unison.Util.Defn (Defn (..))
 import Unison.Util.Defns (Defns (..))
@@ -863,23 +863,16 @@ notifyUser dir = \case
           "",
           output
         ]
-  ListNames len types terms ->
-    listOfNames len types terms
-  GlobalListNames projectBranchName len types terms -> do
-    output <- listOfNames len types terms
+  ListNames namesQuery len types terms ->
+    listOfNames namesQuery len types terms
+  GlobalListNames namesQuery projectBranchName len types terms -> do
+    output <- listOfNames namesQuery len types terms
     pure $
       P.lines
         [ P.wrap $ "Found results in " <> P.text (into @Text projectBranchName),
           "",
           output
         ]
-  -- > names foo
-  --   Terms:
-  --     Hash: #asdflkjasdflkjasdf
-  --     Names: .util.frobnicate foo blarg.mcgee
-  --
-  --   Term (with hash #asldfkjsdlfkjsdf): .util.frobnicate, foo, blarg.mcgee
-  --   Types (with hash #hsdflkjsdfsldkfj): Optional, Maybe, foo
   ListShallow buildPPE entries -> do
     let needPPE =
           entries
@@ -2364,7 +2357,7 @@ prettyTransportError = \case
   Share.UnexpectedResponse resp ->
     unexpectedServerResponse resp
 
-unexpectedServerResponse :: Servant.ResponseF LazyByteString.ByteString -> P.Pretty Unison.Util.ColorText.ColorText
+unexpectedServerResponse :: Servant.ResponseF LazyByteString.ByteString -> Pretty
 unexpectedServerResponse resp =
   (P.lines . catMaybes)
     [ Just
@@ -2916,44 +2909,63 @@ listOfDefinitions ::
 listOfDefinitions fscope ppe detailed results =
   pure $ listOfDefinitions' fscope ppe detailed results
 
-listOfNames :: Int -> [(Reference, [HQ'.HashQualified Name])] -> [(Referent, [HQ'.HashQualified Name])] -> IO Pretty
-listOfNames len types terms = do
+listOfNames :: String -> Int -> [(Reference, [HQ'.HashQualified Name])] -> [(Referent, [HQ'.HashQualified Name])] -> IO Pretty
+listOfNames namesQuery len types terms = do
   if null types && null terms
     then
-      pure . P.callout "😶" $
-        P.sepNonEmpty "\n\n" $
-          [ P.wrap "I couldn't find anything by that name."
+      pure
+        . P.sepNonEmpty "\n"
+        $ [ P.red prettyQuery,
+            P.string "😶",
+            P.wrap "I couldn't find anything by that name."
           ]
     else
-      pure . P.sepNonEmpty "\n\n" $
-        [ formatTypes types,
-          formatTerms terms
+      pure . P.sepNonEmpty "\n" $
+        [ P.green prettyQuery,
+          makeTable prettyRows
         ]
   where
-    formatTerms tms =
-      P.lines . P.nonEmpty $ P.plural tms (P.blue "Term") : List.intersperse "" (go <$> tms)
+    prettyQuery = P.singleQuoted' (P.string namesQuery) ":"
+
+    makeTable =
+      P.column3Header "Hash" "Kind" "Names"
+
+    prettyRows = makePrettyRows $ List.sortBy compareRows rows
+    makePrettyRows =
+      fmap
+        ( \(ref, kind, hqs) ->
+            ( P.syntaxToColor ref,
+              P.blue kind,
+              P.group $
+                P.commas $
+                  P.bold . P.syntaxToColor . prettyHashQualified'
+                    <$> hqs
+            )
+        )
+
+    -- Compare rows by their list of names, first by comparing each name in the list
+    -- then by the length of the list of they share the same prefix
+    compareRows :: (a, b, [HQ'.HashQualified Name]) -> (a, b, [HQ'.HashQualified Name]) -> Ordering
+    compareRows (_, _, hqs1) (_, _, hqs2) =
+      Name.compareAlphabetical hqs1 hqs2 <> comparing length hqs1 hqs2
+
+    rows = termRows terms ++ typeRows types
+
+    termRows terms =
+      makeSortedRow "Term" <$> prettyTerms
       where
-        go (ref, hqs) =
-          P.column2
-            [ ("Hash:", P.syntaxToColor (prettyReferent len ref)),
-              ( "Names: ",
-                P.group $
-                  P.spaced $
-                    P.bold . P.syntaxToColor . prettyHashQualified' <$> List.sortBy Name.compareAlphabetical hqs
-              )
-            ]
-    formatTypes types =
-      P.lines . P.nonEmpty $ P.plural types (P.blue "Type") : List.intersperse "" (go <$> types)
+        prettyTerms = terms & over (mapped . _1) (prettyReferent len)
+
+    typeRows types =
+      makeSortedRow "Type" <$> prettyTypes
       where
-        go (ref, hqs) =
-          P.column2
-            [ ("Hash:", P.syntaxToColor (prettyReference len ref)),
-              ( "Names:",
-                P.group $
-                  P.spaced $
-                    P.bold . P.syntaxToColor . prettyHashQualified' <$> List.sortBy Name.compareAlphabetical hqs
-              )
-            ]
+        prettyTypes = types & over (mapped . _1) (prettyReference len)
+
+    makeSortedRow kind (ref, hqs) =
+      ( ref,
+        kind,
+        List.sortBy Name.compareAlphabetical hqs
+      )
 
 data ShowNumbers = ShowNumbers | HideNumbers
 

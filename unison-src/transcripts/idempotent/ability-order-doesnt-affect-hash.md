@@ -26,7 +26,7 @@ scratch/main> add
 
 scratch/main> names term1
 
-  Term
-  Hash:   #42m1ui9g56
-  Names:  term1 term2
+  'term1':
+  Hash          Kind   Names
+  #42m1ui9g56   Term   term1, term2
 ```

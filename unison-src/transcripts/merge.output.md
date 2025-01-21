@@ -2206,9 +2206,9 @@ scratch/alice> add
 ``` ucm
 scratch/alice> names A
 
-  Type
-  Hash:  #65mdg7015r
-  Names: A A.inner.X
+  'A':
+  Hash          Kind   Names
+  #65mdg7015r   Type   A, A.inner.X
 ```
 
 Bob's branch:
@@ -3364,15 +3364,15 @@ scratch/merge-bob-into-alice> update
 
 scratch/merge-bob-into-alice> names Bar
 
-  Type
-  Hash:  #h3af39sae7
-  Names: Bar
+  'Bar':
+  Hash          Kind   Names
+  #h3af39sae7   Type   Bar
 
 scratch/alice> names Bar
 
-  Type
-  Hash:  #h3af39sae7
-  Names: Bar
+  'Bar':
+  Hash          Kind   Names
+  #h3af39sae7   Type   Bar
 ```
 
 ``` ucm :hide

@@ -281,9 +281,13 @@ formatStructuredArgument schLength = \case
               else "." <> s
         pathArgStr = Text.pack $ show pathArg
 
--- | Converts an arbitrary argument to a `String`. This is for cases where the
+-- | Converts an arbitrary argument to a `String`.
+--
+-- This is for cases where the
 -- command /should/ accept a structured argument of some type, but currently
 -- wants a `String`.
+--
+-- This can also be used where the input argument needs to be included in the output.
 unifyArgument :: I.Argument -> String
 unifyArgument = either id (Text.unpack . formatStructuredArgument Nothing)
 
@@ -2687,16 +2691,30 @@ names isGlobal =
     cmdName
     []
     I.Visible
-    [("name or hash", Required, definitionQueryArg)]
-    (P.wrap $ makeExample (names isGlobal) ["foo"] <> description)
-    $ \case
-      [thing] -> Input.NamesI isGlobal <$> handleHashQualifiedNameArg thing
-      args -> wrongArgsLength "exactly one argument" args
-  where
+    [("name or hash", OnePlus, definitionQueryArg)]
     description
-      | isGlobal = "Iteratively search across all projects and branches for names matching `foo`. Note that this is expected to be quite slow and is primarily for debugging issues with your codebase."
-      | otherwise = "List all known names for `foo` in the current branch."
+    $ \case
+      [] -> wrongArgsLength "at least one argument" []
+      [rawArg] -> do
+        let arg = handleArg rawArg
+        case arg of
+          (_, Left errMsg) -> Left errMsg
+          (argString, Right name) -> pure $ Input.NamesI isGlobal [(argString, Right name)]
+      rawArgs -> do
+        let args = handleArg <$> rawArgs
+        pure $ Input.NamesI isGlobal args
+  where
+    isGlobalPreamble = "Iteratively search names or hashes across all projects and branches."
+    isNotGlobalPreamble = "Search names or hashes in the current branch."
     cmdName = if isGlobal then "debug.names.global" else "names"
+    description =
+      P.lines
+        [ if isGlobal then isGlobalPreamble else isNotGlobalPreamble,
+          P.wrap $ makeExample (names isGlobal) ["foo"] <> "List all known names for `foo`.",
+          P.wrap $ makeExample (names isGlobal) ["foo", "#bar"] <> "List all known names for the name `foo` and for the hash `#bar`.",
+          P.wrap $ makeExample (names isGlobal) [] <> "without arguments invokes a search to select names/hashes to list, which requires that `fzf` can be found within your PATH."
+        ]
+    handleArg arg = (unifyArgument arg, handleHashQualifiedNameArg arg)
 
 dependents, dependencies :: InputPattern
 dependents =
