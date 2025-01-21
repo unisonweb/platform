@@ -256,6 +256,7 @@ module U.Codebase.Sqlite.Queries
     addCurrentProjectPathTable,
     addProjectBranchReflogTable,
     addProjectBranchCausalHashIdColumn,
+    addProjectBranchLastAccessedColumn,
 
     -- ** schema version
     currentSchemaVersion,
@@ -420,7 +421,7 @@ type TextPathSegments = [Text]
 -- * main squeeze
 
 currentSchemaVersion :: SchemaVersion
-currentSchemaVersion = 17
+currentSchemaVersion = 18
 
 runCreateSql :: Transaction ()
 runCreateSql =
@@ -485,6 +486,10 @@ addProjectBranchReflogTable =
 addProjectBranchCausalHashIdColumn :: Transaction ()
 addProjectBranchCausalHashIdColumn =
   executeStatements $(embedProjectStringFile "sql/014-add-project-branch-causal-hash-id.sql")
+
+addProjectBranchLastAccessedColumn :: Transaction ()
+addProjectBranchLastAccessedColumn =
+  executeStatements $(embedProjectStringFile "sql/015-add-project-branch-last-accessed.sql")
 
 schemaVersion :: Transaction SchemaVersion
 schemaVersion =
@@ -4483,6 +4488,13 @@ setCurrentProjectPath projId branchId path = do
     [sql|
       INSERT INTO current_project_path(project_id, branch_id, path)
       VALUES (:projId, :branchId, :jsonPath)
+    |]
+  execute
+    [sql|
+      UPDATE project_branch
+      SET last_accessed = strftime('%s', 'now')
+      WHERE project_id = :projId
+        AND branch_id = :branchId
     |]
   where
     jsonPath :: Text
