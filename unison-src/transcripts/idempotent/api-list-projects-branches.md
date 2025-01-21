@@ -19,26 +19,28 @@ project-one/main> branch branch-three
 GET /api/projects
   [
       {
+          "activeBranchRef": "branch-three",
           "projectName": "project-one"
       },
       {
+          "activeBranchRef": "main",
           "projectName": "project-three"
       },
       {
+          "activeBranchRef": "main",
           "projectName": "project-two"
       },
       {
+          "activeBranchRef": "main",
           "projectName": "scratch"
       }
   ]
--- Should list projects starting with project-t
-GET /api/projects?prefix=project-t
+-- Can query for some infix of the project name
+GET /api/projects?query=thre
   [
       {
+          "activeBranchRef": "main",
           "projectName": "project-three"
-      },
-      {
-          "projectName": "project-two"
       }
   ]
 -- Should list all branches
