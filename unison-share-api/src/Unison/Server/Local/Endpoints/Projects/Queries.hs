@@ -17,5 +17,5 @@ listProjects mayUnsafeQuery = do
         LEFT JOIN project_branch branch
           ON mrb.branch_id = branch.branch_id
         WHERE (:mayQuery IS NULL OR project.name LIKE '%' || :mayQuery || '%' ESCAPE '\')
-      ORDER BY branch.last_accessed DESC, project.name ASC
+      ORDER BY branch.last_accessed DESC NULLS LAST, project.name ASC
     |]
