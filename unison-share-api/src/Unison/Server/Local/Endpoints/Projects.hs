@@ -24,6 +24,7 @@ import Unison.Parser.Ann (Ann)
 import Unison.Prelude
 import Unison.Project (ProjectName)
 import Unison.Server.Backend (Backend)
+import Unison.Server.Local.Endpoints.Projects.Queries qualified as PG
 import Unison.Server.Local.Endpoints.Projects.Queries qualified as PQ
 import Unison.Server.Local.Endpoints.Projects.Types
 import Unison.Symbol (Symbol)
@@ -33,7 +34,7 @@ type ListProjectsEndpoint =
     :> Get '[JSON] [ProjectListing]
 
 type ListProjectBranchesEndpoint =
-  QueryParam "prefix" PrefixFilter
+  QueryParam "query" Query
     :> Get '[JSON] [ProjectBranchListing]
 
 newtype PrefixFilter = PrefixFilter
@@ -87,9 +88,8 @@ projectListingEndpoint codebase mayQuery = liftIO . Codebase.runTransaction code
 projectBranchListingEndpoint ::
   Codebase IO Symbol Ann ->
   ProjectName ->
-  Maybe PrefixFilter ->
+  Maybe Query ->
   Backend IO [ProjectBranchListing]
-projectBranchListingEndpoint codebase projectName mayPrefix = liftIO . Codebase.runTransaction codebase . fmap fold . runMaybeT $ do
+projectBranchListingEndpoint codebase projectName mayQuery = liftIO . Codebase.runTransaction codebase . fmap fold . runMaybeT $ do
   SqliteProject.Project {projectId} <- MaybeT $ Q.loadProjectByName projectName
-  lift (Q.loadAllProjectBranchesBeginningWith projectId (prefix <$> mayPrefix))
-    <&> fmap (ProjectBranchListing . snd)
+  lift (PG.listProjectBranches projectId (getQuery <$> mayQuery))
