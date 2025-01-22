@@ -1,17 +1,17 @@
 # List Projects And Branches Test
 
 ``` ucm :hide
-scratch/main> project.create-empty project-one
+scratch/main> project.create-empty project-apple
 
-scratch/main> project.create-empty project-two
+scratch/main> project.create-empty project-banana
 
-scratch/main> project.create-empty project-three
+scratch/main> project.create-empty project-cherry
 
-project-one/main> branch branch-one
+project-apple/main> branch branch-apple
 
-project-one/main> branch branch-two
+project-apple/main> branch branch-banana
 
-project-one/main> branch branch-three
+project-apple/main> branch branch-cherry
 ```
 
 ``` api
@@ -19,16 +19,16 @@ project-one/main> branch branch-three
 GET /api/projects
   [
       {
-          "activeBranchRef": "branch-three",
-          "projectName": "project-one"
+          "activeBranchRef": "branch-cherry",
+          "projectName": "project-apple"
       },
       {
           "activeBranchRef": "main",
-          "projectName": "project-three"
+          "projectName": "project-banana"
       },
       {
           "activeBranchRef": "main",
-          "projectName": "project-two"
+          "projectName": "project-cherry"
       },
       {
           "activeBranchRef": "main",
@@ -36,37 +36,34 @@ GET /api/projects
       }
   ]
 -- Can query for some infix of the project name
-GET /api/projects?query=thre
+GET /api/projects?query=bana
   [
       {
           "activeBranchRef": "main",
-          "projectName": "project-three"
+          "projectName": "project-banana"
       }
   ]
 -- Should list all branches
-GET /api/projects/project-one/branches
+GET /api/projects/project-apple/branches
   [
       {
-          "branchName": "branch-one"
+          "branchName": "branch-apple"
       },
       {
-          "branchName": "branch-three"
+          "branchName": "branch-banana"
       },
       {
-          "branchName": "branch-two"
+          "branchName": "branch-cherry"
       },
       {
           "branchName": "main"
       }
   ]
--- Should list all branches beginning with branch-t
-GET /api/projects/project-one/branches?prefix=branch-t
+-- Can query for some  infix of the project name
+GET /api/projects/project-apple/branches?query=bana
   [
       {
-          "branchName": "branch-three"
-      },
-      {
-          "branchName": "branch-two"
+          "branchName": "branch-banana"
       }
   ]
 ```

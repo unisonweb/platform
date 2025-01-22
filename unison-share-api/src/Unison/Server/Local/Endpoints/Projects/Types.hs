@@ -41,6 +41,9 @@ data ProjectBranchListing = ProjectBranchListing
   }
   deriving stock (Show, Generic)
 
+instance FromRow ProjectBranchListing where
+  fromRow = ProjectBranchListing <$> field
+
 instance ToSchema ProjectBranchListing
 
 instance ToJSON ProjectBranchListing where
