@@ -35,7 +35,7 @@ import Unison.Core.Project (ProjectAndBranch (..), ProjectBranchName, ProjectNam
 import Unison.Hash32 (Hash32)
 import Unison.Prelude (From (..))
 import Unison.Server.Orphans ()
-import Unison.Share.API.Hash (HashJWT)
+import Unison.Share.API.Hash (DependencyJWT, HashJWT)
 import Unison.Sync.Types qualified as SyncV1
 import Unison.Util.Servant.CBOR
 
@@ -173,6 +173,17 @@ data StreamInitInfo = StreamInitInfo
   }
   deriving (Show, Eq, Ord)
 
+-- | Conceptually a Dependency Chunk represents the entirety of the dependencies of the specified hash, but
+-- indicates they must be streamed independently
+data DependencyChunk = DependencyChunk
+  { dependencyJWT :: DependencyJWT
+  }
+  deriving (Show, Eq, Ord)
+
+instance Serialise DependencyChunk where
+  encode (DependencyChunk {dependencyJWT}) = CBOR.encode dependencyJWT
+  decode = DependencyChunk <$> CBOR.decode
+
 decodeMapKey :: (Serialise r) => Text -> Map Text UnknownCBORBytes -> CBOR.Decoder s r
 decodeMapKey k m =
   optionalDecodeMapKey k m >>= \case
@@ -228,35 +239,46 @@ instance Serialise ErrorChunk where
 -- | A chunk of the download entities response stream.
 data DownloadEntitiesChunk
   = InitialC StreamInitInfo
+  | DependencyC DependencyChunk
   | EntityC EntityChunk
   | ErrorC ErrorChunk
+  | -- | Marks the end of the stream so consumers know it didn't get cut off or anything.
+    StreamEndC
   deriving (Show, Eq, Ord)
 
-data DownloadEntitiesChunkTag = InitialChunkTag | EntityChunkTag | ErrorChunkTag
+data DownloadEntitiesChunkTag = InitialChunkTag | DependencyChunkTag | EntityChunkTag | ErrorChunkTag | StreamEndChunkTag
   deriving (Show, Eq, Ord)
 
 instance Serialise DownloadEntitiesChunkTag where
   encode InitialChunkTag = CBOR.encodeWord8 0
   encode EntityChunkTag = CBOR.encodeWord8 1
-  encode ErrorChunkTag = CBOR.encodeWord8 2
+  encode DependencyChunkTag = CBOR.encodeWord8 2
+  encode ErrorChunkTag = CBOR.encodeWord8 3
+  encode StreamEndChunkTag = CBOR.encodeWord8 4
   decode = do
     tag <- CBOR.decodeWord8
     case tag of
       0 -> pure InitialChunkTag
       1 -> pure EntityChunkTag
-      2 -> pure ErrorChunkTag
+      2 -> pure DependencyChunkTag
+      3 -> pure ErrorChunkTag
+      4 -> pure StreamEndChunkTag
       _ -> fail "invalid tag"
 
 instance Serialise DownloadEntitiesChunk where
   encode (EntityC ec) = encode EntityChunkTag <> CBOR.encode ec
+  encode (DependencyC dc) = encode DependencyChunkTag <> CBOR.encode dc
   encode (ErrorC ec) = encode ErrorChunkTag <> CBOR.encode ec
   encode (InitialC ic) = encode InitialChunkTag <> encode ic
+  encode StreamEndC = encode StreamEndChunkTag
   decode = do
     tag <- decode
     case tag of
       InitialChunkTag -> InitialC <$> decode
       EntityChunkTag -> EntityC <$> decode
+      DependencyChunkTag -> DependencyC <$> decode
       ErrorChunkTag -> ErrorC <$> decode
+      StreamEndChunkTag -> pure StreamEndC
 
 -- | An error occurred while pulling code from Unison Share.
 data PullError

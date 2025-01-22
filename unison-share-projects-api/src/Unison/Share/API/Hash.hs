@@ -10,11 +10,17 @@ module Unison.Share.API.Hash
   ( -- * Hash types
     HashJWT (..),
     hashJWTHash,
+    hashJWTType,
     HashJWTClaims (..),
     DecodedHashJWT (..),
     decodeHashJWT,
     decodeHashJWTClaims,
     decodedHashJWTHash,
+    DependencyJWT (..),
+    DependencyJWTClaims (..),
+    DecodedDependencyJWT (..),
+    dependencyJWTType,
+    decodeDependencyJWT,
   )
 where
 
@@ -115,3 +121,83 @@ decodeHashJWTClaims (HashJWT text) =
 decodedHashJWTHash :: DecodedHashJWT -> Hash32
 decodedHashJWTHash DecodedHashJWT {claims = HashJWTClaims {hash}} =
   hash
+
+newtype DependencyJWT = DependencyJWT {unDependencyJWT :: Text}
+  deriving newtype (Show, Eq, Ord, ToJSON, FromJSON)
+
+-- | Adding a type tag to the jwt prevents users from using jwts we issue in unintended places.
+-- All of our jwts should have a type parameter of some kind.
+dependencyJWTType :: String
+dependencyJWTType = "dj"
+
+data DependencyJWTClaims = DependencyJWTClaims
+  { dependencyHash :: Hash32,
+    rootHash :: Hash32,
+    -- The branch ID of the project that the dependency is expected to be found in.
+    projectBranchId :: Text
+  }
+  deriving stock (Show, Eq, Ord)
+
+instance Servant.Auth.ToJWT DependencyJWTClaims where
+  encodeJWT (DependencyJWTClaims dh rh pb) =
+    Jose.emptyClaimsSet
+      & Jose.addClaim "dh" (toJSON dh)
+      & Jose.addClaim "rh" (toJSON rh)
+      & Jose.addClaim "pb" (toJSON pb)
+
+instance Servant.Auth.FromJWT DependencyJWTClaims where
+  decodeJWT claims = maybe (Left "Invalid HashJWTClaims") pure $ do
+    dependencyHash <- claims ^? Jose.unregisteredClaims . ix "dh" . folding fromJSON
+    rootHash <- claims ^? Jose.unregisteredClaims . ix "rh" . folding fromJSON
+    projectBranchId <- claims ^? Jose.unregisteredClaims . ix "pb" . folding fromJSON
+    case claims ^? Jose.unregisteredClaims . ix "t" . folding fromJSON of
+      Just t | t == dependencyJWTType -> pure ()
+      _ -> empty
+    pure DependencyJWTClaims {..}
+
+instance ToJSON DependencyJWTClaims where
+  toJSON (DependencyJWTClaims dependencyHash rootHash projectBranchId) =
+    object
+      [ "dh" .= dependencyHash,
+        "rh" .= rootHash,
+        "pb" .= projectBranchId
+      ]
+
+instance FromJSON DependencyJWTClaims where
+  parseJSON = Aeson.withObject "DependencyJWTClaims" \obj -> do
+    dependencyHash <- obj .: "dh"
+    rootHash <- obj .: "rh"
+    projectBranchId <- obj .: "pb"
+    pure DependencyJWTClaims {..}
+
+-- | A decoded dependency JWT that retains the original encoded JWT.
+data DecodedDependencyJWT = DecodedDependencyJWT
+  { claims :: DependencyJWTClaims,
+    dependencyJWT :: DependencyJWT
+  }
+  deriving (Eq, Ord, Show)
+
+-- | Decode a DependencyJWT.
+decodeDependencyJWT :: DependencyJWT -> DecodedDependencyJWT
+decodeDependencyJWT dependencyJWT =
+  DecodedDependencyJWT
+    { claims = decodeDependencyJWTClaims dependencyJWT,
+      dependencyJWT
+    }
+
+-- | Decode the claims out of a dependency JWT.
+decodeDependencyJWTClaims :: DependencyJWT -> DependencyJWTClaims
+decodeDependencyJWTClaims (DependencyJWT text) =
+  case JWT.decode text of
+    Nothing -> error "bad JWT"
+    Just jwt ->
+      let object =
+            jwt
+              & JWT.claims
+              & JWT.unregisteredClaims
+              & JWT.unClaimsMap
+              & Aeson.KeyMap.fromMapText
+              & Aeson.Object
+       in case Aeson.fromJSON object of
+            Aeson.Error err -> error ("bad JWT: " ++ err)
+            Aeson.Success claims -> claims

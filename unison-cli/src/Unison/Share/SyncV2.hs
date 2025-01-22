@@ -16,8 +16,11 @@ import Control.Monad.Except
 import Control.Monad.Reader (ask)
 import Control.Monad.ST (ST, stToIO)
 import Control.Monad.State
+import Data.Attoparsec.ByteString qualified as A
+import Data.Attoparsec.ByteString.Char8 qualified as A8
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
+import Data.Conduit.Attoparsec qualified as C
 import Data.Conduit.List qualified as C
 import Data.Conduit.Zlib qualified as C
 import Data.Graph qualified as Graph
@@ -43,17 +46,13 @@ import Unison.Sync.Common qualified as Sync
 import Unison.Sync.EntityValidation qualified as EV
 import Unison.Sync.Types qualified as Share
 import Unison.Sync.Types qualified as Sync
+import Unison.SyncV2.API (Routes (downloadEntitiesStream))
+import Unison.SyncV2.API qualified as SyncV2
 import Unison.SyncV2.Types (CBORBytes)
 import Unison.SyncV2.Types qualified as SyncV2
 import Unison.Util.Servant.CBOR qualified as CBOR
 import Unison.Util.Timing qualified as Timing
 import UnliftIO qualified as IO
-import Unison.SyncV2.API (Routes (downloadEntitiesStream))
-import Unison.SyncV2.API qualified as SyncV2
-import Data.Attoparsec.ByteString qualified as A
-import Data.Attoparsec.ByteString.Char8 qualified as A8
-import Data.Conduit.Attoparsec qualified as C
-
 
 type Stream i o = ConduitT i o StreamM ()
 
@@ -287,17 +286,6 @@ withCodebaseEntityStream conn rootHash mayBranchRef callback = do
               lift . Sqlite.unsafeIO $ counter 1
               traverseOf_ Sync.entityHashes_ expandEntities entity
 
--- | Gets the framed chunks from a NetString framed stream.
-_unNetString :: ConduitT ByteString ByteString StreamM ()
-_unNetString = do
-  bs <- C.sinkParser $ do
-    len <- A8.decimal
-    _ <- A8.char ':'
-    bs <- A.take len
-    _ <- A8.char ','
-    pure bs
-  C.yield bs
-
 _decodeFramedEntity :: ByteString -> StreamM SyncV2.DownloadEntitiesChunk
 _decodeFramedEntity bs = do
   case CBOR.deserialiseOrFail (BL.fromStrict bs) of
@@ -403,7 +391,6 @@ handleClientError clientEnv err =
     Servant.ConnectionError _ -> UnreachableCodeserver (Servant.baseUrl clientEnv)
 
 httpStreamEntities ::
-  forall.
   Auth.AuthenticatedHttpClient ->
   Servant.BaseUrl ->
   SyncV2.DownloadEntitiesRequest ->
