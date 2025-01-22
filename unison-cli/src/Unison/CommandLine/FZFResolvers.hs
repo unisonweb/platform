@@ -164,7 +164,7 @@ projectNameResolver = FZFResolver {getOptions = projectNameOptions}
 -- E.g. '@unison/base'
 projectNameOptions :: OptionFetcher
 projectNameOptions codebase _projCtx _searchBranch0 = do
-  fmap (into @Text . SqliteProject.name) <$> Codebase.runTransaction codebase Q.loadAllProjects
+  fmap (into @Text . SqliteProject.name) <$> Codebase.runTransaction codebase Q.loadAllProjectsByRecentlyAccessed
 
 -- | All possible local project/branch names.
 -- E.g. '@unison/base/main'
@@ -172,17 +172,12 @@ projectBranchOptions :: OptionFetcher
 projectBranchOptions codebase projCtx _searchBranch0 = do
   projs <- Codebase.runTransaction codebase Q.loadAllProjectBranchNamePairs
   projs
-    & foldMap
-      ( \(names, projIds) ->
-          if projIds.project == projCtx.project.projectId
-            then -- If the branch is in the current project, put a shortened version of the branch name first,
-            -- then the long-form name at the end of the list (in case the user still types the full name)
-              [(0 :: Int, "/" <> into @Text names.branch), (2, into @Text names)]
-            else [(1, into @Text names)]
+    & filter
+      ( \(_names, projIds) ->
+          -- If it's the same as the current branch, just omit it.
+          projIds.branch /= projCtx.branch.branchId
       )
-    -- Put branches in this project first.
-    & List.sort
-    & fmap snd
+    & fmap (into @Text . fst)
     & pure
 
 -- | All possible local branch names within the current project.
