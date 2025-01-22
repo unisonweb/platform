@@ -124,6 +124,8 @@ data FileAnalysis = FileAnalysis
     notes :: Seq (Note Symbol Ann),
     diagnostics :: IntervalMap Position [Diagnostic],
     codeActions :: IntervalMap Position [CodeAction],
+    -- | The types of local variable bindings keyed by the mention's location.
+    localBindingTypes :: IntervalMap Position (Type Symbol Ann),
     typeSignatureHints :: Map Symbol TypeSignatureHint,
     fileSummary :: Maybe FileSummary
   }

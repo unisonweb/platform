@@ -105,6 +105,7 @@ import Unison.Typechecker.TypeLookup qualified as TL
 import Unison.Typechecker.TypeVar qualified as TypeVar
 import Unison.Var (Var)
 import Unison.Var qualified as Var
+import qualified Unison.Debug as Debug
 
 type TypeVar v loc = TypeVar.TypeVar (B.Blank loc) v
 
@@ -358,6 +359,14 @@ data InfoNote v loc
   = SolvedBlank (B.Recorded loc) v (Type v loc)
   | Decision v loc (Term.Term v loc)
   | TopLevelComponent [(v, Type.Type v loc, RedundantTypeAnnotation)]
+  | -- The inferred type of a let or argument binding, and the scope of that binding as a loc.
+    -- Note that if interpreting the type of a 'v' at a given usage site, it is the caller's
+    -- job to use the binding with the smallest containing scope so as to respect variable
+    -- shadowing.
+    -- This is used in the LSP.
+    VarBinding v (Type.Type v loc)
+  | -- | The usage of a particular variable. We report the variable and its location so we can match a given source location with a specific symbol later in the LSP.
+    VarMention v loc
   deriving (Show)
 
 topLevelComponent :: (Var v) => [(v, Type.Type v loc, RedundantTypeAnnotation)] -> InfoNote v loc
@@ -521,7 +530,18 @@ markThenRetract hint body =
   markThenCallWithRetract hint \retract -> adjustNotes do
     r <- body
     ctx <- retract
-    pure ((r, ctx), substituteSolved ctx)
+    let solvedCtx = substituteSolved ctx
+    for_ ctx \case
+      var@(Ann v typ) -> do
+        Debug.debugM Debug.Temp "Ann" var
+        noteVarBinding v  (TypeVar.lowerType typ)
+      v@(Var{}) ->
+        Debug.debugM Debug.Temp "Var" v
+      (Solved _ v t) -> do
+        Debug.debugM Debug.Temp "Solved" v
+        noteVarBinding v (TypeVar.lowerType $ Type.getPolytype t)
+      _ -> pure ()
+    pure ((r, ctx), solvedCtx)
 
 markThenRetract0 :: (Var v, Ord loc) => v -> M v loc a -> M v loc ()
 markThenRetract0 markerHint body = () <$ markThenRetract markerHint body
@@ -986,7 +1006,7 @@ withEffects handled act = do
   pruneWanted [] want handled
 
 synthesizeApps ::
-  (Foldable f, Var v, Ord loc) =>
+  (Foldable f, Var v, Ord loc, Semigroup loc) =>
   Term v loc ->
   Type v loc ->
   f (Term v loc) ->
@@ -1004,7 +1024,7 @@ synthesizeApps fun ft args =
 -- the process.
 -- e.g. in `(f:t) x` -- finds the type of (f x) given t and x.
 synthesizeApp ::
-  (Var v, Ord loc) =>
+  (Var v, Ord loc, Semigroup loc) =>
   Term v loc ->
   Type v loc ->
   (Term v loc, Int) ->
@@ -1076,7 +1096,7 @@ generalizeExistentials' t =
     isExistential _ = False
 
 noteTopLevelType ::
-  (Ord loc, Var v) =>
+  (Ord loc, Var v, Semigroup loc) =>
   ABT.Subst f v a ->
   Term v loc ->
   Type v loc ->
@@ -1085,7 +1105,7 @@ noteTopLevelType e binding typ = case binding of
   Term.Ann' strippedBinding _ -> do
     inferred <- (Just <$> synthesizeTop strippedBinding) `orElse` pure Nothing
     case inferred of
-      Nothing ->
+      Nothing -> do
         btw $
           topLevelComponent
             [(Var.reset (ABT.variable e), generalizeAndUnTypeVar typ, False)]
@@ -1095,13 +1115,23 @@ noteTopLevelType e binding typ = case binding of
           topLevelComponent
             [(Var.reset (ABT.variable e), generalizeAndUnTypeVar typ, redundant)]
   -- The signature didn't exist, so was definitely redundant
-  _ ->
+  _ -> do
     btw $
       topLevelComponent
         [(Var.reset (ABT.variable e), generalizeAndUnTypeVar typ, True)]
 
+-- | Take note of the types and locations of all bindings, including let bindings, letrec
+-- bindings, lambda argument bindings and top-level bindings.
+-- This information is used to provide information to the LSP after typechecking.
+noteVarBinding :: (Var v) => v ->  Type.Type v loc ->  M v loc ()
+noteVarBinding v t = btw $ VarBinding v t
+
+noteVarMention :: (Var v) => v -> loc -> M v loc ()
+noteVarMention v loc = do
+  btw $ VarMention v loc
+
 synthesizeTop ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Term v loc ->
   M v loc (Type v loc)
@@ -1122,7 +1152,7 @@ synthesizeTop tm = do
 -- the process.  Also collect wanted abilities.
 -- | Figure 11 from the paper
 synthesize ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Term v loc ->
   M v loc (Type v loc, Wanted v loc)
@@ -1155,11 +1185,12 @@ wantRequest loc ty =
 -- The return value is the synthesized type together with a list of
 -- wanted abilities.
 synthesizeWanted ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Term v loc ->
   M v loc (Type v loc, Wanted v loc)
-synthesizeWanted (Term.Var' v) =
+synthesizeWanted trm@(Term.Var' v) = do
+  noteVarMention v (ABT.annotation trm)
   getContext >>= \ctx ->
     case lookupAnn ctx v of -- Var
       Nothing -> compilerCrash $ UndeclaredTermVariable v ctx
@@ -1207,7 +1238,10 @@ synthesizeWanted (Term.Constructor' r) =
 synthesizeWanted tm@(Term.Request' r) =
   fmap (wantRequest tm) . ungeneralize . Type.purifyArrows
     =<< getEffectConstructorType r
-synthesizeWanted (Term.Let1Top' top binding e) = do
+synthesizeWanted trm@(Term.Let1Top' top binding e) = do
+  case trm of
+    ABT.Term _ loc (ABT.Abs v _) -> noteVarMention v loc
+    _ -> pure ()
   (tbinding, wb) <- synthesizeBinding top binding
   v' <- ABT.freshen e freshenVar
   when (Var.isAction (ABT.variable e)) $
@@ -1216,12 +1250,12 @@ synthesizeWanted (Term.Let1Top' top binding e) = do
   appendContext [Ann v' tbinding]
   (t, w) <- synthesize (ABT.bindInheritAnnotation e (Term.var () v'))
   t <- applyM t
-  when top $ noteTopLevelType e binding tbinding
+  when top $ noteTopLevelType  e binding tbinding
   want <- coalesceWanted w wb
   -- doRetract $ Ann v' tbinding
   pure (t, want)
 synthesizeWanted (Term.LetRecNamed' [] body) = synthesizeWanted body
-synthesizeWanted (Term.LetRecTop' isTop letrec) = do
+synthesizeWanted (Term.LetRecAnnotatedTop' isTop letrec) = do
   ((t, want), ctx2) <- markThenRetract (Var.named "let-rec-marker") $ do
     e <- annotateLetRecBindings isTop letrec
     synthesize e
@@ -1325,6 +1359,7 @@ synthesizeWanted e
         else checkWithAbilities [et] body' ot
       ctx <- getContext
       let t = apply ctx $ Type.arrow l it (Type.effect l [et] ot)
+
       pure (t, [])
   | Term.If' cond t f <- e = do
       cwant <- scope InIfCond $ check cond (Type.boolean l)
@@ -1390,7 +1425,7 @@ synthesizeWanted _e = compilerCrash PatternMatchFailure
 -- can be refined later. This is a bit unusual for the algorithm we
 -- use, but it seems like it should be safe.
 synthesizeBinding ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Bool ->
   Term v loc ->
@@ -1531,7 +1566,7 @@ ensurePatternCoverage theMatch _theMatchType _scrutinee scrutineeType cases = do
   checkUncovered *> checkRedundant
 
 checkCases ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Type v loc ->
   Type v loc ->
@@ -1596,7 +1631,7 @@ requestType ps =
 
 checkCase ::
   forall v loc.
-  (Var v, Ord loc) =>
+  (Var v, Ord loc, Semigroup loc) =>
   Type v loc ->
   Type v loc ->
   Term.MatchCase loc (Term v loc) ->
@@ -1820,9 +1855,9 @@ resetContextAfter x a = do
 -- their type. Also returns the freshened version of `body`.
 -- See usage in `synthesize` and `check` for `LetRec'` case.
 annotateLetRecBindings ::
-  (Var v, Ord loc) =>
+  (Var v, Ord loc, Semigroup loc) =>
   Term.IsTop ->
-  ((v -> M v loc v) -> M v loc ([(v, Term v loc)], Term v loc)) ->
+  ((v -> M v loc v) -> M v loc ([((loc, v), Term v loc)], Term v loc)) ->
   M v loc (Term v loc)
 annotateLetRecBindings isTop letrec =
   -- If this is a top-level letrec, then emit a TopLevelComponent note,
@@ -1848,14 +1883,17 @@ annotateLetRecBindings isTop letrec =
           btw $
             topLevelComponent ((\(v, b) -> (Var.reset v, b, False)) . unTypeVar <$> vts)
       pure body
-    else -- If this isn't a top-level letrec, then we don't have to do anything special
-      fst <$> annotateLetRecBindings' True
+    else do -- If this isn't a top-level letrec, then we don't have to do anything special
+      (body, _vts) <- annotateLetRecBindings' True
+      pure body
   where
     annotateLetRecBindings' useUserAnnotations = do
       (bindings, body) <- letrec freshenVar
-      let vs = map fst bindings
+      let vs = map (snd . fst) bindings
+      for bindings \((loc, v), _trm) -> do
+        noteVarMention v loc
       ((bindings, bindingTypes), ctx2) <- markThenRetract Var.inferOther $ do
-        let f (v, binding) = case binding of
+        let f ((_loc, v), binding) = case binding of
               -- If user has provided an annotation, we use that
               Term.Ann' e t | useUserAnnotations -> do
                 -- Arrows in `t` with no ability lists get an attached fresh
@@ -2119,7 +2157,7 @@ variableP _ = Nothing
 -- See its usage in `synthesize` and `annotateLetRecBindings`.
 checkScoped ::
   forall v loc.
-  (Var v, Ord loc) =>
+  (Var v, Ord loc, Semigroup loc) =>
   Term v loc ->
   Type v loc ->
   M v loc (Type v loc, Wanted v loc)
@@ -2136,7 +2174,7 @@ checkScoped e t = do
   (t,) <$> check e t
 
 checkScopedWith ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Term v loc ->
   Type v loc ->
@@ -2398,7 +2436,7 @@ relax' nonArrow v t
     tv = Type.var loc (TypeVar.Existential B.Blank v)
 
 checkWantedScoped ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Wanted v loc ->
   Term v loc ->
@@ -2408,7 +2446,7 @@ checkWantedScoped want m ty =
   scope (InCheck m ty) $ checkWanted want m ty
 
 checkWanted ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Wanted v loc ->
   Term v loc ->
@@ -2430,7 +2468,10 @@ checkWanted want (Term.Lam' body) (Type.Arrow'' i es o) = do
     body <- pure $ ABT.bindInheritAnnotation body (Term.var () x)
     checkWithAbilities es body o
   pure want
-checkWanted want (Term.Let1Top' top binding m) t = do
+checkWanted want trm@(Term.Let1Top' top binding m) t = do
+  case trm of
+    ABT.Term _ loc (ABT.Abs v _) -> noteVarMention v loc
+    _ -> pure ()
   (tbinding, wbinding) <- synthesizeBinding top binding
   want <- coalesceWanted wbinding want
   v <- ABT.freshen m freshenVar
@@ -2443,9 +2484,9 @@ checkWanted want (Term.Let1Top' top binding m) t = do
 checkWanted want (Term.LetRecNamed' [] m) t =
   checkWanted want m t
 -- letrec can't have effects, so it doesn't extend the wanted set
-checkWanted want (Term.LetRecTop' isTop lr) t =
+checkWanted want (Term.LetRecAnnotatedTop' isTop lr) t =
   markThenRetractWanted (Var.named "let-rec-marker") $ do
-    e <- annotateLetRecBindings isTop lr
+    e <- annotateLetRecBindings  isTop lr
     checkWanted want e t
 checkWanted want e@(Term.Match' scrut cases) t = do
   (scrutType, swant) <- synthesize scrut
@@ -2470,7 +2511,7 @@ checkWanted want e t = do
 --     `m` has type `t` with abilities `es`,
 -- updating the context in the process.
 checkWithAbilities ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   [Type v loc] ->
   Term v loc ->
@@ -2486,7 +2527,7 @@ checkWithAbilities es m t = do
 --     `m` has type `t`
 -- updating the context in the process.
 check ::
-  (Var v) =>
+  (Var v, Semigroup loc) =>
   (Ord loc) =>
   Term v loc ->
   Type v loc ->
@@ -3192,7 +3233,7 @@ verifyDataDeclarations decls = forM_ (Map.toList decls) $ \(_ref, decl) -> do
 
 -- | public interface to the typechecker
 synthesizeClosed ::
-  (BuiltinAnnotation loc, Var v, Ord loc, Show loc) =>
+  (BuiltinAnnotation loc, Var v, Ord loc, Show loc, Semigroup loc) =>
   PrettyPrintEnv ->
   PatternMatchCoverageCheckAndKindInferenceSwitch ->
   [Type v loc] ->
@@ -3281,7 +3322,7 @@ run ppe pmcSwitch datas effects m =
     $ Env 1 context0
 
 synthesizeClosed' ::
-  (Var v, Ord loc) =>
+  (Var v, Ord loc, Semigroup loc) =>
   [Type v loc] ->
   Term v loc ->
   M v loc (Type v loc)

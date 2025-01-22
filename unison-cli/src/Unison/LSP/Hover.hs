@@ -5,13 +5,16 @@ module Unison.LSP.Hover where
 
 import Control.Lens hiding (List)
 import Control.Monad.Reader
+import Data.IntervalMap.Lazy qualified as IM
 import Data.Text qualified as Text
 import Language.LSP.Protocol.Lens
 import Language.LSP.Protocol.Message qualified as Msg
 import Language.LSP.Protocol.Types
 import Unison.ABT qualified as ABT
+import Unison.Debug qualified as Debug
 import Unison.HashQualified qualified as HQ
 import Unison.LSP.FileAnalysis (ppedForFile)
+import Unison.LSP.FileAnalysis qualified as FileAnalysis
 import Unison.LSP.Queries qualified as LSPQ
 import Unison.LSP.Types
 import Unison.LSP.VFS qualified as VFS
@@ -24,18 +27,18 @@ import Unison.PrettyPrintEnvDecl qualified as PPED
 import Unison.Reference qualified as Reference
 import Unison.Runtime.IOSource qualified as IOSource
 import Unison.Symbol (Symbol)
+import Unison.Symbol qualified as Symbol
 import Unison.Syntax.DeclPrinter qualified as DeclPrinter
 import Unison.Syntax.Name qualified as Name
 import Unison.Syntax.TypePrinter qualified as TypePrinter
 import Unison.Term qualified as Term
+import Unison.Type qualified as Type
 import Unison.Util.Pretty qualified as Pretty
+import Unison.Var (Var)
+import Unison.Var qualified as Var
 import UnliftIO qualified
 
 -- | Hover help handler
---
--- TODO:
---   * Add docs
---   * Resolve fqn on hover
 hoverHandler :: Msg.TRequestMessage 'Msg.Method_TextDocumentHover -> (Either Msg.ResponseError (Msg.MessageResult 'Msg.Method_TextDocumentHover) -> Lsp ()) -> Lsp ()
 hoverHandler m respond = do
   respond . Right . maybe (InR Null) InL =<< runMaybeT do
@@ -49,7 +52,7 @@ hoverHandler m respond = do
 
 hoverInfo :: Uri -> Position -> MaybeT Lsp Text
 hoverInfo uri pos =
-  (hoverInfoForRef <|> hoverInfoForLiteral)
+  (hoverInfoForRef <|> hoverInfoForLiteral <|> hoverInfoForLocalVar)
   where
     markdownify :: Text -> Text
     markdownify rendered = Text.unlines ["``` unison", rendered, "```"]
@@ -100,9 +103,14 @@ hoverInfo uri pos =
             pure typ
           LD.TermReferent ref -> do
             typ <- LSPQ.getTypeOfReferent uri ref
-            let renderedType = Text.pack $ TypePrinter.prettyStr (Just prettyWidth) (PPED.suffixifiedPPE pped) typ
-            pure (symAtCursor <> " : " <> renderedType)
+            pure $ renderTypeSigForHover pped symAtCursor typ
       pure . Text.unlines $ [markdownify typeSig] <> renderedDocs
+
+    renderTypeSigForHover :: (Var v) => PPED.PrettyPrintEnvDecl -> Text -> Type.Type v a -> Text
+    renderTypeSigForHover pped name typ =
+      let renderedType = Text.pack $ TypePrinter.prettyStr (Just prettyWidth) (PPED.suffixifiedPPE pped) typ
+       in (name <> " : " <> renderedType)
+
     hoverInfoForLiteral :: MaybeT Lsp Text
     hoverInfoForLiteral =
       markdownify <$> do
@@ -114,6 +122,29 @@ hoverInfo uri pos =
           LSPQ.PatternNode pat -> do
             typ <- hoistMaybe $ builtinTypeForPatternLiterals pat
             pure (": " <> typ)
+
+    hoverInfoForLocalVar :: MaybeT Lsp Text
+    hoverInfoForLocalVar = do
+      let varFromNode = do
+            node <- LSPQ.nodeAtPosition uri pos
+            Debug.debugM Debug.Temp "node" node
+            case node of
+              LSPQ.TermNode (Term.Var' v) -> pure $ v
+              LSPQ.TermNode {} -> empty
+              LSPQ.TypeNode {} -> empty
+              LSPQ.PatternNode _pat -> empty
+      -- let varFromText = VFS.identifierAtPosition uri pos
+      localVar <- varFromNode -- <|> varFromText
+      Debug.debugM Debug.Temp "localVar" localVar
+      FileAnalysis {localBindingTypes} <- FileAnalysis.getFileAnalysis uri
+      Debug.debugM Debug.Temp "pos" pos
+      Debug.debugM Debug.Temp "localBindingTypes" localBindingTypes
+      (_range, typ) <- hoistMaybe $ IM.lookupMin $ IM.intersecting localBindingTypes (IM.ClosedInterval pos pos)
+      pped <- lift $ ppedForFile uri
+      let varName = case localVar of
+            (Symbol.Symbol _ (Var.User name)) -> name
+            _ -> tShow localVar
+      pure $ renderTypeSigForHover pped varName typ
 
     hoistMaybe :: Maybe a -> MaybeT Lsp a
     hoistMaybe = MaybeT . pure
