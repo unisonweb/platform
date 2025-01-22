@@ -1,17 +1,23 @@
 # List Projects And Branches Test
 
+I create projects and branches in reverse alphabetical order,
+this is because the results from the listing endpoints is sorted by (timestamp, name); but
+the default sqlite timestamp only has second-level precision and the transcript will sometimes
+lump many of those together. Doing it this way ensures both the creation timestamp and name sort
+the same direction so we don't end up with flaky non-deterministic tests.
+
 ``` ucm :hide
-scratch/main> project.create-empty project-apple
+scratch/main> project.create-empty project-cherry
 
 scratch/main> project.create-empty project-banana
 
-scratch/main> project.create-empty project-cherry
+scratch/main> project.create-empty project-apple
 
-project-apple/main> branch branch-apple
+project-apple/main> branch branch-cherry
 
 project-apple/main> branch branch-banana
 
-project-apple/main> branch branch-cherry
+project-apple/main> branch branch-apple
 ```
 
 ``` api
@@ -19,7 +25,7 @@ project-apple/main> branch branch-cherry
 GET /api/projects
   [
       {
-          "activeBranchRef": "branch-cherry",
+          "activeBranchRef": "branch-apple",
           "projectName": "project-apple"
       },
       {
