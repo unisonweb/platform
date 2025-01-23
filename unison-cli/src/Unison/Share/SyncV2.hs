@@ -5,6 +5,7 @@ module Unison.Share.SyncV2
   ( syncFromFile,
     syncToFile,
     syncFromCodebase,
+    syncFromCodeserver,
   )
 where
 
@@ -22,19 +23,30 @@ import Data.Conduit.List qualified as C
 import Data.Conduit.Zlib qualified as C
 import Data.Graph qualified as Graph
 import Data.Map qualified as Map
+import Data.Proxy
 import Data.Set qualified as Set
 import Data.Text.IO qualified as Text
+import Data.Text.Lazy qualified as Text.Lazy
+import Data.Text.Lazy.Encoding qualified as Text.Lazy
+import Network.HTTP.Client qualified as Http.Client
+import Network.HTTP.Types qualified as HTTP
+import Servant.API qualified as Servant
+import Servant.Client.Streaming qualified as Servant
 import Servant.Conduit ()
+import Servant.Types.SourceT qualified as Servant
 import System.Console.Regions qualified as Console.Regions
 import U.Codebase.HashTags (CausalHash)
 import U.Codebase.Sqlite.Queries qualified as Q
 import U.Codebase.Sqlite.TempEntity (TempEntity)
 import U.Codebase.Sqlite.V2.HashHandle (v2HashHandle)
+import Unison.Auth.HTTPClient qualified as Auth
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Codebase qualified as Codebase
+import Unison.Debug qualified as Debug
 import Unison.Hash32 (Hash32)
 import Unison.Prelude
+import Unison.Share.API.Hash qualified as Share
 import Unison.Share.ExpectedHashMismatches (expectedCausalHashMismatches, expectedComponentHashMismatches)
 import Unison.Share.Sync.Types
 import Unison.Sqlite qualified as Sqlite
@@ -117,6 +129,36 @@ syncFromCodebase shouldValidate srcConn destCodebase causalHash = do
     (header, rest) <- initializeStream entityStream
     streamIntoCodebase shouldValidate destCodebase header rest
     mapExceptT liftIO (afterSyncChecks destCodebase (causalHashToHash32 causalHash))
+
+syncFromCodeserver ::
+  Bool ->
+  -- | The Unison Share URL.
+  Servant.BaseUrl ->
+  -- | The branch to download from.
+  SyncV2.BranchRef ->
+  -- | The hash to download.
+  Share.HashJWT ->
+  Set Hash32 ->
+  -- | Callback that's given a number of entities we just downloaded.
+  (Int -> IO ()) ->
+  Cli (Either (SyncError SyncV2.PullError) ())
+syncFromCodeserver shouldValidate unisonShareUrl branchRef hashJwt knownHashes _downloadedCallback = do
+  Cli.Env {authHTTPClient, codebase} <- ask
+  runExceptT do
+    let hash = Share.hashJWTHash hashJwt
+    ExceptT $ do
+      (Cli.runTransaction (Q.entityLocation hash)) >>= \case
+        Just Q.EntityInMainStorage -> pure $ Right ()
+        _ -> do
+          Debug.debugLogM Debug.Temp $ "Kicking off sync request"
+          Timing.time "Entity Download" $ do
+            liftIO . C.runResourceT . runExceptT $ httpStreamEntities
+              authHTTPClient
+              unisonShareUrl
+              SyncV2.DownloadEntitiesRequest {branchRef, causalHash = hashJwt, knownHashes}
+              \header stream -> do
+                streamIntoCodebase shouldValidate codebase header stream
+    mapExceptT liftIO (afterSyncChecks codebase hash)
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Helpers
