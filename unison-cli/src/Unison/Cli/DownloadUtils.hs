@@ -19,6 +19,7 @@ import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.Share.Projects qualified as Share
 import Unison.Codebase.Editor.HandleInput.AuthLogin (ensureAuthenticatedWithCodeserver)
+import Unison.Codebase.Editor.Input (SyncVersion (..))
 import Unison.Codebase.Editor.Output qualified as Output
 import Unison.Codebase.Editor.RemoteRepo (ReadShareLooseCode, shareUserHandleToText)
 import Unison.Codebase.Editor.RemoteRepo qualified as RemoteRepo
@@ -35,8 +36,6 @@ import Unison.Share.Types (codeserverBaseURL)
 import Unison.Sync.Common qualified as Sync.Common
 import Unison.Sync.Types qualified as Share
 import Unison.SyncV2.Types qualified as SyncV2
-
-data SyncVersion = SyncV1 | SyncV2
 
 -- | Download a project/branch from Share.
 downloadProjectBranchFromShare ::

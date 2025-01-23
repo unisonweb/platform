@@ -8,11 +8,14 @@ where
 
 import Control.Lens
 import Control.Monad.Reader (MonadReader (..))
+import U.Codebase.HashTags (CausalHash)
 import U.Codebase.Sqlite.Queries qualified as Q
+import Unison.Cli.DownloadUtils (SyncVersion (..), downloadProjectBranchFromShare)
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
 import Unison.Cli.ProjectUtils qualified as Project
+import Unison.Cli.Share.Projects qualified as Projects
 import Unison.Codebase (CodebasePath)
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Editor.Output qualified as Output
@@ -22,7 +25,6 @@ import Unison.Prelude
 import Unison.Project (ProjectAndBranch (..), ProjectBranchName, ProjectName)
 import Unison.Share.SyncV2 qualified as SyncV2
 import Unison.SyncV2.Types (BranchRef)
-import Unison.Cli.DownloadUtils (SyncVersion, downloadProjectBranchFromShare)
 
 handleSyncToFile :: FilePath -> ProjectAndBranch (Maybe ProjectName) (Maybe ProjectBranchName) -> Cli ()
 handleSyncToFile destSyncFile branchToSync = do
@@ -72,30 +74,5 @@ handleSyncFromCodebase description srcCodebasePath srcBranch destBranch = do
     Right (Right (Left syncErr)) -> do
       Cli.respond (Output.SyncPullError syncErr)
 
-handleSyncFromCodebase :: Text -> CodebasePath -> ProjectAndBranch ProjectName ProjectBranchName -> ProjectAndBranch (Maybe ProjectName) ProjectBranchName -> Cli ()
-handleSyncFromCodebase description srcCodebasePath srcBranch destBranch = do
-  Cli.Env {codebase} <- ask
-  pp <- Cli.getCurrentProjectPath
-  projectBranch <- Project.resolveProjectBranchInProject (pp ^. #project) (over #branch Just destBranch)
-  r <- liftIO $ Init.withOpenCodebase SqliteCodebase.init "sync-src" srcCodebasePath Init.DontLock (Init.MigrateAfterPrompt Init.Backup Init.Vacuum) \srcCodebase -> do
-    Codebase.withConnection srcCodebase \srcConn -> do
-      maySrcCausalHash <- Codebase.runTransaction srcCodebase $ do
-        let ProjectAndBranch srcProjName srcBranchName = srcBranch
-        runMaybeT do
-          project <- MaybeT (Q.loadProjectByName srcProjName)
-          branch <- MaybeT (Q.loadProjectBranchByName (project ^. #projectId) srcBranchName)
-          lift $ Project.getProjectBranchCausalHash branch
-      case maySrcCausalHash of
-        Nothing -> pure $ Left (error "Todo proper error")
-        Just srcCausalHash -> do
-          let shouldValidate = True
-          fmap (const srcCausalHash) <$> liftIO (SyncV2.syncFromCodebase shouldValidate srcConn codebase srcCausalHash)
-
-  case r of
-    Left _err -> pure $ error "Todo proper error"
-    Right (Left syncErr) -> Cli.respond (Output.SyncPullError syncErr)
-    Right (Right causalHash) -> do
-      Cli.setProjectBranchRootToCausalHash (projectBranch ^. #branch) description causalHash
-
-handleSyncFromCodeserver :: SyncVersion -> Projects.IncludeSquashedHead -> Projects.RemoteProjectBranch -> Cli (Either Output.ShareError CausalHash)
-handleSyncFromCodeserver = downloadProjectBranchFromShare
+handleSyncFromCodeserver :: Projects.IncludeSquashedHead -> Projects.RemoteProjectBranch -> Cli (Either Output.ShareError CausalHash)
+handleSyncFromCodeserver = downloadProjectBranchFromShare SyncV2

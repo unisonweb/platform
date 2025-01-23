@@ -687,7 +687,7 @@ loop e = do
               _ <- Cli.updateAtM description pp \destb ->
                 liftIO (Branch.merge'' (Codebase.lca codebase) Branch.RegularMerge srcb destb)
               Cli.respond Success
-            PullI sourceTarget pullMode -> handlePull sourceTarget pullMode
+            PullI syncVersion sourceTarget pullMode -> handlePull syncVersion sourceTarget pullMode
             PushRemoteBranchI pushRemoteBranchInput -> handlePushRemoteBranch pushRemoteBranchInput
             SyncToFileI syncFileDest projectBranchName -> SyncV2.handleSyncToFile syncFileDest projectBranchName
             SyncFromFileI syncFileSrc projectBranchName -> do
