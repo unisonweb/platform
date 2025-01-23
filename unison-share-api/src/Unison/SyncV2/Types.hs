@@ -14,6 +14,7 @@ module Unison.SyncV2.Types
     PullError (..),
     EntitySorting (..),
     Version (..),
+    BytesEntity,
   )
 where
 
@@ -21,20 +22,15 @@ import Codec.CBOR.Encoding qualified as CBOR
 import Codec.Serialise (Serialise (..))
 import Codec.Serialise qualified as CBOR
 import Codec.Serialise.Decoding qualified as CBOR
-import Control.Exception (Exception)
 import Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.:), (.=))
-import Data.Map (Map)
 import Data.Map qualified as Map
-import Data.Set (Set)
-import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Word (Word16, Word64)
 import U.Codebase.HashTags (CausalHash)
-import U.Codebase.Sqlite.TempEntity (TempEntity)
+import U.Codebase.Sqlite.Entity (SyncEntity')
 import Unison.Core.Project (ProjectAndBranch (..), ProjectBranchName, ProjectName)
 import Unison.Debug qualified as Debug
 import Unison.Hash32 (Hash32)
-import Unison.Prelude (From (..))
+import Unison.Prelude
 import Unison.Server.Orphans ()
 import Unison.Share.API.Hash (HashJWT)
 import Unison.Sync.Types qualified as SyncV1
@@ -214,9 +210,11 @@ instance Serialise StreamInitInfo where
     rootBranchRef <- optionalDecodeMapKey "br" m
     pure StreamInitInfo {version, entitySorting, numEntities, rootCausalHash, rootBranchRef}
 
+type BytesEntity = SyncEntity' Text Hash32 ByteString ByteString ByteString ByteString ByteString
+
 data EntityChunk = EntityChunk
-  { hash :: Hash32,
-    entityCBOR :: CBORBytes TempEntity
+  { hash :: ByteString,
+    entityCBOR :: CBORBytes BytesEntity
   }
   deriving (Show, Eq, Ord)
 

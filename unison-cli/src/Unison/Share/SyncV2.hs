@@ -23,9 +23,7 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Conduit.Attoparsec qualified as C
 import Data.Conduit.List qualified as C
 import Data.Conduit.Zlib qualified as C
-import Data.Graph qualified as Graph
 import Data.Map qualified as Map
-import Data.Set qualified as Set
 import Data.Text.IO qualified as Text
 import Servant.Conduit ()
 import System.Console.Regions qualified as Console.Regions
@@ -37,17 +35,17 @@ import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Codebase qualified as Codebase
 import Unison.Debug qualified as Debug
+import Unison.Hash qualified as Hash
 import Unison.Hash32 (Hash32)
+import Unison.Hash32 qualified as Hash32
 import Unison.Prelude
-import Unison.Share.ExpectedHashMismatches (expectedCausalHashMismatches, expectedComponentHashMismatches)
 import Unison.Share.Sync.Types
 import Unison.Sqlite qualified as Sqlite
-import Unison.Sync.Common (causalHashToHash32, hash32ToCausalHash, tempEntityToEntity)
+import Unison.Sync.Common (causalHashToHash32, entityToTempEntity, hash32ToCausalHash, tempEntityToEntity)
 import Unison.Sync.Common qualified as Sync
-import Unison.Sync.EntityValidation qualified as EV
-import Unison.Sync.Types qualified as Share
+import Unison.Sync.Types (entityHashes_)
 import Unison.Sync.Types qualified as Sync
-import Unison.SyncV2.Types (CBORBytes)
+import Unison.SyncV2.Types (BytesEntity, CBORBytes)
 import Unison.SyncV2.Types qualified as SyncV2
 import Unison.Util.Servant.CBOR qualified as CBOR
 import Unison.Util.Timing qualified as Timing
@@ -65,7 +63,7 @@ batchSize = 5000
 ------------------------------------------------------------------------------------------------------------------------
 -- Download entities
 
-validateAndSave :: Bool -> (Codebase.Codebase IO v a) -> [(Hash32, TempEntity)] -> StreamM ()
+validateAndSave :: Bool -> (Codebase.Codebase IO v a) -> [(Hash32, BytesEntity)] -> StreamM ()
 validateAndSave shouldValidate codebase entities = do
   let validateEntities =
         runExceptT $ when shouldValidate (batchValidateEntities entities)
@@ -74,7 +72,7 @@ validateAndSave shouldValidate codebase entities = do
   ExceptT . liftIO $ IO.withAsync validateEntities \validationTask -> do
     Timing.time "Inserting entities" $ Codebase.runTransactionExceptT codebase do
       for_ entities \(hash, entity) -> do
-        void . lift $ Q.saveTempEntityInMain v2HashHandle hash entity
+        void . lift $ Q.saveTempEntityInMain v2HashHandle hash (bytesToTemp entity)
       lift (Sqlite.unsafeIO (IO.wait validationTask)) >>= \case
         Left err -> throwError err
         Right _ -> pure ()
@@ -88,8 +86,8 @@ syncUnsortedStream ::
 syncUnsortedStream shouldValidate codebase stream = do
   Debug.debugLogM Debug.Temp $ "Syncing unsorted stream"
   allResults <- C.runConduit $ stream C..| C.sinkList
-  allEntities <- ExceptT $ Timing.time "Unpacking chunks" $ liftIO $ Codebase.runTransactionExceptT codebase $ do unpackChunks allResults
-  let sortedEntities = sortDependencyFirst allEntities
+  sortedEntities <- ExceptT $ Timing.time "Unpacking chunks" $ liftIO $ Codebase.runTransactionExceptT codebase $ do unpackChunks allResults
+  -- let sortedEntities = sortDependencyFirst allEntities
   validateAndSave shouldValidate codebase sortedEntities
 
 -- | Syncs a stream which sends entities which are already sorted in dependency order.
@@ -106,44 +104,46 @@ syncSortedStream shouldValidate codebase stream = do
         validateAndSave shouldValidate codebase (catMaybes entityBatch)
   C.runConduit $ stream C..| C.chunksOf batchSize C..| handler
 
-unpackChunk :: SyncV2.EntityChunk -> ExceptT SyncErr Sqlite.Transaction (Maybe (Hash32, TempEntity))
+unpackChunk :: SyncV2.EntityChunk -> ExceptT SyncErr Sqlite.Transaction (Maybe (Hash32, BytesEntity))
 unpackChunk = \case
   SyncV2.EntityChunk {hash, entityCBOR = entityBytes} -> do
     -- Only want entities we don't already have
-    lift (Q.entityLocation hash) >>= \case
+    lift (Q.entityLocation $ hash32FromBS hash) >>= \case
       Just Q.EntityInMainStorage -> pure Nothing
       _ -> do
-        (Just . (hash,)) <$> unpackEntity entityBytes
+        (Just . (hash32FromBS hash,)) <$> unpackEntity entityBytes
     where
-      unpackEntity :: (CBORBytes TempEntity) -> ExceptT SyncErr Sqlite.Transaction TempEntity
+      unpackEntity :: (CBORBytes BytesEntity) -> ExceptT SyncErr Sqlite.Transaction BytesEntity
       unpackEntity entityBytes = do
         case CBOR.deserialiseOrFailCBORBytes entityBytes of
           Left err -> do throwError $ (SyncError . SyncV2.PullError'Sync $ SyncV2.SyncErrorDeserializationFailure err)
           Right entity -> pure entity
 
-unpackChunks :: [SyncV2.EntityChunk] -> ExceptT SyncErr Sqlite.Transaction [(Hash32, TempEntity)]
+unpackChunks :: [SyncV2.EntityChunk] -> ExceptT SyncErr Sqlite.Transaction [(Hash32, BytesEntity)]
 unpackChunks xs = do
   for xs unpackChunk
     <&> catMaybes
 
-batchValidateEntities :: [(Hash32, TempEntity)] -> ExceptT SyncErr IO ()
-batchValidateEntities entities = do
-  mismatches <- fmap catMaybes $ liftIO $ IO.pooledForConcurrently entities \(hash, entity) -> do
-    IO.evaluate $ EV.validateTempEntity hash entity
-  for_ mismatches \case
-    err@(Share.EntityHashMismatch et (Share.HashMismatchForEntity {supplied, computed})) ->
-      let expectedMismatches = case et of
-            Share.TermComponentType -> expectedComponentHashMismatches
-            Share.DeclComponentType -> expectedComponentHashMismatches
-            Share.CausalType -> expectedCausalHashMismatches
-            _ -> mempty
-       in case Map.lookup supplied expectedMismatches of
-            Just expected
-              | expected == computed -> pure ()
-            _ -> do
-              throwError . SyncError . SyncV2.PullError'DownloadEntities . SyncV2.DownloadEntitiesEntityValidationFailure $ err
-    err -> do
-      throwError . SyncError . SyncV2.PullError'DownloadEntities . SyncV2.DownloadEntitiesEntityValidationFailure $ err
+batchValidateEntities :: [(Hash32, BytesEntity)] -> ExceptT SyncErr IO ()
+batchValidateEntities _entities = undefined
+
+-- -- mismatches <- fmap catMaybes $ liftIO $ IO.pooledForConcurrently entities \(hash, entity) -> do
+--   pure Nothing
+-- -- IO.evaluate $ EV.validateTempEntity hash entity
+-- for_ mismatches \case
+--   err@(Share.EntityHashMismatch et (Share.HashMismatchForEntity {supplied, computed})) ->
+--     let expectedMismatches = case et of
+--           Share.TermComponentType -> expectedComponentHashMismatches
+--           Share.DeclComponentType -> expectedComponentHashMismatches
+--           Share.CausalType -> expectedCausalHashMismatches
+--           _ -> mempty
+--      in case Map.lookup supplied expectedMismatches of
+--           Just expected
+--             | expected == computed -> pure ()
+--           _ -> do
+--             throwError . SyncError . SyncV2.PullError'DownloadEntities . SyncV2.DownloadEntitiesEntityValidationFailure $ err
+--   err -> do
+--     throwError . SyncError . SyncV2.PullError'DownloadEntities . SyncV2.DownloadEntitiesEntityValidationFailure $ err
 
 streamIntoCodebase :: Bool -> Codebase.Codebase IO v a -> SyncV2.StreamInitInfo -> Stream () SyncV2.EntityChunk -> StreamM ()
 streamIntoCodebase shouldValidate codebase SyncV2.StreamInitInfo {version, entitySorting, numEntities = numEntities} stream = ExceptT do
@@ -172,11 +172,12 @@ afterSyncChecks codebase hash = do
       isJust <$> (Codebase.runTransaction codebase $ Q.loadCausalByCausalHash expectedHash)
 
 -- | Topologically sort entities based on their dependencies.
-sortDependencyFirst :: [(Hash32, TempEntity)] -> [(Hash32, TempEntity)]
-sortDependencyFirst entities = do
-  let adjList = entities <&> \(hash32, entity) -> ((hash32, entity), hash32, Set.toList $ Share.entityDependencies (tempEntityToEntity entity))
-      (graph, vertexInfo, _vertexForKey) = Graph.graphFromEdges adjList
-   in Graph.reverseTopSort graph <&> \v -> (view _1 $ vertexInfo v)
+_sortDependencyFirst :: [(Hash32, BytesEntity)] -> [(Hash32, BytesEntity)]
+_sortDependencyFirst entities = entities
+
+-- let adjList = entities <&> \(hash32, entity) -> ((hash32, entity), hash32, Set.toList $ Share.entityDependencies (tempEntityToEntity entity))
+--     (graph, vertexInfo, _vertexForKey) = Graph.graphFromEdges adjList
+--  in Graph.reverseTopSort graph <&> \v -> (view _1 $ vertexInfo v)
 
 syncFromFile ::
   Bool ->
@@ -236,10 +237,10 @@ withEntityStream conn rootHash mayBranchRef callback = do
         entities
           & fmap (Sync.entityToTempEntity id)
           & Map.toList
-          & sortDependencyFirst
+          -- & sortDependencyFirst
           & ( fmap \(hash, entity) ->
-                let entityCBOR = (CBOR.serialiseCBORBytes entity)
-                 in SyncV2.EntityC (SyncV2.EntityChunk {hash, entityCBOR})
+                let entityCBOR = (CBOR.serialiseCBORBytes $ tempToBytes entity)
+                 in SyncV2.EntityC (SyncV2.EntityChunk {hash = hash32ToBS hash, entityCBOR})
             )
           & (initialChunk :)
   let stream = C.yieldMany contents
@@ -256,7 +257,7 @@ syncToFile codebase rootHash mayBranchRef destFilePath = do
     C.runResourceT $
       withEntityStream conn rootHash mayBranchRef \mayTotal stream -> do
         withStreamProgressCallback (Just mayTotal) \countC -> runExceptT do
-          C.runConduit $ stream C..| countC C..| C.map (BL.toStrict . CBOR.serialise) C..| C.transPipe liftIO C.gzip C..| C.sinkFile destFilePath
+          C.runConduit $ stream C..| countC C..| C.map (BL.toStrict . CBOR.serialise) C..| C.sinkFile destFilePath
 
 -- | Collect all dependencies of a given causal hash.
 depsForCausal :: CausalHash -> (Int -> IO ()) -> Sqlite.Transaction (Map Hash32 (Sync.Entity Text Hash32 Hash32))
@@ -393,3 +394,19 @@ withEntityLoadingCallback action = do
               <> " entities...\n\n"
         toIO $ action $ \i -> do
           liftIO $ IO.atomically (IO.modifyTVar' counterVar (+ i))
+
+hash32ToBS :: Hash32 -> ByteString
+hash32ToBS = Hash.toByteString . Hash32.toHash
+
+hash32FromBS :: ByteString -> Hash32
+hash32FromBS = Hash32.fromHash . Hash.fromByteString
+
+tempToBytes :: TempEntity -> BytesEntity
+tempToBytes = entityToTempEntity id . mapEntity . tempEntityToEntity
+  where
+    mapEntity = over entityHashes_ hash32ToBS
+
+bytesToTemp :: BytesEntity -> TempEntity
+bytesToTemp = entityToTempEntity id . mapEntity . tempEntityToEntity
+  where
+    mapEntity = over entityHashes_ hash32FromBS

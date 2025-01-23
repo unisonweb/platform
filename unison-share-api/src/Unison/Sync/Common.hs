@@ -19,11 +19,9 @@ import U.Codebase.Sqlite.Causal qualified as Causal
 import U.Codebase.Sqlite.Decl.Format qualified as DeclFormat
 import U.Codebase.Sqlite.Entity qualified as Entity
 import U.Codebase.Sqlite.LocalIds
+import U.Codebase.Sqlite.Patch.Format qualified as Patch
 import U.Codebase.Sqlite.Patch.Format qualified as PatchFormat
 import U.Codebase.Sqlite.Queries qualified as Q
-import U.Codebase.Sqlite.TempEntity (TempEntity)
-import U.Codebase.Sqlite.TempEntity qualified as Sqlite
-import U.Codebase.Sqlite.TempEntity qualified as TempEntity
 import U.Codebase.Sqlite.Term.Format qualified as TermFormat
 import Unison.Hash32 (Hash32)
 import Unison.Hash32 qualified as Hash32
@@ -50,7 +48,8 @@ hash32ToCausalHash =
 
 -- | Convert an entity that came over the wire from Unison Share into an equivalent type that we can store in the
 -- `temp_entity` table.
-entityToTempEntity :: forall hash. (hash -> Hash32) -> Share.Entity Text Hash32 hash -> TempEntity
+-- entityToTempEntity :: forall hash hash'. (hash -> hash') -> Share.Entity Text Hash32 hash -> Entity.SyncEntity' Text _ _ _ _ _ _
+entityToTempEntity :: (a -> branchh) -> Share.Entity t hash a -> Entity.SyncEntity' t hash branchh branchh branchh branchh branchh
 entityToTempEntity toHash32 = \case
   Share.TC (Share.TermComponent terms) ->
     terms
@@ -91,19 +90,19 @@ entityToTempEntity toHash32 = \case
           parents = Vector.fromList (map toHash32 (Set.toList parents))
         }
   where
-    mungeLocalIds :: Share.LocalIds Text hash -> TempEntity.TempLocalIds
+    -- mungeLocalIds :: Share.LocalIds Text hash -> TempEntity.TempLocalIds
     mungeLocalIds Share.LocalIds {texts, hashes} =
       LocalIds
         { textLookup = Vector.fromList texts,
           defnLookup = Vector.map toHash32 (Vector.fromList hashes)
         }
 
-    mungeNamespaceLocalIds ::
-      [Text] ->
-      [hash] ->
-      [hash] ->
-      [(hash, hash)] ->
-      TempEntity.TempNamespaceLocalIds
+    -- mungeNamespaceLocalIds ::
+    --   [Text] ->
+    --   [hash] ->
+    --   [hash] ->
+    --   [(hash, hash)] ->
+    --   TempEntity.TempNamespaceLocalIds
     mungeNamespaceLocalIds textLookup defnLookup patchLookup childLookup =
       NamespaceFormat.LocalIds
         { branchTextLookup = Vector.fromList textLookup,
@@ -112,7 +111,7 @@ entityToTempEntity toHash32 = \case
           branchChildLookup = Vector.fromList (map (\(x, y) -> (toHash32 x, toHash32 y)) childLookup)
         }
 
-    mungePatchLocalIds :: [Text] -> [Hash32] -> [hash] -> TempEntity.TempPatchLocalIds
+    -- mungePatchLocalIds :: [Text] -> [_] -> [hash] -> Patch.PatchLocalIds' Text _ hash'
     mungePatchLocalIds textLookup oldHashLookup newHashLookup =
       PatchFormat.LocalIds
         { patchTextLookup = Vector.fromList textLookup,
@@ -120,7 +119,8 @@ entityToTempEntity toHash32 = \case
           patchDefnLookup = Vector.fromList (map toHash32 newHashLookup)
         }
 
-tempEntityToEntity :: Sqlite.TempEntity -> Share.Entity Text Hash32 Hash32
+-- tempEntityToEntity :: Sqlite.TempEntity -> Share.Entity Text Hash32 Hash32
+tempEntityToEntity :: (Ord h) => Entity.SyncEntity' text oldHash h h h h h -> Share.Entity text oldHash h
 tempEntityToEntity = \case
   Entity.TC (TermFormat.SyncTerm (TermFormat.SyncLocallyIndexedComponent terms)) ->
     terms
@@ -196,7 +196,7 @@ tempEntityToEntity = \case
           parents = Set.fromList (Vector.toList parents)
         }
   where
-    mungeLocalIds :: LocalIds' Text Hash32 -> Share.LocalIds Text Hash32
+    -- mungeLocalIds :: LocalIds' Text Hash32 -> Share.LocalIds Text Hash32
     mungeLocalIds LocalIds {textLookup, defnLookup} =
       Share.LocalIds
         { texts = Vector.toList textLookup,
