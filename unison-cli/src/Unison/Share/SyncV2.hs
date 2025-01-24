@@ -17,8 +17,11 @@ import Control.Monad.Except
 import Control.Monad.Reader (ask)
 import Control.Monad.ST (ST, stToIO)
 import Control.Monad.State
+import Data.Attoparsec.ByteString qualified as A
+import Data.Attoparsec.ByteString.Char8 qualified as A8
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
+import Data.Conduit.Attoparsec qualified as C
 import Data.Conduit.List qualified as C
 import Data.Conduit.Zlib qualified as C
 import Data.Graph qualified as Graph
@@ -43,7 +46,6 @@ import Unison.Auth.HTTPClient qualified as Auth
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Codebase qualified as Codebase
-import Unison.Debug qualified as Debug
 import Unison.Hash32 (Hash32)
 import Unison.Prelude
 import Unison.Share.API.Hash qualified as Share
@@ -55,17 +57,13 @@ import Unison.Sync.Common qualified as Sync
 import Unison.Sync.EntityValidation qualified as EV
 import Unison.Sync.Types qualified as Share
 import Unison.Sync.Types qualified as Sync
+import Unison.SyncV2.API (Routes (downloadEntitiesStream))
+import Unison.SyncV2.API qualified as SyncV2
 import Unison.SyncV2.Types (CBORBytes)
 import Unison.SyncV2.Types qualified as SyncV2
 import Unison.Util.Servant.CBOR qualified as CBOR
 import Unison.Util.Timing qualified as Timing
 import UnliftIO qualified as IO
-import Unison.SyncV2.API (Routes (downloadEntitiesStream))
-import Unison.SyncV2.API qualified as SyncV2
-import Data.Attoparsec.ByteString qualified as A
-import Data.Attoparsec.ByteString.Char8 qualified as A8
-import Data.Conduit.Attoparsec qualified as C
-
 
 type Stream i o = ConduitT i o StreamM ()
 
@@ -150,7 +148,6 @@ syncFromCodeserver shouldValidate unisonShareUrl branchRef hashJwt knownHashes _
       (Cli.runTransaction (Q.entityLocation hash)) >>= \case
         Just Q.EntityInMainStorage -> pure $ Right ()
         _ -> do
-          Debug.debugLogM Debug.Temp $ "Kicking off sync request"
           Timing.time "Entity Download" $ do
             liftIO . C.runResourceT . runExceptT $ httpStreamEntities
               authHTTPClient
@@ -417,12 +414,10 @@ SyncV2.Routes
 -- You MUST consume the stream within the callback, it will be closed when the callback returns.
 withConduit :: forall r. Servant.ClientEnv -> (Stream () SyncV2.DownloadEntitiesChunk -> StreamM r) -> Servant.ClientM (Servant.SourceIO SyncV2.DownloadEntitiesChunk) -> StreamM r
 withConduit clientEnv callback clientM = do
-  Debug.debugLogM Debug.Temp $ "Running clientM"
   ExceptT $ withRunInIO \runInIO -> do
     Servant.withClientM clientM clientEnv $ \case
       Left err -> pure . Left . TransportError $ (handleClientError clientEnv err)
       Right sourceT -> do
-        Debug.debugLogM Debug.Temp $ "Converting sourceIO to conduit"
         conduit <- liftIO $ Servant.fromSourceIO sourceT
         (runInIO . runExceptT $ callback conduit)
 
