@@ -55,6 +55,7 @@ import Unison.Referent qualified as Referent
 import Unison.Share.API.Hash (HashJWT (..))
 import Unison.ShortHash (ShortHash)
 import Unison.ShortHash qualified as SH
+import Unison.Sqlite qualified as Sqlite
 import Unison.Syntax.HashQualified qualified as HQ (parseText)
 import Unison.Syntax.HashQualifiedPrime qualified as HQ' (parseText)
 import Unison.Syntax.Name qualified as Name (parseTextEither, toText)
@@ -406,6 +407,8 @@ deriving anyclass instance (ToSchema n) => ToSchema (HQ.HashQualified n)
 
 deriving anyclass instance (ToSchema n) => ToSchema (HQ'.HashQualified n)
 
+deriving via Text instance Sqlite.FromField ProjectName
+
 instance FromHttpApiData ProjectName where
   parseQueryParam = mapLeft tShow . tryInto @ProjectName
 
@@ -424,6 +427,8 @@ instance ToCapture (Capture "project-name" ProjectName) where
 instance ToSchema ProjectName
 
 deriving via Text instance ToJSON ProjectName
+
+deriving via Text instance Sqlite.FromField ProjectBranchName
 
 instance FromHttpApiData ProjectBranchName where
   parseQueryParam = mapLeft tShow . tryInto @ProjectBranchName
