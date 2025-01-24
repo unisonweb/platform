@@ -683,14 +683,13 @@ eval env !denv !activeThreads !stk !k r (Match i br) = do
   n <- peekOffN stk i
   eval env denv activeThreads stk k r $ selectBranch n br
 eval env !denv !activeThreads !stk !k r (DMatch mr i br) = do
-  (t, stk) <- dumpDataNoTag mr stk =<< peekOff stk i
-  eval env denv activeThreads stk k r $
-    selectBranch (maskTags t) br
+  (nx, stk) <- dataBranch mr stk br =<< peekOff stk i
+  eval env denv activeThreads stk k r nx
 eval env !denv !activeThreads !stk !k r (NMatch _mr i br) = do
   n <- peekOffN stk i
   eval env denv activeThreads stk k r $ selectBranch n br
 eval env !denv !activeThreads !stk !k r (RMatch i pu br) = do
-  (t, stk) <- dumpDataNoTag Nothing stk =<< peekOff stk i
+  (t, stk) <- dumpDataValNoTag stk =<< peekOff stk i
   if t == TT.pureEffectTag
     then eval env denv activeThreads stk k r pu
     else case ANF.unpackTags t of
@@ -1000,46 +999,41 @@ buildData !stk !r !t (VArgV i) = do
     l = fsize stk - i
 {-# INLINE buildData #-}
 
+dumpDataValNoTag ::
+  Stack ->
+  Val ->
+  IO (PackedTag, Stack)
+dumpDataValNoTag stk (BoxedVal c) =
+  (closureTag c,) <$> dumpDataNoTag Nothing stk c
+dumpDataValNoTag _ v =
+  die $ "dumpDataValNoTag: unboxed val: " ++ show v
+{-# inline dumpDataValNoTag #-}
+
 -- Dumps a data type closure to the stack without writing its tag.
 -- Instead, the tag is returned for direct case analysis.
 dumpDataNoTag ::
   Maybe Reference ->
   Stack ->
-  Val ->
-  IO (PackedTag, Stack)
+  Closure ->
+  IO Stack
 dumpDataNoTag !mr !stk = \case
   -- Normally we want to avoid dumping unboxed values since it's unnecessary, but sometimes we don't know the type of
   -- the incoming value and end up dumping unboxed values, so we just push them back to the stack as-is. e.g. in type-casts/coercions
-  val@(UnboxedVal _ t) -> do
+  Enum _ _ -> pure stk
+  Data1 _ _ x -> do
     stk <- bump stk
-    poke stk val
-    pure (unboxedPackedTag t, stk)
-  BoxedVal clos -> case clos of
-    (Enum _ t) -> pure (t, stk)
-    (Data1 _ t x) -> do
-      stk <- bump stk
-      poke stk x
-      pure (t, stk)
-    (Data2 _ t x y) -> do
-      stk <- bumpn stk 2
-      pokeOff stk 1 y
-      poke stk x
-      pure (t, stk)
-    (DataG _ t seg) -> do
-      stk <- dumpSeg stk seg S
-      pure (t, stk)
-    clo ->
-      die $
-        "dumpDataNoTag: bad closure: "
-          ++ show clo
-          ++ maybe "" (\r -> "\nexpected type: " ++ show r) mr
-  where
-    unboxedPackedTag :: UnboxedTypeTag -> PackedTag
-    unboxedPackedTag = \case
-      CharTag -> TT.charTag
-      FloatTag -> TT.floatTag
-      IntTag -> TT.intTag
-      NatTag -> TT.natTag
+    poke stk x
+    pure stk
+  Data2 _ _ x y -> do
+    stk <- bumpn stk 2
+    pokeOff stk 1 y
+    stk <$ poke stk x
+  DataG _ _ seg -> dumpSeg stk seg S
+  clo ->
+    die $
+      "dumpDataNoTag: bad closure: "
+        ++ show clo
+        ++ maybe "" (\r -> "\nexpected type: " ++ show r) mr
 {-# INLINE dumpDataNoTag #-}
 
 -- Note: although the representation allows it, it is impossible
@@ -1994,6 +1988,40 @@ selectBranch t (Test2 u cu v cv e)
 selectBranch t (TestW df cs) = lookupWithDefault df t cs
 selectBranch _ (TestT {}) = error "impossible"
 {-# INLINE selectBranch #-}
+
+selectDataBranch :: Tag -> MBranch -> Either MSection MSection
+selectDataBranch t (Test1 u cu df)
+  | t == u = Left cu
+  | otherwise = Right df
+selectDataBranch t (Test2 u cu v cv df)
+  | t == u = Left cu
+  | t == v = Left cv
+  | otherwise = Right df
+selectDataBranch t (TestW df bs)
+  | Just ca <- EC.lookup t bs = Left ca
+  | otherwise = Right df
+selectDataBranch _ _ =
+  throw $ Panic "selectDataBranch: bad branches" Nothing
+{-# inline selectDataBranch #-}
+
+-- Combined branch selection and field dumping function for data types.
+-- Fields should only be dumped on _matches_, not default cases, because
+-- default cases potentially cover many constructors which could result
+-- in a variable number of values being put on the stack. Default cases
+-- uniformly expect _no_ values to be added to the stack.
+dataBranch
+  :: Maybe Reference -> Stack -> MBranch -> Val -> IO (MSection, Stack)
+dataBranch mrf stk br (BoxedVal c) = case selectDataBranch t br of
+  Left ca -> (ca,) <$> dumpDataNoTag mrf stk c
+  Right df -> pure (df, stk)
+  where
+    t = maskTags $ closureTag c
+dataBranch mrf _ _ v =
+  die $
+    "dataBranch: unboxed value: "
+      ++ show v
+      ++ maybe "" (\r -> "\nexpected type: " ++ show r) mrf
+{-# inline dataBranch #-}
 
 -- Splits off a portion of the continuation up to a given prompt.
 --

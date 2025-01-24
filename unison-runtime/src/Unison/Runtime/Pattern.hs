@@ -13,7 +13,7 @@ module Unison.Runtime.Pattern
 where
 
 import Control.Monad.State (State, evalState, modify, runState, state)
-import Data.List (transpose)
+import Data.List (nub, transpose)
 import Data.Map.Strict
   ( fromListWith,
     insertWith,
@@ -92,6 +92,11 @@ builtinDataSpec = Map.fromList decls
              | (_, x, y) <- builtinEffectDecls
            ]
 
+findPattern :: Eq v => v -> PatternRow v -> Maybe (Pattern v)
+findPattern v (PR ms _ _)
+  | (_, p : _) <- break ((== v) . loc) ms = Just p
+  | otherwise = Nothing
+
 -- A pattern compilation matrix is just a list of rows. There is
 -- no need for the rows to have uniform length; the variable
 -- annotations on the patterns in the rows keep track of what
@@ -125,8 +130,11 @@ refutable (P.Unbound _) = False
 refutable (P.Var _) = False
 refutable _ = True
 
-rowIrrefutable :: PatternRow v -> Bool
-rowIrrefutable (PR ps _ _) = null ps
+noMatches :: PatternRow v -> Bool
+noMatches (PR ps _ _) = null ps
+
+rowRefutable :: PatternRow v -> Bool
+rowRefutable (PR ps g _) = isJust g || not (null ps)
 
 firstRow :: ([P.Pattern v] -> Maybe v) -> Heuristic v
 firstRow f (PM (r : _)) = f $ matches r
@@ -481,6 +489,19 @@ splitMatrix v rf cons (PM rs) =
   where
     mmap = fmap (\(t, fs) -> (t, splitRow v rf t fs =<< rs)) cons
 
+-- Eliminates a variable from a matrix, keeping the rows that are
+-- _not_ specific matches on that variable (so, would potentially
+-- occur in a default case).
+antiSplitMatrix ::
+  (Var v) =>
+  v ->
+  PatternMatrix v ->
+  PatternMatrix v
+antiSplitMatrix v (PM rs) = PM (f =<< rs)
+  where
+    -- keep rows that do not have a refutable pattern for v
+    f r = [ r | isNothing $ findPattern v r ]
+
 -- Monad for pattern preparation. It is a state monad carrying a fresh
 -- variable source, the list of variables bound the pattern being
 -- prepared, and a variable renaming mapping.
@@ -596,7 +617,7 @@ compile _ _ (PM []) = apps' bu [text () "pattern match failure"]
   where
     bu = ref () (Builtin "bug")
 compile spec ctx m@(PM (r : rs))
-  | rowIrrefutable r =
+  | noMatches r =
       case guard r of
         Nothing -> body r
         Just g -> iff mempty g (body r) $ compile spec ctx (PM rs)
@@ -614,8 +635,11 @@ compile spec ctx m@(PM (r : rs))
       case lookupData rf spec of
         Right cons ->
           match () (var () v) $
-            buildCase spec rf False cons ctx
-              <$> splitMatrix v (Just rf) (numberCons cons) m
+            (buildCase spec rf False cons ctx
+              <$> splitMatrix v (Just rf) ncons m)
+              ++ buildDefaultCase spec False needDefault ctx dm
+          where
+            needDefault = length ncons < length cons
         Left err -> internalBug err
   | PReq rfs <- ty =
       match () (var () v) $
@@ -631,7 +655,29 @@ compile spec ctx m@(PM (r : rs))
       internalBug "unknown pattern compilation type"
   where
     v = choose heuristics m
+    ncons = relevantConstructors m v
     ty = Map.findWithDefault Unknown v ctx
+    dm = antiSplitMatrix v m
+
+-- Calculates the data constructors—with their arities—that should be
+-- matched on when splitting a matrix on a given variable. This
+-- includes
+relevantConstructors :: Eq v => PatternMatrix v -> v -> [(Int, Int)]
+relevantConstructors (PM rows) v = search [] rows
+  where
+    search acc (row : rows)
+      | rowRefutable row = case findPattern v row of
+          Just (P.Constructor _ (ConstructorReference _ t) sps) ->
+            search ((fromIntegral t, length sps) : acc) rows
+          Just (P.Boolean _ b) ->
+            search ((if b then 1 else 0, 0) : acc) rows
+          Just p ->
+            internalBug $ "unexpected data pattern: " ++ show p
+          -- if the pattern is not found, it must have been irrefutable,
+          -- so contributes no relevant constructor.
+          _ -> search acc rows
+    -- irrefutable row, or no rows left
+    search acc _ = nub $ reverse acc
 
 buildCaseBuiltin ::
   (Var v) =>
@@ -676,6 +722,18 @@ buildCase spec r eff cons ctx0 (t, vts, m) =
     pat = buildPattern eff (ConstructorReference r (fromIntegral t)) vs $ cons !! t
     vs = ((),) . fst <$> vts
     ctx = Map.fromList vts <> ctx0
+
+buildDefaultCase ::
+  (Var v) =>
+  DataSpec ->
+  Bool ->
+  Bool ->
+  Ctx v ->
+  PatternMatrix v ->
+  [MatchCase () (Term v)]
+buildDefaultCase spec _eff needed ctx pm
+  | needed = [MatchCase (Unbound ()) Nothing $ compile spec ctx pm]
+  | otherwise = []
 
 mkRow ::
   (Var v) =>
