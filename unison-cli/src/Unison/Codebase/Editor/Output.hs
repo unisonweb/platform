@@ -35,6 +35,7 @@ import U.Codebase.Sqlite.ProjectReflog qualified as ProjectReflog
 import Unison.Auth.Types (CredentialFailure)
 import Unison.Cli.MergeTypes (MergeSourceAndTarget, MergeSourceOrTarget)
 import Unison.Cli.Share.Projects.Types qualified as Share
+import Unison.Codebase (CodebasePath)
 import Unison.Codebase.Editor.Input
 import Unison.Codebase.Editor.Output.BranchDiff (BranchDiffOutput)
 import Unison.Codebase.Editor.Output.BranchDiff qualified as BD
@@ -43,6 +44,7 @@ import Unison.Codebase.Editor.RemoteRepo
 import Unison.Codebase.Editor.SlurpResult (SlurpResult (..))
 import Unison.Codebase.Editor.SlurpResult qualified as SR
 import Unison.Codebase.Editor.StructuredArgument (StructuredArgument)
+import Unison.Codebase.Init.OpenCodebaseError (OpenCodebaseError)
 import Unison.Codebase.IntegrityCheck (IntegrityResult (..))
 import Unison.Codebase.Path (Path')
 import Unison.Codebase.Path qualified as Path
@@ -80,6 +82,7 @@ import Unison.Share.Sync.Types qualified as Sync
 import Unison.ShortHash (ShortHash)
 import Unison.Symbol (Symbol)
 import Unison.Sync.Types qualified as Share (DownloadEntitiesError, UploadEntitiesError)
+import Unison.SyncV2.Types qualified as SyncV2
 import Unison.Syntax.Parser qualified as Parser
 import Unison.Term (Term)
 import Unison.Type (Type)
@@ -442,6 +445,9 @@ data Output
   | -- | A literal output message. Use this if it's too cumbersome to create a new Output constructor, e.g. for
     -- ephemeral progress messages that are just simple strings like "Loading branch..."
     Literal !(P.Pretty P.ColorText)
+  | SyncPullError (Sync.SyncError SyncV2.PullError)
+  | SyncFromCodebaseMissingProjectBranch (ProjectAndBranch ProjectName ProjectBranchName)
+  | OpenCodebaseError CodebasePath OpenCodebaseError
 
 data MoreEntriesThanShown = MoreEntriesThanShown | AllEntriesShown
   deriving (Eq, Show)
@@ -680,6 +686,9 @@ isFailure o = case o of
   IncoherentDeclDuringMerge {} -> True
   IncoherentDeclDuringUpdate {} -> True
   Literal _ -> False
+  SyncPullError {} -> True
+  SyncFromCodebaseMissingProjectBranch {} -> True
+  OpenCodebaseError {} -> True
 
 isNumberedFailure :: NumberedOutput -> Bool
 isNumberedFailure = \case

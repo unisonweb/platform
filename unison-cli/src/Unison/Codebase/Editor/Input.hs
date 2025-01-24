@@ -136,6 +136,9 @@ data Input
   | DiffNamespaceI BranchId2 BranchId2 -- old new
   | PullI !PullSourceTarget !PullMode
   | PushRemoteBranchI PushRemoteBranchInput
+  | SyncToFileI FilePath (ProjectAndBranch (Maybe ProjectName) (Maybe ProjectBranchName))
+  | SyncFromFileI FilePath UnresolvedProjectBranch
+  | SyncFromCodebaseI FilePath (ProjectAndBranch ProjectName ProjectBranchName) UnresolvedProjectBranch
   | ResetI (BranchId2 {- namespace to reset it to -}) (Maybe UnresolvedProjectBranch {- ProjectBranch to reset -})
   | -- | used in Welcome module to give directions to user
     --

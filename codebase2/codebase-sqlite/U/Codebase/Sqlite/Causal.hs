@@ -22,5 +22,6 @@ data SyncCausalFormat' causalHash valueHash = SyncCausalFormat
   { valueHash :: valueHash,
     parents :: Vector causalHash
   }
+  deriving stock (Eq, Show)
 
 type SyncCausalFormat = SyncCausalFormat' CausalHashId BranchHashId

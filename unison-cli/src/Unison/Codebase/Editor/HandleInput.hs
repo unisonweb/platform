@@ -88,6 +88,7 @@ import Unison.Codebase.Editor.HandleInput.ReleaseDraft (handleReleaseDraft)
 import Unison.Codebase.Editor.HandleInput.Run (handleRun)
 import Unison.Codebase.Editor.HandleInput.RuntimeUtils qualified as RuntimeUtils
 import Unison.Codebase.Editor.HandleInput.ShowDefinition (handleShowDefinition)
+import Unison.Codebase.Editor.HandleInput.SyncV2 qualified as SyncV2
 import Unison.Codebase.Editor.HandleInput.TermResolution (resolveMainRef)
 import Unison.Codebase.Editor.HandleInput.Tests qualified as Tests
 import Unison.Codebase.Editor.HandleInput.Todo (handleTodo)
@@ -668,6 +669,13 @@ loop e = do
               Cli.respond Success
             PullI sourceTarget pullMode -> handlePull sourceTarget pullMode
             PushRemoteBranchI pushRemoteBranchInput -> handlePushRemoteBranch pushRemoteBranchInput
+            SyncToFileI syncFileDest projectBranchName -> SyncV2.handleSyncToFile syncFileDest projectBranchName
+            SyncFromFileI syncFileSrc projectBranchName -> do
+              description <- inputDescription input
+              SyncV2.handleSyncFromFile description syncFileSrc projectBranchName
+            SyncFromCodebaseI srcCodebasePath srcBranch destBranch -> do
+              description <- inputDescription input
+              SyncV2.handleSyncFromCodebase description srcCodebasePath srcBranch destBranch
             ListDependentsI hq -> handleDependents hq
             ListDependenciesI hq -> handleDependencies hq
             NamespaceDependenciesI path -> handleNamespaceDependencies path
@@ -992,6 +1000,11 @@ inputDescription input =
     ProjectsI -> wat
     PullI {} -> wat
     PushRemoteBranchI {} -> wat
+    SyncToFileI {} -> wat
+    SyncFromFileI fp pab ->
+      pure $ "sync.from-file " <> into @Text fp <> " " <> into @Text pab
+    SyncFromCodebaseI fp srcBranch destBranch -> do
+      pure $ "sync.from-file " <> into @Text fp <> " " <> into @Text srcBranch <> " " <> into @Text destBranch
     QuitI {} -> wat
     ReleaseDraftI {} -> wat
     ShowDefinitionI {} -> wat

@@ -49,6 +49,7 @@ module Unison.Cli.MonadUtils
     stepManyAtM,
     updateProjectBranchRoot,
     updateProjectBranchRoot_,
+    setProjectBranchRootToCausalHash,
     updateAtM,
     updateAt,
     updateAndStepAt,
@@ -453,6 +454,13 @@ updateProjectBranchRoot projectBranch reason f = do
       when ((projectBranch.projectId, projectBranch.branchId) == (projectPathIds.project, projectPathIds.branch)) do
         liftIO (env.lspCheckForChanges projectPathIds)
     pure result
+
+setProjectBranchRootToCausalHash :: ProjectBranch -> Text -> CausalHash -> Cli ()
+setProjectBranchRootToCausalHash projectBranch reason targetCH = do
+  Cli.time "setProjectBranchRootToCausalHash" do
+    Cli.runTransaction $ do
+      targetCHID <- Q.expectCausalHashIdByCausalHash targetCH
+      Q.setProjectBranchHead reason (projectBranch ^. #projectId) (projectBranch ^. #branchId) targetCHID
 
 updateProjectBranchRoot_ :: ProjectBranch -> Text -> (Branch IO -> Branch IO) -> Cli ()
 updateProjectBranchRoot_ projectBranch reason f = do

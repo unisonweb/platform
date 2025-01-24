@@ -97,6 +97,9 @@ module Unison.CommandLine.InputPatterns
     pushCreate,
     pushExhaustive,
     pushForce,
+    syncToFile,
+    syncFromFile,
+    syncFromCodebase,
     quit,
     releaseDraft,
     renameBranch,
@@ -741,6 +744,55 @@ handleProjectAndBranchNamesArg =
       SA.Project project -> pure $ This project
       SA.ProjectBranch (ProjectAndBranch mproj branch) -> pure $ maybe That These mproj branch
       otherNumArg -> Left $ wrongStructuredArgument "a project or branch" otherNumArg
+
+handleOptionalProjectAndBranch :: I.Argument -> Either (P.Pretty CT.ColorText) (ProjectAndBranch (Maybe ProjectName) (Maybe ProjectBranchName))
+handleOptionalProjectAndBranch =
+  either
+    (\str -> fmap intoProjectAndBranch . first (const $ expectedButActually' "a project or branch" str) . tryInto @(These ProjectName ProjectBranchName) $ Text.pack str)
+    $ \case
+      SA.Project project -> pure $ ProjectAndBranch (Just project) Nothing
+      SA.ProjectBranch (ProjectAndBranch mproj branch) -> pure $ ProjectAndBranch mproj (Just branch)
+      otherNumArg -> Left $ wrongStructuredArgument "a project or branch" otherNumArg
+  where
+    intoProjectAndBranch :: These ProjectName ProjectBranchName -> ProjectAndBranch (Maybe ProjectName) (Maybe ProjectBranchName)
+    intoProjectAndBranch = \case
+      This project -> ProjectAndBranch (Just project) Nothing
+      That branch -> ProjectAndBranch Nothing (Just branch)
+      These project branch -> ProjectAndBranch (Just project) (Just branch)
+
+handleBranchWithOptionalProject :: I.Argument -> Either (P.Pretty CT.ColorText) (ProjectAndBranch (Maybe ProjectName) ProjectBranchName)
+handleBranchWithOptionalProject =
+  either
+    ( \str ->
+        Text.pack str
+          & tryInto @(These ProjectName ProjectBranchName)
+          & first (const $ expectedButActually' "a project branch" str)
+          >>= \case
+            These project branch -> pure $ ProjectAndBranch (Just project) branch
+            That branch -> pure $ ProjectAndBranch Nothing branch
+            This _project -> Left $ expectedButActually' "a  project branch" str
+    )
+    ( \case
+        SA.ProjectBranch (ProjectAndBranch mproj branch) -> pure $ ProjectAndBranch mproj branch
+        otherNumArg -> Left $ wrongStructuredArgument "a project branch" otherNumArg
+    )
+
+handleBranchWithProject :: I.Argument -> Either (P.Pretty CT.ColorText) (ProjectAndBranch ProjectName ProjectBranchName)
+handleBranchWithProject =
+  either
+    ( \str ->
+        Text.pack str
+          & tryInto @(These ProjectName ProjectBranchName)
+          & first (const $ expectedButActually' "a project branch" str)
+          >>= \case
+            These project branch -> pure $ ProjectAndBranch project branch
+            That _branch -> Left $ expectedButActually' "a project branch" str
+            This _project -> Left $ expectedButActually' "a project branch" str
+    )
+    ( \case
+        SA.ProjectBranch (ProjectAndBranch (Just proj) branch) -> pure $ ProjectAndBranch proj branch
+        otherNumArg -> Left $ wrongStructuredArgument "a project branch" otherNumArg
+    )
 
 mergeBuiltins :: InputPattern
 mergeBuiltins =
@@ -2088,6 +2140,86 @@ pushExhaustive =
     suggestionsConfig =
       ProjectBranchSuggestionsConfig
         { showProjectCompletions = False,
+          projectInclusion = AllProjects,
+          branchInclusion = AllBranches
+        }
+
+syncToFile :: InputPattern
+syncToFile =
+  InputPattern
+    { patternName = "sync.to-file",
+      aliases = [],
+      visibility = I.Hidden,
+      args = [("file-path", Required, filePathArg), ("branch", Optional, projectAndBranchNamesArg suggestionsConfig)],
+      help =
+        ( P.wrapColumn2
+            [ ( makeExample syncToFile ["./branch.usync"],
+                "saves the current branch to the file `foo.u`."
+              ),
+              ( makeExample syncToFile ["./main.usync", "/main"],
+                "saves the main branch to the file `main.usync`."
+              )
+            ]
+        ),
+      parse = \case
+        [filePath, branch] -> Input.SyncToFileI <$> unsupportedStructuredArgument makeStandalone "a file name" filePath <*> handleOptionalProjectAndBranch branch
+        [filePath] -> Input.SyncToFileI <$> unsupportedStructuredArgument makeStandalone "a file name" filePath <*> pure (ProjectAndBranch Nothing Nothing)
+        args -> wrongArgsLength "one or two arguments" args
+    }
+  where
+    suggestionsConfig =
+      ProjectBranchSuggestionsConfig
+        { showProjectCompletions = True,
+          projectInclusion = AllProjects,
+          branchInclusion = AllBranches
+        }
+
+syncFromFile :: InputPattern
+syncFromFile =
+  InputPattern
+    { patternName = "sync.from-file",
+      aliases = [],
+      visibility = I.Hidden,
+      args = [("file-path", Required, filePathArg), ("destination branch", Required, projectAndBranchNamesArg suggestionsConfig)],
+      help =
+        ( P.wrapColumn2
+            [ ( makeExample syncFromFile ["./feature.usync", "/feature"],
+                "Sets the /feature branch to the contents of the file `main.usync`."
+              )
+            ]
+        ),
+      parse = \case
+        [filePath, branch] -> Input.SyncFromFileI <$> unsupportedStructuredArgument makeStandalone "a file name" filePath <*> handleBranchWithOptionalProject branch
+        args -> wrongArgsLength "one or two arguments" args
+    }
+  where
+    suggestionsConfig =
+      ProjectBranchSuggestionsConfig
+        { showProjectCompletions = True,
+          projectInclusion = AllProjects,
+          branchInclusion = AllBranches
+        }
+
+syncFromCodebase :: InputPattern
+syncFromCodebase =
+  InputPattern
+    { patternName = "sync.from-codebase",
+      aliases = [],
+      visibility = I.Hidden,
+      args = [("codebase-location", Required, filePathArg), ("branch-to-sync", Required, projectAndBranchNamesArg suggestionsConfig), ("destination-branch", Optional, projectAndBranchNamesArg suggestionsConfig)],
+      help =
+        ( P.wrapColumn2
+            [ (makeExample syncFromCodebase ["./codebase", "/feature", "/main"], "Sets the /feature branch to the contents of the codebase at ./codebase.")
+            ]
+        ),
+      parse = \case
+        [codebaseLocation, branchToSync, destinationBranch] -> Input.SyncFromCodebaseI <$> unsupportedStructuredArgument makeStandalone "a file name" codebaseLocation <*> handleBranchWithProject branchToSync <*> handleBranchWithOptionalProject destinationBranch
+        args -> wrongArgsLength "three arguments" args
+    }
+  where
+    suggestionsConfig =
+      ProjectBranchSuggestionsConfig
+        { showProjectCompletions = True,
           projectInclusion = AllProjects,
           branchInclusion = AllBranches
         }
@@ -3684,6 +3816,9 @@ validInputs =
       pushCreate,
       pushExhaustive,
       pushForce,
+      syncToFile,
+      syncFromFile,
+      syncFromCodebase,
       quit,
       releaseDraft,
       renameBranch,
