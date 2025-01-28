@@ -69,18 +69,30 @@ data Mergeblob1 libdep = Mergeblob1
     unconflicts :: DefnsF Unconflicts Referent TypeReference
   }
 
--- | Get  a names object for all the hydrated definitions AND their direct dependencies
-hydratedDefnsLabeledDependencies :: (DefnsF (Map Name) (TermReferenceId, (Term Symbol Ann, Type Symbol Ann)) (TypeReferenceId, Decl Symbol Ann)) -> Set LD.LabeledDependency
-hydratedDefnsLabeledDependencies (Defns {terms, types}) =
+-- | Get a names object for all the hydrated definitions AND their direct dependencies
+hydratedDefnsLabeledDependencies ::
+  DefnsF
+    (Map Name)
+    (TermReferenceId, (Term Symbol Ann, Type Symbol Ann))
+    (TypeReferenceId, Decl Symbol Ann) ->
+  Set LD.LabeledDependency
+hydratedDefnsLabeledDependencies defns =
   let termDeps :: Set LD.LabeledDependency
-      termDeps = foldOf (folded . beside (to Reference.DerivedId . to LD.TermReference . to Set.singleton) (beside (to Term.labeledDependencies) (to Type.labeledDependencies))) terms
+      termDeps =
+        foldOf
+          ( folded
+              . beside
+                (to Reference.DerivedId . to LD.TermReference . to Set.singleton)
+                (beside (to Term.labeledDependencies) (to Type.labeledDependencies))
+          )
+          defns.terms
+
       typeDeps :: Set LD.LabeledDependency
       typeDeps =
-        types
+        defns.types
           & foldMap \(typeRefId, typeDecl) ->
-            let typeRef = Reference.DerivedId typeRefId
-             in Decl.labeledDeclDependenciesIncludingSelfAndFieldAccessors typeRef typeDecl
-   in termDeps <> typeDeps
+            Decl.labeledDeclDependenciesIncludingSelfAndFieldAccessors (Reference.DerivedId typeRefId) typeDecl
+   in Set.union termDeps typeDeps
 
 makeMergeblob1 ::
   forall libdep.
@@ -96,7 +108,7 @@ makeMergeblob1 ::
   Either (EitherWay IncoherentDeclReason) (Mergeblob1 libdep)
 makeMergeblob1 blob names3 hydratedDefns = do
   let ppeds3 :: ThreeWay PPED.PrettyPrintEnvDecl
-      ppeds3 = names3 <&> \names -> (PPED.makePPED (PPE.namer names) (PPE.suffixifyByHash names))
+      ppeds3 = names3 <&> \names -> PPED.makePPED (PPE.namer names) (PPE.suffixifyByHash names)
   -- Make one big constructor count lookup for all type decls
   let numConstructors =
         Map.empty

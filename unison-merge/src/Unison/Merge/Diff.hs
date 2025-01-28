@@ -95,25 +95,33 @@ diffHashedNamespaceDefns d1 d2 =
   zipDefnsWith f f d1 d2
     & splitPropagated
   where
-    f :: Map Name (Synhashed ref) -> Map Name (Synhashed ref) -> (Map Name (DiffOp (Synhashed ref)), Map Name (Updated ref))
-    f old new = unalign (eitherToThese . mapRight (fmap Synhashed.value) <$> alignWith g old new)
+    f ::
+      Map Name (Synhashed ref) ->
+      Map Name (Synhashed ref) ->
+      (Map Name (DiffOp (Synhashed ref)), Map Name (Updated ref))
+    f old new =
+      unalign (eitherToThese . mapRight (fmap Synhashed.value) <$> alignWith g old new)
 
     g :: (Eq x) => These x x -> Either (DiffOp x) (Updated x)
     g = \case
       This old -> Left (DiffOp'Delete old)
       That new -> Left (DiffOp'Add new)
       These old new
-        | old == new -> Right (Updated {old, new})
+        | old == new -> Right Updated {old, new}
         | otherwise -> Left (DiffOp'Update Updated {old, new})
+
     splitPropagated ::
-      Defns (Map Name (DiffOp (Synhashed term)), Map Name (Updated term)) (Map Name (DiffOp (Synhashed typ)), Map Name (Updated typ)) ->
+      Defns
+        ( Map Name (DiffOp (Synhashed term)),
+          Map Name (Updated term)
+        )
+        (Map Name (DiffOp (Synhashed typ)), Map Name (Updated typ)) ->
       (DefnsF3 (Map Name) DiffOp Synhashed term typ, DefnsF2 (Map Name) Updated term typ)
     splitPropagated Defns {terms, types} =
       (Defns {terms = fst terms, types = fst types}, Defns {terms = snd terms, types = snd types})
 
--- | Post-process a diff to identify relationships humans might care about,
--- such as whether a given addition could be interpreted as an alias of an existing definition,
--- or whether an add and deletion could be a rename.
+-- | Post-process a diff to identify relationships humans might care about, such as whether a given addition could be
+-- interpreted as an alias of an existing definition, or whether an add and deletion could be a rename.
 humanizeDiffs ::
   ThreeWay Names ->
   TwoWay (DefnsF3 (Map Name) DiffOp Synhashed Referent TypeReference) ->
@@ -125,10 +133,13 @@ humanizeDiffs names3 diffs propagatedUpdates =
   where
     zipWithF3 :: (Zip.Zip f) => f a -> f b -> f c -> (a -> b -> c -> d) -> f d
     zipWithF3 a b c f = Zip.zipWith (\(x, y) z -> f x y z) (Zip.zip a b) c
+
     namesToRelations :: Names -> (DefnsF (Relation Name) Referent TypeReference)
     namesToRelations names = Defns {terms = Names.terms names, types = Names.types names}
+
     lcaRelation :: DefnsF (Relation Name) Referent TypeReference
     lcaRelation = namesToRelations names3.lca
+
     nameRelations :: TwoWay (DefnsF (Relation Name) Referent TypeReference)
     nameRelations = namesToRelations <$> ThreeWay.forgetLca names3
 
