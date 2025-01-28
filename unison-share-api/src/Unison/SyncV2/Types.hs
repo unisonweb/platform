@@ -1,3 +1,5 @@
+{-# LANGUAGE RecordWildCards #-}
+
 module Unison.SyncV2.Types
   ( DownloadEntitiesRequest (..),
     DownloadEntitiesChunk (..),
@@ -6,6 +8,8 @@ module Unison.SyncV2.Types
     StreamInitInfo (..),
     SyncError (..),
     DownloadEntitiesError (..),
+    CausalDependenciesRequest (..),
+    CausalDependenciesChunk (..),
     CBORBytes (..),
     CBORStream(..),
     EntityKind (..),
@@ -24,6 +28,7 @@ import Codec.Serialise qualified as CBOR
 import Codec.Serialise.Decoding qualified as CBOR
 import Control.Exception (Exception)
 import Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.:), (.=))
+import Data.Aeson qualified as Aeson
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Set (Set)
@@ -299,3 +304,56 @@ instance Serialise EntityKind where
       3 -> pure TypeEntity
       4 -> pure PatchEntity
       _ -> fail "invalid tag"
+
+------------------------------------------------------------------------------------------------------------------------
+-- Causal Dependencies
+
+data CausalDependenciesRequest = CausalDependenciesRequest
+  { branchRef :: BranchRef,
+    rootCausal :: HashJWT
+  }
+  deriving stock (Show, Eq, Ord)
+
+instance ToJSON CausalDependenciesRequest where
+  toJSON (CausalDependenciesRequest branchRef rootCausal) =
+    object
+      [ "branch_ref" .= branchRef,
+        "root_causal" .= rootCausal
+      ]
+
+instance FromJSON CausalDependenciesRequest where
+  parseJSON = Aeson.withObject "CausalDependenciesRequest" \obj -> do
+    branchRef <- obj .: "branch_ref"
+    rootCausal <- obj .: "root_causal"
+    pure CausalDependenciesRequest {..}
+
+instance Serialise CausalDependenciesRequest where
+  encode (CausalDependenciesRequest {branchRef, rootCausal}) =
+    encode branchRef <> encode rootCausal
+  decode = CausalDependenciesRequest <$> decode <*> decode
+
+-- | A chunk of the download entities response stream.
+data CausalDependenciesChunk
+  = HashC Hash32
+  deriving (Show, Eq, Ord)
+
+data CausalDependenciesChunkTag = HashChunkTag
+  deriving (Show, Eq, Ord)
+
+instance Serialise CausalDependenciesChunkTag where
+  encode = \case
+    HashChunkTag -> CBOR.encodeWord8 0
+  decode = do
+    tag <- CBOR.decodeWord8
+    case tag of
+      0 -> pure HashChunkTag
+      _ -> fail "invalid tag"
+
+instance Serialise CausalDependenciesChunk where
+  encode = \case
+    (HashC ch) -> do
+      encode HashChunkTag <> CBOR.encode ch
+  decode = do
+    tag <- decode
+    case tag of
+      HashChunkTag -> HashC <$> CBOR.decode

@@ -22,7 +22,8 @@ import Data.Attoparsec.ByteString.Char8 qualified as A8
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.Conduit.Attoparsec qualified as C
-import Data.Conduit.List qualified as C
+import Data.Conduit.Combinators qualified as C
+import Data.Conduit.List qualified as CL
 import Data.Conduit.Zlib qualified as C
 import Data.Foldable qualified as Foldable
 import Data.Graph qualified as Graph
@@ -148,13 +149,13 @@ syncFromCodeserver ::
   SyncV2.BranchRef ->
   -- | The hash to download.
   Share.HashJWT ->
-  Set Hash32 ->
   -- | Callback that's given a number of entities we just downloaded.
   (Int -> IO ()) ->
   Cli (Either (SyncError SyncV2.PullError) ())
-syncFromCodeserver shouldValidate unisonShareUrl branchRef hashJwt knownHashes _downloadedCallback = do
+syncFromCodeserver shouldValidate unisonShareUrl branchRef hashJwt _downloadedCallback = do
   Cli.Env {authHTTPClient, codebase} <- ask
   runExceptT do
+    knownHashes <- ExceptT $ negotiateKnownCausals unisonShareUrl branchRef hashJwt
     let hash = Share.hashJWTHash hashJwt
     ExceptT $ do
       (Cli.runTransaction (Q.entityLocation hash)) >>= \case
@@ -247,7 +248,7 @@ syncSortedStream shouldValidate codebase stream = do
         validateAndSave shouldValidate codebase entityBatch
   C.runConduit $
     stream
-      C..| C.chunksOf batchSize
+      C..| CL.chunksOf batchSize
       C..| unpackChunks codebase
       C..| handler
 
@@ -441,13 +442,15 @@ syncAPI :: Proxy SyncAPI
 syncAPI = Proxy @SyncAPI
 
 downloadEntitiesStreamClientM :: SyncV2.DownloadEntitiesRequest -> Servant.ClientM (Servant.SourceT IO (CBORStream SyncV2.DownloadEntitiesChunk))
+causalDependenciesStreamClientM :: SyncV2.CausalDependenciesRequest -> Servant.ClientM (Servant.SourceT IO (CBORStream SyncV2.CausalDependenciesChunk))
 SyncV2.Routes
-  { downloadEntitiesStream = downloadEntitiesStreamClientM
+  { downloadEntitiesStream = downloadEntitiesStreamClientM,
+    causalDependenciesStream = causalDependenciesStreamClientM
   } = Servant.client syncAPI
 
 -- | Helper for running clientM that returns a stream of entities.
 -- You MUST consume the stream within the callback, it will be closed when the callback returns.
-withConduit :: forall r. Servant.ClientEnv -> (Stream () (SyncV2.DownloadEntitiesChunk) -> StreamM r) -> Servant.ClientM (Servant.SourceIO (CBORStream SyncV2.DownloadEntitiesChunk)) -> StreamM r
+withConduit :: forall r chunk. Servant.ClientEnv -> (Stream () chunk -> StreamM r) -> Servant.ClientM (Servant.SourceIO (CBORStream chunk)) -> StreamM r
 withConduit clientEnv callback clientM = do
   ExceptT $ withRunInIO \runInIO -> do
     Servant.withClientM clientM clientEnv $ \case
@@ -480,7 +483,6 @@ handleClientError clientEnv err =
 
 -- | Stream entities from the codeserver.
 httpStreamEntities ::
-  forall.
   Auth.AuthenticatedHttpClient ->
   Servant.BaseUrl ->
   SyncV2.DownloadEntitiesRequest ->
@@ -521,6 +523,58 @@ initializeStream stream = do
       SyncV2.EntityC chunk -> pure chunk
       SyncV2.ErrorC (SyncV2.ErrorChunk err) -> throwError . SyncError $ SyncV2.PullError'DownloadEntities err
       SyncV2.InitialC {} -> throwError . SyncError $ SyncV2.PullError'Sync SyncV2.SyncErrorMisplacedInitialChunk
+
+------------------------------------------------------------------------------------------------------------------------
+-- Causal Dependency negotiation
+------------------------------------------------------------------------------------------------------------------------
+
+httpStreamCausalDependencies ::
+  forall r.
+  Auth.AuthenticatedHttpClient ->
+  Servant.BaseUrl ->
+  SyncV2.CausalDependenciesRequest ->
+  (Stream () SyncV2.CausalDependenciesChunk -> StreamM r) ->
+  StreamM r
+httpStreamCausalDependencies (Auth.AuthenticatedHttpClient httpClient) unisonShareUrl req callback = do
+  let clientEnv =
+        (Servant.mkClientEnv httpClient unisonShareUrl)
+          { Servant.makeClientRequest = \url request ->
+              -- Disable client-side timeouts
+              (Servant.defaultMakeClientRequest url request)
+                <&> \r ->
+                  r
+                    { Http.Client.responseTimeout = Http.Client.responseTimeoutNone
+                    }
+          }
+  (causalDependenciesStreamClientM req) & withConduit clientEnv callback
+
+-- | Ask Share for the dependencies of a given hash jwt,
+-- then filter them to get the set of causals which we have and don't need sent.
+negotiateKnownCausals ::
+  -- | The Unison Share URL.
+  Servant.BaseUrl ->
+  -- | The branch to download from.
+  SyncV2.BranchRef ->
+  -- | The hash to download.
+  Share.HashJWT ->
+  Cli (Either (SyncError SyncV2.PullError) (Set Hash32))
+negotiateKnownCausals unisonShareUrl branchRef hashJwt = do
+  Cli.Env {authHTTPClient, codebase} <- ask
+  Timing.time "Causal Negotiation" $ do
+    liftIO . C.runResourceT . runExceptT $ httpStreamCausalDependencies
+      authHTTPClient
+      unisonShareUrl
+      SyncV2.CausalDependenciesRequest {branchRef, rootCausal = hashJwt}
+      \stream -> do
+        Set.fromList <$> C.runConduit (stream C..| C.map unpack C..| C.filterM (haveCausalHash codebase) C..| C.sinkList)
+  where
+    unpack :: SyncV2.CausalDependenciesChunk -> Hash32
+    unpack = \case
+      SyncV2.HashC causalHash -> causalHash
+    haveCausalHash :: Codebase.Codebase IO v a -> Hash32 -> StreamM Bool
+    haveCausalHash codebase causalHash = do
+      liftIO $ Codebase.runTransaction codebase do
+        Q.causalExistsByHash32 causalHash
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Progress Tracking
