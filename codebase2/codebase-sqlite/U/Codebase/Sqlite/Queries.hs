@@ -111,6 +111,7 @@ module U.Codebase.Sqlite.Queries
     loadProjectByName,
     expectProject,
     loadAllProjects,
+    loadAllProjectsByRecentlyAccessed,
     loadAllProjectsBeginningWith,
     insertProject,
     renameProject,
@@ -3602,6 +3603,17 @@ loadAllProjects =
       ORDER BY name ASC
     |]
 
+-- | Load all projects.
+loadAllProjectsByRecentlyAccessed :: Transaction [Project]
+loadAllProjectsByRecentlyAccessed =
+  queryListRow
+    [sql|
+      SELECT project.id, project.name
+      FROM project
+        JOIN project_branch ON project.id = project_branch.project_id
+      ORDER BY project_branch.last_accessed DESC NULLS LAST, project.name ASC
+    |]
+
 -- | Load all projects whose name matches a prefix.
 loadAllProjectsBeginningWith :: Maybe Text -> Transaction [Project]
 loadAllProjectsBeginningWith mayPrefix = do
@@ -3740,7 +3752,7 @@ loadAllProjectBranchNamePairs =
       FROM
         project
         JOIN project_branch ON project.id = project_branch.project_id
-      ORDER BY project.name ASC, project_branch.name ASC
+      ORDER BY project_branch.last_accessed DESC NULLS LAST, project.name ASC, project_branch.name ASC
     |]
     <&> fmap \(projectName, branchName, projectId, branchId) ->
       ( ProjectAndBranch projectName branchName,

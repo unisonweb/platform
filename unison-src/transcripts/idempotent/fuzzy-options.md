@@ -71,12 +71,9 @@ myproject/main> branch mybranch
 scratch/main> debug.fuzzy-options switch _
 
   Select a project or branch to switch to:
-    * /empty
-    * /main
     * myproject/main
     * myproject/mybranch
     * scratch/empty
-    * scratch/main
     * myproject
     * scratch
 ```

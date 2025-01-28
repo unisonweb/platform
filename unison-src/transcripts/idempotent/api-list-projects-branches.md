@@ -14,11 +14,11 @@ scratch/main> project.create-empty project-banana
 
 scratch/main> project.create-empty project-apple
 
-project-apple/main> branch z-branch-cherry
+project-apple/main> branch a-branch-cherry
 
-project-apple/main> branch z-branch-banana
+project-apple/main> branch a-branch-banana
 
-project-apple/main> branch z-branch-apple
+project-apple/main> branch a-branch-apple
 ```
 
 ``` api
@@ -26,7 +26,7 @@ project-apple/main> branch z-branch-apple
 GET /api/projects
   [
       {
-          "activeBranchRef": "z-branch-apple",
+          "activeBranchRef": "a-branch-apple",
           "projectName": "project-apple"
       },
       {
@@ -54,23 +54,23 @@ GET /api/projects?query=bana
 GET /api/projects/project-apple/branches
   [
       {
+          "branchName": "a-branch-apple"
+      },
+      {
+          "branchName": "a-branch-banana"
+      },
+      {
+          "branchName": "a-branch-cherry"
+      },
+      {
           "branchName": "main"
-      },
-      {
-          "branchName": "z-branch-apple"
-      },
-      {
-          "branchName": "z-branch-banana"
-      },
-      {
-          "branchName": "z-branch-cherry"
       }
   ]
 -- Can query for some  infix of the project name
 GET /api/projects/project-apple/branches?query=bana
   [
       {
-          "branchName": "z-branch-banana"
+          "branchName": "a-branch-banana"
       }
   ]
 ```
