@@ -1,13 +1,12 @@
 module Unison.Merge.TwoOrThreeWay
   ( TwoOrThreeWay (..),
+    toThreeWay,
   )
 where
 
+import Unison.Merge.Internal.Types (ThreeWay (..), TwoOrThreeWay (..))
 import Unison.Prelude
 
-data TwoOrThreeWay a = TwoOrThreeWay
-  { lca :: Maybe a,
-    alice :: a,
-    bob :: a
-  }
-  deriving stock (Foldable, Functor, Generic, Traversable)
+toThreeWay :: a -> TwoOrThreeWay a -> ThreeWay a
+toThreeWay x TwoOrThreeWay {alice, bob, lca} =
+  ThreeWay {alice, bob, lca = fromMaybe x lca}
