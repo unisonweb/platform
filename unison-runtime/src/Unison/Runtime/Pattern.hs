@@ -13,7 +13,8 @@ module Unison.Runtime.Pattern
 where
 
 import Control.Monad.State (State, evalState, modify, runState, state)
-import Data.List (nub, transpose)
+import Data.Containers.ListUtils (nubOrd)
+import Data.List (transpose)
 import Data.Map.Strict
   ( fromListWith,
     insertWith,
@@ -662,7 +663,7 @@ compile spec ctx m@(PM (r : rs))
 -- Calculates the data constructors—with their arities—that should be
 -- matched on when splitting a matrix on a given variable. This
 -- includes
-relevantConstructors :: Eq v => PatternMatrix v -> v -> [(Int, Int)]
+relevantConstructors :: Ord v => PatternMatrix v -> v -> [(Int, Int)]
 relevantConstructors (PM rows) v = search [] rows
   where
     search acc (row : rows)
@@ -677,7 +678,7 @@ relevantConstructors (PM rows) v = search [] rows
           -- so contributes no relevant constructor.
           _ -> search acc rows
     -- irrefutable row, or no rows left
-    search acc _ = nub $ reverse acc
+    search acc _ = nubOrd $ reverse acc
 
 buildCaseBuiltin ::
   (Var v) =>
