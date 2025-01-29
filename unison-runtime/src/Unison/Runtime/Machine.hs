@@ -683,7 +683,7 @@ eval env !denv !activeThreads !stk !k r (Match i br) = do
   n <- peekOffN stk i
   eval env denv activeThreads stk k r $ selectBranch n br
 eval env !denv !activeThreads !stk !k r (DMatch mr i br) = do
-  (nx, stk) <- dataBranch mr stk br =<< peekOff stk i
+  (nx, stk) <- dataBranch mr stk br =<< bpeekOff stk i
   eval env denv activeThreads stk k r nx
 eval env !denv !activeThreads !stk !k r (NMatch _mr i br) = do
   n <- peekOffN stk i
@@ -1989,39 +1989,93 @@ selectBranch t (TestW df cs) = lookupWithDefault df t cs
 selectBranch _ (TestT {}) = error "impossible"
 {-# INLINE selectBranch #-}
 
-selectDataBranch :: Tag -> MBranch -> Either MSection MSection
-selectDataBranch t (Test1 u cu df)
-  | t == u = Left cu
-  | otherwise = Right df
-selectDataBranch t (Test2 u cu v cv df)
-  | t == u = Left cu
-  | t == v = Left cv
-  | otherwise = Right df
-selectDataBranch t (TestW df bs)
-  | Just ca <- EC.lookup t bs = Left ca
-  | otherwise = Right df
-selectDataBranch _ _ =
-  throw $ Panic "selectDataBranch: bad branches" Nothing
-{-# inline selectDataBranch #-}
-
 -- Combined branch selection and field dumping function for data types.
 -- Fields should only be dumped on _matches_, not default cases, because
 -- default cases potentially cover many constructors which could result
 -- in a variable number of values being put on the stack. Default cases
 -- uniformly expect _no_ values to be added to the stack.
 dataBranch
-  :: Maybe Reference -> Stack -> MBranch -> Val -> IO (MSection, Stack)
-dataBranch mrf stk br (BoxedVal c) = case selectDataBranch t br of
-  Left ca -> (ca,) <$> dumpDataNoTag mrf stk c
-  Right df -> pure (df, stk)
-  where
-    t = maskTags $ closureTag c
-dataBranch mrf _ _ v =
-  die $
-    "dataBranch: unboxed value: "
-      ++ show v
-      ++ maybe "" (\r -> "\nexpected type: " ++ show r) mrf
+  :: Maybe Reference -> Stack -> MBranch -> Closure -> IO (MSection, Stack)
+dataBranch mrf stk (Test1 u cu df) = \case
+  Enum _ t
+    | maskTags t == u -> pure (cu, stk)
+    | otherwise -> pure (df, stk)
+  Data1 _ t x
+    | maskTags t == u -> do
+      stk <- bump stk
+      (cu, stk) <$ poke stk x
+    | otherwise -> pure (df, stk)
+  Data2 _ t x y
+    | maskTags t == u -> do
+      stk <- bumpn stk 2
+      pokeOff stk 1 y
+      (cu, stk) <$ poke stk x
+    | otherwise -> pure (df, stk)
+  DataG _ t seg
+    | maskTags t == u -> (cu,) <$> dumpSeg stk seg S
+    | otherwise -> pure (df, stk)
+  clo -> dataBranchClosureError mrf clo
+dataBranch mrf stk (Test2 u cu v cv df) = \case
+  Enum _ t
+    | maskTags t == u -> pure (cu, stk)
+    | maskTags t == v -> pure (cv, stk)
+    | otherwise -> pure (df, stk)
+  Data1 _ t x
+    | maskTags t == u -> do
+      stk <- bump stk
+      (cu, stk) <$ poke stk x
+    | maskTags t == v -> do
+      stk <- bump stk
+      (cv, stk) <$ poke stk x
+    | otherwise -> pure (df, stk)
+  Data2 _ t x y
+    | maskTags t == u -> do
+      stk <- bumpn stk 2
+      pokeOff stk 1 y
+      (cu, stk) <$ poke stk x
+    | maskTags t == v -> do
+      stk <- bumpn stk 2
+      pokeOff stk 1 y
+      (cv, stk) <$ poke stk x
+    | otherwise -> pure (df, stk)
+  DataG _ t seg
+    | maskTags t == u -> (cu,) <$> dumpSeg stk seg S
+    | maskTags t == v -> (cv,) <$> dumpSeg stk seg S
+    | otherwise -> pure (df, stk)
+  clo -> dataBranchClosureError mrf clo
+dataBranch mrf stk (TestW df bs) = \case
+  Enum _ t
+    | Just ca <- EC.lookup (maskTags t) bs -> pure (ca, stk)
+    | otherwise -> pure (df, stk)
+  Data1 _ t x
+    | Just ca <- EC.lookup (maskTags t) bs -> do
+      stk <- bump stk
+      (ca, stk) <$ poke stk x
+    | otherwise -> pure (df, stk)
+  Data2 _ t x y
+    | Just ca <- EC.lookup (maskTags t) bs -> do
+      stk <- bumpn stk 2
+      pokeOff stk 1 y
+      (ca, stk) <$ poke stk x
+    | otherwise -> pure (df, stk)
+  DataG _ t seg
+    | Just ca <- EC.lookup (maskTags t) bs ->
+      (ca,) <$> dumpSeg stk seg S
+    | otherwise -> pure (df, stk)
+  clo -> dataBranchClosureError mrf clo
+dataBranch _ _ br = \_ ->
+  dataBranchBranchError br
 {-# inline dataBranch #-}
+
+dataBranchClosureError :: Maybe Reference -> Closure -> IO a
+dataBranchClosureError mrf clo =
+  die $ "dataBranch: bad closure: "
+    ++ show clo
+    ++ maybe "" (\ r -> "\nexpected type: " ++ show r) mrf
+
+dataBranchBranchError :: MBranch -> IO a
+dataBranchBranchError br =
+  die $ "dataBranch: unexpected branch: " ++ show br
 
 -- Splits off a portion of the continuation up to a given prompt.
 --

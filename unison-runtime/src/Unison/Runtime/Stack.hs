@@ -379,6 +379,7 @@ closureTag (Data2 _ t _ _) = t
 closureTag (DataG _ t _) = t
 closureTag c =
   throw $ Panic "closureTag: unexpected closure" (Just $ BoxedVal c)
+{-# inline closureTag #-}
 
 -- | Converts a list of integers representing an unboxed segment back into the
 -- appropriate segment. Segments are stored backwards in the runtime, so this
