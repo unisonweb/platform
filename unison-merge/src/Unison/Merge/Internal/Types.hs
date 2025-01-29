@@ -49,3 +49,12 @@ data TwoOrThreeWay a = TwoOrThreeWay
     bob :: a
   }
   deriving stock (Foldable, Functor, Generic, Traversable)
+
+instance Applicative TwoOrThreeWay where
+  pure :: a -> TwoOrThreeWay a
+  pure x =
+    TwoOrThreeWay (Just x) x x
+
+  (<*>) :: TwoOrThreeWay (a -> b) -> TwoOrThreeWay a -> TwoOrThreeWay b
+  TwoOrThreeWay f g h <*> TwoOrThreeWay x y z =
+    TwoOrThreeWay (f <*> x) (g y) (h z)
