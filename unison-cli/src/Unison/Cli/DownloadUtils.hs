@@ -66,7 +66,6 @@ downloadProjectBranchFromShare syncVersion useSquashed branch =
                 Share.TransportError err -> Output.ShareErrorTransport err
             Cli.respond (Output.DownloadedEntities numDownloaded)
         SyncV2 -> do
-          -- Cli.with withEntitiesDownloadedProgressCallback \(downloadedCallback, getNumDownloaded) -> do
           let branchRef = SyncV2.BranchRef (into @Text (ProjectAndBranch branch.projectName remoteProjectBranchName))
           -- TODO: Fill this in.
           let knownHashes = Set.empty
