@@ -1792,7 +1792,9 @@ pull =
 
 pullV2 :: InputPattern
 pullV2 =
-  pullImpl "pull.v2" [] Input.PullWithHistory "" Input.SyncV2
+  (pullImpl "pull.v2" [] Input.PullWithHistory "" Input.SyncV2)
+    {I.visibility = I.Hidden
+    }
 
 pullWithoutHistory :: InputPattern
 pullWithoutHistory =
