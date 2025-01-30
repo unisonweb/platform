@@ -18,7 +18,11 @@ Edit `releases._<ReleaseName>.README` to include `Release: <ReleaseName>`.
 .basedev.release> push git(git@github.com:unisonweb/base)
 ```
 
-## 2\. Run Release script
+## 2\. Check or run cloud client tests
+
+https://github.com/unisoncomputing/cloud-client-tests/actions/workflows/cloud-client-tests.yml
+
+## 3\. Run Release script
 
   - **Milestone Release**: Look up the most recent release; bump the number and remove any trailing letters, e.g. `./scripts/make-release release/M5 trunk`
   - **Minor Release**: Increment the trailing letter of the previous release, or add an `a` to the previous milestone release, e.g. `./scripts/make-release release/M5a trunk`
@@ -39,11 +43,11 @@ Including:
 
 After successfully executing the script you just have to sit tight and wait for all the jobs to complete.
 
-## 3
+## 4
 
 Smoke test of the new release. Try `brew upgrade unison-language`, launch it, launch `ui`.
 
-## 4
+## 5
 
 Write up release notes, template below.
 
