@@ -35,7 +35,7 @@ xyzzy box decoy =
   change:
 
     ⍟ These new definitions are ok to `add`:
-
+    
       type Decoy a
       type NatBox
       type Tres
