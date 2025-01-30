@@ -89,8 +89,11 @@ batchSize = 5000
 -- | Sync a given causal hash and its dependencies to a sync-file.
 syncToFile ::
   Codebase.Codebase IO v a ->
+  -- | Root hash to sync
   CausalHash ->
+  -- | Optional name of the branch begin synced
   Maybe SyncV2.BranchRef ->
+  -- | Location of the sync-file
   FilePath ->
   IO (Either SyncErr ())
 syncToFile codebase rootHash mayBranchRef destFilePath = do
@@ -98,9 +101,15 @@ syncToFile codebase rootHash mayBranchRef destFilePath = do
     C.runResourceT $
       withCodebaseEntityStream conn rootHash mayBranchRef \mayTotal stream -> do
         withStreamProgressCallback (Just mayTotal) \countC -> runExceptT do
-          C.runConduit $ stream C..| countC C..| C.map (BL.toStrict . CBOR.serialise) C..| C.transPipe liftIO C.gzip C..| C.sinkFile destFilePath
+          C.runConduit $
+            stream
+              C..| countC
+              C..| C.map (BL.toStrict . CBOR.serialise)
+              C..| C.transPipe liftIO C.gzip
+              C..| C.sinkFile destFilePath
 
 syncFromFile ::
+  -- | Whether to validate entities as they're imported.
   Bool ->
   -- | Location of the sync-file
   FilePath ->
@@ -179,6 +188,7 @@ validateAndSave shouldValidate codebase entities = do
         Left err -> throwError err
         Right _ -> pure ()
 
+-- | Validate that a batch of entities matches the hashes they're keyed by, throwing an error if any of them fail validation.
 batchValidateEntities :: Vector (Hash32, TempEntity) -> ExceptT SyncErr IO ()
 batchValidateEntities entities = do
   mismatches <- fmap Vector.catMaybes $ liftIO $ IO.pooledForConcurrently entities \(hash, entity) -> do
@@ -205,7 +215,14 @@ syncUnsortedStream ::
   Stream () SyncV2.EntityChunk ->
   StreamM ()
 syncUnsortedStream shouldValidate codebase stream = do
-  allEntities <- C.runConduit $ stream C..| C.chunksOf batchSize C..| unpackChunks codebase C..| validateBatch C..| C.concat C..| C.sinkVector @Vector
+  allEntities <-
+    C.runConduit $
+      stream
+        C..| C.chunksOf batchSize
+        C..| unpackChunks codebase
+        C..| validateBatch
+        C..| C.concat
+        C..| C.sinkVector @Vector
   let sortedEntities = sortDependencyFirst allEntities
   liftIO $ withEntitySavingCallback (Just $ Vector.length allEntities) \countC -> do
     Codebase.runTransaction codebase $ for_ sortedEntities \(hash, entity) -> do
@@ -218,6 +235,7 @@ syncUnsortedStream shouldValidate codebase stream = do
       when shouldValidate (mapExceptT lift $ batchValidateEntities entities)
 
 -- | Syncs a stream which sends entities which are already sorted in dependency order.
+-- This allows us to stream them directly into the codebase as they're received.
 syncSortedStream ::
   Bool ->
   (Codebase.Codebase IO v a) ->
@@ -227,9 +245,13 @@ syncSortedStream shouldValidate codebase stream = do
   let handler :: Stream (Vector (Hash32, TempEntity)) o
       handler = C.mapM_C \entityBatch -> do
         validateAndSave shouldValidate codebase entityBatch
-  C.runConduit $ stream C..| C.chunksOf batchSize C..| unpackChunks codebase C..| handler
+  C.runConduit $
+    stream
+      C..| C.chunksOf batchSize
+      C..| unpackChunks codebase
+      C..| handler
 
--- | Topologically sort entities based on their dependencies.
+-- | Topologically sort entities based on their dependencies, returning a list in dependency-first order.
 sortDependencyFirst :: (Foldable f, Functor f) => f (Hash32, TempEntity) -> [(Hash32, TempEntity)]
 sortDependencyFirst entities = do
   let adjList = entities <&> \(hash32, entity) -> ((hash32, entity), hash32, Set.toList $ Share.entityDependencies (tempEntityToEntity entity))
@@ -258,9 +280,17 @@ unpackChunks codebase = C.mapM \xs -> ExceptT . lift . Codebase.runTransactionEx
     <&> catMaybes
     <&> Vector.fromList
 
-streamIntoCodebase :: Bool -> Codebase.Codebase IO v a -> SyncV2.StreamInitInfo -> Stream () SyncV2.EntityChunk -> StreamM ()
+-- | Stream entities from one codebase into another.
+streamIntoCodebase ::
+  -- | Whether to validate entities as they're imported.
+  Bool ->
+  Codebase.Codebase IO v a ->
+  SyncV2.StreamInitInfo ->
+  Stream () SyncV2.EntityChunk ->
+  StreamM ()
 streamIntoCodebase shouldValidate codebase SyncV2.StreamInitInfo {version, entitySorting, numEntities = numEntities} stream = ExceptT do
   withStreamProgressCallback (fromIntegral <$> numEntities) \countC -> runExceptT do
+    -- Add a counter to the stream to track how many entities we've processed.
     let stream' = stream C..| countC
     case version of
       (SyncV2.Version 1) -> pure ()
@@ -270,7 +300,7 @@ streamIntoCodebase shouldValidate codebase SyncV2.StreamInitInfo {version, entit
       SyncV2.DependenciesFirst -> syncSortedStream shouldValidate codebase stream'
       SyncV2.Unsorted -> syncUnsortedStream shouldValidate codebase stream'
 
--- | Verify that the hash we expected to import from the stream was successfully loaded into the codebase.
+-- | A sanity-check to verify that the hash we expected to import from the stream was successfully loaded into the codebase.
 afterSyncChecks :: Codebase.Codebase IO v a -> Hash32 -> ExceptT (SyncError SyncV2.PullError) IO ()
 afterSyncChecks codebase hash = do
   lift (didCausalSuccessfullyImport codebase hash) >>= \case
@@ -285,12 +315,13 @@ afterSyncChecks codebase hash = do
       let expectedHash = hash32ToCausalHash hash
       isJust <$> (Codebase.runTransaction codebase $ Q.loadCausalByCausalHash expectedHash)
 
--- | Load and stream entities for a given causal hash from a codebase.
+-- | Load and stream entities for a given causal hash from a codebase into a stream.
 withCodebaseEntityStream ::
   (MonadIO m) =>
   Sqlite.Connection ->
   CausalHash ->
   Maybe SyncV2.BranchRef ->
+  -- | Callback to call with the total count of entities and the stream.
   (Int -> Stream () SyncV2.DownloadEntitiesChunk -> m r) ->
   m r
 withCodebaseEntityStream conn rootHash mayBranchRef callback = do
@@ -353,7 +384,7 @@ _decodeFramedEntity bs = do
     Left err -> throwError . SyncError . SyncV2.PullError'Sync $ SyncV2.SyncErrorDeserializationFailure err
     Right chunk -> pure chunk
 
--- Expects a stream of tightly-packed CBOR entities without any framing/separators.
+-- | Unpacks a stream of tightly-packed CBOR entities without any framing/separators.
 decodeUnframedEntities :: Stream ByteString SyncV2.DownloadEntitiesChunk
 decodeUnframedEntities = C.transPipe (mapExceptT (lift . stToIO)) $ do
   C.await >>= \case
@@ -414,12 +445,6 @@ SyncV2.Routes
   { downloadEntitiesStream = downloadEntitiesStreamClientM
   } = Servant.client syncAPI
 
--- -- | Helper for running clientM that returns a stream of entities.
--- -- You MUST consume the stream within the callback, it will be closed when the callback returns.
--- handleStream :: forall m o. (MonadUnliftIO m) => Servant.ClientEnv -> (o -> m ()) -> Servant.ClientM (Servant.SourceIO o) -> m (Either CodeserverTransportError ())
--- handleStream clientEnv callback clientM = do
---   handleSourceT clientEnv (SourceT.foreach (throwError . StreamingError . Text.pack) callback) clientM
-
 -- | Helper for running clientM that returns a stream of entities.
 -- You MUST consume the stream within the callback, it will be closed when the callback returns.
 withConduit :: forall r. Servant.ClientEnv -> (Stream () SyncV2.DownloadEntitiesChunk -> StreamM r) -> Servant.ClientM (Servant.SourceIO SyncV2.DownloadEntitiesChunk) -> StreamM r
@@ -449,6 +474,7 @@ handleClientError clientEnv err =
     Servant.InvalidContentTypeHeader resp -> UnexpectedResponse resp
     Servant.ConnectionError _ -> UnreachableCodeserver (Servant.baseUrl clientEnv)
 
+-- | Stream entities from the codeserver.
 httpStreamEntities ::
   forall.
   Auth.AuthenticatedHttpClient ->
@@ -496,51 +522,33 @@ initializeStream stream = do
 -- Progress Tracking
 ------------------------------------------------------------------------------------------------------------------------
 
--- Provide the given action a callback that display to the terminal.
+counterProgress :: (MonadIO m, MonadUnliftIO n) => (Int -> Text) -> ((Int -> m ()) -> n a) -> n a
+counterProgress msgBuilder action = do
+  counterVar <- IO.newTVarIO (0 :: Int)
+  IO.withRunInIO \toIO -> do
+    Console.Regions.displayConsoleRegions do
+      Console.Regions.withConsoleRegion Console.Regions.Linear \region -> do
+        Console.Regions.setConsoleRegion region do
+          num <- IO.readTVar counterVar
+          pure $ msgBuilder num
+        toIO $ action $ \i -> do
+          liftIO $ IO.atomically (IO.modifyTVar' counterVar (+ i))
+
+-- | Track how many entities have been downloaded using a counter stream.
 withStreamProgressCallback :: (MonadIO m, MonadUnliftIO n) => Maybe Int -> (ConduitT i i m () -> n a) -> n a
 withStreamProgressCallback total action = do
-  entitiesDownloadedVar <- IO.newTVarIO (0 :: Int)
-  IO.withRunInIO \toIO -> do
-    Console.Regions.displayConsoleRegions do
-      Console.Regions.withConsoleRegion Console.Regions.Linear \region -> do
-        Console.Regions.setConsoleRegion region do
-          entitiesDownloaded <- IO.readTVar entitiesDownloadedVar
-          pure $
-            "\n  Processed "
-              <> tShow entitiesDownloaded
-              <> maybe "" (\total -> " / " <> tShow total) total
-              <> " entities...\n\n"
-        toIO $ action $ C.awaitForever \i -> do
-          liftIO $ IO.atomically (IO.modifyTVar' entitiesDownloadedVar (+ 1))
-          C.yield i
+  let msg n = "\n  Processed " <> tShow n <> maybe "" (\total -> " / " <> tShow total) total <> " entities...\n\n"
+  let action' f = action (C.iterM \_i -> f 1)
+  counterProgress msg action'
 
+-- | Track how many entities have been saved.
 withEntitySavingCallback :: (MonadUnliftIO m) => Maybe Int -> ((Int -> m ()) -> m a) -> m a
 withEntitySavingCallback total action = do
-  counterVar <- IO.newTVarIO (0 :: Int)
-  IO.withRunInIO \toIO -> do
-    Console.Regions.displayConsoleRegions do
-      Console.Regions.withConsoleRegion Console.Regions.Linear \region -> do
-        Console.Regions.setConsoleRegion region do
-          processed <- IO.readTVar counterVar
-          pure $
-            "\n  Saved "
-              <> tShow processed
-              <> maybe "" (\total -> " / " <> tShow total) total
-              <> " entities...\n\n"
-        toIO $ action $ \i -> do
-          liftIO $ IO.atomically (IO.modifyTVar' counterVar (+ i))
+  let msg n = "\n  Saved " <> tShow n <> maybe "" (\total -> " / " <> tShow total) total <> " entities...\n\n"
+  counterProgress msg action
 
+-- | Track how many entities have been loaded.
 withEntityLoadingCallback :: (MonadUnliftIO m) => ((Int -> m ()) -> m a) -> m a
 withEntityLoadingCallback action = do
-  counterVar <- IO.newTVarIO (0 :: Int)
-  IO.withRunInIO \toIO -> do
-    Console.Regions.displayConsoleRegions do
-      Console.Regions.withConsoleRegion Console.Regions.Linear \region -> do
-        Console.Regions.setConsoleRegion region do
-          processed <- IO.readTVar counterVar
-          pure $
-            "\n  Loading "
-              <> tShow processed
-              <> " entities...\n\n"
-        toIO $ action $ \i -> do
-          liftIO $ IO.atomically (IO.modifyTVar' counterVar (+ i))
+  let msg n = "\n  Loading " <> tShow n <> " entities...\n\n"
+  counterProgress msg action
