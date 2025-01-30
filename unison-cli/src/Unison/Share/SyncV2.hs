@@ -219,7 +219,7 @@ syncUnsortedStream shouldValidate codebase stream = do
   allEntities <-
     C.runConduit $
       stream
-        C..| C.chunksOf batchSize
+        C..| CL.chunksOf batchSize
         C..| unpackChunks codebase
         C..| validateBatch
         C..| C.concat

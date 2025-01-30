@@ -11,7 +11,6 @@ where
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (modifyTVar', newTVarIO, readTVar, readTVarIO)
 import Data.List.NonEmpty (pattern (:|))
-import Data.Set qualified as Set
 import System.Console.Regions qualified as Console.Regions
 import U.Codebase.HashTags (CausalHash)
 import U.Codebase.Sqlite.Queries qualified as Queries
@@ -67,11 +66,9 @@ downloadProjectBranchFromShare syncVersion useSquashed branch =
             Cli.respond (Output.DownloadedEntities numDownloaded)
         SyncV2 -> do
           let branchRef = SyncV2.BranchRef (into @Text (ProjectAndBranch branch.projectName remoteProjectBranchName))
-          -- TODO: Fill this in.
-          let knownHashes = Set.empty
           let downloadedCallback = \_ -> pure ()
           let shouldValidate = not $ Codeserver.isCustomCodeserver Codeserver.defaultCodeserver
-          result <- SyncV2.syncFromCodeserver shouldValidate Share.hardCodedBaseUrl branchRef causalHashJwt knownHashes downloadedCallback
+          result <- SyncV2.syncFromCodeserver shouldValidate Share.hardCodedBaseUrl branchRef causalHashJwt downloadedCallback
           result & onLeft \err0 -> do
             done case err0 of
               Share.SyncError pullErr ->
