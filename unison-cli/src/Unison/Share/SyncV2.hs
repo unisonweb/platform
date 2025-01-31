@@ -440,21 +440,25 @@ type SyncAPI = ("ucm" Servant.:> "v2" Servant.:> "sync" Servant.:> SyncV2.API)
 syncAPI :: Proxy SyncAPI
 syncAPI = Proxy @SyncAPI
 
-downloadEntitiesStreamClientM :: SyncV2.DownloadEntitiesRequest -> Servant.ClientM (Servant.SourceT IO SyncV2.DownloadEntitiesChunk)
+downloadEntitiesStreamClientM :: SyncV2.DownloadEntitiesRequest -> Servant.ClientM (Servant.SourceT IO (CBORBytes SyncV2.DownloadEntitiesChunk))
 SyncV2.Routes
   { downloadEntitiesStream = downloadEntitiesStreamClientM
   } = Servant.client syncAPI
 
 -- | Helper for running clientM that returns a stream of entities.
 -- You MUST consume the stream within the callback, it will be closed when the callback returns.
-withConduit :: forall r. Servant.ClientEnv -> (Stream () SyncV2.DownloadEntitiesChunk -> StreamM r) -> Servant.ClientM (Servant.SourceIO SyncV2.DownloadEntitiesChunk) -> StreamM r
+withConduit :: forall r. Servant.ClientEnv -> (Stream () (SyncV2.DownloadEntitiesChunk) -> StreamM r) -> Servant.ClientM (Servant.SourceIO (CBORBytes SyncV2.DownloadEntitiesChunk)) -> StreamM r
 withConduit clientEnv callback clientM = do
   ExceptT $ withRunInIO \runInIO -> do
     Servant.withClientM clientM clientEnv $ \case
       Left err -> pure . Left . TransportError $ (handleClientError clientEnv err)
       Right sourceT -> do
         conduit <- liftIO $ Servant.fromSourceIO sourceT
-        (runInIO . runExceptT $ callback conduit)
+        (runInIO . runExceptT $ callback (conduit C..| unpackCBORBytesStream))
+
+unpackCBORBytesStream :: Stream (CBORBytes SyncV2.DownloadEntitiesChunk) SyncV2.DownloadEntitiesChunk
+unpackCBORBytesStream =
+  C.map (BL.toStrict . coerce @_ @BL.ByteString) C..| decodeUnframedEntities
 
 handleClientError :: Servant.ClientEnv -> Servant.ClientError -> CodeserverTransportError
 handleClientError clientEnv err =

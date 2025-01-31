@@ -21,7 +21,7 @@ type API = NamedRoutes Routes
 type DownloadEntitiesStream =
   -- | The causal hash the client needs. The server should provide it and all of its dependencies
   ReqBody '[CBOR, JSON] DownloadEntitiesRequest
-    :> StreamPost NetstringFraming CBOR (SourceIO DownloadEntitiesChunk)
+    :> StreamPost NoFraming CBOR (SourceIO (CBORBytes DownloadEntitiesChunk))
 
 data Routes mode = Routes
   { downloadEntitiesStream :: mode :- "entities" :> "download" :> DownloadEntitiesStream
