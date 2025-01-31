@@ -26,7 +26,7 @@ type DownloadEntitiesStream =
 -- | Get the relevant dependencies of a causal, including the causal spine and the causal hashes of any library roots.
 type CausalDependenciesStream =
   ReqBody '[CBOR, JSON] CausalDependenciesRequest
-    :> StreamPost NetstringFraming CBOR (SourceIO CausalDependenciesChunk)
+    :> StreamPost NoFraming OctetStream (SourceIO (CBORStream CausalDependenciesChunk))
 
 data Routes mode = Routes
   { downloadEntitiesStream :: mode :- "entities" :> "download" :> DownloadEntitiesStream,

@@ -11,7 +11,7 @@ module Unison.SyncV2.Types
     CausalDependenciesRequest (..),
     CausalDependenciesChunk (..),
     CBORBytes (..),
-    CBORStream(..),
+    CBORStream (..),
     EntityKind (..),
     serialiseCBORBytes,
     deserialiseOrFailCBORBytes,
@@ -332,28 +332,57 @@ instance Serialise CausalDependenciesRequest where
     encode branchRef <> encode rootCausal
   decode = CausalDependenciesRequest <$> decode <*> decode
 
--- | A chunk of the download entities response stream.
-data CausalDependenciesChunk
-  = HashC Hash32
+data DependencyType
+  = -- This is a top-level history node of the root we're pulling.
+    CausalSpineDependency
+  | -- This is the causal root of a library dependency.
+    LibDependency
   deriving (Show, Eq, Ord)
 
-data CausalDependenciesChunkTag = HashChunkTag
+instance Serialise DependencyType where
+  encode = \case
+    CausalSpineDependency -> CBOR.encodeWord8 0
+    LibDependency -> CBOR.encodeWord8 1
+  decode = do
+    tag <- CBOR.decodeWord8
+    case tag of
+      0 -> pure CausalSpineDependency
+      1 -> pure LibDependency
+      _ -> fail "invalid tag"
+
+instance ToJSON DependencyType where
+  toJSON = \case
+    CausalSpineDependency -> "causal_spine"
+    LibDependency -> "lib"
+
+instance FromJSON DependencyType where
+  parseJSON = Aeson.withText "DependencyType" \case
+    "causal_spine" -> pure CausalSpineDependency
+    "lib" -> pure LibDependency
+    _ -> fail "invalid DependencyType"
+
+-- | A chunk of the download entities response stream.
+data CausalDependenciesChunk
+  = CausalHashDepC {causalHash :: Hash32, dependencyType :: DependencyType}
+  deriving (Show, Eq, Ord)
+
+data CausalDependenciesChunkTag = CausalHashDepChunkTag
   deriving (Show, Eq, Ord)
 
 instance Serialise CausalDependenciesChunkTag where
   encode = \case
-    HashChunkTag -> CBOR.encodeWord8 0
+    CausalHashDepChunkTag -> CBOR.encodeWord8 0
   decode = do
     tag <- CBOR.decodeWord8
     case tag of
-      0 -> pure HashChunkTag
+      0 -> pure CausalHashDepChunkTag
       _ -> fail "invalid tag"
 
 instance Serialise CausalDependenciesChunk where
   encode = \case
-    (HashC ch) -> do
-      encode HashChunkTag <> CBOR.encode ch
+    (CausalHashDepC {causalHash, dependencyType}) -> do
+      encode CausalHashDepChunkTag <> CBOR.encode causalHash <> CBOR.encode dependencyType
   decode = do
     tag <- decode
     case tag of
-      HashChunkTag -> HashC <$> CBOR.decode
+      CausalHashDepChunkTag -> CausalHashDepC <$> CBOR.decode <*> CBOR.decode

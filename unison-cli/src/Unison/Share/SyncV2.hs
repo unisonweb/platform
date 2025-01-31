@@ -386,7 +386,7 @@ _decodeFramedEntity bs = do
     Right chunk -> pure chunk
 
 -- | Unpacks a stream of tightly-packed CBOR entities without any framing/separators.
-decodeUnframedEntities :: Stream ByteString SyncV2.DownloadEntitiesChunk
+decodeUnframedEntities :: forall a. (CBOR.Serialise a) => Stream ByteString a
 decodeUnframedEntities = C.transPipe (mapExceptT (lift . stToIO)) $ do
   C.await >>= \case
     Nothing -> pure ()
@@ -394,13 +394,13 @@ decodeUnframedEntities = C.transPipe (mapExceptT (lift . stToIO)) $ do
       d <- newDecoder
       loop bs d
   where
-    newDecoder :: ConduitT ByteString SyncV2.DownloadEntitiesChunk (ExceptT SyncErr (ST s)) (Maybe ByteString -> ST s (CBOR.IDecode s (SyncV2.DownloadEntitiesChunk)))
+    newDecoder :: ConduitT ByteString a (ExceptT SyncErr (ST s)) (Maybe ByteString -> ST s (CBOR.IDecode s a))
     newDecoder = do
       (lift . lift) CBOR.deserialiseIncremental >>= \case
         CBOR.Done _ _ _ -> throwError . SyncError . SyncV2.PullError'Sync $ SyncV2.SyncErrorStreamFailure "Invalid initial decoder"
         CBOR.Fail _ _ err -> throwError . SyncError . SyncV2.PullError'Sync $ SyncV2.SyncErrorDeserializationFailure err
         CBOR.Partial k -> pure k
-    loop :: ByteString -> (Maybe ByteString -> ST s (CBOR.IDecode s (SyncV2.DownloadEntitiesChunk))) -> ConduitT ByteString SyncV2.DownloadEntitiesChunk (ExceptT SyncErr (ST s)) ()
+    loop :: ByteString -> (Maybe ByteString -> ST s (CBOR.IDecode s a)) -> ConduitT ByteString a (ExceptT SyncErr (ST s)) ()
     loop bs k = do
       (lift . lift) (k (Just bs)) >>= \case
         CBOR.Fail _ _ err -> throwError . SyncError . SyncV2.PullError'Sync $ SyncV2.SyncErrorDeserializationFailure err
@@ -450,7 +450,7 @@ SyncV2.Routes
 
 -- | Helper for running clientM that returns a stream of entities.
 -- You MUST consume the stream within the callback, it will be closed when the callback returns.
-withConduit :: forall r chunk. Servant.ClientEnv -> (Stream () chunk -> StreamM r) -> Servant.ClientM (Servant.SourceIO (CBORStream chunk)) -> StreamM r
+withConduit :: forall r chunk. (CBOR.Serialise chunk) => Servant.ClientEnv -> (Stream () chunk -> StreamM r) -> Servant.ClientM (Servant.SourceIO (CBORStream chunk)) -> StreamM r
 withConduit clientEnv callback clientM = do
   ExceptT $ withRunInIO \runInIO -> do
     Servant.withClientM clientM clientEnv $ \case
@@ -459,7 +459,7 @@ withConduit clientEnv callback clientM = do
         conduit <- liftIO $ Servant.fromSourceIO sourceT
         (runInIO . runExceptT $ callback (conduit C..| unpackCBORBytesStream))
 
-unpackCBORBytesStream :: Stream (CBORStream SyncV2.DownloadEntitiesChunk) SyncV2.DownloadEntitiesChunk
+unpackCBORBytesStream :: (CBOR.Serialise a) => Stream (CBORStream a) a
 unpackCBORBytesStream =
   C.map (BL.toStrict . coerce @_ @BL.ByteString) C..| decodeUnframedEntities
 
@@ -570,7 +570,7 @@ negotiateKnownCausals unisonShareUrl branchRef hashJwt = do
   where
     unpack :: SyncV2.CausalDependenciesChunk -> Hash32
     unpack = \case
-      SyncV2.HashC causalHash -> causalHash
+      SyncV2.CausalHashDepC {causalHash} -> causalHash
     haveCausalHash :: Codebase.Codebase IO v a -> Hash32 -> StreamM Bool
     haveCausalHash codebase causalHash = do
       liftIO $ Codebase.runTransaction codebase do
