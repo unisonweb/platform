@@ -25,7 +25,7 @@ import Data.Set qualified as Set
 import Unison.ABT
   ( absChain',
     renames,
-    visitPure,
+    visit,
     pattern AbsN',
   )
 import Unison.Builtin.Decls (builtinDataDecls, builtinEffectDecls)
@@ -765,34 +765,41 @@ initialize ::
   PType ->
   Term v ->
   [MatchCase () (Term v)] ->
-  (Maybe v, (v, PType), PatternMatrix v)
-initialize r sc cs =
-  ( lv,
-    (sv, r),
-    PM $ evalState (traverse (mkRow sv) cs) 1
-  )
+  State Word64 (Maybe v, (v, PType), PatternMatrix v)
+initialize r sc cs = do
+  (lv, sv) <- vars
+  rs <- traverse (mkRow sv) cs
+  pure (lv, (sv, r), PM rs)
   where
-    (lv, sv)
-      | Var' v <- sc = (Nothing, v)
-      | pv <- freshenId 0 $ typed Pattern =
-          (Just pv, pv)
+    vars
+      | Var' v <- sc = pure (Nothing, v)
+      | otherwise = mkVars <$> grabId
+    mkVars n = (Just pv, pv)
+      where
+        pv = freshenId n $ typed Pattern
+
+grabId :: State Word64 Word64
+grabId = state $ \n -> (n, n+1)
 
 splitPatterns :: (Var v) => DataSpec -> Term v -> Term v
-splitPatterns spec0 = visitPure $ \case
+splitPatterns spec0 tm = evalState (splitPatterns0 spec tm) 0
+  where
+    spec = Map.insert Rf.booleanRef (Right [0, 0]) spec0
+
+splitPatterns0 :: (Var v) => DataSpec -> Term v -> State Word64 (Term v)
+splitPatterns0 spec = visit $ \case
   Match' sc0 cs0
-    | ty <- determineType $ p <$> cs0,
-      (lv, scrut, pm) <- initialize ty sc cs,
-      body <- compile spec (uncurry Map.singleton scrut) pm ->
-        Just $ case lv of
+    | ty <- determineType $ p <$> cs0 -> Just $ do
+        sc <- splitPatterns0 spec sc0
+        cs <- (traverse . traverse) (splitPatterns0 spec) cs0
+        (lv, scrut, pm) <- initialize ty sc cs
+        let body = compile spec (uncurry Map.singleton scrut) pm
+        pure $ case lv of
           Just v -> let1 False [(((), v), sc)] body
           _ -> body
-    where
-      sc = splitPatterns spec sc0
-      cs = fmap (splitPatterns spec) <$> cs0
   _ -> Nothing
   where
     p (MatchCase pp _ _) = pp
-    spec = Map.insert Rf.booleanRef (Right [0, 0]) spec0
 
 builtinCase :: Set Reference
 builtinCase =
