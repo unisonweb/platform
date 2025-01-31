@@ -5,6 +5,7 @@ module Unison.Util.Servant.CBOR
   ( CBOR,
     UnknownCBORBytes,
     CBORBytes (..),
+    CBORStream (..),
     deserialiseOrFailCBORBytes,
     serialiseCBORBytes,
     decodeCBORBytes,
@@ -86,3 +87,14 @@ serialiseUnknownCBORBytes = CBORBytes . CBOR.serialise
 data Unknown
 
 type UnknownCBORBytes = CBORBytes Unknown
+
+-- | Wrapper for a stream of CBOR data. Each chunk may not be a complete CBOR value, but the concatenation of all the chunks is a valid CBOR stream.
+newtype CBORStream a = CBORStream BL.ByteString
+  deriving (Serialise) via (BL.ByteString)
+  deriving (Eq, Show, Ord)
+
+instance MimeRender OctetStream (CBORStream a) where
+  mimeRender Proxy (CBORStream bs) = bs
+
+instance MimeUnrender OctetStream (CBORStream a) where
+  mimeUnrender Proxy bs = Right (CBORStream bs)

@@ -7,6 +7,7 @@ module Unison.SyncV2.Types
     SyncError (..),
     DownloadEntitiesError (..),
     CBORBytes (..),
+    CBORStream(..),
     EntityKind (..),
     serialiseCBORBytes,
     deserialiseOrFailCBORBytes,

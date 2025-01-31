@@ -62,7 +62,7 @@ import Unison.Sync.Types qualified as Share
 import Unison.Sync.Types qualified as Sync
 import Unison.SyncV2.API (Routes (downloadEntitiesStream))
 import Unison.SyncV2.API qualified as SyncV2
-import Unison.SyncV2.Types (CBORBytes)
+import Unison.SyncV2.Types (CBORBytes, CBORStream)
 import Unison.SyncV2.Types qualified as SyncV2
 import Unison.Util.Servant.CBOR qualified as CBOR
 import Unison.Util.Timing qualified as Timing
@@ -440,14 +440,14 @@ type SyncAPI = ("ucm" Servant.:> "v2" Servant.:> "sync" Servant.:> SyncV2.API)
 syncAPI :: Proxy SyncAPI
 syncAPI = Proxy @SyncAPI
 
-downloadEntitiesStreamClientM :: SyncV2.DownloadEntitiesRequest -> Servant.ClientM (Servant.SourceT IO (CBORBytes SyncV2.DownloadEntitiesChunk))
+downloadEntitiesStreamClientM :: SyncV2.DownloadEntitiesRequest -> Servant.ClientM (Servant.SourceT IO (CBORStream SyncV2.DownloadEntitiesChunk))
 SyncV2.Routes
   { downloadEntitiesStream = downloadEntitiesStreamClientM
   } = Servant.client syncAPI
 
 -- | Helper for running clientM that returns a stream of entities.
 -- You MUST consume the stream within the callback, it will be closed when the callback returns.
-withConduit :: forall r. Servant.ClientEnv -> (Stream () (SyncV2.DownloadEntitiesChunk) -> StreamM r) -> Servant.ClientM (Servant.SourceIO (CBORBytes SyncV2.DownloadEntitiesChunk)) -> StreamM r
+withConduit :: forall r. Servant.ClientEnv -> (Stream () (SyncV2.DownloadEntitiesChunk) -> StreamM r) -> Servant.ClientM (Servant.SourceIO (CBORStream SyncV2.DownloadEntitiesChunk)) -> StreamM r
 withConduit clientEnv callback clientM = do
   ExceptT $ withRunInIO \runInIO -> do
     Servant.withClientM clientM clientEnv $ \case
@@ -456,7 +456,7 @@ withConduit clientEnv callback clientM = do
         conduit <- liftIO $ Servant.fromSourceIO sourceT
         (runInIO . runExceptT $ callback (conduit C..| unpackCBORBytesStream))
 
-unpackCBORBytesStream :: Stream (CBORBytes SyncV2.DownloadEntitiesChunk) SyncV2.DownloadEntitiesChunk
+unpackCBORBytesStream :: Stream (CBORStream SyncV2.DownloadEntitiesChunk) SyncV2.DownloadEntitiesChunk
 unpackCBORBytesStream =
   C.map (BL.toStrict . coerce @_ @BL.ByteString) C..| decodeUnframedEntities
 
