@@ -63,7 +63,7 @@ import Unison.Sync.Types qualified as Share
 import Unison.Sync.Types qualified as Sync
 import Unison.SyncV2.API (Routes (downloadEntitiesStream))
 import Unison.SyncV2.API qualified as SyncV2
-import Unison.SyncV2.Types (CBORBytes, CBORStream)
+import Unison.SyncV2.Types (CBORBytes, CBORStream, DependencyType (..))
 import Unison.SyncV2.Types qualified as SyncV2
 import Unison.Util.Servant.CBOR qualified as CBOR
 import Unison.Util.Timing qualified as Timing
@@ -566,11 +566,33 @@ negotiateKnownCausals unisonShareUrl branchRef hashJwt = do
       unisonShareUrl
       SyncV2.CausalDependenciesRequest {branchRef, rootCausal = hashJwt}
       \stream -> do
-        Set.fromList <$> C.runConduit (stream C..| C.map unpack C..| C.filterM (haveCausalHash codebase) C..| C.sinkList)
+        Set.fromList <$> C.runConduit (stream C..| C.map unpack C..| findKnownDeps codebase C..| C.sinkList)
   where
-    unpack :: SyncV2.CausalDependenciesChunk -> Hash32
+    -- Go through the dependencies of the remote root from top-down, yielding all causal hashes that we already
+    -- have until we find one in the causal spine we already have, then yield that one and stop since we'll implicitly
+    -- have all of its dependencies.
+    findKnownDeps :: Codebase.Codebase IO v a -> Stream (Hash32, DependencyType) Hash32
+    findKnownDeps codebase = do
+      C.await >>= \case
+        Just (hash, LibDependency) -> do
+          -- We yield all lib dependencies we have, it's possible we don't have any of the causal spine in common, but _do_ have
+          -- some of the libraries we can still save a lot of work.
+          whenM (lift $ haveCausalHash codebase hash) (C.yield hash)
+          -- We continue regardless.
+          findKnownDeps codebase
+        Just (hash, CausalSpineDependency) -> do
+          lift (haveCausalHash codebase hash) >>= \case
+            True -> do
+              -- If we find a causal hash we have in the spine, we don't need to look further,
+              -- we can pass it on, then hang up the stream.
+              C.yield hash
+            False -> do
+              -- Otherwise we keep looking, maybe we'll have one further in.
+              findKnownDeps codebase
+        Nothing -> pure ()
+    unpack :: SyncV2.CausalDependenciesChunk -> (Hash32, DependencyType)
     unpack = \case
-      SyncV2.CausalHashDepC {causalHash} -> causalHash
+      SyncV2.CausalHashDepC {causalHash, dependencyType} -> (causalHash, dependencyType)
     haveCausalHash :: Codebase.Codebase IO v a -> Hash32 -> StreamM Bool
     haveCausalHash codebase causalHash = do
       liftIO $ Codebase.runTransaction codebase do

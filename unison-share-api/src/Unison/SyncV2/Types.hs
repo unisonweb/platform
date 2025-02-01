@@ -10,6 +10,7 @@ module Unison.SyncV2.Types
     DownloadEntitiesError (..),
     CausalDependenciesRequest (..),
     CausalDependenciesChunk (..),
+    DependencyType (..),
     CBORBytes (..),
     CBORStream (..),
     EntityKind (..),
