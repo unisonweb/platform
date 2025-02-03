@@ -20,7 +20,7 @@ import Unison.Merge.Diff (humanizeDiffs, nameBasedNamespaceDiff)
 import Unison.Merge.DiffOp (DiffOp)
 import Unison.Merge.EitherWay (EitherWay (..))
 import Unison.Merge.HumanDiffOp (HumanDiffOp)
-import Unison.Merge.Libdeps (LibdepDiffOp, applyLibdepsDiff, diffLibdeps, getTwoFreshLibdepNames)
+import Unison.Merge.Libdeps (applyLibdepsDiff, diffLibdeps, getTwoFreshLibdepNames, mergeLibdepsDiffs)
 import Unison.Merge.Mergeblob0 (Mergeblob0 (..))
 import Unison.Merge.PartialDeclNameLookup (PartialDeclNameLookup)
 import Unison.Merge.PartitionCombinedDiffs (partitionCombinedDiffs)
@@ -63,9 +63,9 @@ data Mergeblob1 libdep = Mergeblob1
             (TypeReferenceId, Decl Symbol Ann)
         ),
     lcaDeclNameLookup :: PartialDeclNameLookup,
-    libdeps :: Map NameSegment libdep,
-    libdepsDiff :: Map NameSegment (LibdepDiffOp libdep),
     lcaLibdeps :: Map NameSegment libdep,
+    libdeps :: Map NameSegment libdep,
+    libdepsDiffs :: TwoWay (Map NameSegment (DiffOp libdep)),
     unconflicts :: DefnsF Unconflicts Referent TypeReference
   }
 
@@ -163,13 +163,13 @@ makeMergeblob1 blob names3 hydratedDefns = do
         partitionCombinedDiffs (ThreeWay.forgetLca blob.defns) declNameLookups diff
 
   -- Diff and merge libdeps
-  let libdepsDiff :: Map NameSegment (LibdepDiffOp libdep)
-      libdepsDiff =
+  let libdepsDiffs :: TwoWay (Map NameSegment (DiffOp libdep))
+      libdepsDiffs =
         diffLibdeps blob.libdeps
 
   let libdeps :: Map NameSegment libdep
       libdeps =
-        applyLibdepsDiff getTwoFreshLibdepNames blob.libdeps libdepsDiff
+        applyLibdepsDiff getTwoFreshLibdepNames blob.libdeps (mergeLibdepsDiffs libdepsDiffs)
 
   pure
     Mergeblob1
@@ -181,8 +181,8 @@ makeMergeblob1 blob names3 hydratedDefns = do
         humanDiffsFromLCA,
         hydratedDefns,
         lcaDeclNameLookup,
-        libdeps,
-        libdepsDiff,
         lcaLibdeps = blob.libdeps.lca,
+        libdeps,
+        libdepsDiffs,
         unconflicts
       }
