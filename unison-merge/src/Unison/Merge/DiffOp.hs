@@ -14,4 +14,4 @@ data DiffOp a
   = DiffOp'Add !a
   | DiffOp'Delete !a
   | DiffOp'Update !(Updated a)
-  deriving stock (Functor, Show)
+  deriving stock (Foldable, Functor, Show, Traversable)
