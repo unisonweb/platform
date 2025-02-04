@@ -541,18 +541,18 @@ counterProgress msgBuilder action = do
 -- | Track how many entities have been downloaded using a counter stream.
 withStreamProgressCallback :: (MonadIO m, MonadUnliftIO n) => Maybe Int -> (ConduitT i i m () -> n a) -> n a
 withStreamProgressCallback total action = do
-  let msg n = "\n  Processed " <> tShow n <> maybe "" (\total -> " / " <> tShow total) total <> " entities...\n\n"
+  let msg n = "\n  📦 Unpacked  " <> tShow n <> maybe "" (\total -> " / " <> tShow total) total <> " entities...\n\n"
   let action' f = action (C.iterM \_i -> f 1)
   counterProgress msg action'
 
 -- | Track how many entities have been saved.
 withEntitySavingCallback :: (MonadUnliftIO m) => Maybe Int -> ((Int -> m ()) -> m a) -> m a
 withEntitySavingCallback total action = do
-  let msg n = "\n  Saved " <> tShow n <> maybe "" (\total -> " / " <> tShow total) total <> " entities...\n\n"
+  let msg n = "\n  💾 Saved  " <> tShow n <> maybe "" (\total -> " / " <> tShow total) total <> " new entities...\n\n"
   counterProgress msg action
 
 -- | Track how many entities have been loaded.
 withEntityLoadingCallback :: (MonadUnliftIO m) => ((Int -> m ()) -> m a) -> m a
 withEntityLoadingCallback action = do
-  let msg n = "\n  Loading " <> tShow n <> " entities...\n\n"
+  let msg n = "\n  📦 Unpacked  " <> tShow n <> " entities...\n\n"
   counterProgress msg action
