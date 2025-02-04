@@ -117,6 +117,9 @@ syncFromFile ::
   Cli (Either (SyncError SyncV2.PullError) CausalHash)
 syncFromFile shouldValidate syncFilePath = do
   Cli.Env {codebase} <- ask
+  -- Every insert into SQLite checks the temp entity tables, but syncv2 doesn't actually use them, so it's faster
+  -- if we clear them out before starting a sync.
+  Cli.runTransaction Q.clearTempEntityTables
   runExceptT do
     mapExceptT liftIO $ Timing.time "File Sync" $ do
       header <- mapExceptT C.runResourceT $ do
@@ -136,6 +139,9 @@ syncFromCodebase ::
   CausalHash ->
   IO (Either (SyncError SyncV2.PullError) ())
 syncFromCodebase shouldValidate srcConn destCodebase causalHash = do
+  -- Every insert into SQLite checks the temp entity tables, but syncv2 doesn't actually use them, so it's faster
+  -- if we clear them out before starting a sync.
+  Sqlite.runTransaction srcConn Q.clearTempEntityTables
   liftIO . C.runResourceT . runExceptT $ withCodebaseEntityStream srcConn causalHash Nothing \_total entityStream -> do
     (header, rest) <- initializeStream entityStream
     streamIntoCodebase shouldValidate destCodebase header rest
@@ -154,6 +160,9 @@ syncFromCodeserver ::
   Cli (Either (SyncError SyncV2.PullError) ())
 syncFromCodeserver shouldValidate unisonShareUrl branchRef hashJwt _downloadedCallback = do
   Cli.Env {authHTTPClient, codebase} <- ask
+  -- Every insert into SQLite checks the temp entity tables, but syncv2 doesn't actually use them, so it's faster
+  -- if we clear them out before starting a sync.
+  Cli.runTransaction Q.clearTempEntityTables
   runExceptT do
     knownHashes <- ExceptT $ negotiateKnownCausals unisonShareUrl branchRef hashJwt
     let hash = Share.hashJWTHash hashJwt
