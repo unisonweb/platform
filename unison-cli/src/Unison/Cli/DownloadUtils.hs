@@ -74,10 +74,8 @@ downloadProjectBranchFromShare syncVersion useSquashed branch =
           result <- SyncV2.syncFromCodeserver shouldValidate Share.hardCodedBaseUrl branchRef causalHashJwt knownHashes downloadedCallback
           result & onLeft \err0 -> do
             done case err0 of
-              Share.SyncError err ->
-                -- TODO: Fix this
-                error (show err)
-              -- Output.ShareErrorDownloadEntities err
+              Share.SyncError pullErr ->
+                Output.ShareErrorPullV2 pullErr
               Share.TransportError err -> Output.ShareErrorTransport err
     pure (Sync.Common.hash32ToCausalHash (Share.hashJWTHash causalHashJwt))
 
