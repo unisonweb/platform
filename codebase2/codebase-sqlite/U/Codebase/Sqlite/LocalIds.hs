@@ -15,7 +15,7 @@ data LocalIds' t h = LocalIds
   { textLookup :: Vector t,
     defnLookup :: Vector h
   }
-  deriving (Functor, Show)
+  deriving stock (Functor, Show, Eq)
 
 type LocalIds = LocalIds' TextId ObjectId
 

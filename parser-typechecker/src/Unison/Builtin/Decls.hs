@@ -107,6 +107,11 @@ constructorId ref name = do
   (_, _, dd) <- find (\(_, r, _) -> Reference.DerivedId r == ref) builtinDataDecls
   fmap fromIntegral . elemIndex name $ DD.constructorNames dd
 
+effectId :: Reference -> Text -> Maybe ConstructorId
+effectId ref name = do
+  (_, _, ed) <- find (\(_, r, _) -> Reference.DerivedId r == ref) builtinEffectDecls
+  fmap fromIntegral . elemIndex name . DD.constructorNames $ DD.toDataDecl ed
+
 noneId, someId, okConstructorId, failConstructorId, docBlobId, docLinkId, docSignatureId, docSourceId, docEvaluateId, docJoinId, linkTermId, linkTypeId, eitherRightId, eitherLeftId :: ConstructorId
 isPropagatedConstructorId, isTestConstructorId, bufferModeNoBufferingId, bufferModeLineBufferingId, bufferModeBlockBufferingId, bufferModeSizedBlockBufferingId :: ConstructorId
 seqViewEmpty, seqViewElem :: ConstructorId
@@ -152,6 +157,25 @@ bufferModeLineBufferingId = Maybe.fromJust $ constructorId bufferModeRef "io2.Bu
 bufferModeBlockBufferingId = Maybe.fromJust $ constructorId bufferModeRef "io2.BufferMode.BlockBuffering"
 
 bufferModeSizedBlockBufferingId = Maybe.fromJust $ constructorId bufferModeRef "io2.BufferMode.SizedBlockBuffering"
+
+fileModeReadId, fileModeWriteId, fileModeAppendId, fileModeReadWriteId :: ConstructorId
+fileModeReadId = Maybe.fromJust $ constructorId fileModeRef "io2.FileMode.Read"
+fileModeWriteId = Maybe.fromJust $ constructorId fileModeRef "io2.FileMode.Write"
+fileModeAppendId = Maybe.fromJust $ constructorId fileModeRef "io2.FileMode.Append"
+fileModeReadWriteId = Maybe.fromJust $ constructorId fileModeRef "io2.FileMode.ReadWrite"
+
+seekModeAbsoluteId, seekModeRelativeId, seekModeEndId :: ConstructorId
+seekModeAbsoluteId = Maybe.fromJust $ constructorId seekModeRef "io2.SeekMode.AbsoluteSeek"
+seekModeRelativeId = Maybe.fromJust $ constructorId seekModeRef "io2.SeekMode.RelativeSeek"
+seekModeEndId = Maybe.fromJust $ constructorId seekModeRef "io2.SeekMode.SeekFromEnd"
+
+stdInId, stdOutId, stdErrId :: ConstructorId
+stdInId = Maybe.fromJust $ constructorId stdHandleRef "io2.StdHandle.StdIn"
+stdOutId = Maybe.fromJust $ constructorId stdHandleRef "io2.StdHandle.StdOut"
+stdErrId = Maybe.fromJust $ constructorId stdHandleRef "io2.StdHandle.StdErr"
+
+exceptionRaiseId :: ConstructorId
+exceptionRaiseId = Maybe.fromJust $ effectId exceptionRef "Exception.raise"
 
 okConstructorReferent, failConstructorReferent :: Referent.Referent
 okConstructorReferent = Referent.Con (ConstructorReference testResultRef okConstructorId) CT.Data

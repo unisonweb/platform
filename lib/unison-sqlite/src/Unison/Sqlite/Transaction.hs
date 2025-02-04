@@ -3,6 +3,7 @@ module Unison.Sqlite.Transaction
     Transaction,
     runTransaction,
     runTransactionWithRollback,
+    runTransactionExceptT,
     runReadOnlyTransaction,
     runWriteTransaction,
     cacheTransaction,
@@ -44,6 +45,7 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (Exception (fromException), onException, throwIO)
+import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Control.Monad.Trans.Reader (ReaderT (..))
 import Data.Text qualified as Text
 import Data.Unique (Unique, newUnique)
@@ -129,6 +131,13 @@ runTransactionWithRollback conn transaction = liftIO do
       | otherwise -> throwIO exception
     Right x -> pure x
 {-# SPECIALIZE runTransactionWithRollback :: Connection -> ((forall void. a -> Transaction void) -> Transaction a) -> IO a #-}
+
+-- | Run a transaction wrapped in an 'ExceptT'. If the ExceptT fails, the transaction is rolled back.
+runTransactionExceptT :: (MonadIO m, HasCallStack) => Connection -> ExceptT e Transaction a -> m (Either e a)
+runTransactionExceptT conn transaction = runTransactionWithRollback conn \rollback -> do
+  runExceptT transaction >>= \case
+    Left e -> rollback (Left e)
+    Right a -> pure (Right a)
 
 -- | Run a transaction that is known to only perform reads.
 --

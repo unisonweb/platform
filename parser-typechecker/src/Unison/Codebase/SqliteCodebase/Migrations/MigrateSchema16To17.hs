@@ -5,9 +5,11 @@ module Unison.Codebase.SqliteCodebase.Migrations.MigrateSchema16To17 (migrateSch
 
 import Control.Lens
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Text qualified as Aeson
 import Data.Map qualified as Map
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
+import Data.Text.Lazy qualified as Text.Lazy
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import U.Codebase.Branch.Type qualified as V2Branch
@@ -76,8 +78,8 @@ migrateSchema16To17 conn = withDisabledForeignKeys $ do
 
   case mayRecentProjectBranch of
     Just (projectId, branchId) ->
-      Q.setCurrentProjectPath projectId branchId []
-    Nothing -> Q.setCurrentProjectPath scratchMain.projectId scratchMain.branchId []
+      initializeCurrentProjectPath projectId branchId []
+    Nothing -> initializeCurrentProjectPath scratchMain.projectId scratchMain.branchId []
   Debug.debugLogM Debug.Migration "Done migrating to version 17"
   Q.setSchemaVersion 17
   where
@@ -89,6 +91,19 @@ migrateSchema16To17 conn = withDisabledForeignKeys $ do
       let enable = Connection.execute conn [Sqlite.sql| PRAGMA foreign_keys=ON |]
       let action = Sqlite.runWriteTransaction conn \run -> run $ m
       UnsafeIO.bracket disable (const enable) (const action)
+    initializeCurrentProjectPath :: ProjectId -> ProjectBranchId -> [NameSegment] -> Sqlite.Transaction ()
+    initializeCurrentProjectPath projId branchId path = do
+      Sqlite.execute
+        [Sqlite.sql| DELETE FROM current_project_path |]
+      Sqlite.execute
+        [Sqlite.sql|
+          INSERT INTO current_project_path(project_id, branch_id, path)
+          VALUES (:projId, :branchId, :jsonPath)
+        |]
+      where
+        jsonPath :: Text
+        jsonPath =
+          Text.Lazy.toStrict (Aeson.encodeToLazyText $ NameSegment.toUnescapedText <$> path)
 
 data ForeignKeyFailureException
   = ForeignKeyFailureException

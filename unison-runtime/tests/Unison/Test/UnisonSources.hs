@@ -43,10 +43,6 @@ type EitherResult = Either String TFile
 ppEnv :: PPE.PrettyPrintEnv
 ppEnv = PPE.makePPE (PPE.hqNamer Common.hqLength Builtin.names) PPE.dontSuffixify
 
-expectRight' :: Either String a -> Test a
-expectRight' (Left e) = crash e
-expectRight' (Right a) = ok >> pure a
-
 good :: EitherResult -> Test TFile
 good = expectRight'
 

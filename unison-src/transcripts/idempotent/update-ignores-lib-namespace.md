@@ -61,7 +61,7 @@ scratch/main> update
 
 scratch/main> names foo
 
-  Term
-  Hash:   #9ntnotdp87
-  Names:  foo
+  'foo':
+  Hash          Kind   Names
+  #9ntnotdp87   Term   foo
 ```

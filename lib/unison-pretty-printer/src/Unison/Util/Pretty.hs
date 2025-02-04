@@ -695,8 +695,8 @@ column2UnzippedM bottomPadding left right =
 column3sep ::
   (LL.ListLike s Char, IsString s) => Pretty s -> [(Pretty s, Pretty s, Pretty s)] -> Pretty s
 column3sep sep rows =
-  let bc = align [(b, sep <> c) | (_, b, c) <- rows]
-      abc = group <$> align [(a, sep <> bc) | ((a, _, _), bc) <- rows `zip` bc]
+  let bc = align $ [(b, indent sep c) | (_, b, c) <- rows]
+      abc = group <$> align [(a, indent sep bc) | ((a, _, _), bc) <- rows `zip` bc]
    in lines abc
 
 -- | Creates an aligned table with an arbitrary number of columns separated by `sep`
