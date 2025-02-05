@@ -31,6 +31,7 @@ module Unison.Codebase.Editor.Input
     -- * Type aliases
     ErrorMessageOrName,
     RawQuery,
+    SyncVersion (..),
   )
 where
 
@@ -58,6 +59,9 @@ import Unison.Util.Pretty qualified as P
 data Event
   = UnisonFileChanged SourceName Source
   deriving stock (Show)
+
+data SyncVersion = SyncV1 | SyncV2
+  deriving (Eq, Show)
 
 type Source = Text -- "id x = x\nconst a b = a"
 
@@ -134,11 +138,12 @@ data Input
     MergeLocalBranchI BranchRelativePath (Maybe BranchRelativePath) Branch.MergeMode
   | PreviewMergeLocalBranchI BranchRelativePath (Maybe BranchRelativePath)
   | DiffNamespaceI BranchId2 BranchId2 -- old new
-  | PullI !PullSourceTarget !PullMode
+  | PullI !SyncVersion !PullSourceTarget !PullMode
   | PushRemoteBranchI PushRemoteBranchInput
   | SyncToFileI FilePath (ProjectAndBranch (Maybe ProjectName) (Maybe ProjectBranchName))
   | SyncFromFileI FilePath UnresolvedProjectBranch
-  | SyncFromCodebaseI FilePath (ProjectAndBranch ProjectName ProjectBranchName) UnresolvedProjectBranch
+  | -- | Sync from a codebase project branch to this codebase's project branch
+    SyncFromCodebaseI FilePath (ProjectAndBranch ProjectName ProjectBranchName) UnresolvedProjectBranch
   | ResetI (BranchId2 {- namespace to reset it to -}) (Maybe UnresolvedProjectBranch {- ProjectBranch to reset -})
   | -- | used in Welcome module to give directions to user
     --
