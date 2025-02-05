@@ -13,7 +13,7 @@ import U.Codebase.Sqlite.Project qualified as Sqlite (Project (..))
 import U.Codebase.Sqlite.ProjectBranch qualified as Sqlite
 import U.Codebase.Sqlite.Queries qualified as Q
 import U.Codebase.Sqlite.Queries qualified as Queries
-import Unison.Cli.DownloadUtils (SyncVersion (..), downloadProjectBranchFromShare)
+import Unison.Cli.DownloadUtils (downloadProjectBranchFromShare)
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli (getCurrentProjectAndBranch)
@@ -225,7 +225,7 @@ cloneInto localProjectBranch remoteProjectBranch = do
   let remoteProjectBranchNames = ProjectAndBranch remoteProjectName remoteBranchName
 
   branchHead <-
-    downloadProjectBranchFromShare SyncV1 Share.NoSquashedHead remoteProjectBranch
+    downloadProjectBranchFromShare Share.NoSquashedHead remoteProjectBranch
       & onLeftM (Cli.returnEarly . Output.ShareError)
 
   localProjectAndBranch <-
