@@ -2003,7 +2003,6 @@ useExamples =
       "",
       Pr.indentN 2 . Pr.column2 $
         [ (Pr.blue "use math sqrt", Pr.wrap "Introduces `sqrt` as a local alias for `math.sqrt`"),
-          (Pr.blue "use List :+", Pr.wrap "Introduces `:+` as a local alias for `List.:+`."),
-          (Pr.blue "use .foo bar.baz", Pr.wrap "Introduces `bar.baz` as a local alias for the absolute name `.foo.bar.baz`")
+          (Pr.blue "use List :+", Pr.wrap "Introduces `:+` as a local alias for `List.:+`.")
         ]
     ]
