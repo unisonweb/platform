@@ -10,6 +10,7 @@
     * [`UNISON_SHARE_ACCESS_TOKEN`](#unison_share_access_token)
     * [`UNISON_READONLY`](#unison_readonly)
     * [`UNISON_ENTITY_VALIDATION`](#unison_entity_validation)
+    * [`UNISON_SYNC_VERSION`](#unison_sync_version)
     * [Local Codebase Server](#local-codebase-server)
 * [Codebase Configuration](#codebase-configuration)
 
@@ -17,7 +18,7 @@
 
 ### `UNISON_DEBUG`
 
-Enable debugging output for various portions of the application. 
+Enable debugging output for various portions of the application.
 See `lib/unison-prelude/src/Unison/Debug.hs` for the full list of supported flags.
 
 E.g.
@@ -62,7 +63,7 @@ Note for Windows users: Due to an outstanding issue with GHC's IO manager on Win
 Enabling the LSP on windows can cause UCM to hang on exit and may require the process to be killed by the operating system or via Ctrl-C.
 Note that this doesn't pose any risk of codebase corruption or cause any known issues, it's simply an annoyance.
 
-If you accept this annoyance, you can enable the LSP server on Windows by exporting the `UNISON_LSP_ENABLED=true` environment variable. 
+If you accept this annoyance, you can enable the LSP server on Windows by exporting the `UNISON_LSP_ENABLED=true` environment variable.
 
 You can set this persistently in powershell using:
 
@@ -115,6 +116,14 @@ Defaults to enabled.
 
 ```sh
 $ UNISON_ENTITY_VALIDATION="false" ucm
+```
+
+### `UNISON_SYNC_VERSION`
+
+Allows enabling the experimental Sync Version 2 protocol when downloading code from Share.
+
+```sh
+$ UNISON_ENTITY_VALIDATION="2" ucm
 ```
 
 ### `UNISON_PULL_WORKERS`

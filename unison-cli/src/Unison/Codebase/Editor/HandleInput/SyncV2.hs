@@ -10,7 +10,7 @@ import Control.Lens
 import Control.Monad.Reader (MonadReader (..))
 import U.Codebase.HashTags (CausalHash)
 import U.Codebase.Sqlite.Queries qualified as Q
-import Unison.Cli.DownloadUtils (SyncVersion (..), downloadProjectBranchFromShare)
+import Unison.Cli.DownloadUtils (downloadProjectBranchFromShare)
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
@@ -75,4 +75,4 @@ handleSyncFromCodebase description srcCodebasePath srcBranch destBranch = do
       Cli.respond (Output.SyncPullError syncErr)
 
 handleSyncFromCodeserver :: Projects.IncludeSquashedHead -> Projects.RemoteProjectBranch -> Cli (Either Output.ShareError CausalHash)
-handleSyncFromCodeserver = downloadProjectBranchFromShare SyncV2
+handleSyncFromCodeserver = downloadProjectBranchFromShare

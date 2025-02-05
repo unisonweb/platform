@@ -46,8 +46,8 @@ import Unison.Prelude
 import Unison.Project (ProjectAndBranch (..), ProjectBranchNameOrLatestRelease (..), ProjectName)
 import Witch (unsafeFrom)
 
-handlePull :: SyncVersion -> PullSourceTarget -> PullMode -> Cli ()
-handlePull syncVersion unresolvedSourceAndTarget pullMode = do
+handlePull :: PullSourceTarget -> PullMode -> Cli ()
+handlePull unresolvedSourceAndTarget pullMode = do
   let includeSquashed = case pullMode of
         Input.PullWithHistory -> Share.NoSquashedHead
         Input.PullWithoutHistory -> Share.IncludeSquashedHead
@@ -59,7 +59,6 @@ handlePull syncVersion unresolvedSourceAndTarget pullMode = do
       ReadShare'LooseCode repo -> downloadLooseCodeFromShare repo & onLeftM (Cli.returnEarly . Output.ShareError)
       ReadShare'ProjectBranch remoteBranch ->
         downloadProjectBranchFromShare
-          syncVersion
           ( case pullMode of
               Input.PullWithHistory -> Share.NoSquashedHead
               Input.PullWithoutHistory -> Share.IncludeSquashedHead

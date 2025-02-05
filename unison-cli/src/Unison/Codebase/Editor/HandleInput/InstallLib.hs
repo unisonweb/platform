@@ -60,7 +60,7 @@ handleInstallLib remind (ProjectAndBranch libdepProjectName unresolvedLibdepBran
   Cli.Env {codebase} <- ask
 
   causalHash <-
-    downloadProjectBranchFromShare SyncV1 Share.IncludeSquashedHead libdepProjectBranch
+    downloadProjectBranchFromShare Share.IncludeSquashedHead libdepProjectBranch
       & onLeftM (Cli.returnEarly . Output.ShareError)
 
   remoteBranchObject <- liftIO (Codebase.expectBranchForHash codebase causalHash)

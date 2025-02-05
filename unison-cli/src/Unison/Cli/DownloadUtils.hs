@@ -12,13 +12,13 @@ import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (modifyTVar', newTVarIO, readTVar, readTVarIO)
 import Data.List.NonEmpty (pattern (:|))
 import System.Console.Regions qualified as Console.Regions
+import System.IO.Unsafe (unsafePerformIO)
 import U.Codebase.HashTags (CausalHash)
 import U.Codebase.Sqlite.Queries qualified as Queries
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.Share.Projects qualified as Share
 import Unison.Codebase.Editor.HandleInput.AuthLogin (ensureAuthenticatedWithCodeserver)
-import Unison.Codebase.Editor.Input (SyncVersion (..))
 import Unison.Codebase.Editor.Output qualified as Output
 import Unison.Codebase.Editor.RemoteRepo (ReadShareLooseCode, shareUserHandleToText)
 import Unison.Codebase.Editor.RemoteRepo qualified as RemoteRepo
@@ -35,15 +35,26 @@ import Unison.Share.Types (codeserverBaseURL)
 import Unison.Sync.Common qualified as Sync.Common
 import Unison.Sync.Types qualified as Share
 import Unison.SyncV2.Types qualified as SyncV2
+import UnliftIO.Environment qualified as UnliftIO
+
+data SyncVersion = SyncV1 | SyncV2
+  deriving (Eq, Show)
+
+-- | The version of the sync protocol to use.
+syncVersion :: SyncVersion
+syncVersion = unsafePerformIO do
+  UnliftIO.lookupEnv "UNISON_SYNC_VERSION"
+    <&> \case
+      Just "2" -> SyncV2
+      _ -> SyncV1
 
 -- | Download a project/branch from Share.
 downloadProjectBranchFromShare ::
   (HasCallStack) =>
-  SyncVersion ->
   Share.IncludeSquashedHead ->
   Share.RemoteProjectBranch ->
   Cli (Either Output.ShareError CausalHash)
-downloadProjectBranchFromShare syncVersion useSquashed branch =
+downloadProjectBranchFromShare useSquashed branch =
   Cli.labelE \done -> do
     let remoteProjectBranchName = branch.branchName
     causalHashJwt <-

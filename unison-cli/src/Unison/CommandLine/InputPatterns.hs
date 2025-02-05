@@ -92,7 +92,6 @@ module Unison.CommandLine.InputPatterns
     projectSwitch,
     projectsInputPattern,
     pull,
-    pullV2,
     pullWithoutHistory,
     push,
     pushCreate,
@@ -1788,13 +1787,7 @@ reset =
 
 pull :: InputPattern
 pull =
-  pullImpl "pull" [] Input.PullWithHistory "" Input.SyncV1
-
-pullV2 :: InputPattern
-pullV2 =
-  (pullImpl "pull.v2" [] Input.PullWithHistory "" Input.SyncV2)
-    {I.visibility = I.Hidden
-    }
+  pullImpl "pull" [] Input.PullWithHistory ""
 
 pullWithoutHistory :: InputPattern
 pullWithoutHistory =
@@ -1803,10 +1796,9 @@ pullWithoutHistory =
     []
     Input.PullWithoutHistory
     "without including the remote's history. This usually results in smaller codebase sizes."
-    Input.SyncV1
 
-pullImpl :: String -> [String] -> Input.PullMode -> P.Pretty CT.ColorText -> Input.SyncVersion -> InputPattern
-pullImpl name aliases pullMode addendum syncVersion = do
+pullImpl :: String -> [String] -> Input.PullMode -> P.Pretty CT.ColorText -> InputPattern
+pullImpl name aliases pullMode addendum = do
   self
   where
     self =
@@ -1850,10 +1842,10 @@ pullImpl name aliases pullMode addendum syncVersion = do
                 explainRemote Pull
               ],
           parse = \case
-            [] -> pure $ Input.PullI syncVersion Input.PullSourceTarget0 pullMode
+            [] -> pure $ Input.PullI Input.PullSourceTarget0 pullMode
             [sourceArg] -> do
               source <- handlePullSourceArg sourceArg
-              pure (Input.PullI syncVersion (Input.PullSourceTarget1 source) pullMode)
+              pure (Input.PullI (Input.PullSourceTarget1 source) pullMode)
             [sourceArg, targetArg] ->
               -- You used to be able to pull into a path, so this arg parser is a little complicated, because
               -- we want to provide helpful suggestions if you are doing a deprecated or invalid thing.
@@ -1861,7 +1853,7 @@ pullImpl name aliases pullMode addendum syncVersion = do
                      handleMaybeProjectBranchArg targetArg,
                      handlePath'Arg targetArg
                    ) of
-                (Right source, Right target, _) -> Right (Input.PullI syncVersion (Input.PullSourceTarget2 source target) pullMode)
+                (Right source, Right target, _) -> Right (Input.PullI (Input.PullSourceTarget2 source target) pullMode)
                 (Left err, _, _) -> Left err
                 -- Parsing as a path didn't work either; just show the branch parse error
                 (Right _, Left err, Left _) -> Left err
@@ -3821,7 +3813,6 @@ validInputs =
       projectSwitch,
       projectsInputPattern,
       pull,
-      pullV2,
       pullWithoutHistory,
       push,
       pushCreate,

@@ -569,7 +569,7 @@ negotiateKnownCausals ::
   Cli (Either (SyncError SyncV2.PullError) (Set Hash32))
 negotiateKnownCausals unisonShareUrl branchRef hashJwt = do
   Cli.Env {authHTTPClient, codebase} <- ask
-  liftIO $ Text.hPutStrLn IO.stderr $ "  🔎  Identifying missing entities..."
+  liftIO $ Text.hPutStrLn IO.stderr $ "  🔎 Identifying missing entities..."
   Timing.time "Causal Negotiation" $ do
     liftIO . C.runResourceT . runExceptT $ httpStreamCausalDependencies
       authHTTPClient
