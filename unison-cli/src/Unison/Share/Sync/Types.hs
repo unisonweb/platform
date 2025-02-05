@@ -39,6 +39,8 @@ data CodeserverTransportError
   | Unauthenticated Servant.BaseUrl
   | UnexpectedResponse Servant.Response
   | UnreachableCodeserver Servant.BaseUrl
+  | -- I wish Servant gave us more detail, but it's just Text. I don't think we ever hit these errors though.
+    StreamingError Text
   deriving stock (Show)
   deriving anyclass (Exception)
 

@@ -161,7 +161,7 @@ scratch/main> view distributed.abra.cadabra
 
 scratch/main> names distributed.lib.baz.qux
 
-  Term
-  Hash:   #nhup096n2s
-  Names:  lib.distributed.lib.baz.qux
+  'distributed.lib.baz.qux':
+  Hash          Kind   Names
+  #nhup096n2s   Term   lib.distributed.lib.baz.qux
 ```

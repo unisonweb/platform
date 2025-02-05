@@ -2,6 +2,7 @@
 module Unison.Merge.Libdeps
   ( LibdepDiffOp (..),
     diffLibdeps,
+    mergeLibdepsDiffs,
     applyLibdepsDiff,
     getTwoFreshLibdepNames,
   )
@@ -15,6 +16,7 @@ import Data.These (These (..))
 import Unison.Merge.DiffOp (DiffOp (..))
 import Unison.Merge.EitherWay qualified as EitherWay
 import Unison.Merge.ThreeWay (ThreeWay (..))
+import Unison.Merge.ThreeWay qualified as ThreeWay
 import Unison.Merge.TwoDiffOps (TwoDiffOps (..))
 import Unison.Merge.TwoDiffOps qualified as TwoDiffOps
 import Unison.Merge.TwoWay (TwoWay (..))
@@ -33,45 +35,43 @@ data LibdepDiffOp a
   | AddBothLibdeps !a !a
   | DeleteLibdep
 
--- | Perform a three-way diff on two collections of library dependencies.
+-- | Perform two two-way diffs on two collections of library dependencies. This is only half of a three-way diff: use
+-- 'mergeLibdepsDiffs' to complete it.
 diffLibdeps ::
+  forall k v.
   (Ord k, Eq v) =>
   -- | Library dependencies.
   ThreeWay (Map k v) ->
-  -- | Library dependencies diff.
-  Map k (LibdepDiffOp v)
+  -- | Library dependencies diffs.
+  TwoWay (Map k (DiffOp v))
 diffLibdeps libdeps =
-  mergeDiffs (twoWayDiff libdeps.lca libdeps.alice) (twoWayDiff libdeps.lca libdeps.bob)
-
--- `twoWayDiff old new` computes a diff between old thing `old` and new thing `new`.
---
--- Values present in `old` but not `new` are tagged as "deleted"; similar for "added" and "updated".
-twoWayDiff :: (Ord k, Eq v) => Map k v -> Map k v -> Map k (DiffOp v)
-twoWayDiff =
-  Map.merge
-    (Map.mapMissing \_ -> DiffOp'Delete)
-    (Map.mapMissing \_ -> DiffOp'Add)
-    ( Map.zipWithMaybeMatched \_ old new ->
-        if old == new
-          then Nothing
-          else Just (DiffOp'Update Updated {old, new})
-    )
+  f <$> ThreeWay.forgetLca libdeps
+  where
+    f :: Map k v -> Map k (DiffOp v)
+    f =
+      Map.merge
+        (Map.mapMissing \_ -> DiffOp'Delete)
+        (Map.mapMissing \_ -> DiffOp'Add)
+        ( Map.zipWithMaybeMatched \_ old new ->
+            if old == new
+              then Nothing
+              else Just (DiffOp'Update Updated {old, new})
+        )
+        libdeps.lca
 
 -- Merge two library dependency diffs together:
 --
 --   * Keep all adds/updates (allowing conflicts as necessary, which will be resolved later)
 --   * Ignore deletes that only one party makes (because the other party may expect the dep to still be there)
-mergeDiffs ::
+mergeLibdepsDiffs ::
   forall k v.
   (Ord k, Eq v) =>
-  -- The LCA->Alice library dependencies diff.
-  Map k (DiffOp v) ->
-  -- The LCA->Bob library dependencies diff.
-  Map k (DiffOp v) ->
+  -- The LCA->Alice and LCA->Bob library dependencies diffs.
+  TwoWay (Map k (DiffOp v)) ->
   -- The merged library dependencies diff.
   Map k (LibdepDiffOp v)
-mergeDiffs alice bob =
-  catMaybes (alignWith combineDiffOps alice bob)
+mergeLibdepsDiffs diffs =
+  catMaybes (alignWith combineDiffOps diffs.alice diffs.bob)
 
 combineDiffOps :: (Eq a) => These (DiffOp a) (DiffOp a) -> Maybe (LibdepDiffOp a)
 combineDiffOps =

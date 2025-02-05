@@ -132,7 +132,7 @@ data IncoherentDeclReason
     --   Foo.Bar#Foo
     IncoherentDeclReason'NestedDeclAlias !Name !Name -- shorter name, longer name
   | IncoherentDeclReason'StrayConstructor !TypeReferenceId !Name
-  deriving stock (Show)
+  deriving stock (Eq, Show)
 
 checkDeclCoherency ::
   (HasCallStack) =>

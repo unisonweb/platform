@@ -40,6 +40,7 @@ data PatchLocalIds' t h d = LocalIds
     patchHashLookup :: Vector h,
     patchDefnLookup :: Vector d
   }
+  deriving stock (Eq, Show)
 
 type SyncPatchFormat = SyncPatchFormat' PatchObjectId TextId HashId ObjectId
 
@@ -47,6 +48,7 @@ data SyncPatchFormat' parent text hash defn
   = SyncFull (PatchLocalIds' text hash defn) ByteString
   | -- | p is the identity of the thing that the diff is relative to
     SyncDiff parent (PatchLocalIds' text hash defn) ByteString
+  deriving stock (Eq, Show)
 
 -- | Apply a list of patch diffs to a patch, left to right.
 applyPatchDiffs :: Patch -> [PatchDiff] -> Patch

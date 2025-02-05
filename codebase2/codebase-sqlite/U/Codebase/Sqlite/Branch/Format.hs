@@ -101,7 +101,7 @@ data BranchLocalIds' t d p c = LocalIds
     branchPatchLookup :: Vector p,
     branchChildLookup :: Vector c
   }
-  deriving (Show)
+  deriving (Show, Eq)
 
 -- | Bytes encoding a LocalBranch
 newtype LocalBranchBytes = LocalBranchBytes ByteString
@@ -110,6 +110,7 @@ newtype LocalBranchBytes = LocalBranchBytes ByteString
 data SyncBranchFormat' parent text defn patch child
   = SyncFull (BranchLocalIds' text defn patch child) LocalBranchBytes
   | SyncDiff parent (BranchLocalIds' text defn patch child) LocalBranchBytes
+  deriving (Eq, Show)
 
 type SyncBranchFormat = SyncBranchFormat' BranchObjectId TextId ObjectId PatchObjectId (BranchObjectId, CausalHashId)
 

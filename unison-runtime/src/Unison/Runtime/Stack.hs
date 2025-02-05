@@ -22,6 +22,7 @@ module Unison.Runtime.Stack
         BlackHole,
         UnboxedTypeTag
       ),
+    closureTag,
     UnboxedTypeTag (..),
     unboxedTypeTagToInt,
     unboxedTypeTagFromInt,
@@ -153,7 +154,7 @@ module Unison.Runtime.Stack
   )
 where
 
-import Control.Exception (throwIO)
+import Control.Exception (throw, throwIO)
 import Control.Monad.Primitive
 import Data.Char qualified as Char
 import Data.IORef (IORef)
@@ -370,6 +371,15 @@ splitData = \case
   (Data2 r t i j) -> Just (r, t, [i, j])
   (DataG r t seg) -> Just (r, t, segToList seg)
   _ -> Nothing
+
+closureTag :: Closure -> PackedTag
+closureTag (Enum _ t) = t
+closureTag (Data1 _ t _) = t
+closureTag (Data2 _ t _ _) = t
+closureTag (DataG _ t _) = t
+closureTag c =
+  throw $ Panic "closureTag: unexpected closure" (Just $ BoxedVal c)
+{-# inline closureTag #-}
 
 -- | Converts a list of integers representing an unboxed segment back into the
 -- appropriate segment. Segments are stored backwards in the runtime, so this
