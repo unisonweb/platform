@@ -338,7 +338,14 @@ data Output
   | NoBranchWithHash ShortCausalHash
   | ListDependencies PPE.PrettyPrintEnv (Set LabeledDependency) [HQ.HashQualified Name] [HQ.HashQualified Name] -- types, terms
   | -- | List dependents of a type or term.
-    ListDependents PPE.PrettyPrintEnv (Set LabeledDependency) [HQ.HashQualified Name] [HQ.HashQualified Name] -- types, terms
+    ListDependents
+      PPE.PrettyPrintEnv
+      (Set LabeledDependency)
+      ( DefnsF
+          []
+          (HQ'.HashQualified Name, HQ'.HashQualified Name)
+          (HQ'.HashQualified Name, HQ'.HashQualified Name)
+      )
   | DumpNumberedArgs HashLength NumberedArgs
   | DumpBitBooster CausalHash (Map CausalHash [CausalHash])
   | DumpUnisonFileHashes Int [(Name, Reference.Id)] [(Name, Reference.Id)] [(Name, Reference.Id)]
