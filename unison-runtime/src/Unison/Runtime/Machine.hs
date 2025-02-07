@@ -33,6 +33,7 @@ import Control.Lens
 import Data.Atomics qualified as Atomic
 import Data.Bits
 import Data.Functor.Classes (Eq1 (..), Ord1 (..))
+import Data.List qualified as List
 import Data.IORef (IORef)
 import Data.IORef qualified as IORef
 import Data.Map.Strict qualified as M
@@ -2361,12 +2362,31 @@ preEvalTopLevelConstants cacheableCombs newCombs cc = do
           atomically $ do
             modifyTVar evaluatedCacheableCombsVar $ EC.mapInsert w (EC.mapSingleton 0 $ CachedVal w val)
     apply0 (Just hook) cc activeThreads w
+      `catch` \e ->
+        -- ignore sandboxing exceptions during pre-eval, in case they
+        -- don't matter for the final result.
+        if isSandboxingException e
+          then pure ()
+          else throwIO e
 
   evaluatedCacheableCombs <- readTVarIO evaluatedCacheableCombsVar
   let allNew = evaluatedCacheableCombs <> newCombs
   -- Rewrite all the inlined combinator references to point to the
   -- new cached versions.
   atomically $ modifyTVar (combs cc) (\existingCombs -> (resolveCombs (Just $ EC.mapDifference existingCombs allNew) allNew) <> existingCombs)
+
+-- Checks if a runtime exception is due to sandboxing.
+--
+-- This is used above during pre-evaluation, to ignore sandboxing
+-- exceptions for top-level constant dependencies of docs and such, in
+-- case the docs don't actually evaluate them.
+isSandboxingException :: RuntimeExn -> Bool
+isSandboxingException (PE _ (P.toPlainUnbroken -> msg)) =
+  List.isPrefixOf sdbx1 msg || List.isPrefixOf sdbx2 msg
+  where
+    sdbx1 = "attempted to use sandboxed operation"
+    sdbx2 = "Attempted to use disallowed builtin in sandboxed"
+isSandboxingException _ = False
 
 expandSandbox ::
   Map Reference (Set Reference) ->
