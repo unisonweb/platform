@@ -2223,11 +2223,13 @@ syncFromCodebase =
           $ Optional [] Nothing,
       help =
         ( P.wrapColumn2
-            [ (makeExample syncFromCodebase ["./codebase", "/feature", "/main"], "Sets the /feature branch to the contents of the codebase at ./codebase.")
+            [ ( makeExample syncFromCodebase ["./codebase", "srcProject/main", "destProject/main"],
+                "Imports srcProject/main from the specified codebase, then sets destProject/main to the imported branch."
+              )
             ]
         ),
       parse = \case
-        [codebaseLocation, branchToSync, destinationBranch] -> Input.SyncFromCodebaseI <$> unsupportedStructuredArgument makeStandalone "a file name" codebaseLocation <*> handleBranchWithProject branchToSync <*> handleBranchWithOptionalProject destinationBranch
+        [codebaseLocation, srcBranch, destinationBranch] -> Input.SyncFromCodebaseI <$> unsupportedStructuredArgument makeStandalone "a file name" codebaseLocation <*> handleBranchWithProject srcBranch <*> handleBranchWithOptionalProject destinationBranch
         args -> wrongArgsLength "exactly three arguments" args
     }
   where

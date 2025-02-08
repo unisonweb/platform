@@ -2293,6 +2293,7 @@ prettyShareError =
     ShareErrorDownloadEntities err -> prettyDownloadEntitiesError err
     ShareErrorGetCausalHashByPath err -> prettyGetCausalHashByPathError err
     ShareErrorPull err -> prettyPullError err
+    ShareErrorPullV2 err -> prettyPullV2Error err
     ShareErrorTransport err -> prettyTransportError err
     ShareErrorUploadEntities err -> prettyUploadEntitiesError err
     ShareExpectedSquashedHead -> "The server failed to provide a squashed branch head when requested. Please report this as a bug to the Unison team."
