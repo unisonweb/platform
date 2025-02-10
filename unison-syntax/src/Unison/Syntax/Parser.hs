@@ -24,6 +24,8 @@ module Unison.Syntax.Parser
     failureIf,
     hqInfixId,
     hqPrefixId,
+    importRelativeSymbolyId,
+    importRelativeWordyId,
     importSymbolyId,
     importWordyId,
     label,
@@ -357,15 +359,27 @@ wordyDefinitionName = queryToken \case
   L.WordyId n -> Just $ Name.toVar (HQ'.toName n)
   _ -> Nothing
 
--- | Parse a wordyId as a relative Name, rejecting any hash
+-- | Parse a wordyId as a Name, rejecting any hash
 importWordyId :: (Ord v) => P v m (L.Token Name)
 importWordyId = queryToken \case
+  L.WordyId (HQ'.NameOnly n) -> Just n
+  _ -> Nothing
+
+-- | Parse a wordyId as a relative Name, rejecting any hash
+importRelativeWordyId :: (Ord v) => P v m (L.Token Name)
+importRelativeWordyId = queryToken \case
   L.WordyId (HQ'.NameOnly n) | Name.isRelative n -> Just n
   _ -> Nothing
 
--- | The `+` in: use Foo.bar + as a relative Name
+-- | The `+` in: use Foo.bar + as a Name
 importSymbolyId :: (Ord v) => P v m (L.Token Name)
 importSymbolyId = queryToken \case
+  L.SymbolyId (HQ'.NameOnly n) -> Just n
+  _ -> Nothing
+
+-- | The `+` in: use Foo.bar + as a relative Name
+importRelativeSymbolyId :: (Ord v) => P v m (L.Token Name)
+importRelativeSymbolyId = queryToken \case
   L.SymbolyId (HQ'.NameOnly n) | Name.isRelative n -> Just n
   _ -> Nothing
 
