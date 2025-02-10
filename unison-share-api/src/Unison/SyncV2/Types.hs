@@ -1,3 +1,5 @@
+{-# LANGUAGE RecordWildCards #-}
+
 module Unison.SyncV2.Types
   ( DownloadEntitiesRequest (..),
     DownloadEntitiesChunk (..),
@@ -6,7 +8,11 @@ module Unison.SyncV2.Types
     StreamInitInfo (..),
     SyncError (..),
     DownloadEntitiesError (..),
+    CausalDependenciesRequest (..),
+    CausalDependenciesChunk (..),
+    DependencyType (..),
     CBORBytes (..),
+    CBORStream (..),
     EntityKind (..),
     serialiseCBORBytes,
     deserialiseOrFailCBORBytes,
@@ -23,6 +29,7 @@ import Codec.Serialise qualified as CBOR
 import Codec.Serialise.Decoding qualified as CBOR
 import Control.Exception (Exception)
 import Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.:), (.=))
+import Data.Aeson qualified as Aeson
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Set (Set)
@@ -32,7 +39,6 @@ import Data.Word (Word16, Word64)
 import U.Codebase.HashTags (CausalHash)
 import U.Codebase.Sqlite.TempEntity (TempEntity)
 import Unison.Core.Project (ProjectAndBranch (..), ProjectBranchName, ProjectName)
-import Unison.Debug qualified as Debug
 import Unison.Hash32 (Hash32)
 import Unison.Prelude (From (..))
 import Unison.Server.Orphans ()
@@ -186,7 +192,7 @@ optionalDecodeMapKey k m =
     Nothing -> pure Nothing
     Just bs -> Just <$> decodeUnknownCBORBytes bs
 
--- | Serialised as a map to allow for future expansion
+-- | Serialised as a map to be future compatible, allowing for future expansion.
 instance Serialise StreamInitInfo where
   encode (StreamInitInfo {version, entitySorting, numEntities, rootCausalHash, rootBranchRef}) =
     CBOR.encode
@@ -199,18 +205,11 @@ instance Serialise StreamInitInfo where
             <> maybe [] (\br -> [("br", serialiseUnknownCBORBytes br)]) rootBranchRef
       )
   decode = do
-    Debug.debugLogM Debug.Temp "Decoding StreamInitInfo"
-    Debug.debugLogM Debug.Temp "Decoding Map"
     m <- CBOR.decode
-    Debug.debugLogM Debug.Temp "Decoding Version"
     version <- decodeMapKey "v" m
-    Debug.debugLogM Debug.Temp "Decoding Entity Sorting"
     entitySorting <- decodeMapKey "es" m
-    Debug.debugLogM Debug.Temp "Decoding Number of Entities"
     numEntities <- (optionalDecodeMapKey "ne" m)
-    Debug.debugLogM Debug.Temp "Decoding Root Causal Hash"
     rootCausalHash <- decodeMapKey "rc" m
-    Debug.debugLogM Debug.Temp "Decoding Branch Ref"
     rootBranchRef <- optionalDecodeMapKey "br" m
     pure StreamInitInfo {version, entitySorting, numEntities, rootCausalHash, rootBranchRef}
 
@@ -306,3 +305,85 @@ instance Serialise EntityKind where
       3 -> pure TypeEntity
       4 -> pure PatchEntity
       _ -> fail "invalid tag"
+
+------------------------------------------------------------------------------------------------------------------------
+-- Causal Dependencies
+
+data CausalDependenciesRequest = CausalDependenciesRequest
+  { branchRef :: BranchRef,
+    rootCausal :: HashJWT
+  }
+  deriving stock (Show, Eq, Ord)
+
+instance ToJSON CausalDependenciesRequest where
+  toJSON (CausalDependenciesRequest branchRef rootCausal) =
+    object
+      [ "branch_ref" .= branchRef,
+        "root_causal" .= rootCausal
+      ]
+
+instance FromJSON CausalDependenciesRequest where
+  parseJSON = Aeson.withObject "CausalDependenciesRequest" \obj -> do
+    branchRef <- obj .: "branch_ref"
+    rootCausal <- obj .: "root_causal"
+    pure CausalDependenciesRequest {..}
+
+instance Serialise CausalDependenciesRequest where
+  encode (CausalDependenciesRequest {branchRef, rootCausal}) =
+    encode branchRef <> encode rootCausal
+  decode = CausalDependenciesRequest <$> decode <*> decode
+
+data DependencyType
+  = -- This is a top-level history node of the root we're pulling.
+    CausalSpineDependency
+  | -- This is the causal root of a library dependency.
+    LibDependency
+  deriving (Show, Eq, Ord)
+
+instance Serialise DependencyType where
+  encode = \case
+    CausalSpineDependency -> CBOR.encodeWord8 0
+    LibDependency -> CBOR.encodeWord8 1
+  decode = do
+    tag <- CBOR.decodeWord8
+    case tag of
+      0 -> pure CausalSpineDependency
+      1 -> pure LibDependency
+      _ -> fail "invalid tag"
+
+instance ToJSON DependencyType where
+  toJSON = \case
+    CausalSpineDependency -> "causal_spine"
+    LibDependency -> "lib"
+
+instance FromJSON DependencyType where
+  parseJSON = Aeson.withText "DependencyType" \case
+    "causal_spine" -> pure CausalSpineDependency
+    "lib" -> pure LibDependency
+    _ -> fail "invalid DependencyType"
+
+-- | A chunk of the download entities response stream.
+data CausalDependenciesChunk
+  = CausalHashDepC {causalHash :: Hash32, dependencyType :: DependencyType}
+  deriving (Show, Eq, Ord)
+
+data CausalDependenciesChunkTag = CausalHashDepChunkTag
+  deriving (Show, Eq, Ord)
+
+instance Serialise CausalDependenciesChunkTag where
+  encode = \case
+    CausalHashDepChunkTag -> CBOR.encodeWord8 0
+  decode = do
+    tag <- CBOR.decodeWord8
+    case tag of
+      0 -> pure CausalHashDepChunkTag
+      _ -> fail "invalid tag"
+
+instance Serialise CausalDependenciesChunk where
+  encode = \case
+    (CausalHashDepC {causalHash, dependencyType}) -> do
+      encode CausalHashDepChunkTag <> CBOR.encode causalHash <> CBOR.encode dependencyType
+  decode = do
+    tag <- decode
+    case tag of
+      CausalHashDepChunkTag -> CausalHashDepC <$> CBOR.decode <*> CBOR.decode

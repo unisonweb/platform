@@ -10,4 +10,4 @@ data Updated a = Updated
   { old :: a,
     new :: a
   }
-  deriving stock (Functor, Generic, Show)
+  deriving stock (Foldable, Functor, Generic, Show, Traversable)

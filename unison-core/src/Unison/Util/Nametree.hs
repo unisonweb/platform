@@ -3,6 +3,7 @@ module Unison.Util.Nametree
     Nametree (..),
     traverseNametreeWithName,
     unfoldNametree,
+    unionWith,
 
     -- ** Flattening and unflattening
     flattenNametree,
@@ -32,6 +33,16 @@ data Nametree a = Nametree
     children :: !(Map NameSegment (Nametree a))
   }
   deriving stock (Functor, Foldable, Traversable, Generic, Show)
+
+unionWith :: (a -> a -> a) -> Nametree a -> Nametree a -> Nametree a
+unionWith f (Nametree x xs) (Nametree y ys) =
+  Nametree (f x y) (Map.unionWith (unionWith f) xs ys)
+
+instance (Semigroup a) => Semigroup (Nametree a) where
+  (<>) = unionWith (<>)
+
+instance (Monoid a) => Monoid (Nametree a) where
+  mempty = Nametree mempty mempty
 
 instance Semialign Nametree where
   alignWith :: (These a b -> c) -> Nametree a -> Nametree b -> Nametree c

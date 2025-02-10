@@ -3839,8 +3839,8 @@ insertProjectBranch description causalHashId (ProjectBranch projectId branchId b
 
   execute
     [sql|
-      INSERT INTO project_branch (project_id, branch_id, name, causal_hash_id)
-        VALUES (:projectId, :branchId, :branchName, :causalHashId)
+      INSERT INTO project_branch (project_id, branch_id, name, causal_hash_id, last_accessed)
+        VALUES (:projectId, :branchId, :branchName, :causalHashId, strftime('%s', 'now', 'subsec'))
     |]
   whenJust maybeParentBranchId \parentBranchId ->
     execute
@@ -4478,7 +4478,7 @@ setCurrentProjectPath projId branchId path = do
   execute
     [sql|
       UPDATE project_branch
-      SET last_accessed = strftime('%s', 'now')
+      SET last_accessed = strftime('%s', 'now', 'subsec')
       WHERE project_id = :projId
         AND branch_id = :branchId
     |]

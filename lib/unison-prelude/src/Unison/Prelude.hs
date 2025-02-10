@@ -25,6 +25,7 @@ module Unison.Prelude
     whenJustM,
     eitherToMaybe,
     maybeToEither,
+    eitherToThese,
     altSum,
     altMap,
     hoistMaybe,
@@ -82,6 +83,7 @@ import Data.Text as X (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding as X (decodeUtf8, encodeUtf8)
 import Data.Text.IO qualified as Text
+import Data.These (These (..))
 import Data.Traversable as X (for)
 import Data.Typeable as X (Typeable)
 import Data.Void as X (Void)
@@ -204,6 +206,9 @@ throwEitherM = throwEitherMWith id
 
 throwEitherMWith :: forall e e' m a. (MonadIO m, Exception e') => (e -> e') -> m (Either e a) -> m a
 throwEitherMWith f action = throwExceptT . withExceptT f $ (ExceptT action)
+
+eitherToThese :: Either a b -> These a b
+eitherToThese = either This That
 
 tShow :: (Show a) => a -> Text
 tShow = Text.pack . show

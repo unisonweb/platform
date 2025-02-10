@@ -5,6 +5,7 @@ module Unison.Util.Set
     mapMaybe,
     symmetricDifference,
     Unison.Util.Set.traverse,
+    Unison.Util.Set.for,
     flatMap,
     filterM,
     forMaybe,
@@ -50,6 +51,9 @@ forMaybe xs f =
 
 traverse :: (Applicative f, Ord b) => (a -> f b) -> Set a -> f (Set b)
 traverse f = fmap Set.fromList . Prelude.traverse f . Set.toList
+
+for :: (Ord b, Applicative f) => Set a -> (a -> f b) -> f (Set b)
+for = flip Unison.Util.Set.traverse
 
 flatMap :: (Ord b) => (a -> Set b) -> Set a -> Set b
 flatMap f = Set.unions . fmap f . Set.toList
