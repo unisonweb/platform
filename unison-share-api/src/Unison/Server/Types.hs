@@ -98,6 +98,13 @@ instance ToJSON NamespaceDetails where
         "readme" .= readme
       ]
 
+instance FromJSON NamespaceDetails where
+  parseJSON = Aeson.withObject "NamespaceDetails" \obj -> do
+    fqn <- obj .: "fqn"
+    hash <- obj .: "hash"
+    readme <- obj .: "readme"
+    pure $ NamespaceDetails {..}
+
 deriving instance ToSchema NamespaceDetails
 
 -- | A hash qualified name, unlike HashQualified, the hash is required
@@ -168,6 +175,15 @@ instance ToJSON TypeDefinition where
         "typeDocs" .= typeDocs
       ]
 
+instance FromJSON TypeDefinition where
+  parseJSON = Aeson.withObject "TypeDefinition" \obj -> do
+    typeNames <- obj .: "typeNames"
+    bestTypeName <- obj .: "bestTypeName"
+    defnTypeTag <- obj .: "defnTypeTag"
+    typeDefinition <- obj .: "typeDefinition"
+    typeDocs <- obj .: "typeDocs"
+    pure $ TypeDefinition {..}
+
 deriving instance ToSchema TypeDefinition
 
 instance ToJSON TermDefinition where
@@ -181,6 +197,16 @@ instance ToJSON TermDefinition where
         "termDocs" .= termDocs
       ]
 
+instance FromJSON TermDefinition where
+  parseJSON = Aeson.withObject "TermDefinition" \obj -> do
+    termNames <- obj .: "termNames"
+    bestTermName <- obj .: "bestTermName"
+    defnTermTag <- obj .: "defnTermTag"
+    termDefinition <- obj .: "termDefinition"
+    signature <- obj .: "signature"
+    termDocs <- obj .: "termDocs"
+    pure $ TermDefinition {..}
+
 deriving instance ToSchema TermDefinition
 
 instance ToJSON DefinitionDisplayResults where
@@ -190,6 +216,13 @@ instance ToJSON DefinitionDisplayResults where
         "typeDefinitions" .= typeDefinitions,
         "missingDefinitions" .= missingDefinitions
       ]
+
+instance FromJSON DefinitionDisplayResults where
+  parseJSON = Aeson.withObject "DefinitionDisplayResults" \obj -> do
+    termDefinitions <- obj .: "termDefinitions"
+    typeDefinitions <- obj .: "typeDefinitions"
+    missingDefinitions <- obj .: "missingDefinitions"
+    pure $ DefinitionDisplayResults {..}
 
 deriving instance ToSchema DefinitionDisplayResults
 
@@ -295,6 +328,25 @@ instance ToJSON SemanticSyntaxDiff where
           "fromAnnotation" .= fromAnnotation,
           "toAnnotation" .= toAnnotation
         ]
+
+instance FromJSON SemanticSyntaxDiff where
+  parseJSON = Aeson.withObject "SemanticSyntaxDiff" \obj -> do
+    diffTag :: Text <- obj .: "diffTag"
+    case diffTag of
+      "old" -> Old <$> obj .: "elements"
+      "new" -> New <$> obj .: "elements"
+      "both" -> Both <$> obj .: "elements"
+      "segmentChange" -> do
+        fromSegment <- obj .: "fromSegment"
+        toSegment <- obj .: "toSegment"
+        annotation <- obj .: "annotation"
+        pure $ SegmentChange (fromSegment, toSegment) annotation
+      "annotationChange" -> do
+        segment <- obj .: "segment"
+        fromAnnotation <- obj .: "fromAnnotation"
+        toAnnotation <- obj .: "toAnnotation"
+        pure $ AnnotationChange segment (fromAnnotation, toAnnotation)
+      _ -> fail "Invalid diffTag"
 
 -- | A diff of the syntax of a term or type
 --
@@ -504,6 +556,20 @@ instance ToJSON TermDiffResponse where
             "newTerm" .= newTerm
           ]
 
+instance FromJSON TermDiffResponse where
+  parseJSON = Aeson.withObject "TermDiffResponse" \obj -> do
+    diff <- DisplayObjectDiff <$> obj .: "diff"
+    diffKind :: Text <- obj .: "diffKind"
+    project <- obj .: "project"
+    oldBranch <- obj .: "oldBranchRef"
+    newBranch <- obj .: "newBranchRef"
+    oldTerm <- obj .: "oldTerm"
+    newTerm <- obj .: "newTerm"
+    case diffKind of
+      "diff" -> pure $ TermDiffResponse {..}
+      "mismatched" -> pure $ TermDiffResponse {..}
+      _ -> fail "Invalid diffKind"
+
 data TypeDiffResponse = TypeDiffResponse
   { project :: ProjectName,
     oldBranch :: ProjectBranchName,
@@ -541,6 +607,20 @@ instance ToJSON TypeDiffResponse where
             "oldType" .= oldType,
             "newType" .= newType
           ]
+
+instance FromJSON TypeDiffResponse where
+  parseJSON = Aeson.withObject "TypeDiffResponse" \obj -> do
+    diff <- DisplayObjectDiff <$> obj .: "diff"
+    diffKind :: Text <- obj .: "diffKind"
+    project <- obj .: "project"
+    oldBranch <- obj .: "oldBranchRef"
+    newBranch <- obj .: "newBranchRef"
+    oldType <- obj .: "oldType"
+    newType <- obj .: "newType"
+    case diffKind of
+      "diff" -> pure $ TypeDiffResponse {..}
+      "mismatched" -> pure $ TypeDiffResponse {..}
+      _ -> fail "Invalid diffKind"
 
 -- | Servant utility for a query param that's required, providing a useful error message if it's missing.
 type RequiredQueryParam = Servant.QueryParam' '[Servant.Required, Servant.Strict]

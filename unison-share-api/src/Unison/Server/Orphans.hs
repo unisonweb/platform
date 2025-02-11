@@ -329,10 +329,21 @@ instance ToCapture (Capture "namespace" Path.Path) where
       "E.g. base.List"
 
 instance ToJSON Path.Path where
-  toJSON p = Aeson.String (tShow p)
+  toJSON p = Aeson.String (Path.toText p)
+
+instance FromJSON Path.Path where
+  parseJSON = Aeson.withText "Path" \txt -> case Path.parsePath (Text.unpack txt) of
+    Left s -> fail (Text.unpack s)
+    Right p -> pure p
 
 instance ToJSON Path.Absolute where
-  toJSON p = Aeson.String (tShow p)
+  toJSON p = Aeson.String (Path.absToText p)
+
+instance FromJSON Path.Absolute where
+  parseJSON = Aeson.withText "Path" \txt -> case Path.parsePath' (Text.unpack txt) of
+    Left s -> fail (Text.unpack s)
+    Right (Path.AbsolutePath' p) -> pure p
+    Right (Path.RelativePath' _) -> fail "Expected an absolute path but received a relative path."
 
 instance ToSchema Path.Path where
   declareNamedSchema _ = declareNamedSchema (Proxy @Text)
@@ -428,6 +439,8 @@ instance ToSchema ProjectName
 
 deriving via Text instance ToJSON ProjectName
 
+deriving via Text instance FromJSON ProjectName
+
 deriving via Text instance Sqlite.FromField ProjectBranchName
 
 instance FromHttpApiData ProjectBranchName where
@@ -448,6 +461,8 @@ instance ToCapture (Capture "branch-name" ProjectBranchName) where
       "The name of a branch in a project. E.g. @handle/name"
 
 deriving via Text instance ToJSON ProjectBranchName
+
+deriving via Text instance FromJSON ProjectBranchName
 
 -- CBOR encodings
 
