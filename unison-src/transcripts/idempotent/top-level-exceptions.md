@@ -10,10 +10,9 @@ FYI, here are the `Exception` and `Failure` types:
 scratch/main> view Exception Failure
 
   structural ability builtin.Exception where
-    raise : Failure ->{builtin.Exception} x
+    raise : Failure ->{Exception} x
 
-  type builtin.io2.Failure
-    = Failure Type Text Any
+  type builtin.io2.Failure = Failure Type Text Any
 ```
 
 Here's a sample program just to verify that the typechecker allows `run` to throw exceptions:
