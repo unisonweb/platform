@@ -81,7 +81,11 @@ getUserInput codebase authHTTPClient pp currentProjectRoot numberedArgs =
     codeserverPrompt :: String
     codeserverPrompt =
       if isCustomCodeserver Codeserver.defaultCodeserver
-        then "🌐" <> Codeserver.codeserverRegName Codeserver.defaultCodeserver <> maybe "" (":" <>) (show <$> Codeserver.codeserverPort Codeserver.defaultCodeserver) <> "\n"
+        then
+          "🌐"
+            <> Codeserver.codeserverRegName Codeserver.defaultCodeserver
+            <> maybe "" (":" <>) (show <$> Codeserver.codeserverPort Codeserver.defaultCodeserver)
+            <> "\n"
         else ""
 
     go :: Line.InputT IO Input
@@ -95,11 +99,11 @@ getUserInput codebase authHTTPClient pp currentProjectRoot numberedArgs =
           [] -> go
           ws -> do
             liftIO (parseInput codebase pp currentProjectRoot numberedArgs IP.patternMap ws) >>= \case
-              Left msg -> do
+              Left failure -> do
                 -- We still add history that failed to parse so the user can easily reload
                 -- the input and fix it.
-                Line.modifyHistory $ Line.addHistoryUnlessConsecutiveDupe $ l
-                liftIO $ putPrettyLn msg
+                Line.modifyHistory $ Line.addHistoryUnlessConsecutiveDupe l
+                liftIO . putPrettyLn $ reportParseFailure failure
                 go
               Right Nothing -> do
                 -- Ctrl-c or some input cancel, re-run the prompt
@@ -109,7 +113,7 @@ getUserInput codebase authHTTPClient pp currentProjectRoot numberedArgs =
                     expandedArgsStr = unwords expandedArgs'
                 when (expandedArgs' /= ws) $ do
                   liftIO . putStrLn $ fullPrompt <> expandedArgsStr
-                Line.modifyHistory $ Line.addHistoryUnlessConsecutiveDupe $ expandedArgsStr
+                Line.modifyHistory $ Line.addHistoryUnlessConsecutiveDupe expandedArgsStr
                 pure i
     settings :: Line.Settings IO
     settings =
