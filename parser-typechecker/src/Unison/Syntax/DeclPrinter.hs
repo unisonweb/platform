@@ -84,9 +84,9 @@ prettyGADT ::
   DataDeclaration v a ->
   Pretty SyntaxText
 prettyGADT env ctorType r name dd =
-  P.hang header . P.lines $
-    constructor <$> zip [0 ..] (DD.constructors' dd)
+  header <> P.newline <> P.indentN 2 constructors
   where
+    constructors = P.lines (constructor <$> zip [0 ..] (DD.constructors' dd))
     constructor (n, (_, _, t)) =
       prettyPattern (PPED.unsuffixifiedPPE env) ctorType name (ConstructorReference r n)
         <> fmt S.TypeAscriptionColon " :"

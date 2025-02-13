@@ -2,16 +2,20 @@ module Unison.Codebase.Editor.HandleInput.SyncV2
   ( handleSyncToFile,
     handleSyncFromFile,
     handleSyncFromCodebase,
+    handleSyncFromCodeserver,
   )
 where
 
 import Control.Lens
 import Control.Monad.Reader (MonadReader (..))
+import U.Codebase.HashTags (CausalHash)
 import U.Codebase.Sqlite.Queries qualified as Q
+import Unison.Cli.DownloadUtils (downloadProjectBranchFromShare)
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
 import Unison.Cli.ProjectUtils qualified as Project
+import Unison.Cli.Share.Projects qualified as Projects
 import Unison.Codebase (CodebasePath)
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Editor.Output qualified as Output
@@ -69,3 +73,6 @@ handleSyncFromCodebase description srcCodebasePath srcBranch destBranch = do
       Cli.setProjectBranchRootToCausalHash (projectBranch ^. #branch) description causalHash
     Right (Right (Left syncErr)) -> do
       Cli.respond (Output.SyncPullError syncErr)
+
+handleSyncFromCodeserver :: Projects.IncludeSquashedHead -> Projects.RemoteProjectBranch -> Cli (Either Output.ShareError CausalHash)
+handleSyncFromCodeserver = downloadProjectBranchFromShare

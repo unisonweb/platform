@@ -4,6 +4,7 @@
 module Unison.Cli.DownloadUtils
   ( downloadProjectBranchFromShare,
     downloadLooseCodeFromShare,
+    SyncVersion (..),
   )
 where
 
@@ -11,6 +12,7 @@ import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (modifyTVar', newTVarIO, readTVar, readTVarIO)
 import Data.List.NonEmpty (pattern (:|))
 import System.Console.Regions qualified as Console.Regions
+import System.IO.Unsafe (unsafePerformIO)
 import U.Codebase.HashTags (CausalHash)
 import U.Codebase.Sqlite.Queries qualified as Queries
 import Unison.Cli.Monad (Cli)
@@ -28,9 +30,23 @@ import Unison.Share.API.Hash qualified as Share
 import Unison.Share.Codeserver qualified as Codeserver
 import Unison.Share.Sync qualified as Share
 import Unison.Share.Sync.Types qualified as Share
+import Unison.Share.SyncV2 qualified as SyncV2
 import Unison.Share.Types (codeserverBaseURL)
 import Unison.Sync.Common qualified as Sync.Common
 import Unison.Sync.Types qualified as Share
+import Unison.SyncV2.Types qualified as SyncV2
+import UnliftIO.Environment qualified as UnliftIO
+
+data SyncVersion = SyncV1 | SyncV2
+  deriving (Eq, Show)
+
+-- | The version of the sync protocol to use.
+syncVersion :: SyncVersion
+syncVersion = unsafePerformIO do
+  UnliftIO.lookupEnv "UNISON_SYNC_VERSION"
+    <&> \case
+      Just "2" -> SyncV2
+      _ -> SyncV1
 
 -- | Download a project/branch from Share.
 downloadProjectBranchFromShare ::
@@ -41,7 +57,6 @@ downloadProjectBranchFromShare ::
 downloadProjectBranchFromShare useSquashed branch =
   Cli.labelE \done -> do
     let remoteProjectBranchName = branch.branchName
-    let repoInfo = Share.RepoInfo (into @Text (ProjectAndBranch branch.projectName remoteProjectBranchName))
     causalHashJwt <-
       case (useSquashed, branch.squashedBranchHead) of
         (Share.IncludeSquashedHead, Nothing) -> done Output.ShareExpectedSquashedHead
@@ -49,16 +64,27 @@ downloadProjectBranchFromShare useSquashed branch =
         (Share.NoSquashedHead, _) -> pure branch.branchHead
     exists <- Cli.runTransaction (Queries.causalExistsByHash32 (Share.hashJWTHash causalHashJwt))
     when (not exists) do
-      (result, numDownloaded) <-
-        Cli.with withEntitiesDownloadedProgressCallback \(downloadedCallback, getNumDownloaded) -> do
-          result <- Share.downloadEntities Share.hardCodedBaseUrl repoInfo causalHashJwt downloadedCallback
-          numDownloaded <- liftIO getNumDownloaded
-          pure (result, numDownloaded)
-      result & onLeft \err0 -> do
-        done case err0 of
-          Share.SyncError err -> Output.ShareErrorDownloadEntities err
-          Share.TransportError err -> Output.ShareErrorTransport err
-      Cli.respond (Output.DownloadedEntities numDownloaded)
+      case syncVersion of
+        SyncV1 -> do
+          let repoInfo = Share.RepoInfo (into @Text (ProjectAndBranch branch.projectName remoteProjectBranchName))
+          Cli.with withEntitiesDownloadedProgressCallback \(downloadedCallback, getNumDownloaded) -> do
+            result <- Share.downloadEntities Share.hardCodedBaseUrl repoInfo causalHashJwt downloadedCallback
+            numDownloaded <- liftIO getNumDownloaded
+            result & onLeft \err0 -> do
+              done case err0 of
+                Share.SyncError err -> Output.ShareErrorDownloadEntities err
+                Share.TransportError err -> Output.ShareErrorTransport err
+            Cli.respond (Output.DownloadedEntities numDownloaded)
+        SyncV2 -> do
+          let branchRef = SyncV2.BranchRef (into @Text (ProjectAndBranch branch.projectName remoteProjectBranchName))
+          let downloadedCallback = \_ -> pure ()
+          let shouldValidate = not $ Codeserver.isCustomCodeserver Codeserver.defaultCodeserver
+          result <- SyncV2.syncFromCodeserver shouldValidate Share.hardCodedBaseUrl branchRef causalHashJwt downloadedCallback
+          result & onLeft \err0 -> do
+            done case err0 of
+              Share.SyncError pullErr ->
+                Output.ShareErrorPullV2 pullErr
+              Share.TransportError err -> Output.ShareErrorTransport err
     pure (Sync.Common.hash32ToCausalHash (Share.hashJWTHash causalHashJwt))
 
 -- | Download loose code from Share.

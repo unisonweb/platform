@@ -9,6 +9,7 @@
       - [`UNISON_SHARE_ACCESS_TOKEN`](#unison_share_access_token)
       - [`UNISON_READONLY`](#unison_readonly)
       - [`UNISON_ENTITY_VALIDATION`](#unison_entity_validation)
+      - [`UNISON_SYNC_VERSION`](#unison_sync_version)
       - [Local Codebase Server](#local-codebase-server)
   - [Codebase Configuration](#codebase-configuration)
 
@@ -114,6 +115,14 @@ Defaults to enabled.
 
 ``` sh
 $ UNISON_ENTITY_VALIDATION="false" ucm
+```
+
+### `UNISON_SYNC_VERSION`
+
+Allows enabling the experimental Sync Version 2 protocol when downloading code from Share.
+
+``` sh
+$ UNISON_ENTITY_VALIDATION="2" ucm
 ```
 
 ### `UNISON_PULL_WORKERS`

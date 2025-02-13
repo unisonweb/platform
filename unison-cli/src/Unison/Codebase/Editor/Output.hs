@@ -482,6 +482,7 @@ data ShareError
   = ShareErrorDownloadEntities Share.DownloadEntitiesError
   | ShareErrorGetCausalHashByPath Sync.GetCausalHashByPathError
   | ShareErrorPull Sync.PullError
+  | ShareErrorPullV2 SyncV2.PullError
   | ShareErrorTransport Sync.CodeserverTransportError
   | ShareErrorUploadEntities Share.UploadEntitiesError
   | ShareExpectedSquashedHead

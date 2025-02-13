@@ -466,7 +466,7 @@ prettyType pped (n, r, dt) =
   case dt of
     MissingObject r -> missingDefinitionMsg n r
     BuiltinObject _ -> builtin n
-    UserObject decl -> DeclPrinter.prettyDecl (PPED.biasTo (maybeToList $ HQ.toName n) $ PPE.declarationPPEDecl pped r) r n decl
+    UserObject decl -> DeclPrinter.prettyDecl (PPED.biasTo (maybeToList $ HQ.toName n) $ pped) r n decl
   where
     builtin n = P.wrap $ "--" <> prettyHashQualified n <> " is built-in."
 
