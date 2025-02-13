@@ -203,7 +203,7 @@ test = cases
 
 ## Complete patterns with guards should be accepted
 
-``` unison :error
+``` unison
 test : Optional Nat -> Nat
 test = cases
   None -> 0
