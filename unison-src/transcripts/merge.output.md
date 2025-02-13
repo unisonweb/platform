@@ -1445,7 +1445,8 @@ my.cool.thing : Nat
 my.cool.thing = 17
 
 -- scratch/bob
-ability my.cool where thing : Nat ->{cool} Nat
+ability my.cool where
+  thing : Nat ->{cool} Nat
 
 ```
 
