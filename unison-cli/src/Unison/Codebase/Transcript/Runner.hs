@@ -360,7 +360,6 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
             writeIORef isHidden $ hidden infoTags
             writeIORef allowErrors $ expectingError infoTags
             writeIORef expectFailure $ hasBug infoTags
-            writeIORef hasErrors False
           traverse_ (atomically . Q.enqueue cmdQueue . Just) cmds
           atomically . Q.enqueue cmdQueue $ Nothing
           Cli.returnEarlyWithoutOutput
@@ -401,6 +400,7 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
         liftIO $ writeIORef isHidden Shown
         liftIO $ writeIORef allowErrors False
         liftIO $ writeIORef expectFailure False
+        liftIO $ writeIORef hasErrors False
         maybe (liftIO finishTranscript) (uncurry processStanza) =<< atomically (Q.tryDequeue inputQueue)
 
       awaitInput :: Cli (Either Event Input)

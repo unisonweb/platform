@@ -9,7 +9,7 @@
 module Unison.Server.Doc where
 
 import Control.Monad
-import Data.Aeson (ToJSON)
+import Data.Aeson (ToJSON, FromJSON)
 import Data.Foldable
 import Data.Functor
 import Data.Map qualified as Map
@@ -91,7 +91,7 @@ data DocG specialForm
   | Column [(DocG specialForm)]
   | Group (DocG specialForm)
   deriving stock (Eq, Ord, Show, Generic, Functor, Foldable, Traversable)
-  deriving anyclass (ToJSON)
+  deriving anyclass (ToJSON, FromJSON)
 
 deriving instance (ToSchema specialForm) => ToSchema (DocG specialForm)
 
@@ -99,13 +99,13 @@ type UnisonHash = Text
 
 data Ref a = Term a | Type a
   deriving stock (Eq, Ord, Show, Generic, Functor, Foldable, Traversable)
-  deriving anyclass (ToJSON)
+  deriving anyclass (ToJSON, FromJSON)
 
 instance (ToSchema a) => ToSchema (Ref a)
 
 data MediaSource = MediaSource {mediaSourceUrl :: Text, mediaSourceMimeType :: Maybe Text}
   deriving stock (Eq, Ord, Show, Generic)
-  deriving anyclass (ToJSON, ToSchema)
+  deriving anyclass (ToJSON, FromJSON, ToSchema)
 
 data RenderedSpecialForm
   = Source [SrcRefs]
@@ -125,7 +125,7 @@ data RenderedSpecialForm
   | Svg Text
   | RenderError (RenderError SyntaxText)
   deriving stock (Eq, Ord, Show, Generic)
-  deriving anyclass (ToJSON, ToSchema)
+  deriving anyclass (ToJSON, FromJSON, ToSchema)
 
 data EvaluatedSpecialForm v
   = ESource [(EvaluatedSrc v)]
@@ -151,7 +151,7 @@ data EvaluatedSpecialForm v
 -- `Src folded unfolded`
 data Src = Src SyntaxText SyntaxText
   deriving stock (Eq, Ord, Show, Generic)
-  deriving anyclass (ToJSON, ToSchema)
+  deriving anyclass (ToJSON, FromJSON, ToSchema)
 
 -- | Evaluate the doc, then render it.
 evalAndRenderDoc ::
@@ -448,7 +448,7 @@ evalDoc terms typeOf eval types tm =
 data RenderError trm
   = InvalidTerm trm
   deriving stock (Eq, Ord, Show, Generic)
-  deriving anyclass (ToJSON)
+  deriving anyclass (ToJSON, FromJSON)
 
 deriving anyclass instance (ToSchema trm) => ToSchema (RenderError trm)
 

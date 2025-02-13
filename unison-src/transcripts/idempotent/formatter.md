@@ -138,7 +138,8 @@ ability Thing where
 
 
 Ask.doc = {{ Ability with single constructor }}
-structural ability Ask a where ask : {Ask a} a
+structural ability Ask a where
+  ask : {Ask a} a
 
 -- Regression test for: https://github.com/unisonweb/unison/issues/4666
 provide : a -> '{Ask a} r -> r
