@@ -4165,7 +4165,7 @@ ensureRemoteProjectBranch rpid host rbid name lastKnownCausalHash =
         host,
         branch_id,
         name,
-        last_known_head)
+        last_known_causal_hash)
       VALUES (
         :rpid,
         :host,
