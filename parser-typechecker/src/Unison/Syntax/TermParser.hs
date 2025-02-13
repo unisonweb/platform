@@ -1355,7 +1355,7 @@ importp = do
     optional $
       fmap Right importWordyId
         <|> fmap Left importSymbolyId
-  suffixes <- optional (some (importWordyId <|> importSymbolyId))
+  suffixes <- optional (some (importRelativeWordyId <|> importRelativeSymbolyId))
   case (prefix, suffixes) of
     (Nothing, _) -> P.customFailure $ UseEmpty kw
     (Just prefix@(Left _), _) -> P.customFailure $ UseInvalidPrefixSuffix prefix suffixes
