@@ -3839,9 +3839,10 @@ insertProjectBranch description causalHashId (ProjectBranch projectId branchId b
 
   execute
     [sql|
-      INSERT INTO project_branch (project_id, branch_id, name, causal_hash_id, last_accessed)
-        VALUES (:projectId, :branchId, :branchName, :causalHashId, strftime('%s', 'now', 'subsec'))
+      INSERT INTO project_branch (project_id, branch_id, name, causal_hash_id)
+        VALUES (:projectId, :branchId, :branchName, :causalHashId)
     |]
+  updateProjectBranchLastAccessed projectId branchId
   whenJust maybeParentBranchId \parentBranchId ->
     execute
       [sql|
@@ -4461,6 +4462,19 @@ expectCurrentProjectPath =
         Left failure -> Left JsonParseFailure {bytes = pathText, failure = Text.pack failure}
         Right namespace -> Right (projId, branchId, map NameSegment namespace)
 
+updateProjectBranchLastAccessed :: ProjectId -> ProjectBranchId -> Transaction ()
+updateProjectBranchLastAccessed projectId branchId = do
+  sv <- schemaVersion
+  -- The 'last_accessed' field doesn't exist before schema version 18.
+  when (sv >= 18) $ do
+    execute
+      [sql|
+        UPDATE project_branch
+        SET last_accessed = strftime('%s', 'now', 'subsec')
+        WHERE project_id = :projectId
+          AND branch_id = :branchId
+      |]
+
 -- | Set the most recent namespace the user has visited.
 setCurrentProjectPath ::
   ProjectId ->
@@ -4475,13 +4489,7 @@ setCurrentProjectPath projId branchId path = do
       INSERT INTO current_project_path(project_id, branch_id, path)
       VALUES (:projId, :branchId, :jsonPath)
     |]
-  execute
-    [sql|
-      UPDATE project_branch
-      SET last_accessed = strftime('%s', 'now', 'subsec')
-      WHERE project_id = :projId
-        AND branch_id = :branchId
-    |]
+  updateProjectBranchLastAccessed projId branchId
   where
     jsonPath :: Text
     jsonPath =
