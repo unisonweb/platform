@@ -22,12 +22,14 @@ import Control.Lens (folding, ix, (^?))
 import Crypto.JWT qualified as Jose
 import Data.Aeson
 import Data.Aeson qualified as Aeson
-import Data.Aeson.KeyMap qualified as Aeson.KeyMap
+import Data.ByteArray.Encoding qualified as BE
+import Data.ByteString.Lazy qualified as BL
+import Data.Text qualified as Text
+import Data.Text.Encoding qualified as Text
 import Servant.Auth.JWT qualified as Servant.Auth
 import Unison.Hash32 (Hash32)
 import Unison.Hash32.Orphans.Aeson ()
 import Unison.Prelude
-import Web.JWT qualified as JWT
 
 newtype HashJWT = HashJWT {unHashJWT :: Text}
   deriving newtype (Show, Eq, Ord, ToJSON, FromJSON)
@@ -94,22 +96,20 @@ decodeHashJWT hashJWT =
       hashJWT
     }
 
--- | Decode the claims out of a hash JWT.
-decodeHashJWTClaims :: HashJWT -> HashJWTClaims
+-- | ATTENTION: THIS DOES NOT VERIFY THE JWT
+-- Decode the claims out of a hash JWT,
+decodeHashJWTClaims :: (HasCallStack) => HashJWT -> HashJWTClaims
 decodeHashJWTClaims (HashJWT text) =
-  case JWT.decode text of
-    Nothing -> error "bad JWT"
-    Just jwt ->
-      let object =
-            jwt
-              & JWT.claims
-              & JWT.unregisteredClaims
-              & JWT.unClaimsMap
-              & Aeson.KeyMap.fromMapText
-              & Aeson.Object
-       in case Aeson.fromJSON object of
-            Aeson.Error err -> error ("bad JWT: " ++ err)
-            Aeson.Success claims -> claims
+  Text.splitOn "." text
+    & \case
+      [_, body, _] -> body
+      _ -> error $ "decodeHashJWTClaims: Encountered invalid JWT: " <> show text
+    & Text.encodeUtf8
+    & BE.convertFromBase BE.Base64URLUnpadded
+    & fromRight (error $ "decodeHashJWTClaims: Encountered invalid JWT, bad base64 in body: " <> show text)
+    & BL.fromStrict
+    & Aeson.decode @HashJWTClaims
+    & fromMaybe (error $ "decodeHashJWTClaims: Encountered invalid JWT, failed to decode claims: " <> show text)
 
 -- | Grab the hash out of a decoded hash JWT.
 decodedHashJWTHash :: DecodedHashJWT -> Hash32
