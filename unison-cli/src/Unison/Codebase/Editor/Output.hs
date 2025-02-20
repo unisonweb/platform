@@ -35,6 +35,7 @@ import U.Codebase.Sqlite.ProjectReflog qualified as ProjectReflog
 import Unison.Auth.Types (CredentialFailure)
 import Unison.Cli.MergeTypes (MergeSourceAndTarget, MergeSourceOrTarget)
 import Unison.Cli.Share.Projects.Types qualified as Share
+import Unison.Codebase (CodebasePath)
 import Unison.Codebase.Editor.Input
 import Unison.Codebase.Editor.Output.BranchDiff (BranchDiffOutput)
 import Unison.Codebase.Editor.Output.BranchDiff qualified as BD
@@ -43,6 +44,7 @@ import Unison.Codebase.Editor.RemoteRepo
 import Unison.Codebase.Editor.SlurpResult (SlurpResult (..))
 import Unison.Codebase.Editor.SlurpResult qualified as SR
 import Unison.Codebase.Editor.StructuredArgument (StructuredArgument)
+import Unison.Codebase.Init.OpenCodebaseError (OpenCodebaseError)
 import Unison.Codebase.IntegrityCheck (IntegrityResult (..))
 import Unison.Codebase.Path (Path')
 import Unison.Codebase.Path qualified as Path
@@ -80,6 +82,7 @@ import Unison.Share.Sync.Types qualified as Sync
 import Unison.ShortHash (ShortHash)
 import Unison.Symbol (Symbol)
 import Unison.Sync.Types qualified as Share (DownloadEntitiesError, UploadEntitiesError)
+import Unison.SyncV2.Types qualified as SyncV2
 import Unison.Syntax.Parser qualified as Parser
 import Unison.Term (Term)
 import Unison.Type (Type)
@@ -264,10 +267,12 @@ data Output
   | MovedOverExistingBranch Path'
   | DeletedEverything
   | ListNames
+      String -- input namesQuery for which this output is being produced
       Int -- hq length to print References
       [(Reference, [HQ'.HashQualified Name])] -- type match, type names
       [(Referent, [HQ'.HashQualified Name])] -- term match, term names
   | GlobalListNames
+      String -- input namesQuery for which this output is being produced
       (ProjectAndBranch ProjectName ProjectBranchName)
       Int -- hq length to print References
       [(Reference, [HQ'.HashQualified Name])] -- type match, type names
@@ -354,6 +359,8 @@ data Output
   | DisplayDebugCompletions [Completion.Completion]
   | DisplayDebugLSPNameCompletions [(Text, Name, LabeledDependency)]
   | DebugDisplayFuzzyOptions Text [String {- arg description, options -}]
+  | DebugFuzzyOptionsIncorrectArgs (NonEmpty String)
+  | DebugFuzzyOptionsNoCommand String
   | DebugFuzzyOptionsNoResolver
   | DebugTerm (Bool {- verbose mode -}) (Either (Text {- A builtin hash -}) (Term Symbol Ann))
   | DebugDecl (Either (Text {- A builtin hash -}) (DD.Decl Symbol Ann)) (Maybe ConstructorId {- If 'Just' we're debugging a constructor of the given decl -})
@@ -440,6 +447,9 @@ data Output
   | -- | A literal output message. Use this if it's too cumbersome to create a new Output constructor, e.g. for
     -- ephemeral progress messages that are just simple strings like "Loading branch..."
     Literal !(P.Pretty P.ColorText)
+  | SyncPullError (Sync.SyncError SyncV2.PullError)
+  | SyncFromCodebaseMissingProjectBranch (ProjectAndBranch ProjectName ProjectBranchName)
+  | OpenCodebaseError CodebasePath OpenCodebaseError
 
 data MoreEntriesThanShown = MoreEntriesThanShown | AllEntriesShown
   deriving (Eq, Show)
@@ -467,6 +477,7 @@ data ShareError
   = ShareErrorDownloadEntities Share.DownloadEntitiesError
   | ShareErrorGetCausalHashByPath Sync.GetCausalHashByPathError
   | ShareErrorPull Sync.PullError
+  | ShareErrorPullV2 SyncV2.PullError
   | ShareErrorTransport Sync.CodeserverTransportError
   | ShareErrorUploadEntities Share.UploadEntitiesError
   | ShareExpectedSquashedHead
@@ -547,7 +558,7 @@ isFailure o = case o of
   MoveRootBranchConfirmation -> False
   MovedOverExistingBranch {} -> False
   DeletedEverything -> False
-  ListNames _ tys tms -> null tms && null tys
+  ListNames _ _ tys tms -> null tms && null tys
   GlobalListNames {} -> False
   ListOfDefinitions _ _ _ ds -> null ds
   GlobalFindBranchResults _ _ _ _ -> False
@@ -611,6 +622,8 @@ isFailure o = case o of
   DisplayDebugCompletions {} -> False
   DisplayDebugLSPNameCompletions {} -> False
   DebugDisplayFuzzyOptions {} -> False
+  DebugFuzzyOptionsIncorrectArgs {} -> True
+  DebugFuzzyOptionsNoCommand {} -> True
   DebugFuzzyOptionsNoResolver {} -> True
   DebugTerm {} -> False
   DebugDecl {} -> False
@@ -678,6 +691,9 @@ isFailure o = case o of
   IncoherentDeclDuringMerge {} -> True
   IncoherentDeclDuringUpdate {} -> True
   Literal _ -> False
+  SyncPullError {} -> True
+  SyncFromCodebaseMissingProjectBranch {} -> True
+  OpenCodebaseError {} -> True
 
 isNumberedFailure :: NumberedOutput -> Bool
 isNumberedFailure = \case

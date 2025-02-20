@@ -453,11 +453,14 @@ sortNames toText =
 -- /Precondition/: the name is relative.
 splits :: (HasCallStack) => Name -> [([NameSegment], Name)]
 splits (Name p ss0) =
-  ss0
-    & List.NonEmpty.toList
-    & reverse
-    & splits0
-    & over (mapped . _2) (Name p . List.NonEmpty.reverse)
+  case p of
+    Absolute -> error (reportBug "E243149" ("Name.splits called with an absolute name: " ++ show ss0))
+    Relative ->
+      ss0
+        & List.NonEmpty.toList
+        & reverse
+        & splits0
+        & over (mapped . _2) (Name p . List.NonEmpty.reverse)
   where
     -- splits a.b.c
     -- ([], a.b.c) : over (mapped . _1) (a.) (splits b.c)

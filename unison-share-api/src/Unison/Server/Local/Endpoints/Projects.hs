@@ -11,9 +11,7 @@ module Unison.Server.Local.Endpoints.Projects
   )
 where
 
-import Data.Aeson (ToJSON (..))
-import Data.Aeson qualified as Aeson
-import Data.OpenApi (ToParamSchema, ToSchema)
+import Data.OpenApi (ToParamSchema)
 import GHC.Generics ()
 import Servant
 import Servant.Docs
@@ -22,48 +20,21 @@ import U.Codebase.Sqlite.Project qualified as SqliteProject
 import U.Codebase.Sqlite.Queries qualified as Q
 import Unison.Codebase (Codebase)
 import Unison.Codebase qualified as Codebase
-import Unison.Core.Project (ProjectBranchName (UnsafeProjectBranchName), ProjectName (UnsafeProjectName))
 import Unison.Parser.Ann (Ann)
 import Unison.Prelude
+import Unison.Project (ProjectName)
 import Unison.Server.Backend (Backend)
+import Unison.Server.Local.Endpoints.Projects.Queries qualified as PG
+import Unison.Server.Local.Endpoints.Projects.Queries qualified as PQ
+import Unison.Server.Local.Endpoints.Projects.Types
 import Unison.Symbol (Symbol)
 
-data ProjectListing = ProjectListing
-  { projectName :: ProjectName
-  }
-  deriving stock (Show, Generic)
-
-instance ToSchema ProjectListing
-
-instance ToJSON ProjectListing where
-  toJSON ProjectListing {projectName} =
-    Aeson.object ["projectName" Aeson..= projectName]
-
-instance ToSample ProjectListing where
-  toSamples _ =
-    singleSample $ ProjectListing (UnsafeProjectName "my-project")
-
-data ProjectBranchListing = ProjectBranchListing
-  { branchName :: ProjectBranchName
-  }
-  deriving stock (Show, Generic)
-
-instance ToSchema ProjectBranchListing
-
-instance ToJSON ProjectBranchListing where
-  toJSON ProjectBranchListing {branchName} =
-    Aeson.object ["branchName" Aeson..= branchName]
-
-instance ToSample ProjectBranchListing where
-  toSamples _ =
-    singleSample $ ProjectBranchListing (UnsafeProjectBranchName "my-branch")
-
 type ListProjectsEndpoint =
-  QueryParam "prefix" PrefixFilter
+  QueryParam "query" Query
     :> Get '[JSON] [ProjectListing]
 
 type ListProjectBranchesEndpoint =
-  QueryParam "prefix" PrefixFilter
+  QueryParam "query" Query
     :> Get '[JSON] [ProjectBranchListing]
 
 newtype PrefixFilter = PrefixFilter
@@ -86,20 +57,39 @@ instance Docs.ToSample PrefixFilter where
   toSamples _ =
     singleSample $ PrefixFilter "my-proj"
 
+newtype Query = Query
+  { getQuery :: Text
+  }
+  deriving stock (Show, Generic)
+  deriving newtype (FromHttpApiData)
+
+instance ToParamSchema Query
+
+instance ToParam (QueryParam "query" Query) where
+  toParam _ =
+    DocQueryParam
+      "query"
+      ["my-proj"]
+      "Filter for results containing the given text."
+      Normal
+
+instance Docs.ToSample Query where
+  toSamples _ =
+    singleSample $ Query "my-proj"
+
 projectListingEndpoint ::
   Codebase IO Symbol Ann ->
-  Maybe PrefixFilter ->
+  -- Infix Query
+  Maybe Query ->
   Backend IO [ProjectListing]
-projectListingEndpoint codebase mayPrefix = liftIO . Codebase.runTransaction codebase $ do
-  projects <- Q.loadAllProjectsBeginningWith (prefix <$> mayPrefix)
-  pure $ ProjectListing . SqliteProject.name <$> projects
+projectListingEndpoint codebase mayQuery = liftIO . Codebase.runTransaction codebase $ do
+  PQ.listProjects (getQuery <$> mayQuery)
 
 projectBranchListingEndpoint ::
   Codebase IO Symbol Ann ->
   ProjectName ->
-  Maybe PrefixFilter ->
+  Maybe Query ->
   Backend IO [ProjectBranchListing]
-projectBranchListingEndpoint codebase projectName mayPrefix = liftIO . Codebase.runTransaction codebase . fmap fold . runMaybeT $ do
+projectBranchListingEndpoint codebase projectName mayQuery = liftIO . Codebase.runTransaction codebase . fmap fold . runMaybeT $ do
   SqliteProject.Project {projectId} <- MaybeT $ Q.loadProjectByName projectName
-  lift (Q.loadAllProjectBranchesBeginningWith projectId (prefix <$> mayPrefix))
-    <&> fmap (ProjectBranchListing . snd)
+  lift (PG.listProjectBranches projectId (getQuery <$> mayQuery))

@@ -25,6 +25,10 @@ module Unison.Codebase.Editor.Input
     IsGlobal,
     DeleteOutput (..),
     DeleteTarget (..),
+
+    -- * Type aliases
+    ErrorMessageOrName,
+    RawQuery,
   )
 where
 
@@ -57,7 +61,15 @@ type Source = Text -- "id x = x\nconst a b = a"
 
 type SourceName = Text -- "foo.u" or "buffer 7"
 
-data OptionalPatch = NoPatch | DefaultPatch | UsePatch (Path.Split Path')
+type PatchPath = Path.Split Path'
+
+type ErrorMessageOrValue a = Either (P.Pretty P.ColorText) a
+
+type ErrorMessageOrName = ErrorMessageOrValue (HQ.HashQualified Name)
+
+type RawQuery = String
+
+data OptionalPatch = NoPatch | DefaultPatch | UsePatch PatchPath
   deriving (Eq, Ord, Show)
 
 data BranchIdG p
@@ -120,6 +132,10 @@ data Input
   | DiffNamespaceI BranchId2 BranchId2 -- old new
   | PullI !PullSourceTarget !PullMode
   | PushRemoteBranchI PushRemoteBranchInput
+  | SyncToFileI FilePath (ProjectAndBranch (Maybe ProjectName) (Maybe ProjectBranchName))
+  | SyncFromFileI FilePath UnresolvedProjectBranch
+  | -- | Sync from a codebase project branch to this codebase's project branch
+    SyncFromCodebaseI FilePath (ProjectAndBranch ProjectName ProjectBranchName) UnresolvedProjectBranch
   | ResetI (BranchId2 {- namespace to reset it to -}) (Maybe UnresolvedProjectBranch {- ProjectBranch to reset -})
   | -- | used in Welcome module to give directions to user
     --
@@ -135,7 +151,8 @@ data Input
     -- > names .foo.bar
     -- > names .foo.bar#asdflkjsdf
     -- > names #sdflkjsdfhsdf
-    NamesI IsGlobal (HQ.HashQualified Name)
+    -- > names foo.bar foo.baz #sdflkjsdfhsdf
+    NamesI IsGlobal [(RawQuery, ErrorMessageOrName)]
   | AliasTermI !Bool (HQ'.HashOrHQ (Path.Split Path')) (Path.Split Path') -- bool = force?
   | AliasTypeI !Bool (HQ'.HashOrHQ (Path.Split Path')) (Path.Split Path') -- bool = force?
   | AliasManyI [HQ'.HashQualified (Path.Split Path)] Path'

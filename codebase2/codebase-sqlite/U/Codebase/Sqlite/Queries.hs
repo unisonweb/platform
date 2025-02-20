@@ -111,6 +111,7 @@ module U.Codebase.Sqlite.Queries
     loadProjectByName,
     expectProject,
     loadAllProjects,
+    loadAllProjectsByRecentlyAccessed,
     loadAllProjectsBeginningWith,
     insertProject,
     renameProject,
@@ -256,6 +257,7 @@ module U.Codebase.Sqlite.Queries
     addCurrentProjectPathTable,
     addProjectBranchReflogTable,
     addProjectBranchCausalHashIdColumn,
+    addProjectBranchLastAccessedColumn,
 
     -- ** schema version
     currentSchemaVersion,
@@ -420,7 +422,7 @@ type TextPathSegments = [Text]
 -- * main squeeze
 
 currentSchemaVersion :: SchemaVersion
-currentSchemaVersion = 17
+currentSchemaVersion = 18
 
 runCreateSql :: Transaction ()
 runCreateSql =
@@ -485,6 +487,10 @@ addProjectBranchReflogTable =
 addProjectBranchCausalHashIdColumn :: Transaction ()
 addProjectBranchCausalHashIdColumn =
   executeStatements $(embedProjectStringFile "sql/014-add-project-branch-causal-hash-id.sql")
+
+addProjectBranchLastAccessedColumn :: Transaction ()
+addProjectBranchLastAccessedColumn =
+  executeStatements $(embedProjectStringFile "sql/015-add-project-branch-last-accessed.sql")
 
 schemaVersion :: Transaction SchemaVersion
 schemaVersion =
@@ -2274,32 +2280,6 @@ globEscape =
     ']' -> "[]]"
     c -> Text.singleton c
 
--- | Escape special characters for "LIKE" matches.
---
--- Prepared statements prevent sql injection, but it's still possible some user
--- may be able to craft a query using a fake "hash" that would let them see more than they
--- ought to.
---
--- You still need to provide the escape char in the sql query, E.g.
---
--- @@
---   SELECT * FROM table
---     WHERE txt LIKE ? ESCAPE '\'
--- @@
---
--- >>> likeEscape '\\' "Nat.%"
--- "Nat.\%"
-likeEscape :: Char -> Text -> Text
-likeEscape '%' _ = error "Can't use % or _ as escape characters"
-likeEscape '_' _ = error "Can't use % or _ as escape characters"
-likeEscape escapeChar pat =
-  flip Text.concatMap pat \case
-    '%' -> Text.pack [escapeChar, '%']
-    '_' -> Text.pack [escapeChar, '_']
-    c
-      | c == escapeChar -> Text.pack [escapeChar, escapeChar]
-      | otherwise -> Text.singleton c
-
 -- | NOTE: requires that the codebase has an up-to-date name lookup index. As of writing, this
 -- is only true on Share.
 --
@@ -3623,6 +3603,17 @@ loadAllProjects =
       ORDER BY name ASC
     |]
 
+-- | Load all projects.
+loadAllProjectsByRecentlyAccessed :: Transaction [Project]
+loadAllProjectsByRecentlyAccessed =
+  queryListRow
+    [sql|
+      SELECT project.id, project.name
+      FROM project
+        JOIN project_branch ON project.id = project_branch.project_id
+      ORDER BY project_branch.last_accessed DESC NULLS LAST, project.name ASC
+    |]
+
 -- | Load all projects whose name matches a prefix.
 loadAllProjectsBeginningWith :: Maybe Text -> Transaction [Project]
 loadAllProjectsBeginningWith mayPrefix = do
@@ -3761,7 +3752,7 @@ loadAllProjectBranchNamePairs =
       FROM
         project
         JOIN project_branch ON project.id = project_branch.project_id
-      ORDER BY project.name ASC, project_branch.name ASC
+      ORDER BY project_branch.last_accessed DESC NULLS LAST, project.name ASC, project_branch.name ASC
     |]
     <&> fmap \(projectName, branchName, projectId, branchId) ->
       ( ProjectAndBranch projectName branchName,
@@ -3851,6 +3842,7 @@ insertProjectBranch description causalHashId (ProjectBranch projectId branchId b
       INSERT INTO project_branch (project_id, branch_id, name, causal_hash_id)
         VALUES (:projectId, :branchId, :branchName, :causalHashId)
     |]
+  updateProjectBranchLastAccessed projectId branchId
   whenJust maybeParentBranchId \parentBranchId ->
     execute
       [sql|
@@ -4470,6 +4462,19 @@ expectCurrentProjectPath =
         Left failure -> Left JsonParseFailure {bytes = pathText, failure = Text.pack failure}
         Right namespace -> Right (projId, branchId, map NameSegment namespace)
 
+updateProjectBranchLastAccessed :: ProjectId -> ProjectBranchId -> Transaction ()
+updateProjectBranchLastAccessed projectId branchId = do
+  sv <- schemaVersion
+  -- The 'last_accessed' field doesn't exist before schema version 18.
+  when (sv >= 18) $ do
+    execute
+      [sql|
+        UPDATE project_branch
+        SET last_accessed = strftime('%s', 'now', 'subsec')
+        WHERE project_id = :projectId
+          AND branch_id = :branchId
+      |]
+
 -- | Set the most recent namespace the user has visited.
 setCurrentProjectPath ::
   ProjectId ->
@@ -4484,6 +4489,7 @@ setCurrentProjectPath projId branchId path = do
       INSERT INTO current_project_path(project_id, branch_id, path)
       VALUES (:projId, :branchId, :jsonPath)
     |]
+  updateProjectBranchLastAccessed projId branchId
   where
     jsonPath :: Text
     jsonPath =

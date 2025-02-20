@@ -57,26 +57,3 @@ scratch/main> debug.fuzzy-options find-in _
   Select a namespace:
     * nested
 ```
-
-Project Branch args
-
-``` ucm
-myproject/main> branch mybranch
-
-  Done. I've created the mybranch branch based off of main.
-
-  Tip: To merge your work back into the main branch, first
-       `switch /main` then `merge /mybranch`.
-
-scratch/main> debug.fuzzy-options switch _
-
-  Select a project or branch to switch to:
-    * /empty
-    * /main
-    * myproject/main
-    * myproject/mybranch
-    * scratch/empty
-    * scratch/main
-    * myproject
-    * scratch
-```

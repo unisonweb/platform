@@ -50,9 +50,6 @@ module Unison.Cli.Monad
     runTransactionWithRollback,
     runTransactionWithRollback2,
 
-    -- * Internal
-    setMostRecentProjectPath,
-
     -- * Misc types
     LoadSourceResult (..),
   )
@@ -169,6 +166,8 @@ data Env = Env
     generateUniqueName :: IO Parser.UniqueName,
     -- | How to load source code.
     loadSource :: SourceName -> IO LoadSourceResult,
+    -- | Notify the LSP that this ProjectPathIds might be different from the last (e.g. on branch update, switch, etc).
+    lspCheckForChanges :: PP.ProjectPathIds -> IO (),
     -- | How to write source code. Bool = make new fold?
     writeSource :: SourceName -> Text -> Bool -> IO (),
     -- | What to do with output for the user.
@@ -388,19 +387,24 @@ getProjectPathIds = do
 
 cd :: Path.Absolute -> Cli ()
 cd path = do
+  env <- ask
   pp <- getProjectPathIds
   let newPP = pp & PP.absPath_ .~ path
-  setMostRecentProjectPath newPP
+  runTransaction (Codebase.setCurrentProjectPath newPP)
   #projectPathStack %= NonEmpty.cons newPP
+  liftIO (env.lspCheckForChanges newPP)
 
 switchProject :: ProjectAndBranch ProjectId ProjectBranchId -> Cli ()
 switchProject pab@(ProjectAndBranch projectId branchId) = do
-  Env {codebase} <- ask
+  env <- ask
   let newPP = PP.ProjectPath projectId branchId Path.Root
   #projectPathStack %= NonEmpty.cons newPP
-  runTransaction $ do Q.setMostRecentBranch projectId branchId
-  setMostRecentProjectPath newPP
-  liftIO $ Codebase.preloadProjectBranch codebase pab
+  runTransaction do
+    Q.setMostRecentBranch projectId branchId
+    Codebase.setCurrentProjectPath newPP
+  liftIO do
+    Codebase.preloadProjectBranch env.codebase pab
+    env.lspCheckForChanges newPP
 
 -- | Pop the latest path off the stack, if it's not the only path in the stack.
 --
@@ -411,13 +415,12 @@ popd = do
   case List.NonEmpty.uncons (projectPathStack state) of
     (_, Nothing) -> pure False
     (_, Just paths) -> do
-      setMostRecentProjectPath (List.NonEmpty.head paths)
+      let path = List.NonEmpty.head paths
+      runTransaction (Codebase.setCurrentProjectPath path)
       State.put state {projectPathStack = paths}
+      env <- ask
+      liftIO (env.lspCheckForChanges path)
       pure True
-
-setMostRecentProjectPath :: PP.ProjectPathIds -> Cli ()
-setMostRecentProjectPath loc =
-  runTransaction $ Codebase.setCurrentProjectPath loc
 
 respond :: Output -> Cli ()
 respond output = do

@@ -19,6 +19,7 @@ module Unison.Sqlite
     Transaction,
     runTransaction,
     runTransactionWithRollback,
+    runTransactionExceptT,
     runReadOnlyTransaction,
     runWriteTransaction,
     cacheTransaction,
@@ -54,6 +55,9 @@ module Unison.Sqlite
     queryMaybeColCheck,
     queryOneRowCheck,
     queryOneColCheck,
+
+    -- * Utilities
+    likeEscape,
 
     -- * Rows modified
     rowsModified,
@@ -118,6 +122,7 @@ import Unison.Sqlite.Exception
 import Unison.Sqlite.JournalMode (JournalMode (..), SetJournalModeException (..), trySetJournalMode)
 import Unison.Sqlite.Sql (Sql, sql)
 import Unison.Sqlite.Transaction
+import Unison.Sqlite.Utils (likeEscape)
 
 -- $query-naming-convention
 --

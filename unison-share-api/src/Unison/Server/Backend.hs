@@ -1193,7 +1193,7 @@ typesToSyntax suff width ppe0 types =
             MissingObject sh -> MissingObject sh
             UserObject d ->
               UserObject . Pretty.render width $
-                DeclPrinter.prettyDecl (PPE.declarationPPEDecl ppe0 r) r n d
+                DeclPrinter.prettyDecl ppe0 r n d
   where
     ppeDecl =
       if suffixified suff

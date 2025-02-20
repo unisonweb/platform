@@ -38,6 +38,7 @@ import Unison.Runtime.Builtin.Types
 import Unison.Runtime.Foreign.Function.Type (ForeignFunc (..), foreignFuncBuiltinName)
 import Unison.Runtime.Stack (UnboxedTypeTag (..), Val (..), unboxedTypeTagToInt)
 import Unison.Runtime.Stack qualified as Closure
+import Unison.Runtime.TypeTags qualified as TT
 import Unison.Symbol
 import Unison.Type qualified as Ty
 import Unison.Util.EnumContainers as EC
@@ -137,13 +138,6 @@ seqViewEmpty = TCon Ty.seqViewRef (fromIntegral Ty.seqViewEmpty) []
 
 seqViewElem :: (Var v) => v -> v -> ANormal v
 seqViewElem l r = TCon Ty.seqViewRef (fromIntegral Ty.seqViewElem) [l, r]
-
-unenum :: (Var v) => Int -> v -> Reference -> v -> ANormal v -> ANormal v
-unenum n v0 r v nx =
-  TMatch v0 $ MatchData r cases Nothing
-  where
-    mkCase i = (toEnum i, ([], TLetD v UN (TLit . I $ fromIntegral i) nx))
-    cases = mapFromList . fmap mkCase $ [0 .. n - 1]
 
 unop0 :: (Var v) => Int -> ([v] -> ANormal v) -> SuperNormal v
 unop0 n f =
@@ -745,15 +739,6 @@ stm'atomic =
 
 type ForeignOp = ForeignFunc -> ([Mem], ANormal Symbol)
 
-standard'handle :: ForeignOp
-standard'handle instr =
-  ([BX],)
-    . TAbss [h0]
-    . unenum 3 h0 Ty.stdHandleRef h
-    $ TFOp instr [h]
-  where
-    (h0, h) = fresh
-
 any'construct :: SuperNormal Symbol
 any'construct =
   unop0 0 $ \[v] ->
@@ -813,123 +798,6 @@ ref'readForCas = unop0 0 $ TPrm RRFC
 ref'new :: SuperNormal Symbol
 ref'new = unop0 0 $ TPrm REFN
 
-seek'handle :: ForeignOp
-seek'handle instr =
-  ([BX, BX, BX],)
-    . TAbss [arg1, arg2, arg3]
-    . unenum 3 arg2 Ty.seekModeRef seek
-    . TLetD result UN (TFOp instr [arg1, seek, arg3])
-    $ outIoFailUnit stack1 stack2 stack3 unit fail result
-  where
-    (arg1, arg2, arg3, seek, stack1, stack2, stack3, unit, fail, result) = fresh
-
-no'buf, line'buf, block'buf, sblock'buf :: (Enum e) => e
-no'buf = toEnum $ fromIntegral Ty.bufferModeNoBufferingId
-line'buf = toEnum $ fromIntegral Ty.bufferModeLineBufferingId
-block'buf = toEnum $ fromIntegral Ty.bufferModeBlockBufferingId
-sblock'buf = toEnum $ fromIntegral Ty.bufferModeSizedBlockBufferingId
-
-infixr 0 -->
-
-(-->) :: a -> b -> (a, b)
-x --> y = (x, y)
-
-time'zone :: ForeignOp
-time'zone instr =
-  ([BX],)
-    . TAbss [secs]
-    . TLets Direct [offset, summer, name] [UN, UN, BX] (TFOp instr [secs])
-    . TLetD un BX (TCon Ty.unitRef 0 [])
-    . TLetD p2 BX (TCon Ty.pairRef 0 [name, un])
-    . TLetD p1 BX (TCon Ty.pairRef 0 [summer, p2])
-    $ TCon Ty.pairRef 0 [offset, p1]
-  where
-    (secs, offset, summer, name, un, p2, p1) = fresh
-
-start'process :: ForeignOp
-start'process instr =
-  ([BX, BX],)
-    . TAbss [exe, args]
-    . TLets Direct [hin, hout, herr, hproc] [BX, BX, BX, BX] (TFOp instr [exe, args])
-    . TLetD un BX (TCon Ty.unitRef 0 [])
-    . TLetD p3 BX (TCon Ty.pairRef 0 [hproc, un])
-    . TLetD p2 BX (TCon Ty.pairRef 0 [herr, p3])
-    . TLetD p1 BX (TCon Ty.pairRef 0 [hout, p2])
-    $ TCon Ty.pairRef 0 [hin, p1]
-  where
-    (exe, args, hin, hout, herr, hproc, un, p3, p2, p1) = fresh
-
-set'buffering :: ForeignOp
-set'buffering instr =
-  ([BX, BX],)
-    . TAbss [handle, bmode]
-    . TMatch bmode
-    . MatchDataCover Ty.bufferModeRef
-    $ mapFromList
-      [ no'buf --> [] --> k1 no'buf,
-        line'buf --> [] --> k1 line'buf,
-        block'buf --> [] --> k1 block'buf,
-        sblock'buf
-          --> [BX]
-          --> TAbs n
-          . TMatch n
-          . MatchDataCover Ty.bufferModeRef
-          $ mapFromList
-            [ 0
-                --> [UN]
-                --> TAbs w
-                . TLetD tag UN (TLit (N sblock'buf))
-                $ k2 [tag, w]
-            ]
-      ]
-  where
-    k1 num =
-      TLetD tag UN (TLit (N num)) $
-        k2 [tag]
-    k2 args =
-      TLetD r UN (TFOp instr (handle : args)) $
-        outIoFailUnit s1 s2 s3 u f r
-    (handle, bmode, tag, n, w, s1, s2, s3, u, f, r) = fresh
-
-get'buffering'output :: forall v. (Var v) => v -> v -> v -> v -> v -> v -> v -> v -> ANormal v
-get'buffering'output eitherResult stack1 stack2 stack3 resultTag anyVar failVar successVar =
-  TMatch eitherResult . MatchSum $
-    mapFromList
-      [ failureCase stack1 stack2 stack3 anyVar failVar,
-        ( 1,
-          ([UN],)
-            . TAbs resultTag
-            . TMatch resultTag
-            . MatchSum
-            $ mapFromList
-              [ no'buf
-                  --> []
-                  --> TLetD successVar BX (TCon Ty.bufferModeRef no'buf [])
-                  $ right successVar,
-                line'buf
-                  --> []
-                  --> TLetD successVar BX (TCon Ty.bufferModeRef line'buf [])
-                  $ right successVar,
-                block'buf
-                  --> []
-                  --> TLetD successVar BX (TCon Ty.bufferModeRef block'buf [])
-                  $ right successVar,
-                sblock'buf
-                  --> [UN]
-                  --> TAbs stack1
-                  . TLetD successVar BX (TCon Ty.bufferModeRef sblock'buf [stack1])
-                  $ right successVar
-              ]
-        )
-      ]
-
-get'buffering :: ForeignOp
-get'buffering =
-  in1 arg1 eitherResult $
-    get'buffering'output eitherResult n n2 n3 resultTag anyVar failVar successVar
-  where
-    (arg1, eitherResult, n, n2, n3, resultTag, anyVar, failVar, successVar) = fresh
-
 crypto'hash :: ForeignOp
 crypto'hash instr =
   ([BX, BX],)
@@ -957,162 +825,6 @@ crypto'hmac instr =
   where
     (alg, by, x, vl) = fresh
 
--- Input Shape -- these represent different argument lists a
--- foreign might expect
---
--- They are named according to their shape:
---   inUnit : one input arg, unit output
---   in1 : one input arg
---
--- All of these functions will have take (at least) the same three arguments
---
---   instr : the foreign instruction to call
---   result : a variable containing the result of the foreign call
---   cont : a term which will be evaluated when a result from the foreign call is on the stack
---
-
--- () -> ...
-inUnit :: forall v. (Var v) => v -> v -> ANormal v -> ForeignFunc -> ([Mem], ANormal v)
-inUnit unit result cont instr =
-  ([BX], TAbs unit $ TLetD result UN (TFOp instr []) cont)
-
-inN :: forall v. (Var v) => [v] -> v -> ANormal v -> ForeignFunc -> ([Mem], ANormal v)
-inN args result cont instr =
-  (args $> BX,)
-    . TAbss args
-    $ TLetD result UN (TFOp instr args) cont
-
--- a -> ...
-in1 :: forall v. (Var v) => v -> v -> ANormal v -> ForeignFunc -> ([Mem], ANormal v)
-in1 arg result cont instr = inN [arg] result cont instr
-
--- a -> b -> ...
-in2 :: forall v. (Var v) => v -> v -> v -> ANormal v -> ForeignFunc -> ([Mem], ANormal v)
-in2 arg1 arg2 result cont instr = inN [arg1, arg2] result cont instr
-
--- a -> b -> c -> ...
-in3 :: forall v. (Var v) => v -> v -> v -> v -> ANormal v -> ForeignFunc -> ([Mem], ANormal v)
-in3 arg1 arg2 arg3 result cont instr = inN [arg1, arg2, arg3] result cont instr
-
--- Maybe a -> b -> ...
-inMaybeBx :: forall v. (Var v) => v -> v -> v -> v -> v -> ANormal v -> ForeignFunc -> ([Mem], ANormal v)
-inMaybeBx arg1 arg2 arg3 mb result cont instr =
-  ([BX, BX],)
-    . TAbss [arg1, arg2]
-    . TMatch arg1
-    . flip (MatchData Ty.optionalRef) Nothing
-    $ mapFromList
-      [ ( fromIntegral Ty.noneId,
-          ( [],
-            TLetD mb UN (TLit $ I 0) $
-              TLetD result UN (TFOp instr [mb, arg2]) cont
-          )
-        ),
-        (fromIntegral Ty.someId, ([BX], TAbs arg3 . TLetD mb UN (TLit $ I 1) $ TLetD result UN (TFOp instr [mb, arg3, arg2]) cont))
-      ]
-
-set'echo :: ForeignOp
-set'echo instr =
-  ([BX, BX],)
-    . TAbss [arg1, arg2]
-    . unenum 2 arg2 Ty.booleanRef bol
-    . TLetD result UN (TFOp instr [arg1, bol])
-    $ outIoFailUnit stack1 stack2 stack3 unit fail result
-  where
-    (arg1, arg2, bol, stack1, stack2, stack3, unit, fail, result) = fresh
-
--- a -> IOMode -> ...
-inIomr :: forall v. (Var v) => v -> v -> v -> v -> ANormal v -> ForeignFunc -> ([Mem], ANormal v)
-inIomr arg1 arg2 fm result cont instr =
-  ([BX, BX],)
-    . TAbss [arg1, arg2]
-    . unenum 4 arg2 Ty.fileModeRef fm
-    $ TLetD result UN (TFOp instr [arg1, fm]) cont
-
--- Output Shape -- these will represent different ways of translating
--- the result of a foreign call to a Unison Term
---
--- They will be named according to the output type
---   outInt    : a foreign function returning an Int
---   outBool   : a foreign function returning a boolean
---   outIOFail : a function returning (Either Failure a)
---
--- All of these functions will take a Var named result containing the
--- result of the foreign call
---
-
-outMaybe :: forall v. (Var v) => v -> v -> ANormal v
-outMaybe tag result =
-  TMatch tag . MatchSum $
-    mapFromList
-      [ (0, ([], none)),
-        (1, ([BX], TAbs result $ some result))
-      ]
-
-outMaybeNTup :: forall v. (Var v) => v -> v -> v -> v -> v -> v -> ANormal v
-outMaybeNTup a b u bp p result =
-  TMatch result . MatchSum $
-    mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN, BX],
-            TAbss [a, b]
-              . TLetD u BX (TCon Ty.unitRef 0 [])
-              . TLetD bp BX (TCon Ty.pairRef 0 [b, u])
-              . TLetD p BX (TCon Ty.pairRef 0 [a, bp])
-              $ some p
-          )
-        )
-      ]
-
-outMaybeTup :: (Var v) => v -> v -> v -> v -> v -> v -> ANormal v
-outMaybeTup a b u bp ap result =
-  TMatch result . MatchSum $
-    mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [BX, BX],
-            TAbss [a, b]
-              . TLetD u BX (TCon Ty.unitRef 0 [])
-              . TLetD bp BX (TCon Ty.pairRef 0 [b, u])
-              . TLetD ap BX (TCon Ty.pairRef 0 [a, bp])
-              $ some ap
-          )
-        )
-      ]
-
--- Note: the Io part doesn't really do anything. There's no actual
--- representation of `IO`.
-outIoFail :: forall v. (Var v) => v -> v -> v -> v -> v -> v -> ANormal v
-outIoFail stack1 stack2 stack3 any fail result =
-  TMatch result . MatchSum $
-    mapFromList
-      [ failureCase stack1 stack2 stack3 any fail,
-        (1, ([BX], TAbs stack1 $ right stack1))
-      ]
-
-outIoFailChar :: forall v. (Var v) => v -> v -> v -> v -> v -> v -> ANormal v
-outIoFailChar stack1 stack2 stack3 fail extra result =
-  TMatch result . MatchSum $
-    mapFromList
-      [ failureCase stack1 stack2 stack3 extra fail,
-        ( 1,
-          ([UN],)
-            . TAbs extra
-            $ right extra
-        )
-      ]
-
-failureCase ::
-  (Var v) => v -> v -> v -> v -> v -> (Word64, ([Mem], ANormal v))
-failureCase stack1 stack2 stack3 any fail =
-  (0,)
-    . ([BX, BX, BX],)
-    . TAbss [stack1, stack2, stack3]
-    . TLetD any BX (TCon Ty.anyRef 0 [stack3])
-    . TLetD fail BX (TCon Ty.failureRef 0 [stack1, stack2, any])
-    $ left fail
-
 exnCase ::
   (Var v) => v -> v -> v -> v -> v -> (Word64, ([Mem], ANormal v))
 exnCase stack1 stack2 stack3 any fail =
@@ -1122,103 +834,6 @@ exnCase stack1 stack2 stack3 any fail =
     . TLetD any BX (TCon Ty.anyRef 0 [stack3])
     . TLetD fail BX (TCon Ty.failureRef 0 [stack1, stack2, any])
     $ TReq Ty.exceptionRef 0 [fail]
-
-outIoExnUnit ::
-  forall v. (Var v) => v -> v -> v -> v -> v -> v -> ANormal v
-outIoExnUnit stack1 stack2 stack3 any fail result =
-  TMatch result . MatchSum $
-    mapFromList
-      [ exnCase stack1 stack2 stack3 any fail,
-        (1, ([], TCon Ty.unitRef 0 []))
-      ]
-
-outIoExn ::
-  (Var v) => v -> v -> v -> v -> v -> v -> ANormal v
-outIoExn stack1 stack2 stack3 any fail result =
-  TMatch result . MatchSum $
-    mapFromList
-      [ exnCase stack1 stack2 stack3 any fail,
-        (1, ([BX], TAbs stack1 $ TVar stack1))
-      ]
-
-outIoExnEither ::
-  (Var v) => v -> v -> v -> v -> v -> v -> v -> v -> ANormal v
-outIoExnEither stack1 stack2 stack3 any fail t0 t1 res =
-  TMatch t0 . MatchSum $
-    mapFromList
-      [ exnCase stack1 stack2 stack3 any fail,
-        ( 1,
-          ([UN],)
-            . TAbs t1
-            . TMatch t1
-            . MatchSum
-            $ mapFromList
-              [ (0, ([BX], TAbs res $ left res)),
-                (1, ([BX], TAbs res $ right res))
-              ]
-        )
-      ]
-
-outIoFailUnit :: forall v. (Var v) => v -> v -> v -> v -> v -> v -> ANormal v
-outIoFailUnit stack1 stack2 stack3 extra fail result =
-  TMatch result . MatchSum $
-    mapFromList
-      [ failureCase stack1 stack2 stack3 extra fail,
-        ( 1,
-          ([],)
-            . TLetD extra BX (TCon Ty.unitRef 0 [])
-            $ right extra
-        )
-      ]
-
-outIoFailBool :: forall v. (Var v) => v -> v -> v -> v -> v -> v -> ANormal v
-outIoFailBool stack1 stack2 stack3 extra fail result =
-  TMatch result . MatchSum $
-    mapFromList
-      [ failureCase stack1 stack2 stack3 extra fail,
-        ( 1,
-          ([UN],)
-            . TAbs stack3
-            $ right stack3
-        )
-      ]
-
-outIoFailTup :: forall v. (Var v) => v -> v -> v -> v -> v -> v -> v -> v -> ANormal v
-outIoFailTup stack1 stack2 stack3 stack4 stack5 extra fail result =
-  TMatch result . MatchSum $
-    mapFromList
-      [ failureCase stack1 stack2 stack3 extra fail,
-        ( 1,
-          ( [BX, BX],
-            TAbss [stack1, stack2]
-              . TLetD stack3 BX (TCon Ty.unitRef 0 [])
-              . TLetD stack4 BX (TCon Ty.pairRef 0 [stack2, stack3])
-              . TLetD stack5 BX (TCon Ty.pairRef 0 [stack1, stack4])
-              $ right stack5
-          )
-        )
-      ]
-
-outIoFailG ::
-  (Var v) =>
-  v ->
-  v ->
-  v ->
-  v ->
-  v ->
-  v ->
-  ((ANormal v -> ANormal v) -> ([Mem], ANormal v)) ->
-  ANormal v
-outIoFailG stack1 stack2 stack3 fail result output k =
-  TMatch result . MatchSum $
-    mapFromList
-      [ failureCase stack1 stack2 stack3 output fail,
-        ( 1,
-          k $ \t ->
-            TLetD output BX t $
-              right output
-        )
-      ]
 
 -- Input / Output glue
 --
@@ -1231,44 +846,6 @@ outIoFailG stack1 stack2 stack3 fail result output k =
 -- a
 direct :: ForeignOp
 direct instr = ([], TFOp instr [])
-
--- () -> r
-unitToR :: ForeignOp
-unitToR =
-  inUnit unit result $ TVar result
-  where
-    (unit, result) = fresh
-
--- () -> Either Failure a
-unitToEF :: ForeignOp
-unitToEF =
-  inUnit unit result $
-    outIoFail stack1 stack2 stack3 any fail result
-  where
-    (unit, stack1, stack2, stack3, fail, any, result) = fresh
-
-argIomrToEF :: ForeignOp
-argIomrToEF =
-  inIomr arg1 arg2 enum result $
-    outIoFail stack1 stack2 stack3 any fail result
-  where
-    (arg1, arg2, enum, stack1, stack2, stack3, any, fail, result) = fresh
-
--- a -> ()
-argToUnit :: ForeignOp
-argToUnit = in1 arg result (TCon Ty.unitRef 0 [])
-  where
-    (arg, result) = fresh
-
--- a -> b ->{E} ()
-arg2To0 :: ForeignOp
-arg2To0 instr =
-  ([BX, BX],)
-    . TAbss [arg1, arg2]
-    . TLets Direct [] [] (TFOp instr [arg1, arg2])
-    $ TCon Ty.unitRef 0 []
-  where
-    (arg1, arg2) = fresh
 
 argNDirect :: Int -> ForeignOp
 argNDirect n instr =
@@ -1283,222 +860,6 @@ argNDirect n instr =
 --  Unit is unique in that we don't actually pass it as an arg
 unitDirect :: ForeignOp
 unitDirect instr = ([BX],) . TAbs arg $ TFOp instr [] where arg = fresh1
-
--- a -> Either Failure b
-argToEF :: ForeignOp
-argToEF =
-  in1 arg result $
-    outIoFail stack1 stack2 stack3 any fail result
-  where
-    (arg, result, stack1, stack2, stack3, any, fail) = fresh
-
--- a -> Either Failure (b, c)
-argToEFTup :: ForeignOp
-argToEFTup =
-  in1 arg result $
-    outIoFailTup stack1 stack2 stack3 stack4 stack5 extra fail result
-  where
-    (arg, result, stack1, stack2, stack3, stack4, stack5, extra, fail) = fresh
-
--- a -> Either Failure (Maybe b)
-argToEFM :: ForeignOp
-argToEFM =
-  in1 arg result
-    . outIoFailG stack1 stack2 stack3 fail result output
-    $ \k ->
-      ( [UN],
-        TAbs stack3 . TMatch stack3 . MatchSum $
-          mapFromList
-            [ (0, ([], k $ none)),
-              (1, ([BX], TAbs stack4 . k $ some stack4))
-            ]
-      )
-  where
-    (arg, result, stack1, stack2, stack3, stack4, fail, output) = fresh
-
--- a -> Maybe b
-argToMaybe :: ForeignOp
-argToMaybe = in1 arg tag $ outMaybe tag result
-  where
-    (arg, tag, result) = fresh
-
--- a -> Maybe (Nat, b)
-argToMaybeNTup :: ForeignOp
-argToMaybeNTup =
-  in1 arg result $ outMaybeNTup a b u bp p result
-  where
-    (arg, a, b, u, bp, p, result) = fresh
-
--- a -> b -> Maybe (c, d)
-arg2ToMaybeTup :: ForeignOp
-arg2ToMaybeTup =
-  in2 arg1 arg2 result $ outMaybeTup a b u bp ap result
-  where
-    (arg1, arg2, a, b, u, bp, ap, result) = fresh
-
--- a -> Either Failure Bool
-argToEFBool :: ForeignOp
-argToEFBool =
-  in1 arg result $
-    outIoFailBool stack1 stack2 stack3 bool fail result
-  where
-    (arg, stack1, stack2, stack3, bool, fail, result) = fresh
-
--- a -> Either Failure Char
-argToEFChar :: ForeignOp
-argToEFChar =
-  in1 arg result $
-    outIoFailChar stack1 stack2 stack3 bool fail result
-  where
-    (arg, stack1, stack2, stack3, bool, fail, result) = fresh
-
--- a -> b -> Either Failure Bool
-arg2ToEFBool :: ForeignOp
-arg2ToEFBool =
-  in2 arg1 arg2 result $
-    outIoFailBool stack1 stack2 stack3 bool fail result
-  where
-    (arg1, arg2, stack1, stack2, stack3, bool, fail, result) = fresh
-
--- a -> b -> c -> Either Failure Bool
-arg3ToEFBool :: ForeignOp
-arg3ToEFBool =
-  in3 arg1 arg2 arg3 result $
-    outIoFailBool stack1 stack2 stack3 bool fail result
-  where
-    (arg1, arg2, arg3, stack1, stack2, stack3, bool, fail, result) = fresh
-
--- a -> Either Failure ()
-argToEF0 :: ForeignOp
-argToEF0 =
-  in1 arg result $
-    outIoFailUnit stack1 stack2 stack3 unit fail result
-  where
-    (arg, result, stack1, stack2, stack3, unit, fail) = fresh
-
--- a -> b -> Either Failure ()
-arg2ToEF0 :: ForeignOp
-arg2ToEF0 =
-  in2 arg1 arg2 result $
-    outIoFailUnit stack1 stack2 stack3 fail unit result
-  where
-    (arg1, arg2, result, stack1, stack2, stack3, fail, unit) = fresh
-
--- a -> b -> c -> Either Failure ()
-arg3ToEF0 :: ForeignOp
-arg3ToEF0 =
-  in3 arg1 arg2 arg3 result $
-    outIoFailUnit stack1 stack2 stack3 fail unit result
-  where
-    (arg1, arg2, arg3, result, stack1, stack2, stack3, fail, unit) = fresh
-
--- a -> Either Failure b
-argToEFNat :: ForeignOp
-argToEFNat =
-  in1 arg result $
-    outIoFail stack1 stack2 stack3 nat fail result
-  where
-    (arg, result, stack1, stack2, stack3, nat, fail) = fresh
-
--- Maybe a -> b -> Either Failure c
-maybeToEF :: ForeignOp
-maybeToEF =
-  inMaybeBx arg1 arg2 arg3 mb result $
-    outIoFail stack1 stack2 stack3 any fail result
-  where
-    (arg1, arg2, arg3, mb, result, stack1, stack2, stack3, any, fail) = fresh
-
--- a -> b -> Either Failure c
-arg2ToEF :: ForeignOp
-arg2ToEF =
-  in2 arg1 arg2 result $
-    outIoFail stack1 stack2 stack3 any fail result
-  where
-    (arg1, arg2, result, stack1, stack2, stack3, any, fail) = fresh
-
--- a -> b -> c -> Either Failure d
-arg3ToEF :: ForeignOp
-arg3ToEF =
-  in3 arg1 arg2 arg3 result $
-    outIoFail stack1 stack2 stack3 any fail result
-  where
-    (arg1, arg2, arg3, result, stack1, stack2, stack3, any, fail) = fresh
-
--- a -> b ->{Exception} c
-arg2ToExn :: ForeignOp
-arg2ToExn =
-  in2 arg1 arg2 result $
-    outIoExn stack1 stack2 stack3 any fail result
-  where
-    (arg1, arg2, stack1, stack2, stack3, any, fail, result) = fresh
-
--- a -> b -> c ->{Exception} ()
-arg3ToExnUnit :: ForeignOp
-arg3ToExnUnit =
-  in3 arg1 arg2 arg3 result $
-    outIoExnUnit stack1 stack2 stack3 any fail result
-  where
-    (arg1, arg2, arg3, stack1, stack2, stack3, any, fail, result) = fresh
-
--- a -> Nat -> Nat ->{Exception} b
-arg3ToExn :: ForeignOp
-arg3ToExn =
-  in3 arg1 arg2 arg3 result $
-    outIoExn stack1 stack2 stack3 any fail result
-  where
-    (arg1, arg2, arg3, result, stack1, stack2, stack3, any, fail) = fresh
-
--- a -> Nat -> b -> Nat -> Nat ->{Exception} ()
-arg5ToExnUnit :: ForeignOp
-arg5ToExnUnit instr =
-  ([BX, BX, BX, BX, BX],)
-    . TAbss [a0, ua1, a2, ua3, ua4]
-    . TLetD result UN (TFOp instr [a0, ua1, a2, ua3, ua4])
-    $ outIoExnUnit stack1 stack2 stack3 any fail result
-  where
-    (a0, a2, ua1, ua3, ua4, result, stack1, stack2, stack3, any, fail) = fresh
-
--- a ->{Exception} Either b c
-argToExnE :: ForeignOp
-argToExnE instr =
-  ([BX],)
-    . TAbs a
-    . TLetD t0 UN (TFOp instr [a])
-    $ outIoExnEither stack1 stack2 stack3 any fail t0 t1 result
-  where
-    (a, stack1, stack2, stack3, any, fail, t0, t1, result) = fresh
-
--- Nat -> Either Failure ()
-argToEFUnit :: ForeignOp
-argToEFUnit =
-  in1 nat result
-    . TMatch result
-    . MatchSum
-    $ mapFromList
-      [ failureCase stack1 stack2 stack3 unit fail,
-        ( 1,
-          ([],)
-            . TLetD unit BX (TCon Ty.unitRef 0 [])
-            $ right unit
-        )
-      ]
-  where
-    (nat, result, fail, stack1, stack2, stack3, unit) = fresh
-
--- a -> Either b c
-argToEither :: ForeignOp
-argToEither instr =
-  ([BX],)
-    . TAbss [b]
-    . TLetD e UN (TFOp instr [b])
-    . TMatch e
-    . MatchSum
-    $ mapFromList
-      [ (0, ([BX], TAbs ev $ left ev)),
-        (1, ([BX], TAbs ev $ right ev))
-      ]
-  where
-    (e, b, ev) = fresh
 
 builtinLookup :: Map.Map Reference (Sandbox, SuperNormal Symbol)
 builtinLookup =
@@ -1699,385 +1060,396 @@ type FDecl v = State (Map ForeignFunc (Sandbox, SuperNormal v))
 data Sandbox = Tracked | Untracked
   deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
-declareForeign ::
+declareForeignWrap ::
   Sandbox ->
   ForeignOp ->
   ForeignFunc ->
   FDecl Symbol ()
-declareForeign sand op func = do
-  modify $ \funcs ->
-    let code = uncurry Lambda (op func)
-     in (Map.insert func (sand, code) funcs)
+declareForeignWrap sand wrap func =
+  modify $ Map.insert func (sand, code)
+  where
+    code = uncurry Lambda (wrap func)
+
+declareForeign ::
+  Sandbox ->
+  Int ->
+  ForeignFunc ->
+  FDecl Symbol ()
+declareForeign sand arity func = declareForeignWrap sand wrap func
+  where
+  -- Special case: turn 0-arg foreigns into unit-accepting functions
+  wrap | 0 == arity = unitDirect
+       | otherwise = argNDirect arity
 
 unitValue :: Val
-unitValue = BoxedVal $ Closure.Enum Ty.unitRef (PackedTag 0)
+unitValue = BoxedVal $ Closure.Enum Ty.unitRef TT.unitTag
 
 natValue :: Word64 -> Val
 natValue w = NatVal w
 
 declareUdpForeigns :: FDecl Symbol ()
 declareUdpForeigns = do
-  declareForeign Tracked arg2ToEF IO_UDP_clientSocket_impl_v1
+  declareForeign Tracked 2 IO_UDP_clientSocket_impl_v1
 
-  declareForeign Tracked argToEF IO_UDP_UDPSocket_recv_impl_v1
+  declareForeign Tracked 1 IO_UDP_UDPSocket_recv_impl_v1
 
-  declareForeign Tracked arg2ToEF0 IO_UDP_UDPSocket_send_impl_v1
-  declareForeign Tracked argToEF0 IO_UDP_UDPSocket_close_impl_v1
+  declareForeign Tracked 2 IO_UDP_UDPSocket_send_impl_v1
+  declareForeign Tracked 1 IO_UDP_UDPSocket_close_impl_v1
 
-  declareForeign Tracked argToEF0 IO_UDP_ListenSocket_close_impl_v1
+  declareForeign Tracked 1 IO_UDP_ListenSocket_close_impl_v1
 
-  declareForeign Tracked (argNDirect 1) IO_UDP_UDPSocket_toText_impl_v1
+  declareForeign Tracked 1 IO_UDP_UDPSocket_toText_impl_v1
 
-  declareForeign Tracked arg2ToEF IO_UDP_serverSocket_impl_v1
+  declareForeign Tracked 2 IO_UDP_serverSocket_impl_v1
 
-  declareForeign Tracked (argNDirect 1) IO_UDP_ListenSocket_toText_impl_v1
+  declareForeign Tracked 1 IO_UDP_ListenSocket_toText_impl_v1
 
-  declareForeign Tracked argToEFTup IO_UDP_ListenSocket_recvFrom_impl_v1
+  declareForeign Tracked 1 IO_UDP_ListenSocket_recvFrom_impl_v1
 
-  declareForeign Tracked (argNDirect 1) IO_UDP_ClientSockAddr_toText_v1
+  declareForeign Tracked 1 IO_UDP_ClientSockAddr_toText_v1
 
-  declareForeign Tracked arg3ToEF0 IO_UDP_ListenSocket_sendTo_impl_v1
+  declareForeign Tracked 3 IO_UDP_ListenSocket_sendTo_impl_v1
 
 declareForeigns :: FDecl Symbol ()
 declareForeigns = do
   declareUdpForeigns
-  declareForeign Tracked argIomrToEF IO_openFile_impl_v3
+  declareForeign Tracked 2 IO_openFile_impl_v3
 
-  declareForeign Tracked argToEF0 IO_closeFile_impl_v3
-  declareForeign Tracked argToEFBool IO_isFileEOF_impl_v3
-  declareForeign Tracked argToEFBool IO_isFileOpen_impl_v3
-  declareForeign Tracked argToEFBool IO_getEcho_impl_v1
-  declareForeign Tracked argToEFBool IO_ready_impl_v1
-  declareForeign Tracked argToEFChar IO_getChar_impl_v1
-  declareForeign Tracked argToEFBool IO_isSeekable_impl_v3
+  declareForeign Tracked 1 IO_closeFile_impl_v3
+  declareForeign Tracked 1 IO_isFileEOF_impl_v3
+  declareForeign Tracked 1 IO_isFileOpen_impl_v3
+  declareForeign Tracked 1 IO_getEcho_impl_v1
+  declareForeign Tracked 1 IO_ready_impl_v1
+  declareForeign Tracked 1 IO_getChar_impl_v1
+  declareForeign Tracked 1 IO_isSeekable_impl_v3
 
-  declareForeign Tracked seek'handle IO_seekHandle_impl_v3
+  declareForeign Tracked 3 IO_seekHandle_impl_v3
 
-  declareForeign Tracked argToEFNat IO_handlePosition_impl_v3
+  declareForeign Tracked 1 IO_handlePosition_impl_v3
 
-  declareForeign Tracked get'buffering IO_getBuffering_impl_v3
+  declareForeign Tracked 1 IO_getBuffering_impl_v3
 
-  declareForeign Tracked set'buffering IO_setBuffering_impl_v3
+  declareForeign Tracked 2 IO_setBuffering_impl_v3
 
-  declareForeign Tracked set'echo IO_setEcho_impl_v1
+  declareForeign Tracked 2 IO_setEcho_impl_v1
 
-  declareForeign Tracked argToEF IO_getLine_impl_v1
+  declareForeign Tracked 1 IO_getLine_impl_v1
 
-  declareForeign Tracked arg2ToEF IO_getBytes_impl_v3
-  declareForeign Tracked arg2ToEF IO_getSomeBytes_impl_v1
-  declareForeign Tracked arg2ToEF0 IO_putBytes_impl_v3
-  declareForeign Tracked unitToEF IO_systemTime_impl_v3
+  declareForeign Tracked 2 IO_getBytes_impl_v3
+  declareForeign Tracked 2 IO_getSomeBytes_impl_v1
+  declareForeign Tracked 2 IO_putBytes_impl_v3
+  declareForeign Tracked 0 IO_systemTime_impl_v3
 
-  declareForeign Tracked unitToR IO_systemTimeMicroseconds_v1
+  declareForeign Tracked 0 IO_systemTimeMicroseconds_v1
 
-  declareForeign Tracked unitToEF Clock_internals_monotonic_v1
+  declareForeign Tracked 0 Clock_internals_monotonic_v1
 
-  declareForeign Tracked unitToEF Clock_internals_realtime_v1
+  declareForeign Tracked 0 Clock_internals_realtime_v1
 
-  declareForeign Tracked unitToEF Clock_internals_processCPUTime_v1
+  declareForeign Tracked 0 Clock_internals_processCPUTime_v1
 
-  declareForeign Tracked unitToEF Clock_internals_threadCPUTime_v1
+  declareForeign Tracked 0 Clock_internals_threadCPUTime_v1
 
-  declareForeign Tracked (argNDirect 1) Clock_internals_sec_v1
+  declareForeign Tracked 1 Clock_internals_sec_v1
 
   -- A TimeSpec that comes from getTime never has negative nanos,
   -- so we can safely cast to Nat
-  declareForeign Tracked (argNDirect 1) Clock_internals_nsec_v1
+  declareForeign Tracked 1 Clock_internals_nsec_v1
 
-  declareForeign Tracked time'zone Clock_internals_systemTimeZone_v1
+  declareForeign Tracked 1 Clock_internals_systemTimeZone_v1
 
-  declareForeign Tracked unitToEF IO_getTempDirectory_impl_v3
+  declareForeign Tracked 0 IO_getTempDirectory_impl_v3
 
-  declareForeign Tracked argToEF IO_createTempDirectory_impl_v3
+  declareForeign Tracked 1 IO_createTempDirectory_impl_v3
 
-  declareForeign Tracked unitToEF IO_getCurrentDirectory_impl_v3
+  declareForeign Tracked 0 IO_getCurrentDirectory_impl_v3
 
-  declareForeign Tracked argToEF0 IO_setCurrentDirectory_impl_v3
+  declareForeign Tracked 1 IO_setCurrentDirectory_impl_v3
 
-  declareForeign Tracked argToEFBool IO_fileExists_impl_v3
+  declareForeign Tracked 1 IO_fileExists_impl_v3
 
-  declareForeign Tracked argToEF IO_getEnv_impl_v1
+  declareForeign Tracked 1 IO_getEnv_impl_v1
 
-  declareForeign Tracked unitToEF IO_getArgs_impl_v1
+  declareForeign Tracked 0 IO_getArgs_impl_v1
 
-  declareForeign Tracked argToEFBool IO_isDirectory_impl_v3
+  declareForeign Tracked 1 IO_isDirectory_impl_v3
 
-  declareForeign Tracked argToEF0 IO_createDirectory_impl_v3
+  declareForeign Tracked 1 IO_createDirectory_impl_v3
 
-  declareForeign Tracked argToEF0 IO_removeDirectory_impl_v3
+  declareForeign Tracked 1 IO_removeDirectory_impl_v3
 
-  declareForeign Tracked arg2ToEF0 IO_renameDirectory_impl_v3
+  declareForeign Tracked 2 IO_renameDirectory_impl_v3
 
-  declareForeign Tracked argToEF IO_directoryContents_impl_v3
+  declareForeign Tracked 1 IO_directoryContents_impl_v3
 
-  declareForeign Tracked argToEF0 IO_removeFile_impl_v3
+  declareForeign Tracked 1 IO_removeFile_impl_v3
 
-  declareForeign Tracked arg2ToEF0 IO_renameFile_impl_v3
+  declareForeign Tracked 2 IO_renameFile_impl_v3
 
-  declareForeign Tracked argToEFNat IO_getFileTimestamp_impl_v3
+  declareForeign Tracked 1 IO_getFileTimestamp_impl_v3
 
-  declareForeign Tracked argToEFNat IO_getFileSize_impl_v3
+  declareForeign Tracked 1 IO_getFileSize_impl_v3
 
-  declareForeign Tracked maybeToEF IO_serverSocket_impl_v3
+  declareForeign Tracked 2 IO_serverSocket_impl_v3
 
-  declareForeign Tracked (argNDirect 1) Socket_toText
+  declareForeign Tracked 1 Socket_toText
 
-  declareForeign Tracked (argNDirect 1) Handle_toText
+  declareForeign Tracked 1 Handle_toText
 
-  declareForeign Tracked (argNDirect 1) ThreadId_toText
+  declareForeign Tracked 1 ThreadId_toText
 
-  declareForeign Tracked argToEFNat IO_socketPort_impl_v3
+  declareForeign Tracked 1 IO_socketPort_impl_v3
 
-  declareForeign Tracked argToEF0 IO_listen_impl_v3
+  declareForeign Tracked 1 IO_listen_impl_v3
 
-  declareForeign Tracked arg2ToEF IO_clientSocket_impl_v3
+  declareForeign Tracked 2 IO_clientSocket_impl_v3
 
-  declareForeign Tracked argToEF0 IO_closeSocket_impl_v3
+  declareForeign Tracked 1 IO_closeSocket_impl_v3
 
-  declareForeign Tracked argToEF IO_socketAccept_impl_v3
+  declareForeign Tracked 1 IO_socketAccept_impl_v3
 
-  declareForeign Tracked arg2ToEF0 IO_socketSend_impl_v3
+  declareForeign Tracked 2 IO_socketSend_impl_v3
 
-  declareForeign Tracked arg2ToEF IO_socketReceive_impl_v3
+  declareForeign Tracked 2 IO_socketReceive_impl_v3
 
-  declareForeign Tracked argToEF0 IO_kill_impl_v3
+  declareForeign Tracked 1 IO_kill_impl_v3
 
-  declareForeign Tracked argToEFUnit IO_delay_impl_v3
+  declareForeign Tracked 1 IO_delay_impl_v3
 
-  declareForeign Tracked standard'handle IO_stdHandle
+  declareForeign Tracked 1 IO_stdHandle
 
-  declareForeign Tracked (argNDirect 2) IO_process_call
+  declareForeign Tracked 2 IO_process_call
 
-  declareForeign Tracked start'process IO_process_start
+  declareForeign Tracked 2 IO_process_start
 
-  declareForeign Tracked argToUnit IO_process_kill
+  declareForeign Tracked 1 IO_process_kill
 
-  declareForeign Tracked (argNDirect 1) IO_process_wait
+  declareForeign Tracked 1 IO_process_wait
 
-  declareForeign Tracked argToMaybe IO_process_exitCode
-  declareForeign Tracked (argNDirect 1) MVar_new
+  declareForeign Tracked 1 IO_process_exitCode
+  declareForeign Tracked 1 MVar_new
 
-  declareForeign Tracked unitDirect MVar_newEmpty_v2
+  declareForeign Tracked 0 MVar_newEmpty_v2
 
-  declareForeign Tracked argToEF MVar_take_impl_v3
+  declareForeign Tracked 1 MVar_take_impl_v3
 
-  declareForeign Tracked argToMaybe MVar_tryTake
+  declareForeign Tracked 1 MVar_tryTake
 
-  declareForeign Tracked arg2ToEF0 MVar_put_impl_v3
+  declareForeign Tracked 2 MVar_put_impl_v3
 
-  declareForeign Tracked arg2ToEFBool MVar_tryPut_impl_v3
+  declareForeign Tracked 2 MVar_tryPut_impl_v3
 
-  declareForeign Tracked arg2ToEF MVar_swap_impl_v3
+  declareForeign Tracked 2 MVar_swap_impl_v3
 
-  declareForeign Tracked (argNDirect 1) MVar_isEmpty
+  declareForeign Tracked 1 MVar_isEmpty
 
-  declareForeign Tracked argToEF MVar_read_impl_v3
+  declareForeign Tracked 1 MVar_read_impl_v3
 
-  declareForeign Tracked argToEFM MVar_tryRead_impl_v3
+  declareForeign Tracked 1 MVar_tryRead_impl_v3
 
-  declareForeign Untracked (argNDirect 1) Char_toText
-  declareForeign Untracked (argNDirect 2) Text_repeat
-  declareForeign Untracked (argNDirect 1) Text_reverse
-  declareForeign Untracked (argNDirect 1) Text_toUppercase
-  declareForeign Untracked (argNDirect 1) Text_toLowercase
-  declareForeign Untracked (argNDirect 1) Text_toUtf8
-  declareForeign Untracked argToEF Text_fromUtf8_impl_v3
-  declareForeign Tracked (argNDirect 2) Tls_ClientConfig_default
-  declareForeign Tracked (argNDirect 2) Tls_ServerConfig_default
-  declareForeign Tracked (argNDirect 2) Tls_ClientConfig_certificates_set
+  declareForeign Untracked 1 Char_toText
+  declareForeign Untracked 2 Text_repeat
+  declareForeign Untracked 1 Text_reverse
+  declareForeign Untracked 1 Text_toUppercase
+  declareForeign Untracked 1 Text_toLowercase
+  declareForeign Untracked 1 Text_toUtf8
+  declareForeign Untracked 1 Text_fromUtf8_impl_v3
+  declareForeign Tracked 2 Tls_ClientConfig_default
+  declareForeign Tracked 2 Tls_ServerConfig_default
+  declareForeign Tracked 2 Tls_ClientConfig_certificates_set
 
-  declareForeign Tracked (argNDirect 2) Tls_ServerConfig_certificates_set
+  declareForeign Tracked 2 Tls_ServerConfig_certificates_set
 
-  declareForeign Tracked (argNDirect 1) TVar_new
+  declareForeign Tracked 1 TVar_new
 
-  declareForeign Tracked (argNDirect 1) TVar_read
-  declareForeign Tracked arg2To0 TVar_write
-  declareForeign Tracked (argNDirect 1) TVar_newIO
+  declareForeign Tracked 1 TVar_read
+  declareForeign Tracked 2 TVar_write
+  declareForeign Tracked 1 TVar_newIO
 
-  declareForeign Tracked (argNDirect 1) TVar_readIO
-  declareForeign Tracked (argNDirect 2) TVar_swap
-  declareForeign Tracked unitDirect STM_retry
-  declareForeign Tracked unitDirect Promise_new
+  declareForeign Tracked 1 TVar_readIO
+  declareForeign Tracked 2 TVar_swap
+  declareForeign Tracked 0 STM_retry
+  declareForeign Tracked 0 Promise_new
   -- the only exceptions from Promise.read are async and shouldn't be caught
-  declareForeign Tracked (argNDirect 1) Promise_read
-  declareForeign Tracked argToMaybe Promise_tryRead
+  declareForeign Tracked 1 Promise_read
+  declareForeign Tracked 1 Promise_tryRead
 
-  declareForeign Tracked (argNDirect 2) Promise_write
-  declareForeign Tracked arg2ToEF Tls_newClient_impl_v3
-  declareForeign Tracked arg2ToEF Tls_newServer_impl_v3
-  declareForeign Tracked argToEF0 Tls_handshake_impl_v3
-  declareForeign Tracked arg2ToEF0 Tls_send_impl_v3
-  declareForeign Tracked argToEF Tls_decodeCert_impl_v3
+  declareForeign Tracked 2 Promise_write
+  declareForeign Tracked 2 Tls_newClient_impl_v3
+  declareForeign Tracked 2 Tls_newServer_impl_v3
+  declareForeign Tracked 1 Tls_handshake_impl_v3
+  declareForeign Tracked 2 Tls_send_impl_v3
+  declareForeign Tracked 1 Tls_decodeCert_impl_v3
 
-  declareForeign Tracked (argNDirect 1) Tls_encodeCert
+  declareForeign Tracked 1 Tls_encodeCert
 
-  declareForeign Tracked (argNDirect 1) Tls_decodePrivateKey
-  declareForeign Tracked (argNDirect 1) Tls_encodePrivateKey
+  declareForeign Tracked 1 Tls_decodePrivateKey
+  declareForeign Tracked 1 Tls_encodePrivateKey
 
-  declareForeign Tracked argToEF Tls_receive_impl_v3
+  declareForeign Tracked 1 Tls_receive_impl_v3
 
-  declareForeign Tracked argToEF0 Tls_terminate_impl_v3
-  declareForeign Untracked argToExnE Code_validateLinks
-  declareForeign Untracked (argNDirect 1) Code_dependencies
-  declareForeign Untracked (argNDirect 1) Code_serialize
-  declareForeign Untracked argToEither Code_deserialize
-  declareForeign Untracked (argNDirect 2) Code_display
-  declareForeign Untracked (argNDirect 1) Value_dependencies
-  declareForeign Untracked (argNDirect 1) Value_serialize
-  declareForeign Untracked argToEither Value_deserialize
+  declareForeign Tracked 1 Tls_terminate_impl_v3
+  declareForeign Untracked 1 Code_validateLinks
+  declareForeign Untracked 1 Code_dependencies
+  declareForeign Untracked 1 Code_serialize
+  declareForeign Untracked 1 Code_deserialize
+  declareForeign Untracked 2 Code_display
+  declareForeign Untracked 1 Value_dependencies
+  declareForeign Untracked 1 Value_serialize
+  declareForeign Untracked 1 Value_deserialize
   -- Hashing functions
-  declareForeign Untracked direct Crypto_HashAlgorithm_Sha3_512
-  declareForeign Untracked direct Crypto_HashAlgorithm_Sha3_256
-  declareForeign Untracked direct Crypto_HashAlgorithm_Sha2_512
-  declareForeign Untracked direct Crypto_HashAlgorithm_Sha2_256
-  declareForeign Untracked direct Crypto_HashAlgorithm_Sha1
-  declareForeign Untracked direct Crypto_HashAlgorithm_Blake2b_512
-  declareForeign Untracked direct Crypto_HashAlgorithm_Blake2b_256
-  declareForeign Untracked direct Crypto_HashAlgorithm_Blake2s_256
-  declareForeign Untracked direct Crypto_HashAlgorithm_Md5
+  declareForeignWrap Untracked direct Crypto_HashAlgorithm_Sha3_512
+  declareForeignWrap Untracked direct Crypto_HashAlgorithm_Sha3_256
+  declareForeignWrap Untracked direct Crypto_HashAlgorithm_Sha2_512
+  declareForeignWrap Untracked direct Crypto_HashAlgorithm_Sha2_256
+  declareForeignWrap Untracked direct Crypto_HashAlgorithm_Sha1
+  declareForeignWrap Untracked direct Crypto_HashAlgorithm_Blake2b_512
+  declareForeignWrap Untracked direct Crypto_HashAlgorithm_Blake2b_256
+  declareForeignWrap Untracked direct Crypto_HashAlgorithm_Blake2s_256
+  declareForeignWrap Untracked direct Crypto_HashAlgorithm_Md5
 
-  declareForeign Untracked (argNDirect 2) Crypto_hashBytes
-  declareForeign Untracked (argNDirect 3) Crypto_hmacBytes
+  declareForeign Untracked 2 Crypto_hashBytes
+  declareForeign Untracked 3 Crypto_hmacBytes
 
-  declareForeign Untracked crypto'hash Crypto_hash
-  declareForeign Untracked crypto'hmac Crypto_hmac
-  declareForeign Untracked arg3ToEF Crypto_Ed25519_sign_impl
+  declareForeignWrap Untracked crypto'hash Crypto_hash
+  declareForeignWrap Untracked crypto'hmac Crypto_hmac
+  declareForeign Untracked 3 Crypto_Ed25519_sign_impl
 
-  declareForeign Untracked arg3ToEFBool Crypto_Ed25519_verify_impl
+  declareForeign Untracked 3 Crypto_Ed25519_verify_impl
 
-  declareForeign Untracked arg2ToEF Crypto_Rsa_sign_impl
+  declareForeign Untracked 2 Crypto_Rsa_sign_impl
 
-  declareForeign Untracked arg3ToEFBool Crypto_Rsa_verify_impl
+  declareForeign Untracked 3 Crypto_Rsa_verify_impl
 
-  declareForeign Untracked murmur'hash Universal_murmurHash
-  declareForeign Tracked (argNDirect 1) IO_randomBytes
-  declareForeign Untracked (argNDirect 1) Bytes_zlib_compress
-  declareForeign Untracked (argNDirect 1) Bytes_gzip_compress
-  declareForeign Untracked argToEither Bytes_zlib_decompress
-  declareForeign Untracked argToEither Bytes_gzip_decompress
+  declareForeignWrap Untracked murmur'hash Universal_murmurHash
+  declareForeign Tracked 1 IO_randomBytes
+  declareForeign Untracked 1 Bytes_zlib_compress
+  declareForeign Untracked 1 Bytes_gzip_compress
+  declareForeign Untracked 1 Bytes_zlib_decompress
+  declareForeign Untracked 1 Bytes_gzip_decompress
 
-  declareForeign Untracked (argNDirect 1) Bytes_toBase16
-  declareForeign Untracked (argNDirect 1) Bytes_toBase32
-  declareForeign Untracked (argNDirect 1) Bytes_toBase64
-  declareForeign Untracked (argNDirect 1) Bytes_toBase64UrlUnpadded
+  declareForeign Untracked 1 Bytes_toBase16
+  declareForeign Untracked 1 Bytes_toBase32
+  declareForeign Untracked 1 Bytes_toBase64
+  declareForeign Untracked 1 Bytes_toBase64UrlUnpadded
 
-  declareForeign Untracked argToEither Bytes_fromBase16
-  declareForeign Untracked argToEither Bytes_fromBase32
-  declareForeign Untracked argToEither Bytes_fromBase64
-  declareForeign Untracked argToEither Bytes_fromBase64UrlUnpadded
+  declareForeign Untracked 1 Bytes_fromBase16
+  declareForeign Untracked 1 Bytes_fromBase32
+  declareForeign Untracked 1 Bytes_fromBase64
+  declareForeign Untracked 1 Bytes_fromBase64UrlUnpadded
 
-  declareForeign Untracked argToMaybeNTup Bytes_decodeNat64be
-  declareForeign Untracked argToMaybeNTup Bytes_decodeNat64le
-  declareForeign Untracked argToMaybeNTup Bytes_decodeNat32be
-  declareForeign Untracked argToMaybeNTup Bytes_decodeNat32le
-  declareForeign Untracked argToMaybeNTup Bytes_decodeNat16be
-  declareForeign Untracked argToMaybeNTup Bytes_decodeNat16le
+  declareForeign Untracked 1 Bytes_decodeNat64be
+  declareForeign Untracked 1 Bytes_decodeNat64le
+  declareForeign Untracked 1 Bytes_decodeNat32be
+  declareForeign Untracked 1 Bytes_decodeNat32le
+  declareForeign Untracked 1 Bytes_decodeNat16be
+  declareForeign Untracked 1 Bytes_decodeNat16le
 
-  declareForeign Untracked (argNDirect 1) Bytes_encodeNat64be
-  declareForeign Untracked (argNDirect 1) Bytes_encodeNat64le
-  declareForeign Untracked (argNDirect 1) Bytes_encodeNat32be
-  declareForeign Untracked (argNDirect 1) Bytes_encodeNat32le
-  declareForeign Untracked (argNDirect 1) Bytes_encodeNat16be
-  declareForeign Untracked (argNDirect 1) Bytes_encodeNat16le
+  declareForeign Untracked 1 Bytes_encodeNat64be
+  declareForeign Untracked 1 Bytes_encodeNat64le
+  declareForeign Untracked 1 Bytes_encodeNat32be
+  declareForeign Untracked 1 Bytes_encodeNat32le
+  declareForeign Untracked 1 Bytes_encodeNat16be
+  declareForeign Untracked 1 Bytes_encodeNat16le
 
-  declareForeign Untracked arg5ToExnUnit MutableArray_copyTo_force
+  declareForeign Untracked 5 MutableArray_copyTo_force
 
-  declareForeign Untracked arg5ToExnUnit MutableByteArray_copyTo_force
+  declareForeign Untracked 5 MutableByteArray_copyTo_force
 
-  declareForeign Untracked arg5ToExnUnit ImmutableArray_copyTo_force
+  declareForeign Untracked 5 ImmutableArray_copyTo_force
 
-  declareForeign Untracked (argNDirect 1) ImmutableArray_size
-  declareForeign Untracked (argNDirect 1) MutableArray_size
-  declareForeign Untracked (argNDirect 1) ImmutableByteArray_size
-  declareForeign Untracked (argNDirect 1) MutableByteArray_size
+  declareForeign Untracked 1 ImmutableArray_size
+  declareForeign Untracked 1 MutableArray_size
+  declareForeign Untracked 1 ImmutableByteArray_size
+  declareForeign Untracked 1 MutableByteArray_size
 
-  declareForeign Untracked arg5ToExnUnit ImmutableByteArray_copyTo_force
+  declareForeign Untracked 5 ImmutableByteArray_copyTo_force
 
-  declareForeign Untracked arg2ToExn MutableArray_read
-  declareForeign Untracked arg2ToExn MutableByteArray_read8
-  declareForeign Untracked arg2ToExn MutableByteArray_read16be
-  declareForeign Untracked arg2ToExn MutableByteArray_read24be
-  declareForeign Untracked arg2ToExn MutableByteArray_read32be
-  declareForeign Untracked arg2ToExn MutableByteArray_read40be
-  declareForeign Untracked arg2ToExn MutableByteArray_read64be
+  declareForeign Untracked 2 MutableArray_read
+  declareForeign Untracked 2 MutableByteArray_read8
+  declareForeign Untracked 2 MutableByteArray_read16be
+  declareForeign Untracked 2 MutableByteArray_read24be
+  declareForeign Untracked 2 MutableByteArray_read32be
+  declareForeign Untracked 2 MutableByteArray_read40be
+  declareForeign Untracked 2 MutableByteArray_read64be
 
-  declareForeign Untracked arg3ToExnUnit MutableArray_write
-  declareForeign Untracked arg3ToExnUnit MutableByteArray_write8
-  declareForeign Untracked arg3ToExnUnit MutableByteArray_write16be
-  declareForeign Untracked arg3ToExnUnit MutableByteArray_write32be
-  declareForeign Untracked arg3ToExnUnit MutableByteArray_write64be
+  declareForeign Untracked 3 MutableArray_write
+  declareForeign Untracked 3 MutableByteArray_write8
+  declareForeign Untracked 3 MutableByteArray_write16be
+  declareForeign Untracked 3 MutableByteArray_write32be
+  declareForeign Untracked 3 MutableByteArray_write64be
 
-  declareForeign Untracked arg2ToExn ImmutableArray_read
-  declareForeign Untracked arg2ToExn ImmutableByteArray_read8
-  declareForeign Untracked arg2ToExn ImmutableByteArray_read16be
-  declareForeign Untracked arg2ToExn ImmutableByteArray_read24be
-  declareForeign Untracked arg2ToExn ImmutableByteArray_read32be
-  declareForeign Untracked arg2ToExn ImmutableByteArray_read40be
-  declareForeign Untracked arg2ToExn ImmutableByteArray_read64be
+  declareForeign Untracked 2 ImmutableArray_read
+  declareForeign Untracked 2 ImmutableByteArray_read8
+  declareForeign Untracked 2 ImmutableByteArray_read16be
+  declareForeign Untracked 2 ImmutableByteArray_read24be
+  declareForeign Untracked 2 ImmutableByteArray_read32be
+  declareForeign Untracked 2 ImmutableByteArray_read40be
+  declareForeign Untracked 2 ImmutableByteArray_read64be
 
-  declareForeign Untracked (argNDirect 1) MutableByteArray_freeze_force
-  declareForeign Untracked (argNDirect 1) MutableArray_freeze_force
+  declareForeign Untracked 1 MutableByteArray_freeze_force
+  declareForeign Untracked 1 MutableArray_freeze_force
 
-  declareForeign Untracked arg3ToExn MutableByteArray_freeze
-  declareForeign Untracked arg3ToExn MutableArray_freeze
+  declareForeign Untracked 3 MutableByteArray_freeze
+  declareForeign Untracked 3 MutableArray_freeze
 
-  declareForeign Untracked (argNDirect 1) MutableByteArray_length
+  declareForeign Untracked 1 MutableByteArray_length
 
-  declareForeign Untracked (argNDirect 1) ImmutableByteArray_length
+  declareForeign Untracked 1 ImmutableByteArray_length
 
-  declareForeign Tracked (argNDirect 1) IO_array
-  declareForeign Tracked (argNDirect 2) IO_arrayOf
-  declareForeign Tracked (argNDirect 1) IO_bytearray
-  declareForeign Tracked (argNDirect 2) IO_bytearrayOf
+  declareForeign Tracked 1 IO_array
+  declareForeign Tracked 2 IO_arrayOf
+  declareForeign Tracked 1 IO_bytearray
+  declareForeign Tracked 2 IO_bytearrayOf
 
-  declareForeign Untracked (argNDirect 1) Scope_array
-  declareForeign Untracked (argNDirect 2) Scope_arrayOf
-  declareForeign Untracked (argNDirect 1) Scope_bytearray
-  declareForeign Untracked (argNDirect 2) Scope_bytearrayOf
+  declareForeign Untracked 1 Scope_array
+  declareForeign Untracked 2 Scope_arrayOf
+  declareForeign Untracked 1 Scope_bytearray
+  declareForeign Untracked 2 Scope_bytearrayOf
 
-  declareForeign Untracked (argNDirect 1) Text_patterns_literal
-  declareForeign Untracked direct Text_patterns_digit
-  declareForeign Untracked direct Text_patterns_letter
-  declareForeign Untracked direct Text_patterns_space
-  declareForeign Untracked direct Text_patterns_punctuation
-  declareForeign Untracked direct Text_patterns_anyChar
-  declareForeign Untracked direct Text_patterns_eof
-  declareForeign Untracked (argNDirect 2) Text_patterns_charRange
-  declareForeign Untracked (argNDirect 2) Text_patterns_notCharRange
-  declareForeign Untracked (argNDirect 1) Text_patterns_charIn
-  declareForeign Untracked (argNDirect 1) Text_patterns_notCharIn
-  declareForeign Untracked (argNDirect 1) Pattern_many
-  declareForeign Untracked (argNDirect 1) Pattern_many_corrected
-  declareForeign Untracked (argNDirect 1) Pattern_capture
-  declareForeign Untracked (argNDirect 2) Pattern_captureAs
-  declareForeign Untracked (argNDirect 1) Pattern_join
-  declareForeign Untracked (argNDirect 2) Pattern_or
-  declareForeign Untracked (argNDirect 3) Pattern_replicate
+  declareForeign Untracked 1 Text_patterns_literal
+  declareForeignWrap Untracked direct Text_patterns_digit
+  declareForeignWrap Untracked direct Text_patterns_letter
+  declareForeignWrap Untracked direct Text_patterns_space
+  declareForeignWrap Untracked direct Text_patterns_punctuation
+  declareForeignWrap Untracked direct Text_patterns_anyChar
+  declareForeignWrap Untracked direct Text_patterns_eof
+  declareForeign Untracked 2 Text_patterns_charRange
+  declareForeign Untracked 2 Text_patterns_notCharRange
+  declareForeign Untracked 1 Text_patterns_charIn
+  declareForeign Untracked 1 Text_patterns_notCharIn
+  declareForeign Untracked 1 Pattern_many
+  declareForeign Untracked 1 Pattern_many_corrected
+  declareForeign Untracked 1 Pattern_capture
+  declareForeign Untracked 2 Pattern_captureAs
+  declareForeign Untracked 1 Pattern_join
+  declareForeign Untracked 2 Pattern_or
+  declareForeign Untracked 3 Pattern_replicate
 
-  declareForeign Untracked arg2ToMaybeTup Pattern_run
+  declareForeign Untracked 2 Pattern_run
 
-  declareForeign Untracked (argNDirect 2) Pattern_isMatch
+  declareForeign Untracked 2 Pattern_isMatch
 
-  declareForeign Untracked direct Char_Class_any
-  declareForeign Untracked (argNDirect 1) Char_Class_not
-  declareForeign Untracked (argNDirect 2) Char_Class_and
-  declareForeign Untracked (argNDirect 2) Char_Class_or
-  declareForeign Untracked (argNDirect 2) Char_Class_range
-  declareForeign Untracked (argNDirect 1) Char_Class_anyOf
-  declareForeign Untracked direct Char_Class_alphanumeric
-  declareForeign Untracked direct Char_Class_upper
-  declareForeign Untracked direct Char_Class_lower
-  declareForeign Untracked direct Char_Class_whitespace
-  declareForeign Untracked direct Char_Class_control
-  declareForeign Untracked direct Char_Class_printable
-  declareForeign Untracked direct Char_Class_mark
-  declareForeign Untracked direct Char_Class_number
-  declareForeign Untracked direct Char_Class_punctuation
-  declareForeign Untracked direct Char_Class_symbol
-  declareForeign Untracked direct Char_Class_separator
-  declareForeign Untracked direct Char_Class_letter
-  declareForeign Untracked (argNDirect 2) Char_Class_is
-  declareForeign Untracked (argNDirect 1) Text_patterns_char
+  declareForeignWrap Untracked direct Char_Class_any
+  declareForeign Untracked 1 Char_Class_not
+  declareForeign Untracked 2 Char_Class_and
+  declareForeign Untracked 2 Char_Class_or
+  declareForeign Untracked 2 Char_Class_range
+  declareForeign Untracked 1 Char_Class_anyOf
+  declareForeignWrap Untracked direct Char_Class_alphanumeric
+  declareForeignWrap Untracked direct Char_Class_upper
+  declareForeignWrap Untracked direct Char_Class_lower
+  declareForeignWrap Untracked direct Char_Class_whitespace
+  declareForeignWrap Untracked direct Char_Class_control
+  declareForeignWrap Untracked direct Char_Class_printable
+  declareForeignWrap Untracked direct Char_Class_mark
+  declareForeignWrap Untracked direct Char_Class_number
+  declareForeignWrap Untracked direct Char_Class_punctuation
+  declareForeignWrap Untracked direct Char_Class_symbol
+  declareForeignWrap Untracked direct Char_Class_separator
+  declareForeignWrap Untracked direct Char_Class_letter
+  declareForeign Untracked 2 Char_Class_is
+  declareForeign Untracked 1 Text_patterns_char
 
 foreignDeclResults :: (Map ForeignFunc (Sandbox, SuperNormal Symbol))
 foreignDeclResults =

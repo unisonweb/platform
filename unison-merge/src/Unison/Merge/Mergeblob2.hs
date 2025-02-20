@@ -65,7 +65,7 @@ data Mergeblob2Error
 makeMergeblob2 :: Mergeblob1 libdep -> Either Mergeblob2Error (Mergeblob2 libdep)
 makeMergeblob2 blob = do
   -- Bail early if it looks like we can't proceed with the merge, because Alice or Bob has one or more conflicted alias
-  for_ ((,) <$> TwoWay Alice Bob <*> blob.diffs) \(who, diff) ->
+  for_ ((,) <$> TwoWay Alice Bob <*> blob.diffsFromLCA) \(who, diff) ->
     whenJust (findConflictedAlias blob.defns.lca diff) $
       Left . Mergeblob2Error'ConflictedAlias . who
 

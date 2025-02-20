@@ -72,18 +72,18 @@ import Unison.Var qualified as Var
 
 type SyntaxText = S.SyntaxText' Reference
 
-pretty :: (Var v) => PrettyPrintEnv -> Term v a -> Pretty ColorText
+pretty :: (HasCallStack, Var v) => PrettyPrintEnv -> Term v a -> Pretty ColorText
 pretty ppe tm =
   PP.syntaxToColor . runPretty (avoidShadowing tm ppe) $ pretty0 emptyAc $ printAnnotate ppe tm
 
 prettyBlock :: (Var v) => Bool -> PrettyPrintEnv -> Term v a -> Pretty ColorText
 prettyBlock elideUnit ppe = PP.syntaxToColor . prettyBlock' elideUnit ppe
 
-prettyBlock' :: (Var v) => Bool -> PrettyPrintEnv -> Term v a -> Pretty SyntaxText
+prettyBlock' :: (HasCallStack, Var v) => Bool -> PrettyPrintEnv -> Term v a -> Pretty SyntaxText
 prettyBlock' elideUnit ppe tm =
   runPretty (avoidShadowing tm ppe) . pretty0 (emptyBlockAc {elideUnit = elideUnit}) $ printAnnotate ppe tm
 
-pretty' :: (Var v) => Maybe Width -> PrettyPrintEnv -> Term v a -> ColorText
+pretty' :: (HasCallStack, Var v) => Maybe Width -> PrettyPrintEnv -> Term v a -> ColorText
 pretty' (Just width) n t =
   PP.render width . PP.syntaxToColor . runPretty (avoidShadowing t n) $ pretty0 emptyAc (printAnnotate n t)
 pretty' Nothing n t =
@@ -217,12 +217,12 @@ pretty0
     }
   term =
     specialCases term \case
-      Var' (Var.reset -> v) -> do
+      Var' v -> do
         env <- ask
         let name =
-              if Set.member v env.boundTerms
+              if Set.member v env.freeTerms && Set.member v env.boundTerms
                 then HQ.fromName (Name.makeAbsolute (Name.unsafeParseVar v))
-                else elideFQN im $ HQ.unsafeFromVar v
+                else elideFQN im $ HQ.unsafeFromVar (Var.reset v)
         pure . parenIfInfix name ic $ styleHashQualified'' (fmt S.Var) name
       Ref' r -> do
         env <- ask
@@ -687,30 +687,21 @@ printLetBindings ::
   m [Pretty SyntaxText]
 printLetBindings context = \case
   LetBindings bindings -> traverse (printLetBinding context) bindings
-  LetrecBindings bindings -> traverse (printLetrecBinding context) bindings
+  LetrecBindings bindings ->
+    let boundVars = map fst bindings
+     in traverse (printLetrecBinding context boundVars) bindings
 
 printLetBinding :: (MonadPretty v m) => AmbientContext -> (v, Term3 v PrintAnnotation) -> m (Pretty SyntaxText)
 printLetBinding context (v, binding)
   | Var.isAction v = pretty0 context binding
   | otherwise =
-      -- For a non-recursive let binding like "let x = y in z", variable "x" is not bound in "y". Yet, "x" may be free
-      -- in "y" anyway, referring to some previous binding.
-      --
-      -- In Unison we don't have a syntax, for non-recusrive let, though, we just have this:
-      --
-      --   x = y
-      --   z
-      --
-      -- So, render free "x" in "y" with a leading dot. This is because we happen to know that the only way to have
-      -- a free "x" in "y" is if "x" is a top-level binding.
-      renderPrettyBinding
-        <$> local (over #boundTerms (Set.insert v1)) (prettyBinding0' context (HQ.unsafeFromVar v1) binding)
+      renderPrettyBinding <$> withBoundTerm v (prettyBinding0' context (HQ.unsafeFromVar v1) binding)
   where
     v1 = Var.reset v
 
-printLetrecBinding :: (MonadPretty v m) => AmbientContext -> (v, Term3 v PrintAnnotation) -> m (Pretty SyntaxText)
-printLetrecBinding context (v, binding) =
-  renderPrettyBinding <$> prettyBinding0' context (HQ.unsafeFromVar (Var.reset v)) binding
+printLetrecBinding :: (MonadPretty v m) => AmbientContext -> [v] -> (v, Term3 v PrintAnnotation) -> m (Pretty SyntaxText)
+printLetrecBinding context vs (v, binding) =
+  renderPrettyBinding <$> withBoundTerms vs (prettyBinding0' context (HQ.unsafeFromVar (Var.reset v)) binding)
 
 prettyPattern ::
   forall v loc.
@@ -735,7 +726,7 @@ prettyPattern n c@AmbientContext {imports = im} p vs patt = case patt of
   Pattern.Unbound _ -> (fmt S.DelimiterChar $ l "_", vs)
   Pattern.Var _ ->
     case vs of
-      (v : tail_vs) -> (fmt S.Var $ l $ Var.nameStr v, tail_vs)
+      (v : tail_vs) -> (fmt S.Var $ l $ Var.nameStr (Var.reset v), tail_vs)
       _ -> error "prettyPattern: Expected at least one var"
   Pattern.Boolean _ b -> (fmt S.BooleanLiteral $ if b then l "true" else l "false", vs)
   Pattern.Int _ i -> (fmt S.NumericLiteral $ (if i >= 0 then l "+" else mempty) <> l (show i), vs)
@@ -764,7 +755,7 @@ prettyPattern n c@AmbientContext {imports = im} p vs patt = case patt of
     case vs of
       (v : tail_vs) ->
         let (printed, eventual_tail) = prettyPattern n c Prefix tail_vs pat
-         in (paren (p >= Prefix) (fmt S.Var (l $ Var.nameStr v) <> fmt S.DelimiterChar (l "@") <> printed), eventual_tail)
+         in (paren (p >= Prefix) (fmt S.Var (l $ Var.nameStr (Var.reset v)) <> fmt S.DelimiterChar (l "@") <> printed), eventual_tail)
       _ -> error "prettyPattern: Expected at least one var"
   Pattern.EffectPure _ pat ->
     let (printed, eventual_tail) = prettyPattern n c Bottom vs pat
@@ -826,28 +817,28 @@ arity1Branches bs = [([pat], guard, body) | MatchCase pat guard body <- bs]
 groupCases ::
   (Ord v) =>
   [MatchCase' () (Term3 v ann)] ->
-  [([Pattern ()], [v], [(Maybe (Term3 v ann), Term3 v ann)])]
-groupCases ms = go0 ms
+  [([Pattern ()], [v], [(Maybe (Term3 v ann), ([v], Term3 v ann))])]
+groupCases = \cases
+  [] -> []
+  ms@((p1, _, AbsN' vs1 _) : _) -> go (p1, vs1) [] ms
   where
-    go0 [] = []
-    go0 ms@((p1, _, AbsN' vs1 _) : _) = go2 (p1, vs1) [] ms
-    go2 (p0, vs0) acc [] = [(p0, vs0, reverse acc)]
-    go2 (p0, vs0) acc ms@((p1, g1, AbsN' vs body) : tl)
-      | p0 == p1 && vs == vs0 = go2 (p0, vs0) ((g1, body) : acc) tl
-      | otherwise = (p0, vs0, reverse acc) : go0 ms
+    go (p0, vs0) acc [] = [(p0, vs0, reverse acc)]
+    go (p0, vs0) acc ms@((p1, g1, AbsN' vs body) : tl)
+      | p0 == p1 && vs == vs0 = go (p0, vs0) ((g1, (vs, body)) : acc) tl
+      | otherwise = (p0, vs0, reverse acc) : groupCases ms
 
 printCase ::
+  forall m v.
   (MonadPretty v m) =>
   Imports ->
   DocLiteralContext ->
   [MatchCase' () (Term3 v PrintAnnotation)] ->
   m (Pretty SyntaxText)
-printCase im doc ms0 =
+printCase im doc ms =
   PP.orElse
     <$> (PP.lines . alignGrid True <$> grid)
     <*> (PP.lines . alignGrid False <$> grid)
   where
-    ms = groupCases ms0
     justify rows =
       zip (fmap fst . PP.align' $ fmap alignPatterns rows) $ fmap gbs rows
       where
@@ -876,19 +867,19 @@ printCase im doc ms0 =
                   )
                   justified
             justified = PP.leftJustify $ fmap (\(g, b) -> (g, (arrow, b))) gbs
-    grid = traverse go ms
-    patLhs env vs pats =
-      case pats of
-        [pat] -> PP.group (fst (prettyPattern env (ac Annotation Block im doc) Bottom vs pat))
-        pats -> PP.group
-          . PP.sep (PP.indentAfterNewline "  " $ "," <> PP.softbreak)
-          . (`evalState` vs)
-          . for pats
-          $ \pat -> do
-            vs <- State.get
-            let (p, rem) = prettyPattern env (ac Annotation Block im doc) Bottom vs pat
-            State.put rem
-            pure p
+    grid = traverse go (groupCases ms)
+    patLhs :: PrettyPrintEnv -> [v] -> [Pattern ()] -> Pretty SyntaxText
+    patLhs ppe vs = \cases
+      [pat] -> PP.group (fst (prettyPattern ppe (ac Annotation Block im doc) Bottom vs pat))
+      pats -> PP.group
+        . PP.sep (PP.indentAfterNewline "  " $ "," <> PP.softbreak)
+        . (`evalState` vs)
+        . for pats
+        $ \pat -> do
+          vs <- State.get
+          let (p, rem) = prettyPattern ppe (ac Annotation Block im doc) Bottom vs pat
+          State.put rem
+          pure p
     arrow = fmt S.ControlKeyword "->"
     -- If there's multiple guarded cases for this pattern, prints as:
     -- MyPattern x y
@@ -910,7 +901,7 @@ printCase im doc ms0 =
           -- like any other variable, ex: case Foo x y | x < y -> ...
           PP.spaceIfNeeded (fmt S.DelimiterChar "|")
             <$> pretty0 (ac Control Normal im doc) g
-        printBody = pretty0 (ac Annotation Block im doc)
+        printBody (vs, body) = withBoundTerms vs (pretty0 (ac Annotation Block im doc) body)
 
 -- A pretty term binding, split into the type signature (possibly empty) and the term.
 data PrettyBinding = PrettyBinding
@@ -982,14 +973,14 @@ prettyBinding' ppe width v t =
   PP.render width . PP.syntaxToColor $ prettyBinding ppe v t
 
 prettyBinding0 ::
-  (MonadPretty v m) =>
+  (HasCallStack, MonadPretty v m) =>
   AmbientContext ->
   HQ.HashQualified Name ->
   Term2 v at ap v a ->
   m PrettyBinding
 prettyBinding0 ac v tm = do
   env <- ask
-  prettyBinding0' ac v (printAnnotate env.ppe tm)
+  local (set #freeTerms (ABT.freeVars tm)) (prettyBinding0' ac v (printAnnotate env.ppe tm))
 
 prettyBinding0' ::
   (MonadPretty v m) =>
@@ -1323,7 +1314,7 @@ instance Semigroup PrintAnnotation where
 instance Monoid PrintAnnotation where
   mempty = PrintAnnotation {usages = Map.empty}
 
-suffixCounterTerm :: (Var v) => PrettyPrintEnv -> Set Name -> Set Name -> Term2 v at ap v a -> PrintAnnotation
+suffixCounterTerm :: (HasCallStack, Var v) => PrettyPrintEnv -> Set Name -> Set Name -> Term2 v at ap v a -> PrintAnnotation
 suffixCounterTerm n usedTm usedTy = \case
   Ref' r -> countHQ usedTm $ PrettyPrintEnv.termName n (Referent.Ref r)
   Constructor' r | noImportRefs (r ^. ConstructorReference.reference_) -> mempty
@@ -1335,14 +1326,14 @@ suffixCounterTerm n usedTm usedTy = \case
      in foldMap (countPatternUsages n usedTm . pat) bs
   _ -> mempty
 
-suffixCounterType :: (Var v) => PrettyPrintEnv -> Set Name -> Type v a -> PrintAnnotation
+suffixCounterType :: (HasCallStack, Var v) => PrettyPrintEnv -> Set Name -> Type v a -> PrintAnnotation
 suffixCounterType n used = \case
   Type.Var' v -> countHQ used $ HQ.unsafeFromVar v
   Type.Ref' r | noImportRefs r || r == Type.listRef -> mempty
   Type.Ref' r -> countHQ used $ PrettyPrintEnv.typeName n r
   _ -> mempty
 
-printAnnotate :: (Var v, Ord v) => PrettyPrintEnv -> Term2 v at ap v a -> Term3 v PrintAnnotation
+printAnnotate :: (HasCallStack, Var v, Ord v) => PrettyPrintEnv -> Term2 v at ap v a -> Term3 v PrintAnnotation
 printAnnotate n tm =
   fmap snd (go (reannotateUp (suffixCounterTerm n usedTermNames usedTypeNames) tm))
   where
@@ -1359,7 +1350,7 @@ printAnnotate n tm =
 countTypeUsages :: (Var v, Ord v) => PrettyPrintEnv -> Set Name -> Type v a -> PrintAnnotation
 countTypeUsages n usedTy t = snd $ annotation $ reannotateUp (suffixCounterType n usedTy) t
 
-countPatternUsages :: PrettyPrintEnv -> Set Name -> Pattern loc -> PrintAnnotation
+countPatternUsages :: (HasCallStack) => PrettyPrintEnv -> Set Name -> Pattern loc -> PrintAnnotation
 countPatternUsages n usedTm = Pattern.foldMap' f
   where
     f = \case
@@ -1381,22 +1372,23 @@ countPatternUsages n usedTm = Pattern.foldMap' f
           then mempty
           else countHQ usedTm $ PrettyPrintEnv.patternName n r
 
-countHQ :: Set Name -> HQ.HashQualified Name -> PrintAnnotation
+countHQ :: (HasCallStack) => Set Name -> HQ.HashQualified Name -> PrintAnnotation
 countHQ used (HQ.NameOnly n)
   -- Names that are marked 'used' aren't considered for `use` clause insertion
   -- So if a variable 'foo' is used, then we won't insert a `use` clause for
   -- the reference `Qux.quaffle.foo`.
   | Just n' <- Set.lookupLE n used, Name.endsWith n n' = mempty
-countHQ _ hq = foldMap countName (HQ.toName hq)
-
-countName :: Name -> PrintAnnotation
-countName n =
-  PrintAnnotation
-    { usages =
-        Map.fromList do
-          (p, s) <- Name.splits n
-          pure (Name.toText s, Map.singleton (map NameSegment.toEscapedText p) 1)
-    }
+countHQ _ hq =
+  HQ.toName hq & foldMap \n ->
+    if Name.isRelative n
+      then
+        PrintAnnotation
+          { usages =
+              Map.fromList do
+                (p, s) <- Name.splits n
+                pure (Name.toText s, Map.singleton (map NameSegment.toEscapedText p) 1)
+          }
+      else mempty
 
 joinName :: Prefix -> Suffix -> Name
 joinName p s = Name.unsafeParseText $ dotConcat $ p ++ [s]

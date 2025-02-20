@@ -14,6 +14,7 @@ import Data.List qualified as List
 import Data.List.Extra (notNull, nubOrd, nubOrdOn)
 import Data.List.NonEmpty qualified as NEList
 import Data.Map qualified as Map
+import Data.Ord (comparing)
 import Data.Sequence qualified as Seq
 import Data.Set qualified as Set
 import Data.Set.NonEmpty (NESet)
@@ -65,6 +66,7 @@ import Unison.Codebase.Editor.Output.PushPull qualified as PushPull
 import Unison.Codebase.Editor.SlurpResult qualified as SlurpResult
 import Unison.Codebase.Editor.StructuredArgument (StructuredArgument)
 import Unison.Codebase.Editor.StructuredArgument qualified as SA
+import Unison.Codebase.Init.OpenCodebaseError qualified as CodebaseInit
 import Unison.Codebase.IntegrityCheck (IntegrityResult (..), prettyPrintIntegrityErrors)
 import Unison.Codebase.Patch qualified as Patch
 import Unison.Codebase.Path qualified as Path
@@ -117,7 +119,9 @@ import Unison.Server.Backend (ShallowListEntry (..), TypeEntry (..))
 import Unison.Server.Backend qualified as Backend
 import Unison.Server.SearchResultPrime qualified as SR'
 import Unison.Share.Sync.Types qualified as Share (CodeserverTransportError (..), GetCausalHashByPathError (..), PullError (..))
+import Unison.Share.Sync.Types qualified as Sync
 import Unison.Sync.Types qualified as Share
+import Unison.SyncV2.Types qualified as SyncV2
 import Unison.Syntax.DeclPrinter qualified as DeclPrinter
 import Unison.Syntax.HashQualified qualified as HQ (toText, unsafeFromVar)
 import Unison.Syntax.Name qualified as Name (toText)
@@ -138,7 +142,6 @@ import Unison.Term (Term)
 import Unison.Term qualified as Term
 import Unison.Type (Type)
 import Unison.UnisonFile qualified as UF
-import Unison.Util.ColorText qualified
 import Unison.Util.Conflicted (Conflicted (..))
 import Unison.Util.Defn (Defn (..))
 import Unison.Util.Defns (Defns (..))
@@ -863,23 +866,16 @@ notifyUser dir = \case
           "",
           output
         ]
-  ListNames len types terms ->
-    listOfNames len types terms
-  GlobalListNames projectBranchName len types terms -> do
-    output <- listOfNames len types terms
+  ListNames namesQuery len types terms ->
+    listOfNames namesQuery len types terms
+  GlobalListNames namesQuery projectBranchName len types terms -> do
+    output <- listOfNames namesQuery len types terms
     pure $
       P.lines
         [ P.wrap $ "Found results in " <> P.text (into @Text projectBranchName),
           "",
           output
         ]
-  -- > names foo
-  --   Terms:
-  --     Hash: #asdflkjasdflkjasdf
-  --     Names: .util.frobnicate foo blarg.mcgee
-  --
-  --   Term (with hash #asldfkjsdlfkjsdf): .util.frobnicate, foo, blarg.mcgee
-  --   Types (with hash #hsdflkjsdfsldkfj): Optional, Maybe, foo
   ListShallow buildPPE entries -> do
     let needPPE =
           entries
@@ -972,6 +968,7 @@ notifyUser dir = \case
       --       defs in the codebase.  In some cases it's fine for bindings to
       --       shadow codebase names, but you don't want it to capture them in
       --       the decompiled output.
+
         let prettyBindings =
               P.bracket . P.lines $
                 P.wrap "The watch expression(s) reference these definitions:"
@@ -1584,6 +1581,8 @@ notifyUser dir = \case
     pure $
       P.lines
         [P.text (FZFResolvers.fuzzySelectHeader argDesc), P.indentN 2 $ P.bulleted (P.string <$> fuzzyOptions)]
+  DebugFuzzyOptionsIncorrectArgs _ -> pure $ P.string "Too many arguments were provided."
+  DebugFuzzyOptionsNoCommand command -> pure $ "The command “" <> P.string command <> "” doesn’t exist."
   DebugFuzzyOptionsNoResolver -> pure "No resolver found for fuzzy options in this slot."
   ClearScreen -> do
     ANSI.clearScreen
@@ -2258,6 +2257,35 @@ notifyUser dir = \case
                 <> "it. Then try the update again."
           ]
   Literal message -> pure message
+  SyncPullError syncErr ->
+    case syncErr of
+      Sync.TransportError te -> pure (prettyTransportError te)
+      Sync.SyncError pullErr -> pure (prettyPullV2Error pullErr)
+  SyncFromCodebaseMissingProjectBranch projectBranch ->
+    pure . P.wrap $
+      "I couldn't sync from the codebase because the project branch"
+        <> prettyProjectAndBranchName projectBranch
+        <> "doesn't exist."
+  OpenCodebaseError codebasePath err -> case err of
+    CodebaseInit.OpenCodebaseDoesntExist ->
+      pure . P.wrap $ "I couldn't find a valid codebase at " <> prettyFilePath codebasePath
+    CodebaseInit.OpenCodebaseUnknownSchemaVersion schemaVersion ->
+      pure . P.wrap . P.lines $
+        [ "I couldn't open the codebase at " <> prettyFilePath codebasePath <> ".",
+          "The schema version appears to be newer than the current UCM version can support.",
+          "You may need to upgrade UCM. The codebase is at schema version: " <> P.shown schemaVersion
+        ]
+    CodebaseInit.OpenCodebaseFileLockFailed -> do
+      pure . P.wrap . P.lines $
+        [ "I couldn't open the codebase at " <> prettyFilePath codebasePath,
+          "It appears another process is using that codebase, please close other UCM instances and try again."
+        ]
+    CodebaseInit.OpenCodebaseRequiresMigration currentSV requiredSV ->
+      pure . P.wrap . P.lines $
+        [ "I couldn't open the codebase at " <> prettyFilePath codebasePath,
+          "The codebase is at schema version " <> P.shown currentSV <> " but UCM requires schema version " <> P.shown requiredSV <> ".",
+          "Please open the other codebase with UCM directly to upgrade it to the latest version, then try again."
+        ]
 
 prettyShareError :: ShareError -> Pretty
 prettyShareError =
@@ -2265,6 +2293,7 @@ prettyShareError =
     ShareErrorDownloadEntities err -> prettyDownloadEntitiesError err
     ShareErrorGetCausalHashByPath err -> prettyGetCausalHashByPathError err
     ShareErrorPull err -> prettyPullError err
+    ShareErrorPullV2 err -> prettyPullV2Error err
     ShareErrorTransport err -> prettyTransportError err
     ShareErrorUploadEntities err -> prettyUploadEntitiesError err
     ShareExpectedSquashedHead -> "The server failed to provide a squashed branch head when requested. Please report this as a bug to the Unison team."
@@ -2276,6 +2305,26 @@ prettyDownloadEntitiesError = \case
   Share.DownloadEntitiesUserNotFound userHandle -> shareUserNotFound (Share.RepoInfo userHandle)
   Share.DownloadEntitiesProjectNotFound project -> shareProjectNotFound project
   Share.DownloadEntitiesEntityValidationFailure err -> prettyEntityValidationFailure err
+
+prettyBranchRef :: SyncV2.BranchRef -> Pretty
+prettyBranchRef (SyncV2.BranchRef txt) = P.blue (P.text txt)
+
+prettyDownloadEntitiesErrorV2 :: SyncV2.DownloadEntitiesError -> Pretty
+prettyDownloadEntitiesErrorV2 = \case
+  SyncV2.DownloadEntitiesNoReadPermission branchRef -> prettyBranchRef branchRef
+  SyncV2.DownloadEntitiesUserNotFound userHandle -> shareUserNotFound (Share.RepoInfo userHandle)
+  SyncV2.DownloadEntitiesProjectNotFound project -> shareProjectNotFound project
+  SyncV2.DownloadEntitiesEntityValidationFailure err -> prettyEntityValidationFailure err
+  SyncV2.DownloadEntitiesInvalidBranchRef msg ref -> prettyInvalidBranchRef msg ref
+
+prettyInvalidBranchRef :: Text -> SyncV2.BranchRef -> Pretty
+prettyInvalidBranchRef msg (SyncV2.BranchRef txt) =
+  P.wrap $
+    "The server sent an invalid branch reference."
+      <> "The error was:"
+      <> P.text msg
+      <> "The branch reference was:"
+      <> P.text txt
 
 prettyGetCausalHashByPathError :: Share.GetCausalHashByPathError -> Pretty
 prettyGetCausalHashByPathError = \case
@@ -2289,6 +2338,38 @@ prettyPullError = \case
   Share.PullError'GetCausalHash err -> prettyGetCausalHashByPathError err
   Share.PullError'NoHistoryAtPath sharePath ->
     P.wrap $ P.text "The server didn't find anything at" <> prettySharePath sharePath
+
+prettyPullV2Error :: SyncV2.PullError -> Pretty
+prettyPullV2Error = \case
+  SyncV2.PullError'DownloadEntities err -> prettyDownloadEntitiesErrorV2 err
+  SyncV2.PullError'Sync syncErr -> prettySyncErrorV2 syncErr
+
+prettySyncErrorV2 :: SyncV2.SyncError -> Pretty
+prettySyncErrorV2 = \case
+  SyncV2.SyncErrorExpectedResultNotInMain hash ->
+    P.wrap $
+      "The sync finished, but I'm missing an entity I expected."
+        <> "The missing hash is:"
+        <> prettyCausalHash hash
+  SyncV2.SyncErrorDeserializationFailure failure ->
+    P.wrap $
+      "Failed to decode a response from the server."
+        <> "The error was:"
+        <> P.shown failure
+  SyncV2.SyncErrorMissingInitialChunk ->
+    P.wrap "The server didn't send the initial chunk of the response."
+  SyncV2.SyncErrorMisplacedInitialChunk ->
+    P.wrap "The server sent the initial chunk of the response in the wrong place."
+  SyncV2.SyncErrorStreamFailure msg ->
+    P.wrap $
+      "Failed to stream data from the server."
+        <> "The error was:"
+        <> P.text msg
+  SyncV2.SyncErrorUnsupportedVersion version ->
+    P.wrap $
+      "The server sent a response with an unsupported version."
+        <> "The version was:"
+        <> P.shown version
 
 prettyUploadEntitiesError :: Share.UploadEntitiesError -> Pretty
 prettyUploadEntitiesError = \case
@@ -2363,8 +2444,13 @@ prettyTransportError = \case
   Share.Timeout -> "The code server timed-out when responding to your request. Please try again later or report an issue if the problem persists."
   Share.UnexpectedResponse resp ->
     unexpectedServerResponse resp
+  Share.StreamingError err ->
+    P.lines
+      [ ("We encountered an error while streaming data from the code server: " <> P.text err),
+        P.red (P.text err)
+      ]
 
-unexpectedServerResponse :: Servant.ResponseF LazyByteString.ByteString -> P.Pretty Unison.Util.ColorText.ColorText
+unexpectedServerResponse :: Servant.ResponseF LazyByteString.ByteString -> Pretty
 unexpectedServerResponse resp =
   (P.lines . catMaybes)
     [ Just
@@ -2550,7 +2636,7 @@ displayDefinitions' ppe0 types terms = P.syntaxToColor $ P.sep "\n\n" (prettyTyp
       case dt of
         MissingObject r -> missing n r
         BuiltinObject _ -> builtin n
-        UserObject decl -> DeclPrinter.prettyDecl (PPE.declarationPPEDecl ppe0 r) r n decl
+        UserObject decl -> DeclPrinter.prettyDecl ppe0 r n decl
     builtin n = P.wrap $ "--" <> prettyHashQualified n <> " is built-in."
     missing n r =
       P.wrap
@@ -2916,44 +3002,63 @@ listOfDefinitions ::
 listOfDefinitions fscope ppe detailed results =
   pure $ listOfDefinitions' fscope ppe detailed results
 
-listOfNames :: Int -> [(Reference, [HQ'.HashQualified Name])] -> [(Referent, [HQ'.HashQualified Name])] -> IO Pretty
-listOfNames len types terms = do
+listOfNames :: String -> Int -> [(Reference, [HQ'.HashQualified Name])] -> [(Referent, [HQ'.HashQualified Name])] -> IO Pretty
+listOfNames namesQuery len types terms = do
   if null types && null terms
     then
-      pure . P.callout "😶" $
-        P.sepNonEmpty "\n\n" $
-          [ P.wrap "I couldn't find anything by that name."
+      pure
+        . P.sepNonEmpty "\n"
+        $ [ P.red prettyQuery,
+            P.string "😶",
+            P.wrap "I couldn't find anything by that name."
           ]
     else
-      pure . P.sepNonEmpty "\n\n" $
-        [ formatTypes types,
-          formatTerms terms
+      pure . P.sepNonEmpty "\n" $
+        [ P.green prettyQuery,
+          makeTable prettyRows
         ]
   where
-    formatTerms tms =
-      P.lines . P.nonEmpty $ P.plural tms (P.blue "Term") : List.intersperse "" (go <$> tms)
+    prettyQuery = P.singleQuoted' (P.string namesQuery) ":"
+
+    makeTable =
+      P.column3Header "Hash" "Kind" "Names"
+
+    prettyRows = makePrettyRows $ List.sortBy compareRows rows
+    makePrettyRows =
+      fmap
+        ( \(ref, kind, hqs) ->
+            ( P.syntaxToColor ref,
+              P.blue kind,
+              P.group $
+                P.commas $
+                  P.bold . P.syntaxToColor . prettyHashQualified'
+                    <$> hqs
+            )
+        )
+
+    -- Compare rows by their list of names, first by comparing each name in the list
+    -- then by the length of the list of they share the same prefix
+    compareRows :: (a, b, [HQ'.HashQualified Name]) -> (a, b, [HQ'.HashQualified Name]) -> Ordering
+    compareRows (_, _, hqs1) (_, _, hqs2) =
+      Name.compareAlphabetical hqs1 hqs2 <> comparing length hqs1 hqs2
+
+    rows = termRows terms ++ typeRows types
+
+    termRows terms =
+      makeSortedRow "Term" <$> prettyTerms
       where
-        go (ref, hqs) =
-          P.column2
-            [ ("Hash:", P.syntaxToColor (prettyReferent len ref)),
-              ( "Names: ",
-                P.group $
-                  P.spaced $
-                    P.bold . P.syntaxToColor . prettyHashQualified' <$> List.sortBy Name.compareAlphabetical hqs
-              )
-            ]
-    formatTypes types =
-      P.lines . P.nonEmpty $ P.plural types (P.blue "Type") : List.intersperse "" (go <$> types)
+        prettyTerms = terms & over (mapped . _1) (prettyReferent len)
+
+    typeRows types =
+      makeSortedRow "Type" <$> prettyTypes
       where
-        go (ref, hqs) =
-          P.column2
-            [ ("Hash:", P.syntaxToColor (prettyReference len ref)),
-              ( "Names:",
-                P.group $
-                  P.spaced $
-                    P.bold . P.syntaxToColor . prettyHashQualified' <$> List.sortBy Name.compareAlphabetical hqs
-              )
-            ]
+        prettyTypes = types & over (mapped . _1) (prettyReference len)
+
+    makeSortedRow kind (ref, hqs) =
+      ( ref,
+        kind,
+        List.sortBy Name.compareAlphabetical hqs
+      )
 
 data ShowNumbers = ShowNumbers | HideNumbers
 

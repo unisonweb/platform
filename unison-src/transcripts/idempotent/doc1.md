@@ -15,7 +15,7 @@ scratch/main> view lib.builtins.Doc
     | Source Link
     | Signature Term
     | Evaluate Term
-    | Join [lib.builtins.Doc]
+    | Join [Doc]
 ```
 
 You can create these `Doc` values with ordinary code, or you can use the special syntax. A value of structural type `Doc` can be created via syntax like:

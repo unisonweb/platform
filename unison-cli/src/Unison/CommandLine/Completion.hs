@@ -82,8 +82,8 @@ haskelineTabComplete patterns codebase authedHTTPClient ppCtx = Line.completeWor
     case words $ reverse prev of
       h : t -> fromMaybe (pure []) $ do
         p <- Map.lookup h patterns
-        argType <- IP.argType p (length t)
-        pure $ IP.suggestions argType word codebase authedHTTPClient ppCtx
+        paramType <- IP.paramType (IP.params p) (length t)
+        pure $ IP.suggestions paramType word codebase authedHTTPClient ppCtx
       _ -> pure []
 
 -- | Things which we may want to complete for.

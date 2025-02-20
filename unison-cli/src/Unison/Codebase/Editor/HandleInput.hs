@@ -73,6 +73,7 @@ import Unison.Codebase.Editor.HandleInput.MoveAll (handleMoveAll)
 import Unison.Codebase.Editor.HandleInput.MoveBranch (doMoveBranch)
 import Unison.Codebase.Editor.HandleInput.MoveTerm (doMoveTerm)
 import Unison.Codebase.Editor.HandleInput.MoveType (doMoveType)
+import Unison.Codebase.Editor.HandleInput.Names (handleNames)
 import Unison.Codebase.Editor.HandleInput.NamespaceDependencies (handleNamespaceDependencies)
 import Unison.Codebase.Editor.HandleInput.NamespaceDiffUtils (diffHelper)
 import Unison.Codebase.Editor.HandleInput.ProjectClone (handleClone)
@@ -87,6 +88,7 @@ import Unison.Codebase.Editor.HandleInput.ReleaseDraft (handleReleaseDraft)
 import Unison.Codebase.Editor.HandleInput.Run (handleRun)
 import Unison.Codebase.Editor.HandleInput.RuntimeUtils qualified as RuntimeUtils
 import Unison.Codebase.Editor.HandleInput.ShowDefinition (handleShowDefinition)
+import Unison.Codebase.Editor.HandleInput.SyncV2 qualified as SyncV2
 import Unison.Codebase.Editor.HandleInput.TermResolution (resolveMainRef)
 import Unison.Codebase.Editor.HandleInput.Tests qualified as Tests
 import Unison.Codebase.Editor.HandleInput.Todo (handleTodo)
@@ -495,29 +497,8 @@ loop e = do
 
                 fixupOutput :: HQ'.HashQualified (Path.Split Path) -> HQ.HashQualified Name
                 fixupOutput = HQ'.toHQ . fmap Path.nameFromSplit
-            NamesI global query -> do
-              hqLength <- Cli.runTransaction Codebase.hashLength
-              let searchNames names = do
-                    let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
-                        unsuffixifiedPPE = PPED.unsuffixifiedPPE pped
-                        terms = Names.lookupHQTerm Names.IncludeSuffixes query names
-                        types = Names.lookupHQType Names.IncludeSuffixes query names
-                        terms' :: [(Referent, [HQ'.HashQualified Name])]
-                        terms' = map (\r -> (r, PPE.allTermNames unsuffixifiedPPE r)) (Set.toList terms)
-                        types' :: [(Reference, [HQ'.HashQualified Name])]
-                        types' = map (\r -> (r, PPE.allTypeNames unsuffixifiedPPE r)) (Set.toList types)
-                    pure (terms', types')
-              if global
-                then do
-                  Global.forAllProjectBranches \(projBranchNames, _ids) branch -> do
-                    let names = Branch.toNames . Branch.head $ branch
-                    (terms, types) <- searchNames names
-                    when (not (null terms) || not (null types)) do
-                      Cli.respond $ GlobalListNames projBranchNames hqLength types terms
-                else do
-                  names <- Cli.currentNames
-                  (terms, types) <- searchNames names
-                  Cli.respond $ ListNames hqLength types terms
+            NamesI global queries -> do
+              mapM_ (handleNames global) queries
             DocsI srcs -> do
               for_ srcs docsI
             CreateAuthorI authorNameSegment authorFullName -> do
@@ -679,6 +660,13 @@ loop e = do
               Cli.respond Success
             PullI sourceTarget pullMode -> handlePull sourceTarget pullMode
             PushRemoteBranchI pushRemoteBranchInput -> handlePushRemoteBranch pushRemoteBranchInput
+            SyncToFileI syncFileDest projectBranchName -> SyncV2.handleSyncToFile syncFileDest projectBranchName
+            SyncFromFileI syncFileSrc projectBranchName -> do
+              description <- inputDescription input
+              SyncV2.handleSyncFromFile description syncFileSrc projectBranchName
+            SyncFromCodebaseI srcCodebasePath srcBranch destBranch -> do
+              description <- inputDescription input
+              SyncV2.handleSyncFromCodebase description srcCodebasePath srcBranch destBranch
             ListDependentsI hq -> handleDependents hq
             ListDependenciesI hq -> handleDependencies hq
             NamespaceDependenciesI path -> handleNamespaceDependencies path
@@ -706,17 +694,23 @@ loop e = do
               Cli.Env {codebase} <- ask
               currentBranch <- Branch.withoutTransitiveLibs <$> Cli.getCurrentBranch0
               case Map.lookup command InputPatterns.patternMap of
-                Just (IP.InputPattern {args = argTypes}) -> do
-                  zip argTypes args & Monoid.foldMapM \case
-                    ((argName, _, IP.ArgumentType {fzfResolver = Just IP.FZFResolver {getOptions}}), "_") -> do
-                      pp <- Cli.getCurrentProjectPath
-                      results <- liftIO $ getOptions codebase pp currentBranch
-                      Cli.respond (DebugDisplayFuzzyOptions argName (Text.unpack <$> results))
-                    ((_, _, IP.ArgumentType {fzfResolver = Nothing}), "_") -> do
-                      Cli.respond DebugFuzzyOptionsNoResolver
-                    _ -> pure ()
-                Nothing -> do
-                  Cli.respond DebugFuzzyOptionsNoResolver
+                Just IP.InputPattern {params} ->
+                  either (Cli.respond . DebugFuzzyOptionsIncorrectArgs) (pure . fst)
+                    =<< IP.foldParamsWithM
+                      ( \_ (paramName, IP.ParameterType {fzfResolver}) arg ->
+                          if arg == "_"
+                            then case fzfResolver of
+                              Just IP.FZFResolver {getOptions} -> do
+                                pp <- Cli.getCurrentProjectPath
+                                results <- liftIO $ getOptions codebase pp currentBranch
+                                (,[]) <$> Cli.respond (DebugDisplayFuzzyOptions paramName (Text.unpack <$> results))
+                              Nothing -> (,[]) <$> Cli.respond DebugFuzzyOptionsNoResolver
+                            else pure ((), [])
+                      )
+                      ()
+                      params
+                      args
+                Nothing -> Cli.respond $ DebugFuzzyOptionsNoCommand command
             DebugFormatI -> do
               env <- ask
               void $ runMaybeT do
@@ -1003,6 +997,11 @@ inputDescription input =
     ProjectsI -> wat
     PullI {} -> wat
     PushRemoteBranchI {} -> wat
+    SyncToFileI {} -> wat
+    SyncFromFileI fp pab ->
+      pure $ "sync.from-file " <> into @Text fp <> " " <> into @Text pab
+    SyncFromCodebaseI fp srcBranch destBranch -> do
+      pure $ "sync.from-file " <> into @Text fp <> " " <> into @Text srcBranch <> " " <> into @Text destBranch
     QuitI {} -> wat
     ReleaseDraftI {} -> wat
     ShowDefinitionI {} -> wat

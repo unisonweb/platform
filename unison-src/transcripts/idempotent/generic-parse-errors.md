@@ -33,27 +33,7 @@ namespace.blah = 1
       1 | namespace.blah = 1
 
 
-  I was surprised to find a = here.
-  I was expecting one of these instead:
-
-  * ability
-  * bang
-  * binding
-  * do
-  * false
-  * force
-  * handle
-  * if
-  * lambda
-  * let
-  * newline or semicolon
-  * quote
-  * termLink
-  * true
-  * tuple
-  * type
-  * typeLink
-  * use
+  I was surprised to find a .blah here.
 ```
 
 ``` unison :error

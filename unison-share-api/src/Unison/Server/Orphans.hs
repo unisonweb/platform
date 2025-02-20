@@ -1,8 +1,14 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module Unison.Server.Orphans where
 
+import Codec.CBOR.Decoding qualified as CBOR
+import Codec.CBOR.Encoding qualified as CBOR
+import Codec.Serialise (Serialise (..))
+import Codec.Serialise qualified as CBOR
+import Codec.Serialise.Class qualified as CBOR
 import Control.Lens
 import Data.Aeson
 import Data.Aeson qualified as Aeson
@@ -12,9 +18,20 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.OpenApi
 import Data.Proxy
 import Data.Text qualified as Text
+import Data.Vector (Vector)
+import Data.Vector qualified as Vector
 import Servant
 import Servant.Docs (DocCapture (DocCapture), DocQueryParam (..), ParamKind (..), ToCapture (..), ToParam (..))
 import U.Codebase.HashTags
+import U.Codebase.Sqlite.Branch.Format qualified as BranchFormat
+import U.Codebase.Sqlite.Causal qualified as SqliteCausal
+import U.Codebase.Sqlite.Decl.Format qualified as DeclFormat
+import U.Codebase.Sqlite.Entity qualified as Entity
+import U.Codebase.Sqlite.LocalIds qualified as LocalIds
+import U.Codebase.Sqlite.Patch.Format qualified as PatchFormat
+import U.Codebase.Sqlite.TempEntity (TempEntity)
+import U.Codebase.Sqlite.Term.Format qualified as TermFormat
+import U.Util.Base32Hex (Base32Hex (..))
 import Unison.Codebase.Editor.DisplayObject
 import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.Path.Parse qualified as Path
@@ -25,6 +42,7 @@ import Unison.ConstructorType qualified as CT
 import Unison.Core.Project (ProjectBranchName (..), ProjectName (..))
 import Unison.Hash (Hash (..))
 import Unison.Hash qualified as Hash
+import Unison.Hash32 (Hash32 (..))
 import Unison.HashQualified qualified as HQ
 import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.Name (Name)
@@ -34,8 +52,10 @@ import Unison.Prelude
 import Unison.Project
 import Unison.Reference qualified as Reference
 import Unison.Referent qualified as Referent
+import Unison.Share.API.Hash (HashJWT (..))
 import Unison.ShortHash (ShortHash)
 import Unison.ShortHash qualified as SH
+import Unison.Sqlite qualified as Sqlite
 import Unison.Syntax.HashQualified qualified as HQ (parseText)
 import Unison.Syntax.HashQualifiedPrime qualified as HQ' (parseText)
 import Unison.Syntax.Name qualified as Name (parseTextEither, toText)
@@ -311,8 +331,19 @@ instance ToCapture (Capture "namespace" Path.Path) where
 instance ToJSON Path.Path where
   toJSON p = Aeson.String (Path.toText p)
 
+instance FromJSON Path.Path where
+  parseJSON = Aeson.withText "Path" \txt -> case Path.parsePath (Text.unpack txt) of
+    Left s -> fail (Text.unpack s)
+    Right p -> pure p
+
 instance ToJSON Path.Absolute where
   toJSON p = Aeson.String (Path.toText p)
+
+instance FromJSON Path.Absolute where
+  parseJSON = Aeson.withText "Path" \txt -> case Path.parsePath' (Text.unpack txt) of
+    Left s -> fail (Text.unpack s)
+    Right (Path.AbsolutePath' p) -> pure p
+    Right (Path.RelativePath' _) -> fail "Expected an absolute path but received a relative path."
 
 instance ToSchema Path.Path where
   declareNamedSchema _ = declareNamedSchema (Proxy @Text)
@@ -387,6 +418,8 @@ deriving anyclass instance (ToSchema n) => ToSchema (HQ.HashQualified n)
 
 deriving anyclass instance (ToSchema n) => ToSchema (HQ'.HashQualified n)
 
+deriving via Text instance Sqlite.FromField ProjectName
+
 instance FromHttpApiData ProjectName where
   parseQueryParam = mapLeft tShow . tryInto @ProjectName
 
@@ -406,6 +439,10 @@ instance ToSchema ProjectName
 
 deriving via Text instance ToJSON ProjectName
 
+deriving via Text instance FromJSON ProjectName
+
+deriving via Text instance Sqlite.FromField ProjectBranchName
+
 instance FromHttpApiData ProjectBranchName where
   parseQueryParam = mapLeft tShow . tryInto @ProjectBranchName
 
@@ -424,3 +461,113 @@ instance ToCapture (Capture "branch-name" ProjectBranchName) where
       "The name of a branch in a project. E.g. @handle/name"
 
 deriving via Text instance ToJSON ProjectBranchName
+
+deriving via Text instance FromJSON ProjectBranchName
+
+-- CBOR encodings
+
+deriving via Text instance Serialise Hash32
+
+deriving via Text instance Serialise HashJWT
+
+data SyncTag
+  = TermComponentTag
+  | DeclComponentTag
+  | PatchTag
+  | NamespaceTag
+  | CausalTag
+  deriving (Eq, Show)
+
+instance Serialise SyncTag where
+  encode = \case
+    TermComponentTag -> CBOR.encodeWord 0
+    DeclComponentTag -> CBOR.encodeWord 1
+    PatchTag -> CBOR.encodeWord 2
+    NamespaceTag -> CBOR.encodeWord 3
+    CausalTag -> CBOR.encodeWord 4
+
+  decode = do
+    tag <- CBOR.decodeWord
+    case tag of
+      0 -> pure TermComponentTag
+      1 -> pure DeclComponentTag
+      2 -> pure PatchTag
+      3 -> pure NamespaceTag
+      4 -> pure CausalTag
+      _ -> fail $ "Unknown tag: " <> show tag
+
+newtype ComponentBody t d = ComponentBody {unComponentBody :: (LocalIds.LocalIds' t d, ByteString)}
+
+instance (Serialise t, Serialise d) => Serialise (ComponentBody t d) where
+  encode (ComponentBody (LocalIds.LocalIds {textLookup, defnLookup}, bytes)) =
+    CBOR.encodeVector textLookup
+      <> CBOR.encodeVector defnLookup
+      <> CBOR.encodeBytes bytes
+
+  decode = do
+    textLookup <- CBOR.decodeVector
+    defnLookup <- CBOR.decodeVector
+    bytes <- CBOR.decodeBytes
+    pure $ ComponentBody (LocalIds.LocalIds {textLookup, defnLookup}, bytes)
+
+instance Serialise TempEntity where
+  encode = \case
+    Entity.TC (TermFormat.SyncTerm (TermFormat.SyncLocallyIndexedComponent elements)) ->
+      CBOR.encode TermComponentTag
+        <> CBOR.encodeVector (coerce @(Vector (LocalIds.LocalIds' Text Hash32, ByteString)) @(Vector (ComponentBody Text Hash32)) elements)
+    Entity.DC (DeclFormat.SyncDecl (DeclFormat.SyncLocallyIndexedComponent elements)) ->
+      CBOR.encode DeclComponentTag
+        <> CBOR.encodeVector (coerce @(Vector (LocalIds.LocalIds' Text Hash32, ByteString)) @(Vector (ComponentBody Text Hash32)) elements)
+    Entity.P (PatchFormat.SyncDiff {}) -> error "Serializing Diffs are not supported"
+    Entity.P (PatchFormat.SyncFull (PatchFormat.LocalIds {patchTextLookup, patchHashLookup, patchDefnLookup}) bytes) ->
+      CBOR.encode PatchTag
+        <> CBOR.encodeVector patchTextLookup
+        <> CBOR.encodeVector patchHashLookup
+        <> CBOR.encodeVector patchDefnLookup
+        <> CBOR.encodeBytes bytes
+    Entity.N (BranchFormat.SyncDiff {}) -> error "Serializing Diffs are not supported"
+    Entity.N (BranchFormat.SyncFull (BranchFormat.LocalIds {branchTextLookup, branchDefnLookup, branchPatchLookup, branchChildLookup}) (BranchFormat.LocalBranchBytes bytes)) ->
+      CBOR.encode NamespaceTag
+        <> CBOR.encodeVector branchTextLookup
+        <> CBOR.encodeVector branchDefnLookup
+        <> CBOR.encodeVector branchPatchLookup
+        <> CBOR.encodeVector branchChildLookup
+        <> CBOR.encodeBytes bytes
+    Entity.C (SqliteCausal.SyncCausalFormat {valueHash, parents}) ->
+      CBOR.encode CausalTag
+        <> CBOR.encode valueHash
+        <> CBOR.encodeVector parents
+
+  decode = do
+    CBOR.decode >>= \case
+      TermComponentTag -> do
+        elements <- coerce @(Vector (ComponentBody Text Hash32)) @(Vector (LocalIds.LocalIds' Text Hash32, ByteString)) <$> CBOR.decodeVector
+        pure $ Entity.TC (TermFormat.SyncTerm (TermFormat.SyncLocallyIndexedComponent elements))
+      DeclComponentTag -> do
+        elements <- coerce @(Vector (ComponentBody Text Hash32)) @(Vector (LocalIds.LocalIds' Text Hash32, ByteString)) <$> CBOR.decodeVector
+        pure $ Entity.DC (DeclFormat.SyncDecl (DeclFormat.SyncLocallyIndexedComponent elements))
+      PatchTag -> do
+        patchTextLookup <- CBOR.decodeVector
+        patchHashLookup <- CBOR.decodeVector
+        patchDefnLookup <- CBOR.decodeVector
+        bytes <- CBOR.decodeBytes
+        pure $ Entity.P (PatchFormat.SyncFull (PatchFormat.LocalIds {patchTextLookup, patchHashLookup, patchDefnLookup}) bytes)
+      NamespaceTag -> do
+        branchTextLookup <- CBOR.decodeVector
+        branchDefnLookup <- CBOR.decodeVector
+        branchPatchLookup <- CBOR.decodeVector
+        branchChildLookup <- CBOR.decodeVector
+        bytes <- CBOR.decodeBytes
+        pure $ Entity.N (BranchFormat.SyncFull (BranchFormat.LocalIds {branchTextLookup, branchDefnLookup, branchPatchLookup, branchChildLookup}) (BranchFormat.LocalBranchBytes bytes))
+      CausalTag -> do
+        valueHash <- CBOR.decode
+        parents <- CBOR.decodeVector
+        pure $ Entity.C (SqliteCausal.SyncCausalFormat {valueHash, parents})
+
+encodeVectorWith :: (a -> CBOR.Encoding) -> Vector.Vector a -> CBOR.Encoding
+encodeVectorWith f xs =
+  CBOR.encodeListLen (fromIntegral $ Vector.length xs)
+    <> (foldr (\a b -> f a <> b) mempty xs)
+
+instance Ord CBOR.DeserialiseFailure where
+  compare (CBOR.DeserialiseFailure o s) (CBOR.DeserialiseFailure o' s') = compare (o, s) (o', s')

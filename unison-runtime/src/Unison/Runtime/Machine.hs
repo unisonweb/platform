@@ -33,6 +33,7 @@ import Control.Lens
 import Data.Atomics qualified as Atomic
 import Data.Bits
 import Data.Functor.Classes (Eq1 (..), Ord1 (..))
+import Data.List qualified as List
 import Data.IORef (IORef)
 import Data.IORef qualified as IORef
 import Data.Map.Strict qualified as M
@@ -285,7 +286,7 @@ unitValue = BoxedVal $ unitClosure
 {-# NOINLINE unitValue #-}
 
 unitClosure :: Closure
-unitClosure = Enum Ty.unitRef (PackedTag 0)
+unitClosure = Enum Ty.unitRef TT.unitTag
 {-# NOINLINE unitClosure #-}
 
 litToVal :: MLit -> Val
@@ -329,7 +330,7 @@ exec ::
   K ->
   Reference ->
   MInstr ->
-  IO (DEnv, Stack, K)
+  IO (Bool, DEnv, Stack, K)
 {- ORMOLU_DISABLE -}
 #ifdef STACK_CHECK
 exec _ !_ !_ !stk !_ !_ instr
@@ -339,25 +340,25 @@ exec _ !_ !_ !stk !_ !_ instr
 exec _ !denv !_activeThreads !stk !k _ (Info tx) = do
   info tx stk
   info tx k
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (Name r args) = do
   v <- resolve env denv stk r
   stk <- name stk args v
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (SetDyn p i) = do
   val <- peekOff stk i
-  pure (EC.mapInsert p val denv, stk, k)
+  pure (False, EC.mapInsert p val denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (Capture p) = do
   (cap, denv, stk, k) <- splitCont denv stk k p
   stk <- bump stk
   poke stk cap
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (UPrim1 op i) = do
   stk <- uprim1 stk op i
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (UPrim2 op i j) = do
   stk <- uprim2 stk op i j
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (BPrim1 MISS i)
   | sandboxed env = die "attempted to use sandboxed operation: isMissing"
   | otherwise = do
@@ -368,7 +369,7 @@ exec env !denv !_activeThreads !stk !k _ (BPrim1 MISS i)
       m <- readTVarIO (intermed env)
       stk <- bump stk
       pokeBool stk $ (link `M.member` m)
-      pure (denv, stk, k)
+      pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (BPrim1 CACH i)
   | sandboxed env = die "attempted to use sandboxed operation: cache"
   | otherwise = do
@@ -379,7 +380,7 @@ exec env !denv !_activeThreads !stk !k _ (BPrim1 CACH i)
       pokeS
         stk
         (Sq.fromList $ boxedVal . Foreign . Wrap Rf.termLinkRef . Ref <$> unknown)
-      pure (denv, stk, k)
+      pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (BPrim1 CVLD i)
   | sandboxed env = die "attempted to use sandboxed operation: validate"
   | otherwise = do
@@ -389,7 +390,7 @@ exec env !denv !_activeThreads !stk !k _ (BPrim1 CVLD i)
         Nothing -> do
           stk <- bump stk
           pokeTag stk 0
-          pure (denv, stk, k)
+          pure (False, denv, stk, k)
         Just (Failure ref msg clo) -> do
           stk <- bumpn stk 3
           bpoke stk (Foreign $ Wrap Rf.typeLinkRef ref)
@@ -397,7 +398,7 @@ exec env !denv !_activeThreads !stk !k _ (BPrim1 CVLD i)
           bpokeOff stk 2 clo
           stk <- bump stk
           pokeTag stk 1
-          pure (denv, stk, k)
+          pure (False,  denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (BPrim1 LKUP i)
   | sandboxed env = die "attempted to use sandboxed operation: lookup"
   | otherwise = do
@@ -426,7 +427,7 @@ exec env !denv !_activeThreads !stk !k _ (BPrim1 LKUP i)
           pokeBi stk (CodeRep sg ch)
           stk <- bump stk
           stk <$ pokeTag stk 1
-      pure (denv, stk, k)
+      pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (BPrim1 TLTT i) = do
   clink <- bpeekOff stk i
   let shortHash = case unwrapForeign $ marshalToForeign clink of
@@ -435,7 +436,7 @@ exec _ !denv !_activeThreads !stk !k _ (BPrim1 TLTT i) = do
   let sh = Util.Text.fromText . SH.toText $ shortHash
   stk <- bump stk
   pokeBi stk sh
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (BPrim1 LOAD i)
   | sandboxed env = die "attempted to use sandboxed operation: load"
   | otherwise = do
@@ -450,13 +451,13 @@ exec env !denv !_activeThreads !stk !k _ (BPrim1 LOAD i)
         Right x -> do
           pokeOff stk 1 x
           pokeTag stk 1
-      pure (denv, stk, k)
+      pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (BPrim1 VALU i) = do
   m <- readTVarIO (tagRefs env)
   c <- peekOff stk i
   stk <- bump stk
   pokeBi stk =<< reflectValue m c
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (BPrim1 DBTX i)
   | sandboxed env =
       die "attempted to use sandboxed operation: Debug.toText"
@@ -473,7 +474,7 @@ exec env !denv !_activeThreads !stk !k _ (BPrim1 DBTX i)
           pokeBi stk (Util.Text.pack tx)
           stk <- bump stk
           stk <$ pokeTag stk 2
-      pure (denv, stk, k)
+      pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (BPrim1 SDBL i)
   | sandboxed env =
       die "attempted to use sandboxed operation: sandboxLinks"
@@ -481,10 +482,10 @@ exec env !denv !_activeThreads !stk !k _ (BPrim1 SDBL i)
       tl <- peekOffBi stk i
       stk <- bump stk
       pokeS stk . encodeSandboxListResult =<< sandboxList env tl
-      pure (denv, stk, k)
+      pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (BPrim1 op i) = do
   stk <- bprim1 env stk op i
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (BPrim2 SDBX i j) = do
   s <- peekOffS stk i
   c <- bpeekOff stk j
@@ -492,7 +493,7 @@ exec env !denv !_activeThreads !stk !k _ (BPrim2 SDBX i j) = do
   b <- checkSandboxing env l c
   stk <- bump stk
   pokeBool stk $ b
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (BPrim2 SDBV i j)
   | sandboxed env =
       die "attempted to use sandboxed operation: Value.validateSandboxed"
@@ -503,31 +504,31 @@ exec env !denv !_activeThreads !stk !k _ (BPrim2 SDBV i j)
       res <- checkValueSandboxing env l v
       stk <- bump stk
       bpoke stk $ encodeSandboxResult res
-      pure (denv, stk, k)
+      pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (BPrim2 EQLU i j) = do
   x <- peekOff stk i
   y <- peekOff stk j
   stk <- bump stk
   pokeBool stk $ universalEq (==) x y
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (BPrim2 LEQU i j) = do
   x <- peekOff stk i
   y <- peekOff stk j
   stk <- bump stk
   pokeBool stk $ (universalCompare compare x y) /= GT
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (BPrim2 LESU i j) = do
   x <- peekOff stk i
   y <- peekOff stk j
   stk <- bump stk
   pokeBool stk $ (universalCompare compare x y) == LT
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (BPrim2 CMPU i j) = do
   x <- peekOff stk i
   y <- peekOff stk j
   stk <- bump stk
   pokeI stk . pred . fromEnum $ universalCompare compare x y
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec _ !_ !_activeThreads !stk !k r (BPrim2 THRO i j) = do
   name <- peekOffBi @Util.Text.Text stk i
   x <- peekOff stk j
@@ -551,10 +552,10 @@ exec env !denv !_activeThreads !stk !k _ (BPrim2 TRCE i j)
           putStrLn ugl
           putStrLn "partial decompilation:\n"
           putStrLn pre
-      pure (denv, stk, k)
+      pure (False, denv, stk, k)
 exec _ !denv !_trackThreads !stk !k _ (BPrim2 op i j) = do
   stk <- bprim2 stk op i j
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (RefCAS refI ticketI valI)
   | sandboxed env = die "attempted to use sandboxed operation: Ref.cas"
   | otherwise = do
@@ -567,47 +568,47 @@ exec env !denv !_activeThreads !stk !k _ (RefCAS refI ticketI valI)
       (r, _) <- Atomic.casIORef ref ticket v
       stk <- bump stk
       pokeBool stk r
-      pure (denv, stk, k)
+      pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (Pack r t args) = do
   clo <- buildData stk r t args
   stk <- bump stk
   bpoke stk clo
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (Print i) = do
   t <- peekOffBi stk i
   Tx.putStrLn (Util.Text.toText t)
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (Lit ml) = do
   stk <- bump stk
   poke stk $ litToVal ml
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (Reset ps) = do
   (stk, a) <- saveArgs stk
-  pure (denv, stk, Mark a ps clos k)
+  pure (False, denv, stk, Mark a ps clos k)
   where
     clos = EC.restrictKeys denv ps
 exec _ !denv !_activeThreads !stk !k _ (Seq as) = do
   l <- closureArgs stk as
   stk <- bump stk
   pokeS stk $ Sq.fromList l
-  pure (denv, stk, k)
+  pure (False, denv, stk, k)
 exec _env !denv !_activeThreads !stk !k _ (ForeignCall _ func args) = do
-  stk <- xStackIOToIO $ foreignCall func args (unpackXStack stk)
-  pure (denv, stk, k)
+  (b, stk) <- exStackIOToIO $ foreignCall func args (unpackXStack stk)
+  pure (b, denv, stk, k)
 exec env !denv !activeThreads !stk !k _ (Fork i)
   | sandboxed env = die "attempted to use sandboxed operation: fork"
   | otherwise = do
       tid <- forkEval env activeThreads =<< peekOff stk i
       stk <- bump stk
       bpoke stk . Foreign . Wrap Rf.threadIdRef $ tid
-      pure (denv, stk, k)
+      pure (False, denv, stk, k)
 exec env !denv !activeThreads !stk !k _ (Atomically i)
   | sandboxed env = die $ "attempted to use sandboxed operation: atomically"
   | otherwise = do
       v <- peekOff stk i
       stk <- bump stk
       atomicEval env activeThreads (poke stk) v
-      pure (denv, stk, k)
+      pure (False, denv, stk, k)
 exec env !denv !activeThreads !stk !k _ (TryForce i)
   | sandboxed env = die $ "attempted to use sandboxed operation: tryForce"
   | otherwise = do
@@ -615,7 +616,7 @@ exec env !denv !activeThreads !stk !k _ (TryForce i)
       stk <- bump stk -- Bump the boxed stack to make a slot for the result, which will be written in the callback if we succeed.
       ev <- Control.Exception.try $ nestEval env activeThreads (poke stk) v
       stk <- encodeExn stk ev
-      pure (denv, stk, k)
+      pure (False, denv, stk, k)
 exec !_ !_ !_ !_ !_ _ (SandboxingFailure t) = do
   die $ "Attempted to use disallowed builtin in sandboxed environment: " <> DTx.unpack t
 {-# INLINE exec #-}
@@ -683,15 +684,14 @@ eval env !denv !activeThreads !stk !k r (Match i br) = do
   n <- peekOffN stk i
   eval env denv activeThreads stk k r $ selectBranch n br
 eval env !denv !activeThreads !stk !k r (DMatch mr i br) = do
-  (t, stk) <- dumpDataNoTag mr stk =<< peekOff stk i
-  eval env denv activeThreads stk k r $
-    selectBranch (maskTags t) br
+  (nx, stk) <- dataBranch mr stk br =<< bpeekOff stk i
+  eval env denv activeThreads stk k r nx
 eval env !denv !activeThreads !stk !k r (NMatch _mr i br) = do
   n <- peekOffN stk i
   eval env denv activeThreads stk k r $ selectBranch n br
 eval env !denv !activeThreads !stk !k r (RMatch i pu br) = do
-  (t, stk) <- dumpDataNoTag Nothing stk =<< peekOff stk i
-  if t == PackedTag 0
+  (t, stk) <- dumpDataValNoTag stk =<< peekOff stk i
+  if t == TT.pureEffectTag
     then eval env denv activeThreads stk k r pu
     else case ANF.unpackTags t of
       (ANF.rawTag -> e, ANF.rawTag -> t)
@@ -724,11 +724,29 @@ eval env !denv !activeThreads !stk !k r (Let nw cix f sect) = do
     r
     nw
 eval env !denv !activeThreads !stk !k r (Ins i nx) = do
-  (denv, stk, k) <- exec env denv activeThreads stk k r i
-  eval env denv activeThreads stk k r nx
+  exec env denv activeThreads stk k r i >>= \case
+    (exception, denv, stk, k)
+      -- In this case, the instruction indicated an exception to
+      -- be handled by the current {Exception} handler. The stack
+      -- currently points to an appropriate `Failure` value, and
+      -- we must handle the rest.
+      | exception -> case EC.lookup TT.exceptionTag denv of
+        Just eh -> do
+          -- wrap the failure in an exception raise box
+          fv <- peek stk
+          bpoke stk $ Data1 exceptionRef TT.exceptionRaiseTag fv
+          (stk, fsz, asz) <- saveFrame stk
+          let kk = Push fsz asz fakeCix 10 nx k
+          apply env denv activeThreads stk kk False (VArg1 0) eh
+        Nothing -> -- should be impossible
+          unhandledAbilityRequest
+      | otherwise -> eval env denv activeThreads stk k r nx
 eval _ !_ !_ !_activeThreads !_ _ Exit = pure ()
 eval _ !_ !_ !_activeThreads !_ _ (Die s) = die s
 {-# NOINLINE eval #-}
+
+fakeCix :: CombIx
+fakeCix = CIx exceptionRef maxBound maxBound
 
 unhandledAbilityRequest :: (HasCallStack) => IO a
 unhandledAbilityRequest = error . show . PE callStack . P.lit . fromString $ "eval: unhandled ability request"
@@ -982,46 +1000,41 @@ buildData !stk !r !t (VArgV i) = do
     l = fsize stk - i
 {-# INLINE buildData #-}
 
+dumpDataValNoTag ::
+  Stack ->
+  Val ->
+  IO (PackedTag, Stack)
+dumpDataValNoTag stk (BoxedVal c) =
+  (closureTag c,) <$> dumpDataNoTag Nothing stk c
+dumpDataValNoTag _ v =
+  die $ "dumpDataValNoTag: unboxed val: " ++ show v
+{-# inline dumpDataValNoTag #-}
+
 -- Dumps a data type closure to the stack without writing its tag.
 -- Instead, the tag is returned for direct case analysis.
 dumpDataNoTag ::
   Maybe Reference ->
   Stack ->
-  Val ->
-  IO (PackedTag, Stack)
+  Closure ->
+  IO Stack
 dumpDataNoTag !mr !stk = \case
   -- Normally we want to avoid dumping unboxed values since it's unnecessary, but sometimes we don't know the type of
   -- the incoming value and end up dumping unboxed values, so we just push them back to the stack as-is. e.g. in type-casts/coercions
-  val@(UnboxedVal _ t) -> do
+  Enum _ _ -> pure stk
+  Data1 _ _ x -> do
     stk <- bump stk
-    poke stk val
-    pure (unboxedPackedTag t, stk)
-  BoxedVal clos -> case clos of
-    (Enum _ t) -> pure (t, stk)
-    (Data1 _ t x) -> do
-      stk <- bump stk
-      poke stk x
-      pure (t, stk)
-    (Data2 _ t x y) -> do
-      stk <- bumpn stk 2
-      pokeOff stk 1 y
-      poke stk x
-      pure (t, stk)
-    (DataG _ t seg) -> do
-      stk <- dumpSeg stk seg S
-      pure (t, stk)
-    clo ->
-      die $
-        "dumpDataNoTag: bad closure: "
-          ++ show clo
-          ++ maybe "" (\r -> "\nexpected type: " ++ show r) mr
-  where
-    unboxedPackedTag :: UnboxedTypeTag -> PackedTag
-    unboxedPackedTag = \case
-      CharTag -> TT.charTag
-      FloatTag -> TT.floatTag
-      IntTag -> TT.intTag
-      NatTag -> TT.natTag
+    poke stk x
+    pure stk
+  Data2 _ _ x y -> do
+    stk <- bumpn stk 2
+    pokeOff stk 1 y
+    stk <$ poke stk x
+  DataG _ _ seg -> dumpSeg stk seg S
+  clo ->
+    die $
+      "dumpDataNoTag: bad closure: "
+        ++ show clo
+        ++ maybe "" (\r -> "\nexpected type: " ++ show r) mr
 {-# INLINE dumpDataNoTag #-}
 
 -- Note: although the representation allows it, it is impossible
@@ -1977,6 +1990,94 @@ selectBranch t (TestW df cs) = lookupWithDefault df t cs
 selectBranch _ (TestT {}) = error "impossible"
 {-# INLINE selectBranch #-}
 
+-- Combined branch selection and field dumping function for data types.
+-- Fields should only be dumped on _matches_, not default cases, because
+-- default cases potentially cover many constructors which could result
+-- in a variable number of values being put on the stack. Default cases
+-- uniformly expect _no_ values to be added to the stack.
+dataBranch
+  :: Maybe Reference -> Stack -> MBranch -> Closure -> IO (MSection, Stack)
+dataBranch mrf stk (Test1 u cu df) = \case
+  Enum _ t
+    | maskTags t == u -> pure (cu, stk)
+    | otherwise -> pure (df, stk)
+  Data1 _ t x
+    | maskTags t == u -> do
+      stk <- bump stk
+      (cu, stk) <$ poke stk x
+    | otherwise -> pure (df, stk)
+  Data2 _ t x y
+    | maskTags t == u -> do
+      stk <- bumpn stk 2
+      pokeOff stk 1 y
+      (cu, stk) <$ poke stk x
+    | otherwise -> pure (df, stk)
+  DataG _ t seg
+    | maskTags t == u -> (cu,) <$> dumpSeg stk seg S
+    | otherwise -> pure (df, stk)
+  clo -> dataBranchClosureError mrf clo
+dataBranch mrf stk (Test2 u cu v cv df) = \case
+  Enum _ t
+    | maskTags t == u -> pure (cu, stk)
+    | maskTags t == v -> pure (cv, stk)
+    | otherwise -> pure (df, stk)
+  Data1 _ t x
+    | maskTags t == u -> do
+      stk <- bump stk
+      (cu, stk) <$ poke stk x
+    | maskTags t == v -> do
+      stk <- bump stk
+      (cv, stk) <$ poke stk x
+    | otherwise -> pure (df, stk)
+  Data2 _ t x y
+    | maskTags t == u -> do
+      stk <- bumpn stk 2
+      pokeOff stk 1 y
+      (cu, stk) <$ poke stk x
+    | maskTags t == v -> do
+      stk <- bumpn stk 2
+      pokeOff stk 1 y
+      (cv, stk) <$ poke stk x
+    | otherwise -> pure (df, stk)
+  DataG _ t seg
+    | maskTags t == u -> (cu,) <$> dumpSeg stk seg S
+    | maskTags t == v -> (cv,) <$> dumpSeg stk seg S
+    | otherwise -> pure (df, stk)
+  clo -> dataBranchClosureError mrf clo
+dataBranch mrf stk (TestW df bs) = \case
+  Enum _ t
+    | Just ca <- EC.lookup (maskTags t) bs -> pure (ca, stk)
+    | otherwise -> pure (df, stk)
+  Data1 _ t x
+    | Just ca <- EC.lookup (maskTags t) bs -> do
+      stk <- bump stk
+      (ca, stk) <$ poke stk x
+    | otherwise -> pure (df, stk)
+  Data2 _ t x y
+    | Just ca <- EC.lookup (maskTags t) bs -> do
+      stk <- bumpn stk 2
+      pokeOff stk 1 y
+      (ca, stk) <$ poke stk x
+    | otherwise -> pure (df, stk)
+  DataG _ t seg
+    | Just ca <- EC.lookup (maskTags t) bs ->
+      (ca,) <$> dumpSeg stk seg S
+    | otherwise -> pure (df, stk)
+  clo -> dataBranchClosureError mrf clo
+dataBranch _ _ br = \_ ->
+  dataBranchBranchError br
+{-# inline dataBranch #-}
+
+dataBranchClosureError :: Maybe Reference -> Closure -> IO a
+dataBranchClosureError mrf clo =
+  die $ "dataBranch: bad closure: "
+    ++ show clo
+    ++ maybe "" (\ r -> "\nexpected type: " ++ show r) mrf
+
+dataBranchBranchError :: MBranch -> IO a
+dataBranchBranchError br =
+  die $ "dataBranch: unexpected branch: " ++ show br
+
 -- Splits off a portion of the continuation up to a given prompt.
 --
 -- The main procedure walks along the 'code' stack `k`, keeping track of how
@@ -2261,12 +2362,31 @@ preEvalTopLevelConstants cacheableCombs newCombs cc = do
           atomically $ do
             modifyTVar evaluatedCacheableCombsVar $ EC.mapInsert w (EC.mapSingleton 0 $ CachedVal w val)
     apply0 (Just hook) cc activeThreads w
+      `catch` \e ->
+        -- ignore sandboxing exceptions during pre-eval, in case they
+        -- don't matter for the final result.
+        if isSandboxingException e
+          then pure ()
+          else throwIO e
 
   evaluatedCacheableCombs <- readTVarIO evaluatedCacheableCombsVar
   let allNew = evaluatedCacheableCombs <> newCombs
   -- Rewrite all the inlined combinator references to point to the
   -- new cached versions.
   atomically $ modifyTVar (combs cc) (\existingCombs -> (resolveCombs (Just $ EC.mapDifference existingCombs allNew) allNew) <> existingCombs)
+
+-- Checks if a runtime exception is due to sandboxing.
+--
+-- This is used above during pre-evaluation, to ignore sandboxing
+-- exceptions for top-level constant dependencies of docs and such, in
+-- case the docs don't actually evaluate them.
+isSandboxingException :: RuntimeExn -> Bool
+isSandboxingException (PE _ (P.toPlainUnbroken -> msg)) =
+  List.isPrefixOf sdbx1 msg || List.isPrefixOf sdbx2 msg
+  where
+    sdbx1 = "attempted to use sandboxed operation"
+    sdbx2 = "Attempted to use disallowed builtin in sandboxed"
+isSandboxingException _ = False
 
 expandSandbox ::
   Map Reference (Set Reference) ->
