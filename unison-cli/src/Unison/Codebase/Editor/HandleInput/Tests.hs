@@ -20,6 +20,7 @@ import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
 import Unison.Cli.NamesUtils qualified as Cli
+import Unison.Cli.Pretty qualified as Cli
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Branch qualified as Branch
 import Unison.Codebase.Editor.HandleInput.RuntimeUtils (EvalMode (..))
@@ -54,6 +55,7 @@ import Unison.Type qualified as Type
 import Unison.Typechecker qualified as Typechecker
 import Unison.UnisonFile qualified as UF
 import Unison.Util.Monoid (foldMapM)
+import Unison.Util.Pretty qualified as P
 import Unison.Util.Relation qualified as R
 import Unison.Util.Set qualified as Set
 import Unison.WatchKind qualified as WK
@@ -118,8 +120,11 @@ handleTest native TestInput {includeLibNamespace, path, showFailures, showSucces
           tm' <- RuntimeUtils.evalPureUnison native fqnPPE False tm
           case tm' of
             Left e -> do
-              Cli.respond (EvaluationFailure e)
-              pure []
+              Cli.respond $ TestIncrementalOutputEnd fqnPPE (n, total) r False
+              let
+                testName = (Cli.prettyTermName fqnPPE (Referent.fromTermReferenceId r))
+                e' = P.callout ("Error while evaluating test " <> P.backticked testName) e
+              Cli.returnEarly (EvaluationFailure e')
             Right tm' -> do
               -- After evaluation, cache the result of the test
               Cli.runTransaction (Codebase.putWatch WK.TestWatch r tm')
