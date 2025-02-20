@@ -107,5 +107,5 @@ fresh/main> test
 
   Stack trace:
     builtin.bug
-    #oit1slb1i3
+    #0i4memddch
 ```
