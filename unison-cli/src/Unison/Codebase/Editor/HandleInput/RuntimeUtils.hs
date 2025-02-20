@@ -110,5 +110,8 @@ evalPureUnison native ppe useCache tm =
         tm
         (Term.app a (Term.builtin a "bug") (Term.text a msg))
     a = ABT.annotation tm
-    allow = Term.list a [Term.termLink a (Referent.Ref (Reference.Builtin "Debug.toText"))]
+    allow = Term.list a [
+        Term.termLink a (Referent.Ref (Reference.Builtin "Debug.toText"))
+      , Term.termLink a (Referent.Ref (Reference.Builtin "Value.value"))
+      ]
     msg = "pure code can't perform I/O"
