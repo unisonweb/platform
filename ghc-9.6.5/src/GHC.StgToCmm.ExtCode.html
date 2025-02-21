@@ -1,0 +1,807 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE DeriveFunctor #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE TupleSections #-}</span><span>
+</span><span id="line-3"></span><span class="annot"><span class="hs-comment">-- | Our extended FCode monad.</span></span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- We add a mapping from names to CmmExpr, to support local variable names in</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- the concrete C-- code.  The unique supply of the underlying FCode monad</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- is used to grab a new unique for each local variable.</span><span>
+</span><span id="line-8"></span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- In C--, a local variable can be declared anywhere within a proc,</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- and it scopes from the beginning of the proc to the end.  Hence, we have</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- to collect declarations as we parse the proc, and feed the environment</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- back in circularly (to avoid a two-pass algorithm).</span><span>
+</span><span id="line-13"></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.StgToCmm.ExtCode</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-15"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier">CmmParse</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#unEC"><span class="hs-identifier">unEC</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-16"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#Named"><span class="hs-identifier">Named</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#Env"><span class="hs-identifier">Env</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-17"></span><span>
+</span><span id="line-18"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#loopDecls"><span class="hs-identifier">loopDecls</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getEnv"><span class="hs-identifier">getEnv</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#withName"><span class="hs-identifier">withName</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-22"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getName"><span class="hs-identifier">getName</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#newLocal"><span class="hs-identifier">newLocal</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-25"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#newLabel"><span class="hs-identifier">newLabel</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-26"></span><span>        </span><span class="annot"><a href="GHC.Cmm.BlockId.html#newBlockId"><span class="hs-identifier">newBlockId</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-27"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#newFunctionName"><span class="hs-identifier">newFunctionName</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-28"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#newImport"><span class="hs-identifier">newImport</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-29"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#lookupLabel"><span class="hs-identifier">lookupLabel</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-30"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#lookupName"><span class="hs-identifier">lookupName</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-31"></span><span>
+</span><span id="line-32"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#code"><span class="hs-identifier">code</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-33"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#emit"><span class="hs-identifier">emit</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#emitLabel"><span class="hs-identifier">emitLabel</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#emitAssign"><span class="hs-identifier">emitAssign</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#emitStore"><span class="hs-identifier">emitStore</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-34"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getCode"><span class="hs-identifier">getCode</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getCodeR"><span class="hs-identifier">getCodeR</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getCodeScoped"><span class="hs-identifier">getCodeScoped</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-35"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#emitOutOfLine"><span class="hs-identifier">emitOutOfLine</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-36"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#withUpdFrameOff"><span class="hs-identifier">withUpdFrameOff</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getUpdFrameOff"><span class="hs-identifier">getUpdFrameOff</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-37"></span><span>        </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getProfile"><span class="hs-identifier">getProfile</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getPlatform"><span class="hs-identifier">getPlatform</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getContext"><span class="hs-identifier">getContext</span></a></span><span>
+</span><span id="line-38"></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Platform.html"><span class="hs-identifier">GHC.Platform</span></a></span><span>
+</span><span id="line-45"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Platform.Profile.html"><span class="hs-identifier">GHC.Platform.Profile</span></a></span><span>
+</span><span id="line-46"></span><span>
+</span><span id="line-47"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="GHC.StgToCmm.Monad.html"><span class="hs-identifier">GHC.StgToCmm.Monad</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">F</span></span><span>
+</span><span id="line-48"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.StgToCmm.Monad.html"><span class="hs-identifier">GHC.StgToCmm.Monad</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.StgToCmm.Monad.html#FCode"><span class="hs-identifier">FCode</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.StgToCmm.Monad.html#newUnique"><span class="hs-identifier">newUnique</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.html"><span class="hs-identifier">GHC.Cmm</span></a></span><span>
+</span><span id="line-51"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.CLabel.html"><span class="hs-identifier">GHC.Cmm.CLabel</span></a></span><span>
+</span><span id="line-52"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.Graph.html"><span class="hs-identifier">GHC.Cmm.Graph</span></a></span><span>
+</span><span id="line-53"></span><span>
+</span><span id="line-54"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.BlockId.html"><span class="hs-identifier">GHC.Cmm.BlockId</span></a></span><span>
+</span><span id="line-55"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html"><span class="hs-identifier">GHC.Data.FastString</span></a></span><span>
+</span><span id="line-56"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Unit.Module.html"><span class="hs-identifier">GHC.Unit.Module</span></a></span><span>
+</span><span id="line-57"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html"><span class="hs-identifier">GHC.Types.Unique.FM</span></a></span><span>
+</span><span id="line-58"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Unique.html"><span class="hs-identifier">GHC.Types.Unique</span></a></span><span>
+</span><span id="line-59"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Supply.html"><span class="hs-identifier">GHC.Types.Unique.Supply</span></a></span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Monad.html#/Control.Monad.html"><span class="hs-identifier">Control.Monad</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#ap/GHC.Base.html#ap"><span class="hs-identifier">ap</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html"><span class="hs-identifier">GHC.Utils.Outputable</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Utils.Outputable.html#SDocContext"><span class="hs-identifier">SDocContext</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span class="annot"><span class="hs-comment">-- | The environment contains variable definitions or blockids.</span></span><span>
+</span><span id="line-65"></span><span class="hs-keyword">data</span><span> </span><span id="Named"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#Named"><span class="hs-identifier hs-var">Named</span></a></span></span><span>
+</span><span id="line-66"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span id="VarN"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#VarN"><span class="hs-identifier hs-var">VarN</span></a></span></span><span> </span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmExpr"><span class="hs-identifier hs-type">CmmExpr</span></a></span><span>          </span><span class="hs-comment">-- ^ Holds CmmLit(CmmLabel ..) which gives the label type,</span><span>
+</span><span id="line-67"></span><span>                                </span><span class="hs-comment">--      eg, RtsLabel, ForeignLabel, CmmLabel etc.</span><span>
+</span><span id="line-68"></span><span>
+</span><span id="line-69"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span id="FunN"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#FunN"><span class="hs-identifier hs-var">FunN</span></a></span></span><span>   </span><span class="annot"><a href="GHC.Unit.Types.html#UnitId"><span class="hs-identifier hs-type">UnitId</span></a></span><span>         </span><span class="annot"><span class="hs-comment">-- ^ A function name from this unit</span></span><span>
+</span><span id="line-70"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span id="LabelN"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#LabelN"><span class="hs-identifier hs-var">LabelN</span></a></span></span><span> </span><span class="annot"><a href="GHC.Cmm.BlockId.html#BlockId"><span class="hs-identifier hs-type">BlockId</span></a></span><span>        </span><span class="annot"><span class="hs-comment">-- ^ A blockid of some code or data.</span></span><span>
+</span><span id="line-71"></span><span>
+</span><span id="line-72"></span><span class="annot"><span class="hs-comment">-- | An environment of named things.</span></span><span>
+</span><span id="line-73"></span><span class="hs-keyword">type</span><span> </span><span id="Env"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#Env"><span class="hs-identifier hs-var">Env</span></a></span></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#UniqFM"><span class="hs-identifier hs-type">UniqFM</span></a></span><span> </span><span class="annot"><a href="GHC.Data.FastString.html#FastString"><span class="hs-identifier hs-type">FastString</span></a></span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#Named"><span class="hs-identifier hs-type">Named</span></a></span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span class="annot"><span class="hs-comment">-- | Local declarations that are in scope during code generation.</span></span><span>
+</span><span id="line-76"></span><span class="hs-keyword">type</span><span> </span><span id="Decls"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#Decls"><span class="hs-identifier hs-var">Decls</span></a></span></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Data.FastString.html#FastString"><span class="hs-identifier hs-type">FastString</span></a></span><span class="hs-special">,</span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#Named"><span class="hs-identifier hs-type">Named</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span class="hs-comment">-- | Does a computation in the FCode monad, with a current environment</span><span>
+</span><span id="line-79"></span><span class="hs-comment">--      and a list of local declarations. Returns the resulting list of declarations.</span><span>
+</span><span id="line-80"></span><span class="hs-keyword">newtype</span><span> </span><span id="CmmParse"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-var">CmmParse</span></a></span></span><span> </span><span id="local-6989586621681863449"><span class="annot"><a href="#local-6989586621681863449"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-81"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span id="EC"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span></span><span> </span><span class="hs-special">{</span><span> </span><span id="unEC"><span class="annot"><span class="annottext">forall a. CmmParse a -&gt; String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="GHC.StgToCmm.ExtCode.html#unEC"><span class="hs-identifier hs-var hs-var">unEC</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#String/GHC.Base.html#String"><span class="hs-identifier hs-type">String</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#Decls"><span class="hs-identifier hs-type">Decls</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.Monad.html#FCode"><span class="hs-identifier hs-type">FCode</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#Decls"><span class="hs-identifier hs-type">Decls</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621681863449"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-82"></span><span>    </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681863602"><span id="local-6989586621681863605"><span class="annot"><span class="annottext">(forall a b. (a -&gt; b) -&gt; CmmParse a -&gt; CmmParse b)
+-&gt; (forall a b. a -&gt; CmmParse b -&gt; CmmParse a) -&gt; Functor CmmParse
+forall a b. a -&gt; CmmParse b -&gt; CmmParse a
+forall a b. (a -&gt; b) -&gt; CmmParse a -&gt; CmmParse b
+forall (f :: * -&gt; *).
+(forall a b. (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b. a -&gt; f b -&gt; f a) -&gt; Functor f
+$cfmap :: forall a b. (a -&gt; b) -&gt; CmmParse a -&gt; CmmParse b
+fmap :: forall a b. (a -&gt; b) -&gt; CmmParse a -&gt; CmmParse b
+$c&lt;$ :: forall a b. a -&gt; CmmParse b -&gt; CmmParse a
+&lt;$ :: forall a b. a -&gt; CmmParse b -&gt; CmmParse a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#Functor/GHC.Base.html#Functor"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Functor</span></a></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span class="hs-keyword">type</span><span> </span><span id="ExtCode"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#ExtCode"><span class="hs-identifier hs-var">ExtCode</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-85"></span><span>
+</span><span id="line-86"></span><span id="local-6989586621681863458"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#returnExtFC"><span class="hs-identifier hs-type">returnExtFC</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621681863458"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863458"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-87"></span><span id="returnExtFC"><span class="annot"><span class="annottext">returnExtFC :: forall a. a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#returnExtFC"><span class="hs-identifier hs-var hs-var">returnExtFC</span></a></span></span><span> </span><span id="local-6989586621681863611"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681863611"><span class="hs-identifier hs-var">a</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a)
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Env
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681863612"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863612"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Decls, a) -&gt; FCode (Decls, a)
+forall a. a -&gt; FCode a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863612"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681863611"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-88"></span><span>
+</span><span id="line-89"></span><span id="local-6989586621681863465"><span id="local-6989586621681863466"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#thenExtFC"><span class="hs-identifier hs-type">thenExtFC</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863465"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621681863465"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863466"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863466"><span class="hs-identifier hs-type">b</span></a></span></span></span><span>
+</span><span id="line-90"></span><span id="thenExtFC"><span class="annot"><span class="annottext">thenExtFC :: forall a b. CmmParse a -&gt; (a -&gt; CmmParse b) -&gt; CmmParse b
+</span><a href="GHC.StgToCmm.ExtCode.html#thenExtFC"><span class="hs-identifier hs-var hs-var">thenExtFC</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-type">EC</span></a></span><span> </span><span id="local-6989586621681863615"><span class="annot"><span class="annottext">String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="#local-6989586621681863615"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621681863616"><span class="annot"><span class="annottext">a -&gt; CmmParse b
+</span><a href="#local-6989586621681863616"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, b)) -&gt; CmmParse b
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, b)) -&gt; CmmParse b)
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, b)) -&gt; CmmParse b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681863617"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863617"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621681863618"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863618"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621681863619"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863619"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681863620"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863620"><span class="hs-identifier hs-var">s'</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681863621"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681863621"><span class="hs-identifier hs-var">r</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="#local-6989586621681863615"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863617"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863618"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863619"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">CmmParse b -&gt; String -&gt; Env -&gt; Decls -&gt; FCode (Decls, b)
+forall a. CmmParse a -&gt; String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="GHC.StgToCmm.ExtCode.html#unEC"><span class="hs-identifier hs-var">unEC</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; CmmParse b
+</span><a href="#local-6989586621681863616"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681863621"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863617"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863618"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863620"><span class="hs-identifier hs-var">s'</span></a></span><span>
+</span><span id="line-91"></span><span>
+</span><span id="line-92"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621681863627"><span id="local-6989586621681863631"><span id="local-6989586621681863634"><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#Applicative/GHC.Base.html#Applicative"><span class="hs-identifier hs-type">Applicative</span></a></span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-93"></span><span>      </span><span id="local-6989586621681863637"><span class="annot"><span class="annottext">pure :: forall a. a -&gt; CmmParse a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var hs-var hs-var hs-var">pure</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; CmmParse a
+forall a. a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#returnExtFC"><span class="hs-identifier hs-var">returnExtFC</span></a></span><span>
+</span><span id="line-94"></span><span>      </span><span id="local-6989586621681863639"><span class="annot"><span class="annottext">&lt;*&gt; :: forall a b. CmmParse (a -&gt; b) -&gt; CmmParse a -&gt; CmmParse b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%2A%3E/GHC.Base.html#%3C%2A%3E"><span class="hs-operator hs-var hs-var hs-var hs-var">(&lt;*&gt;)</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CmmParse (a -&gt; b) -&gt; CmmParse a -&gt; CmmParse b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m (a -&gt; b) -&gt; m a -&gt; m b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#ap/GHC.Base.html#ap"><span class="hs-identifier hs-var">ap</span></a></span><span>
+</span><span id="line-95"></span><span>
+</span><span id="line-96"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621681863644"><span id="local-6989586621681863647"><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#Monad/GHC.Base.html#Monad"><span class="hs-identifier hs-type">Monad</span></a></span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-97"></span><span>  </span><span id="local-6989586621681863650"><span class="annot"><span class="annottext">&gt;&gt;= :: forall a b. CmmParse a -&gt; (a -&gt; CmmParse b) -&gt; CmmParse b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3E%3E%3D/GHC.Base.html#%3E%3E%3D"><span class="hs-operator hs-var hs-var hs-var hs-var">(&gt;&gt;=)</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CmmParse a -&gt; (a -&gt; CmmParse b) -&gt; CmmParse b
+forall a b. CmmParse a -&gt; (a -&gt; CmmParse b) -&gt; CmmParse b
+</span><a href="GHC.StgToCmm.ExtCode.html#thenExtFC"><span class="hs-identifier hs-var">thenExtFC</span></a></span><span>
+</span><span id="line-98"></span><span>
+</span><span id="line-99"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621681863656"><span class="annot"><a href="GHC.Types.Unique.Supply.html#MonadUnique"><span class="hs-identifier hs-type">MonadUnique</span></a></span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-100"></span><span>  </span><span id="local-6989586621681863662"><span class="annot"><span class="annottext">getUniqueSupplyM :: CmmParse UniqSupply
+</span><a href="#local-6989586621681863662"><span class="hs-identifier hs-var hs-var hs-var hs-var">getUniqueSupplyM</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FCode UniqSupply -&gt; CmmParse UniqSupply
+forall a. FCode a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#code"><span class="hs-identifier hs-var">code</span></a></span><span> </span><span class="annot"><span class="annottext">FCode UniqSupply
+forall (m :: * -&gt; *). MonadUnique m =&gt; m UniqSupply
+</span><a href="GHC.Types.Unique.Supply.html#getUniqueSupplyM"><span class="hs-identifier hs-var">getUniqueSupplyM</span></a></span><span>
+</span><span id="line-101"></span><span>  </span><span id="local-6989586621681863667"><span class="annot"><span class="annottext">getUniqueM :: CmmParse Unique
+</span><a href="#local-6989586621681863667"><span class="hs-identifier hs-var hs-var hs-var hs-var">getUniqueM</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, Unique))
+-&gt; CmmParse Unique
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, Unique))
+ -&gt; CmmParse Unique)
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, Unique))
+-&gt; CmmParse Unique
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Env
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681863669"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863669"><span class="hs-identifier hs-var">decls</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-102"></span><span>    </span><span id="local-6989586621681863670"><span class="annot"><span class="annottext">Unique
+</span><a href="#local-6989586621681863670"><span class="hs-identifier hs-var">u</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FCode Unique
+forall (m :: * -&gt; *). MonadUnique m =&gt; m Unique
+</span><a href="GHC.Types.Unique.Supply.html#getUniqueM"><span class="hs-identifier hs-var">getUniqueM</span></a></span><span>
+</span><span id="line-103"></span><span>    </span><span class="annot"><span class="annottext">(Decls, Unique) -&gt; FCode (Decls, Unique)
+forall a. a -&gt; FCode a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863669"><span class="hs-identifier hs-var">decls</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Unique
+</span><a href="#local-6989586621681863670"><span class="hs-identifier hs-var">u</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getProfile"><span class="hs-identifier hs-type">getProfile</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Profile.html#Profile"><span class="hs-identifier hs-type">Profile</span></a></span><span>
+</span><span id="line-106"></span><span id="getProfile"><span class="annot"><span class="annottext">getProfile :: CmmParse Profile
+</span><a href="GHC.StgToCmm.ExtCode.html#getProfile"><span class="hs-identifier hs-var hs-var">getProfile</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, Profile))
+-&gt; CmmParse Profile
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Env
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681863671"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863671"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863671"><span class="hs-identifier hs-var">d</span></a></span><span class="hs-special">,</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Profile -&gt; (Decls, Profile))
+-&gt; FCode Profile -&gt; FCode (Decls, Profile)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">FCode Profile
+</span><a href="GHC.StgToCmm.Monad.html#getProfile"><span class="hs-identifier hs-var">F.getProfile</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getPlatform"><span class="hs-identifier hs-type">getPlatform</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span>
+</span><span id="line-109"></span><span id="getPlatform"><span class="annot"><span class="annottext">getPlatform :: CmmParse Platform
+</span><a href="GHC.StgToCmm.ExtCode.html#getPlatform"><span class="hs-identifier hs-var hs-var">getPlatform</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, Platform))
+-&gt; CmmParse Platform
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Env
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681863674"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863674"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863674"><span class="hs-identifier hs-var">d</span></a></span><span class="hs-special">,</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Platform -&gt; (Decls, Platform))
+-&gt; FCode Platform -&gt; FCode (Decls, Platform)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">FCode Platform
+</span><a href="GHC.StgToCmm.Monad.html#getPlatform"><span class="hs-identifier hs-var">F.getPlatform</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-110"></span><span>
+</span><span id="line-111"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getContext"><span class="hs-identifier hs-type">getContext</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#SDocContext"><span class="hs-identifier hs-type">SDocContext</span></a></span><span>
+</span><span id="line-112"></span><span id="getContext"><span class="annot"><span class="annottext">getContext :: CmmParse SDocContext
+</span><a href="GHC.StgToCmm.ExtCode.html#getContext"><span class="hs-identifier hs-var hs-var">getContext</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, SDocContext))
+-&gt; CmmParse SDocContext
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Env
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681863676"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863676"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863676"><span class="hs-identifier hs-var">d</span></a></span><span class="hs-special">,</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(SDocContext -&gt; (Decls, SDocContext))
+-&gt; FCode SDocContext -&gt; FCode (Decls, SDocContext)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">FCode SDocContext
+</span><a href="GHC.StgToCmm.Monad.html#getContext"><span class="hs-identifier hs-var">F.getContext</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span class="hs-comment">-- | Takes the variable declarations and imports from the monad</span><span>
+</span><span id="line-115"></span><span class="hs-comment">--      and makes an environment, which is looped back into the computation.</span><span>
+</span><span id="line-116"></span><span class="hs-comment">--      In this way, we can have embedded declarations that scope over the whole</span><span>
+</span><span id="line-117"></span><span class="hs-comment">--      procedure, and imports that scope over the entire module.</span><span>
+</span><span id="line-118"></span><span class="hs-comment">--      Discards the local declaration contained within decl'</span><span>
+</span><span id="line-119"></span><span class="hs-comment">--</span><span>
+</span><span id="line-120"></span><span id="local-6989586621681863503"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#loopDecls"><span class="hs-identifier hs-type">loopDecls</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863503"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863503"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-121"></span><span id="loopDecls"><span class="annot"><span class="annottext">loopDecls :: forall a. CmmParse a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#loopDecls"><span class="hs-identifier hs-var hs-var">loopDecls</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-type">EC</span></a></span><span> </span><span id="local-6989586621681863681"><span class="annot"><span class="annottext">String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="#local-6989586621681863681"><span class="hs-identifier hs-var">fcode</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-122"></span><span>      </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a)
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681863682"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863682"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621681863683"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863683"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621681863684"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863684"><span class="hs-identifier hs-var">globalDecls</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-123"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681863685"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681863685"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">((Decls, a) -&gt; FCode (Decls, a)) -&gt; FCode (Decls, a)
+forall a. (a -&gt; FCode a) -&gt; FCode a
+</span><a href="GHC.StgToCmm.Monad.html#fixC"><span class="hs-identifier hs-var">F.fixC</span></a></span><span> </span><span class="annot"><span class="annottext">(((Decls, a) -&gt; FCode (Decls, a)) -&gt; FCode (Decls, a))
+-&gt; ((Decls, a) -&gt; FCode (Decls, a)) -&gt; FCode (Decls, a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span> </span><span class="hs-glyph">~</span><span class="hs-special">(</span><span id="local-6989586621681863687"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863687"><span class="hs-identifier hs-var">decls</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-124"></span><span>          </span><span class="annot"><span class="annottext">String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="#local-6989586621681863681"><span class="hs-identifier hs-var">fcode</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863682"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Env -&gt; Decls -&gt; Env
+forall key elt.
+Uniquable key =&gt;
+UniqFM key elt -&gt; [(key, elt)] -&gt; UniqFM key elt
+</span><a href="GHC.Types.Unique.FM.html#addListToUFM"><span class="hs-identifier hs-var">addListToUFM</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863683"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863687"><span class="hs-identifier hs-var">decls</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863684"><span class="hs-identifier hs-var">globalDecls</span></a></span><span>
+</span><span id="line-125"></span><span>        </span><span class="annot"><span class="annottext">(Decls, a) -&gt; FCode (Decls, a)
+forall a. a -&gt; FCode a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863684"><span class="hs-identifier hs-var">globalDecls</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681863685"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-126"></span><span>
+</span><span id="line-127"></span><span class="annot"><span class="hs-comment">-- | Get the current environment from the monad.</span></span><span>
+</span><span id="line-128"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getEnv"><span class="hs-identifier hs-type">getEnv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#Env"><span class="hs-identifier hs-type">Env</span></a></span><span>
+</span><span id="line-129"></span><span id="getEnv"><span class="annot"><span class="annottext">getEnv :: CmmParse Env
+</span><a href="GHC.StgToCmm.ExtCode.html#getEnv"><span class="hs-identifier hs-var hs-var">getEnv</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, Env)) -&gt; CmmParse Env
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, Env)) -&gt; CmmParse Env)
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, Env)) -&gt; CmmParse Env
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681863689"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863689"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621681863690"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863690"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Decls, Env) -&gt; FCode (Decls, Env)
+forall a. a -&gt; FCode a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863690"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863689"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-130"></span><span>
+</span><span id="line-131"></span><span class="annot"><span class="hs-comment">-- | Get the current context name from the monad</span></span><span>
+</span><span id="line-132"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getName"><span class="hs-identifier hs-type">getName</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#String/GHC.Base.html#String"><span class="hs-identifier hs-type">String</span></a></span><span>
+</span><span id="line-133"></span><span id="getName"><span class="annot"><span class="annottext">getName :: CmmParse String
+</span><a href="GHC.StgToCmm.ExtCode.html#getName"><span class="hs-identifier hs-var hs-var">getName</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, String))
+-&gt; CmmParse String
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, String))
+ -&gt; CmmParse String)
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, String))
+-&gt; CmmParse String
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681863691"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863691"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="annot"><span class="annottext">Env
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681863692"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863692"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Decls, String) -&gt; FCode (Decls, String)
+forall a. a -&gt; FCode a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863692"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863691"><span class="hs-identifier hs-var">c</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-134"></span><span>
+</span><span id="line-135"></span><span class="annot"><span class="hs-comment">-- | Set context name for a sub-parse</span></span><span>
+</span><span id="line-136"></span><span id="local-6989586621681863509"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#withName"><span class="hs-identifier hs-type">withName</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#String/GHC.Base.html#String"><span class="hs-identifier hs-type">String</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863509"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863509"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-137"></span><span id="withName"><span class="annot"><span class="annottext">withName :: forall a. String -&gt; CmmParse a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#withName"><span class="hs-identifier hs-var hs-var">withName</span></a></span></span><span> </span><span id="local-6989586621681863693"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863693"><span class="hs-identifier hs-var">c'</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-type">EC</span></a></span><span> </span><span id="local-6989586621681863694"><span class="annot"><span class="annottext">String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="#local-6989586621681863694"><span class="hs-identifier hs-var">fcode</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a)
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681863695"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863695"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621681863696"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863696"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="#local-6989586621681863694"><span class="hs-identifier hs-var">fcode</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863693"><span class="hs-identifier hs-var">c'</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863695"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863696"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-138"></span><span>
+</span><span id="line-139"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#addDecl"><span class="hs-identifier hs-type">addDecl</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html#FastString"><span class="hs-identifier hs-type">FastString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#Named"><span class="hs-identifier hs-type">Named</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#ExtCode"><span class="hs-identifier hs-type">ExtCode</span></a></span><span>
+</span><span id="line-140"></span><span id="addDecl"><span class="annot"><span class="annottext">addDecl :: FastString -&gt; Named -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#addDecl"><span class="hs-identifier hs-var hs-var">addDecl</span></a></span></span><span> </span><span id="local-6989586621681863698"><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863698"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span id="local-6989586621681863699"><span class="annot"><span class="annottext">Named
+</span><a href="#local-6989586621681863699"><span class="hs-identifier hs-var">named</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, ())) -&gt; ExtCode
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, ())) -&gt; ExtCode)
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, ())) -&gt; ExtCode
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Env
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681863700"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863700"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Decls, ()) -&gt; FCode (Decls, ())
+forall a. a -&gt; FCode a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863698"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Named
+</span><a href="#local-6989586621681863699"><span class="hs-identifier hs-var">named</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(FastString, Named) -&gt; Decls -&gt; Decls
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863700"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-141"></span><span>
+</span><span id="line-142"></span><span>
+</span><span id="line-143"></span><span class="hs-comment">-- | Add a new variable to the list of local declarations.</span><span>
+</span><span id="line-144"></span><span class="hs-comment">--      The CmmExpr says where the value is stored.</span><span>
+</span><span id="line-145"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#addVarDecl"><span class="hs-identifier hs-type">addVarDecl</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html#FastString"><span class="hs-identifier hs-type">FastString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmExpr"><span class="hs-identifier hs-type">CmmExpr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#ExtCode"><span class="hs-identifier hs-type">ExtCode</span></a></span><span>
+</span><span id="line-146"></span><span id="addVarDecl"><span class="annot"><span class="annottext">addVarDecl :: FastString -&gt; CmmExpr -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#addVarDecl"><span class="hs-identifier hs-var hs-var">addVarDecl</span></a></span></span><span> </span><span id="local-6989586621681863702"><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863702"><span class="hs-identifier hs-var">var</span></a></span></span><span> </span><span id="local-6989586621681863703"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863703"><span class="hs-identifier hs-var">expr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FastString -&gt; Named -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#addDecl"><span class="hs-identifier hs-var">addDecl</span></a></span><span> </span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863702"><span class="hs-identifier hs-var">var</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmExpr -&gt; Named
+</span><a href="GHC.StgToCmm.ExtCode.html#VarN"><span class="hs-identifier hs-var">VarN</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863703"><span class="hs-identifier hs-var">expr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-147"></span><span>
+</span><span id="line-148"></span><span class="annot"><span class="hs-comment">-- | Add a new label to the list of local declarations.</span></span><span>
+</span><span id="line-149"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#addLabel"><span class="hs-identifier hs-type">addLabel</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html#FastString"><span class="hs-identifier hs-type">FastString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.BlockId.html#BlockId"><span class="hs-identifier hs-type">BlockId</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#ExtCode"><span class="hs-identifier hs-type">ExtCode</span></a></span><span>
+</span><span id="line-150"></span><span id="addLabel"><span class="annot"><span class="annottext">addLabel :: FastString -&gt; BlockId -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#addLabel"><span class="hs-identifier hs-var hs-var">addLabel</span></a></span></span><span> </span><span id="local-6989586621681863705"><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863705"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span id="local-6989586621681863706"><span class="annot"><span class="annottext">BlockId
+</span><a href="#local-6989586621681863706"><span class="hs-identifier hs-var">block_id</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FastString -&gt; Named -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#addDecl"><span class="hs-identifier hs-var">addDecl</span></a></span><span> </span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863705"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BlockId -&gt; Named
+</span><a href="GHC.StgToCmm.ExtCode.html#LabelN"><span class="hs-identifier hs-var">LabelN</span></a></span><span> </span><span class="annot"><span class="annottext">BlockId
+</span><a href="#local-6989586621681863706"><span class="hs-identifier hs-var">block_id</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-151"></span><span>
+</span><span id="line-152"></span><span>
+</span><span id="line-153"></span><span class="annot"><span class="hs-comment">-- | Create a fresh local variable of a given type.</span></span><span>
+</span><span id="line-154"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#newLocal"><span class="hs-identifier hs-type">newLocal</span></a></span><span>
+</span><span id="line-155"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Type.html#CmmType"><span class="hs-identifier hs-type">CmmType</span></a></span><span>              </span><span class="annot"><span class="hs-comment">-- ^ data type</span></span><span>
+</span><span id="line-156"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html#FastString"><span class="hs-identifier hs-type">FastString</span></a></span><span>           </span><span class="annot"><span class="hs-comment">-- ^ name of variable</span></span><span>
+</span><span id="line-157"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.Reg.html#LocalReg"><span class="hs-identifier hs-type">LocalReg</span></a></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ register holding the value</span></span><span>
+</span><span id="line-158"></span><span>
+</span><span id="line-159"></span><span id="newLocal"><span class="annot"><span class="annottext">newLocal :: CmmType -&gt; FastString -&gt; CmmParse LocalReg
+</span><a href="GHC.StgToCmm.ExtCode.html#newLocal"><span class="hs-identifier hs-var hs-var">newLocal</span></a></span></span><span> </span><span id="local-6989586621681863707"><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681863707"><span class="hs-identifier hs-var">ty</span></a></span></span><span> </span><span id="local-6989586621681863708"><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863708"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-160"></span><span>   </span><span id="local-6989586621681863709"><span class="annot"><span class="annottext">Unique
+</span><a href="#local-6989586621681863709"><span class="hs-identifier hs-var">u</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FCode Unique -&gt; CmmParse Unique
+forall a. FCode a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#code"><span class="hs-identifier hs-var">code</span></a></span><span> </span><span class="annot"><span class="annottext">FCode Unique
+</span><a href="GHC.StgToCmm.Monad.html#newUnique"><span class="hs-identifier hs-var">newUnique</span></a></span><span>
+</span><span id="line-161"></span><span>   </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681863710"><span class="annot"><span class="annottext">reg :: LocalReg
+</span><a href="#local-6989586621681863710"><span class="hs-identifier hs-var hs-var">reg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Unique -&gt; CmmType -&gt; LocalReg
+</span><a href="GHC.Cmm.Reg.html#LocalReg"><span class="hs-identifier hs-var">LocalReg</span></a></span><span> </span><span class="annot"><span class="annottext">Unique
+</span><a href="#local-6989586621681863709"><span class="hs-identifier hs-var">u</span></a></span><span> </span><span class="annot"><span class="annottext">CmmType
+</span><a href="#local-6989586621681863707"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-162"></span><span>   </span><span class="annot"><span class="annottext">FastString -&gt; CmmExpr -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#addVarDecl"><span class="hs-identifier hs-var">addVarDecl</span></a></span><span> </span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863708"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmReg -&gt; CmmExpr
+</span><a href="GHC.Cmm.Expr.html#CmmReg"><span class="hs-identifier hs-var">CmmReg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LocalReg -&gt; CmmReg
+</span><a href="GHC.Cmm.Reg.html#CmmLocal"><span class="hs-identifier hs-var">CmmLocal</span></a></span><span> </span><span class="annot"><span class="annottext">LocalReg
+</span><a href="#local-6989586621681863710"><span class="hs-identifier hs-var">reg</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-163"></span><span>   </span><span class="annot"><span class="annottext">LocalReg -&gt; CmmParse LocalReg
+forall a. a -&gt; CmmParse a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">LocalReg
+</span><a href="#local-6989586621681863710"><span class="hs-identifier hs-var">reg</span></a></span><span>
+</span><span id="line-164"></span><span>
+</span><span id="line-165"></span><span>
+</span><span id="line-166"></span><span class="annot"><span class="hs-comment">-- | Allocate a fresh label.</span></span><span>
+</span><span id="line-167"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#newLabel"><span class="hs-identifier hs-type">newLabel</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html#FastString"><span class="hs-identifier hs-type">FastString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.BlockId.html#BlockId"><span class="hs-identifier hs-type">BlockId</span></a></span><span>
+</span><span id="line-168"></span><span id="newLabel"><span class="annot"><span class="annottext">newLabel :: FastString -&gt; CmmParse BlockId
+</span><a href="GHC.StgToCmm.ExtCode.html#newLabel"><span class="hs-identifier hs-var hs-var">newLabel</span></a></span></span><span> </span><span id="local-6989586621681863714"><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863714"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-169"></span><span>   </span><span id="local-6989586621681863715"><span class="annot"><span class="annottext">Unique
+</span><a href="#local-6989586621681863715"><span class="hs-identifier hs-var">u</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FCode Unique -&gt; CmmParse Unique
+forall a. FCode a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#code"><span class="hs-identifier hs-var">code</span></a></span><span> </span><span class="annot"><span class="annottext">FCode Unique
+</span><a href="GHC.StgToCmm.Monad.html#newUnique"><span class="hs-identifier hs-var">newUnique</span></a></span><span>
+</span><span id="line-170"></span><span>   </span><span class="annot"><span class="annottext">FastString -&gt; BlockId -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#addLabel"><span class="hs-identifier hs-var">addLabel</span></a></span><span> </span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863714"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Unique -&gt; BlockId
+</span><a href="GHC.Cmm.BlockId.html#mkBlockId"><span class="hs-identifier hs-var">mkBlockId</span></a></span><span> </span><span class="annot"><span class="annottext">Unique
+</span><a href="#local-6989586621681863715"><span class="hs-identifier hs-var">u</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-171"></span><span>   </span><span class="annot"><span class="annottext">BlockId -&gt; CmmParse BlockId
+forall a. a -&gt; CmmParse a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Unique -&gt; BlockId
+</span><a href="GHC.Cmm.BlockId.html#mkBlockId"><span class="hs-identifier hs-var">mkBlockId</span></a></span><span> </span><span class="annot"><span class="annottext">Unique
+</span><a href="#local-6989586621681863715"><span class="hs-identifier hs-var">u</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span class="annot"><span class="hs-comment">-- | Add a local function to the environment.</span></span><span>
+</span><span id="line-174"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#newFunctionName"><span class="hs-identifier hs-type">newFunctionName</span></a></span><span>
+</span><span id="line-175"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html#FastString"><span class="hs-identifier hs-type">FastString</span></a></span><span>   </span><span class="annot"><span class="hs-comment">-- ^ name of the function</span></span><span>
+</span><span id="line-176"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Unit.Types.html#UnitId"><span class="hs-identifier hs-type">UnitId</span></a></span><span>       </span><span class="annot"><span class="hs-comment">-- ^ package of the current module</span></span><span>
+</span><span id="line-177"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#ExtCode"><span class="hs-identifier hs-type">ExtCode</span></a></span><span>
+</span><span id="line-178"></span><span>
+</span><span id="line-179"></span><span id="newFunctionName"><span class="annot"><span class="annottext">newFunctionName :: FastString -&gt; UnitId -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#newFunctionName"><span class="hs-identifier hs-var hs-var">newFunctionName</span></a></span></span><span> </span><span id="local-6989586621681863717"><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863717"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span id="local-6989586621681863718"><span class="annot"><span class="annottext">UnitId
+</span><a href="#local-6989586621681863718"><span class="hs-identifier hs-var">pkg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FastString -&gt; Named -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#addDecl"><span class="hs-identifier hs-var">addDecl</span></a></span><span> </span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863717"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UnitId -&gt; Named
+</span><a href="GHC.StgToCmm.ExtCode.html#FunN"><span class="hs-identifier hs-var">FunN</span></a></span><span> </span><span class="annot"><span class="annottext">UnitId
+</span><a href="#local-6989586621681863718"><span class="hs-identifier hs-var">pkg</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-180"></span><span>
+</span><span id="line-181"></span><span>
+</span><span id="line-182"></span><span class="hs-comment">-- | Add an imported foreign label to the list of local declarations.</span><span>
+</span><span id="line-183"></span><span class="hs-comment">--      If this is done at the start of the module the declaration will scope</span><span>
+</span><span id="line-184"></span><span class="hs-comment">--      over the whole module.</span><span>
+</span><span id="line-185"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#newImport"><span class="hs-identifier hs-type">newImport</span></a></span><span>
+</span><span id="line-186"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Data.FastString.html#FastString"><span class="hs-identifier hs-type">FastString</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Cmm.CLabel.html#CLabel"><span class="hs-identifier hs-type">CLabel</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-187"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-188"></span><span>
+</span><span id="line-189"></span><span id="newImport"><span class="annot"><span class="annottext">newImport :: (FastString, CLabel) -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#newImport"><span class="hs-identifier hs-var hs-var">newImport</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681863719"><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863719"><span class="hs-identifier hs-var">name</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681863720"><span class="annot"><span class="annottext">CLabel
+</span><a href="#local-6989586621681863720"><span class="hs-identifier hs-var">cmmLabel</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-190"></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FastString -&gt; CmmExpr -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#addVarDecl"><span class="hs-identifier hs-var">addVarDecl</span></a></span><span> </span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863719"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmLit -&gt; CmmExpr
+</span><a href="GHC.Cmm.Expr.html#CmmLit"><span class="hs-identifier hs-var">CmmLit</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CLabel -&gt; CmmLit
+</span><a href="GHC.Cmm.Expr.html#CmmLabel"><span class="hs-identifier hs-var">CmmLabel</span></a></span><span> </span><span class="annot"><span class="annottext">CLabel
+</span><a href="#local-6989586621681863720"><span class="hs-identifier hs-var">cmmLabel</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-191"></span><span>
+</span><span id="line-192"></span><span>
+</span><span id="line-193"></span><span class="hs-comment">-- | Lookup the BlockId bound to the label with this name.</span><span>
+</span><span id="line-194"></span><span class="hs-comment">--      If one hasn't been bound yet, create a fresh one based on the</span><span>
+</span><span id="line-195"></span><span class="hs-comment">--      Unique of the name.</span><span>
+</span><span id="line-196"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#lookupLabel"><span class="hs-identifier hs-type">lookupLabel</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html#FastString"><span class="hs-identifier hs-type">FastString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.BlockId.html#BlockId"><span class="hs-identifier hs-type">BlockId</span></a></span><span>
+</span><span id="line-197"></span><span id="lookupLabel"><span class="annot"><span class="annottext">lookupLabel :: FastString -&gt; CmmParse BlockId
+</span><a href="GHC.StgToCmm.ExtCode.html#lookupLabel"><span class="hs-identifier hs-var hs-var">lookupLabel</span></a></span></span><span> </span><span id="local-6989586621681863723"><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863723"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-198"></span><span>  </span><span id="local-6989586621681863724"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863724"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmParse Env
+</span><a href="GHC.StgToCmm.ExtCode.html#getEnv"><span class="hs-identifier hs-var">getEnv</span></a></span><span>
+</span><span id="line-199"></span><span>  </span><span class="annot"><span class="annottext">BlockId -&gt; CmmParse BlockId
+forall a. a -&gt; CmmParse a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(BlockId -&gt; CmmParse BlockId) -&gt; BlockId -&gt; CmmParse BlockId
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-200"></span><span>     </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Env -&gt; FastString -&gt; Maybe Named
+forall key elt. Uniquable key =&gt; UniqFM key elt -&gt; key -&gt; Maybe elt
+</span><a href="GHC.Types.Unique.FM.html#lookupUFM"><span class="hs-identifier hs-var">lookupUFM</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863724"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863723"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-201"></span><span>        </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#LabelN"><span class="hs-identifier hs-type">LabelN</span></a></span><span> </span><span id="local-6989586621681863726"><span class="annot"><span class="annottext">BlockId
+</span><a href="#local-6989586621681863726"><span class="hs-identifier hs-var">l</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">BlockId
+</span><a href="#local-6989586621681863726"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-202"></span><span>        </span><span id="local-6989586621681863727"><span class="annot"><span class="annottext">Maybe Named
+</span><a href="#local-6989586621681863727"><span class="hs-identifier hs-var">_other</span></a></span></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Unique -&gt; BlockId
+</span><a href="GHC.Cmm.BlockId.html#mkBlockId"><span class="hs-identifier hs-var">mkBlockId</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Unique -&gt; Char -&gt; Unique
+</span><a href="GHC.Types.Unique.html#newTagUnique"><span class="hs-identifier hs-var">newTagUnique</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FastString -&gt; Unique
+forall a. Uniquable a =&gt; a -&gt; Unique
+</span><a href="GHC.Types.Unique.html#getUnique"><span class="hs-identifier hs-var">getUnique</span></a></span><span> </span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863723"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'L'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-203"></span><span>
+</span><span id="line-204"></span><span>
+</span><span id="line-205"></span><span class="hs-comment">-- | Lookup the location of a named variable.</span><span>
+</span><span id="line-206"></span><span class="hs-comment">--      Unknown names are treated as if they had been 'import'ed from the runtime system.</span><span>
+</span><span id="line-207"></span><span class="hs-comment">--      This saves us a lot of bother in the RTS sources, at the expense of</span><span>
+</span><span id="line-208"></span><span class="hs-comment">--      deferring some errors to link time.</span><span>
+</span><span id="line-209"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#lookupName"><span class="hs-identifier hs-type">lookupName</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html#FastString"><span class="hs-identifier hs-type">FastString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmExpr"><span class="hs-identifier hs-type">CmmExpr</span></a></span><span>
+</span><span id="line-210"></span><span id="lookupName"><span class="annot"><span class="annottext">lookupName :: FastString -&gt; CmmParse CmmExpr
+</span><a href="GHC.StgToCmm.ExtCode.html#lookupName"><span class="hs-identifier hs-var hs-var">lookupName</span></a></span></span><span> </span><span id="local-6989586621681863730"><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863730"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-211"></span><span>  </span><span id="local-6989586621681863731"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863731"><span class="hs-identifier hs-var">env</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmParse Env
+</span><a href="GHC.StgToCmm.ExtCode.html#getEnv"><span class="hs-identifier hs-var">getEnv</span></a></span><span>
+</span><span id="line-212"></span><span>  </span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmParse CmmExpr
+forall a. a -&gt; CmmParse a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(CmmExpr -&gt; CmmParse CmmExpr) -&gt; CmmExpr -&gt; CmmParse CmmExpr
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-213"></span><span>     </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Env -&gt; FastString -&gt; Maybe Named
+forall key elt. Uniquable key =&gt; UniqFM key elt -&gt; key -&gt; Maybe elt
+</span><a href="GHC.Types.Unique.FM.html#lookupUFM"><span class="hs-identifier hs-var">lookupUFM</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863731"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863730"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-214"></span><span>        </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#VarN"><span class="hs-identifier hs-type">VarN</span></a></span><span> </span><span id="local-6989586621681863732"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863732"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span>   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863732"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-215"></span><span>        </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#FunN"><span class="hs-identifier hs-type">FunN</span></a></span><span> </span><span id="local-6989586621681863733"><span class="annot"><span class="annottext">UnitId
+</span><a href="#local-6989586621681863733"><span class="hs-identifier hs-var">uid</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">CmmLit -&gt; CmmExpr
+</span><a href="GHC.Cmm.Expr.html#CmmLit"><span class="hs-identifier hs-var">CmmLit</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CLabel -&gt; CmmLit
+</span><a href="GHC.Cmm.Expr.html#CmmLabel"><span class="hs-identifier hs-var">CmmLabel</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UnitId -&gt; FastString -&gt; CLabel
+</span><a href="GHC.Cmm.CLabel.html#mkCmmCodeLabel"><span class="hs-identifier hs-var">mkCmmCodeLabel</span></a></span><span> </span><span class="annot"><span class="annottext">UnitId
+</span><a href="#local-6989586621681863733"><span class="hs-identifier hs-var">uid</span></a></span><span>       </span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863730"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-216"></span><span>        </span><span id="local-6989586621681863735"><span class="annot"><span class="annottext">Maybe Named
+</span><a href="#local-6989586621681863735"><span class="hs-identifier hs-var">_other</span></a></span></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">CmmLit -&gt; CmmExpr
+</span><a href="GHC.Cmm.Expr.html#CmmLit"><span class="hs-identifier hs-var">CmmLit</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CLabel -&gt; CmmLit
+</span><a href="GHC.Cmm.Expr.html#CmmLabel"><span class="hs-identifier hs-var">CmmLabel</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UnitId -&gt; FastString -&gt; CLabel
+</span><a href="GHC.Cmm.CLabel.html#mkCmmCodeLabel"><span class="hs-identifier hs-var">mkCmmCodeLabel</span></a></span><span> </span><span class="annot"><span class="annottext">UnitId
+</span><a href="GHC.Unit.Types.html#rtsUnitId"><span class="hs-identifier hs-var">rtsUnitId</span></a></span><span> </span><span class="annot"><span class="annottext">FastString
+</span><a href="#local-6989586621681863730"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-217"></span><span>
+</span><span id="line-218"></span><span>
+</span><span id="line-219"></span><span class="annot"><span class="hs-comment">-- | Lift an FCode computation into the CmmParse monad</span></span><span>
+</span><span id="line-220"></span><span id="local-6989586621681863496"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#code"><span class="hs-identifier hs-type">code</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.StgToCmm.Monad.html#FCode"><span class="hs-identifier hs-type">FCode</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863496"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863496"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-221"></span><span id="code"><span class="annot"><span class="annottext">code :: forall a. FCode a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#code"><span class="hs-identifier hs-var hs-var">code</span></a></span></span><span> </span><span id="local-6989586621681863739"><span class="annot"><span class="annottext">FCode a
+</span><a href="#local-6989586621681863739"><span class="hs-identifier hs-var">fc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a)
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Env
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681863740"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863740"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-222"></span><span>                </span><span id="local-6989586621681863741"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681863741"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FCode a
+</span><a href="#local-6989586621681863739"><span class="hs-identifier hs-var">fc</span></a></span><span>
+</span><span id="line-223"></span><span>                </span><span class="annot"><span class="annottext">(Decls, a) -&gt; FCode (Decls, a)
+forall a. a -&gt; FCode a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863740"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681863741"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-224"></span><span>
+</span><span id="line-225"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#emit"><span class="hs-identifier hs-type">emit</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Graph.html#CmmAGraph"><span class="hs-identifier hs-type">CmmAGraph</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-226"></span><span id="emit"><span class="annot"><span class="annottext">emit :: CmmAGraph -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#emit"><span class="hs-identifier hs-var hs-var">emit</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FCode () -&gt; ExtCode
+forall a. FCode a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#code"><span class="hs-identifier hs-var">code</span></a></span><span> </span><span class="annot"><span class="annottext">(FCode () -&gt; ExtCode)
+-&gt; (CmmAGraph -&gt; FCode ()) -&gt; CmmAGraph -&gt; ExtCode
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">CmmAGraph -&gt; FCode ()
+</span><a href="GHC.StgToCmm.Monad.html#emit"><span class="hs-identifier hs-var">F.emit</span></a></span><span>
+</span><span id="line-227"></span><span>
+</span><span id="line-228"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#emitLabel"><span class="hs-identifier hs-type">emitLabel</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.BlockId.html#BlockId"><span class="hs-identifier hs-type">BlockId</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-229"></span><span id="emitLabel"><span class="annot"><span class="annottext">emitLabel :: BlockId -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#emitLabel"><span class="hs-identifier hs-var hs-var">emitLabel</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FCode () -&gt; ExtCode
+forall a. FCode a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#code"><span class="hs-identifier hs-var">code</span></a></span><span> </span><span class="annot"><span class="annottext">(FCode () -&gt; ExtCode)
+-&gt; (BlockId -&gt; FCode ()) -&gt; BlockId -&gt; ExtCode
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">BlockId -&gt; FCode ()
+</span><a href="GHC.StgToCmm.Monad.html#emitLabel"><span class="hs-identifier hs-var">F.emitLabel</span></a></span><span>
+</span><span id="line-230"></span><span>
+</span><span id="line-231"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#emitAssign"><span class="hs-identifier hs-type">emitAssign</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Reg.html#CmmReg"><span class="hs-identifier hs-type">CmmReg</span></a></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmExpr"><span class="hs-identifier hs-type">CmmExpr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-232"></span><span id="emitAssign"><span class="annot"><span class="annottext">emitAssign :: CmmReg -&gt; CmmExpr -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#emitAssign"><span class="hs-identifier hs-var hs-var">emitAssign</span></a></span></span><span> </span><span id="local-6989586621681863745"><span class="annot"><span class="annottext">CmmReg
+</span><a href="#local-6989586621681863745"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span id="local-6989586621681863746"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863746"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FCode () -&gt; ExtCode
+forall a. FCode a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#code"><span class="hs-identifier hs-var">code</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmReg -&gt; CmmExpr -&gt; FCode ()
+</span><a href="GHC.StgToCmm.Monad.html#emitAssign"><span class="hs-identifier hs-var">F.emitAssign</span></a></span><span> </span><span class="annot"><span class="annottext">CmmReg
+</span><a href="#local-6989586621681863745"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863746"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-233"></span><span>
+</span><span id="line-234"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#emitStore"><span class="hs-identifier hs-type">emitStore</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.MachOp.html#MemoryOrdering"><span class="hs-identifier hs-type">MemoryOrdering</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmExpr"><span class="hs-identifier hs-type">CmmExpr</span></a></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmExpr"><span class="hs-identifier hs-type">CmmExpr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-235"></span><span id="emitStore"><span class="annot"><span class="annottext">emitStore :: Maybe MemoryOrdering -&gt; CmmExpr -&gt; CmmExpr -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#emitStore"><span class="hs-identifier hs-var hs-var">emitStore</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681863748"><span class="annot"><span class="annottext">MemoryOrdering
+</span><a href="#local-6989586621681863748"><span class="hs-identifier hs-var">mem_ord</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621681863749"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863749"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span id="local-6989586621681863750"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863750"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-236"></span><span>  </span><span id="local-6989586621681863751"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681863751"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CmmParse Platform
+</span><a href="GHC.StgToCmm.ExtCode.html#getPlatform"><span class="hs-identifier hs-var">getPlatform</span></a></span><span>
+</span><span id="line-237"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681863752"><span class="annot"><span class="annottext">w :: Width
+</span><a href="#local-6989586621681863752"><span class="hs-identifier hs-var hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CmmType -&gt; Width
+</span><a href="GHC.Cmm.Type.html#typeWidth"><span class="hs-identifier hs-var">typeWidth</span></a></span><span> </span><span class="annot"><span class="annottext">(CmmType -&gt; Width) -&gt; CmmType -&gt; Width
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Platform -&gt; CmmExpr -&gt; CmmType
+</span><a href="GHC.Cmm.Expr.html#cmmExprType"><span class="hs-identifier hs-var">cmmExprType</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681863751"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863750"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-238"></span><span>  </span><span class="annot"><span class="annottext">CmmAGraph -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#emit"><span class="hs-identifier hs-var">emit</span></a></span><span> </span><span class="annot"><span class="annottext">(CmmAGraph -&gt; ExtCode) -&gt; CmmAGraph -&gt; ExtCode
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignTarget -&gt; [LocalReg] -&gt; [CmmExpr] -&gt; CmmAGraph
+</span><a href="GHC.Cmm.Graph.html#mkUnsafeCall"><span class="hs-identifier hs-var">mkUnsafeCall</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CallishMachOp -&gt; ForeignTarget
+</span><a href="GHC.Cmm.Node.html#PrimTarget"><span class="hs-identifier hs-var">PrimTarget</span></a></span><span> </span><span class="annot"><span class="annottext">(CallishMachOp -&gt; ForeignTarget) -&gt; CallishMachOp -&gt; ForeignTarget
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Width -&gt; MemoryOrdering -&gt; CallishMachOp
+</span><a href="GHC.Cmm.MachOp.html#MO_AtomicWrite"><span class="hs-identifier hs-var">MO_AtomicWrite</span></a></span><span> </span><span class="annot"><span class="annottext">Width
+</span><a href="#local-6989586621681863752"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">MemoryOrdering
+</span><a href="#local-6989586621681863748"><span class="hs-identifier hs-var">mem_ord</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863749"><span class="hs-identifier hs-var">l</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863750"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-239"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#emitStore"><span class="hs-identifier hs-var">emitStore</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe MemoryOrdering
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span> </span><span id="local-6989586621681863758"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863758"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span id="local-6989586621681863759"><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863759"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FCode () -&gt; ExtCode
+forall a. FCode a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#code"><span class="hs-identifier hs-var">code</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmExpr -&gt; CmmExpr -&gt; FCode ()
+</span><a href="GHC.StgToCmm.Monad.html#emitStore"><span class="hs-identifier hs-var">F.emitStore</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863758"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">CmmExpr
+</span><a href="#local-6989586621681863759"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-240"></span><span>
+</span><span id="line-241"></span><span id="local-6989586621681863534"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getCode"><span class="hs-identifier hs-type">getCode</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863534"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.Graph.html#CmmAGraph"><span class="hs-identifier hs-type">CmmAGraph</span></a></span></span><span>
+</span><span id="line-242"></span><span id="getCode"><span class="annot"><span class="annottext">getCode :: forall a. CmmParse a -&gt; CmmParse CmmAGraph
+</span><a href="GHC.StgToCmm.ExtCode.html#getCode"><span class="hs-identifier hs-var hs-var">getCode</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-type">EC</span></a></span><span> </span><span id="local-6989586621681863763"><span class="annot"><span class="annottext">String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="#local-6989586621681863763"><span class="hs-identifier hs-var">ec</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, CmmAGraph))
+-&gt; CmmParse CmmAGraph
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, CmmAGraph))
+ -&gt; CmmParse CmmAGraph)
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, CmmAGraph))
+-&gt; CmmParse CmmAGraph
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681863764"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863764"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621681863765"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863765"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621681863766"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863766"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-243"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621681863767"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863767"><span class="hs-identifier hs-var">s'</span></a></span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">a
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621681863768"><span class="annot"><span class="annottext">CmmAGraph
+</span><a href="#local-6989586621681863768"><span class="hs-identifier hs-var">gr</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FCode (Decls, a) -&gt; FCode ((Decls, a), CmmAGraph)
+forall a. FCode a -&gt; FCode (a, CmmAGraph)
+</span><a href="GHC.StgToCmm.Monad.html#getCodeR"><span class="hs-identifier hs-var">F.getCodeR</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="#local-6989586621681863763"><span class="hs-identifier hs-var">ec</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863764"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863765"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863766"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-244"></span><span>  </span><span class="annot"><span class="annottext">(Decls, CmmAGraph) -&gt; FCode (Decls, CmmAGraph)
+forall a. a -&gt; FCode a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863767"><span class="hs-identifier hs-var">s'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">CmmAGraph
+</span><a href="#local-6989586621681863768"><span class="hs-identifier hs-var">gr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-245"></span><span>
+</span><span id="line-246"></span><span id="local-6989586621681863537"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getCodeR"><span class="hs-identifier hs-type">getCodeR</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863537"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621681863537"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Cmm.Graph.html#CmmAGraph"><span class="hs-identifier hs-type">CmmAGraph</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-247"></span><span id="getCodeR"><span class="annot"><span class="annottext">getCodeR :: forall a. CmmParse a -&gt; CmmParse (a, CmmAGraph)
+</span><a href="GHC.StgToCmm.ExtCode.html#getCodeR"><span class="hs-identifier hs-var hs-var">getCodeR</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-type">EC</span></a></span><span> </span><span id="local-6989586621681863772"><span class="annot"><span class="annottext">String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="#local-6989586621681863772"><span class="hs-identifier hs-var">ec</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, (a, CmmAGraph)))
+-&gt; CmmParse (a, CmmAGraph)
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, (a, CmmAGraph)))
+ -&gt; CmmParse (a, CmmAGraph))
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, (a, CmmAGraph)))
+-&gt; CmmParse (a, CmmAGraph)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681863773"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863773"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621681863774"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863774"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621681863775"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863775"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-248"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621681863776"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863776"><span class="hs-identifier hs-var">s'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681863777"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681863777"><span class="hs-identifier hs-var">r</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621681863778"><span class="annot"><span class="annottext">CmmAGraph
+</span><a href="#local-6989586621681863778"><span class="hs-identifier hs-var">gr</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FCode (Decls, a) -&gt; FCode ((Decls, a), CmmAGraph)
+forall a. FCode a -&gt; FCode (a, CmmAGraph)
+</span><a href="GHC.StgToCmm.Monad.html#getCodeR"><span class="hs-identifier hs-var">F.getCodeR</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="#local-6989586621681863772"><span class="hs-identifier hs-var">ec</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863773"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863774"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863775"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-249"></span><span>  </span><span class="annot"><span class="annottext">(Decls, (a, CmmAGraph)) -&gt; FCode (Decls, (a, CmmAGraph))
+forall a. a -&gt; FCode a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863776"><span class="hs-identifier hs-var">s'</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681863777"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">CmmAGraph
+</span><a href="#local-6989586621681863778"><span class="hs-identifier hs-var">gr</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-250"></span><span>
+</span><span id="line-251"></span><span id="local-6989586621681863539"><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getCodeScoped"><span class="hs-identifier hs-type">getCodeScoped</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681863539"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621681863539"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Cmm.Graph.html#CmmAGraphScoped"><span class="hs-identifier hs-type">CmmAGraphScoped</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-252"></span><span id="getCodeScoped"><span class="annot"><span class="annottext">getCodeScoped :: forall a. CmmParse a -&gt; CmmParse (a, CmmAGraphScoped)
+</span><a href="GHC.StgToCmm.ExtCode.html#getCodeScoped"><span class="hs-identifier hs-var hs-var">getCodeScoped</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-type">EC</span></a></span><span> </span><span id="local-6989586621681863781"><span class="annot"><span class="annottext">String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="#local-6989586621681863781"><span class="hs-identifier hs-var">ec</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, (a, CmmAGraphScoped)))
+-&gt; CmmParse (a, CmmAGraphScoped)
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, (a, CmmAGraphScoped)))
+ -&gt; CmmParse (a, CmmAGraphScoped))
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, (a, CmmAGraphScoped)))
+-&gt; CmmParse (a, CmmAGraphScoped)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681863782"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863782"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621681863783"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863783"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621681863784"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863784"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-253"></span><span>  </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621681863785"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863785"><span class="hs-identifier hs-var">s'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681863786"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681863786"><span class="hs-identifier hs-var">r</span></a></span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span id="local-6989586621681863787"><span class="annot"><span class="annottext">CmmAGraphScoped
+</span><a href="#local-6989586621681863787"><span class="hs-identifier hs-var">gr</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FCode (Decls, a) -&gt; FCode ((Decls, a), CmmAGraphScoped)
+forall a. FCode a -&gt; FCode (a, CmmAGraphScoped)
+</span><a href="GHC.StgToCmm.Monad.html#getCodeScoped"><span class="hs-identifier hs-var">F.getCodeScoped</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="#local-6989586621681863781"><span class="hs-identifier hs-var">ec</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863782"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863783"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863784"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-254"></span><span>  </span><span class="annot"><span class="annottext">(Decls, (a, CmmAGraphScoped))
+-&gt; FCode (Decls, (a, CmmAGraphScoped))
+forall a. a -&gt; FCode a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863785"><span class="hs-identifier hs-var">s'</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621681863786"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">CmmAGraphScoped
+</span><a href="#local-6989586621681863787"><span class="hs-identifier hs-var">gr</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-255"></span><span>
+</span><span id="line-256"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#emitOutOfLine"><span class="hs-identifier hs-type">emitOutOfLine</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.BlockId.html#BlockId"><span class="hs-identifier hs-type">BlockId</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.Graph.html#CmmAGraphScoped"><span class="hs-identifier hs-type">CmmAGraphScoped</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-257"></span><span id="emitOutOfLine"><span class="annot"><span class="annottext">emitOutOfLine :: BlockId -&gt; CmmAGraphScoped -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#emitOutOfLine"><span class="hs-identifier hs-var hs-var">emitOutOfLine</span></a></span></span><span> </span><span id="local-6989586621681863789"><span class="annot"><span class="annottext">BlockId
+</span><a href="#local-6989586621681863789"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span id="local-6989586621681863790"><span class="annot"><span class="annottext">CmmAGraphScoped
+</span><a href="#local-6989586621681863790"><span class="hs-identifier hs-var">g</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FCode () -&gt; ExtCode
+forall a. FCode a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#code"><span class="hs-identifier hs-var">code</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BlockId -&gt; CmmAGraphScoped -&gt; FCode ()
+</span><a href="GHC.StgToCmm.Monad.html#emitOutOfLine"><span class="hs-identifier hs-var">F.emitOutOfLine</span></a></span><span> </span><span class="annot"><span class="annottext">BlockId
+</span><a href="#local-6989586621681863789"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">CmmAGraphScoped
+</span><a href="#local-6989586621681863790"><span class="hs-identifier hs-var">g</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-258"></span><span>
+</span><span id="line-259"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#withUpdFrameOff"><span class="hs-identifier hs-type">withUpdFrameOff</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.Node.html#UpdFrameOffset"><span class="hs-identifier hs-type">UpdFrameOffset</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-260"></span><span id="withUpdFrameOff"><span class="annot"><span class="annottext">withUpdFrameOff :: UpdFrameOffset -&gt; ExtCode -&gt; ExtCode
+</span><a href="GHC.StgToCmm.ExtCode.html#withUpdFrameOff"><span class="hs-identifier hs-var hs-var">withUpdFrameOff</span></a></span></span><span> </span><span id="local-6989586621681863792"><span class="annot"><span class="annottext">UpdFrameOffset
+</span><a href="#local-6989586621681863792"><span class="hs-identifier hs-var">size</span></a></span></span><span> </span><span id="local-6989586621681863793"><span class="annot"><span class="annottext">ExtCode
+</span><a href="#local-6989586621681863793"><span class="hs-identifier hs-var">inner</span></a></span></span><span>
+</span><span id="line-261"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, ())) -&gt; ExtCode
+forall a.
+(String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)) -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#EC"><span class="hs-identifier hs-var">EC</span></a></span><span> </span><span class="annot"><span class="annottext">((String -&gt; Env -&gt; Decls -&gt; FCode (Decls, ())) -&gt; ExtCode)
+-&gt; (String -&gt; Env -&gt; Decls -&gt; FCode (Decls, ())) -&gt; ExtCode
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681863794"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863794"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621681863795"><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863795"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621681863796"><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863796"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">UpdFrameOffset -&gt; FCode (Decls, ()) -&gt; FCode (Decls, ())
+forall a. UpdFrameOffset -&gt; FCode a -&gt; FCode a
+</span><a href="GHC.StgToCmm.Monad.html#withUpdFrameOff"><span class="hs-identifier hs-var">F.withUpdFrameOff</span></a></span><span> </span><span class="annot"><span class="annottext">UpdFrameOffset
+</span><a href="#local-6989586621681863792"><span class="hs-identifier hs-var">size</span></a></span><span> </span><span class="annot"><span class="annottext">(FCode (Decls, ()) -&gt; FCode (Decls, ()))
+-&gt; FCode (Decls, ()) -&gt; FCode (Decls, ())
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ExtCode -&gt; String -&gt; Env -&gt; Decls -&gt; FCode (Decls, ())
+forall a. CmmParse a -&gt; String -&gt; Env -&gt; Decls -&gt; FCode (Decls, a)
+</span><a href="GHC.StgToCmm.ExtCode.html#unEC"><span class="hs-identifier hs-var">unEC</span></a></span><span> </span><span class="annot"><span class="annottext">ExtCode
+</span><a href="#local-6989586621681863793"><span class="hs-identifier hs-var">inner</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621681863794"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621681863795"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Decls
+</span><a href="#local-6989586621681863796"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-262"></span><span>
+</span><span id="line-263"></span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#getUpdFrameOff"><span class="hs-identifier hs-type">getUpdFrameOff</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.StgToCmm.ExtCode.html#CmmParse"><span class="hs-identifier hs-type">CmmParse</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.Node.html#UpdFrameOffset"><span class="hs-identifier hs-type">UpdFrameOffset</span></a></span><span>
+</span><span id="line-264"></span><span id="getUpdFrameOff"><span class="annot"><span class="annottext">getUpdFrameOff :: CmmParse UpdFrameOffset
+</span><a href="GHC.StgToCmm.ExtCode.html#getUpdFrameOff"><span class="hs-identifier hs-var hs-var">getUpdFrameOff</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FCode UpdFrameOffset -&gt; CmmParse UpdFrameOffset
+forall a. FCode a -&gt; CmmParse a
+</span><a href="GHC.StgToCmm.ExtCode.html#code"><span class="hs-identifier hs-var">code</span></a></span><span> </span><span class="annot"><span class="annottext">(FCode UpdFrameOffset -&gt; CmmParse UpdFrameOffset)
+-&gt; FCode UpdFrameOffset -&gt; CmmParse UpdFrameOffset
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">FCode UpdFrameOffset
+</span><a href="GHC.StgToCmm.Monad.html#getUpdFrameOff"><span class="hs-identifier hs-var">F.getUpdFrameOff</span></a></span><span>
+</span><span id="line-265"></span></pre></body></html>

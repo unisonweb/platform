@@ -1,0 +1,360 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP #-}</span><span>
+</span><span id="line-2"></span><span class="annot"><span class="hs-comment">{-|
+
+== Rationale
+
+This module offers functions to handle files that offer better durability and/or
+atomicity.
+
+== When to use functions in this module?
+
+Given the usage of this functions comes at a cost in performance, it is important to
+consider what are the use cases that are ideal for each of the functions.
+
+=== Not Durable and not Atomic
+
+For this use case, you want to use the regular functions:
+
+* 'withBinaryFile'
+* 'writeBinaryFile'
+
+The regular use case for this scenario happens when your program is dealing with outputs
+that are never going to be consumed again by your program. For example, imagine you have a
+program that generates sales reports for the last month, this is a report that can be
+generated quickly; you don't really care if the output file gets corrupted or lost at one
+particular execution of your program given that is cheap to execute the data export
+program a second time. In other words, your program doesn't /rely/ on the data contained
+in this file in order to work.
+
+=== Atomic but not Durable
+
+ Imagine a scenario where your program builds a temporary file that serves as an
+intermediate step to a bigger task, like Object files (@.o@) in a compilation process. The
+program will use an existing @.o@ file if it is present, or it will build one from scratch
+if it is not. The file is not really required, but if it is present, it *must* be valid
+and consistent. In this situation, you care about atomicity, but not durability. You can
+use the functions for such scenario:
+
+* 'withBinaryFileAtomic'
+* 'writeBinaryFileAtomic'
+
+__Note__ - there is a peculiar difference between regular file writing functionality and
+the one that is done atomically. Even if the orignal file is removed while it is being
+modified, because of atomicity, it will be restored with all modifications, if any. The
+reason for this is because a copy of the file was made prior to modifications and at the
+end the existing is atomically replaced. An important consequence of this fact is that
+whenever the folder containing the file which is being modified is removed, all bets are
+off and all atomic functions will result in an exception.
+
+=== Durable but not Atomic
+
+For this use case, you want to use the functions:
+
+* 'withBinaryFileDurable'
+* 'writeBinaryFileDurable'
+
+The regular use case for this scenario happens when your program deals with file
+modifications that must be guaranteed to be durable, but you don't care that changes are
+consistent. If you use this function, more than likely your program is ensuring
+consistency guarantees through other means, for example, SQLite uses the Write Ahead Log
+(WAL) algorithm to ensure changes are atomic at an application level.
+
+=== Durable and Atomic
+
+For this use case, you can use the functions:
+
+* 'withBinaryFileDurableAtomic'
+* 'writeBinaryFileDurableAtomic'
+
+The regular use case for this scenario happens when you want to ensure that after a
+program is executed, the modifications done to a file are guaranteed to be saved, and also
+that changes are rolled-back in case there is a failure (e.g.  hard reboot, shutdown,
+etc).
+
+-}</span></span><span>
+</span><span id="line-75"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">UnliftIO.IO.File</span><span>
+</span><span id="line-76"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="UnliftIO.IO.File.html#writeBinaryFile"><span class="hs-identifier">writeBinaryFile</span></a></span><span>
+</span><span id="line-77"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="UnliftIO.IO.File.html#writeBinaryFileAtomic"><span class="hs-identifier">writeBinaryFileAtomic</span></a></span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="UnliftIO.IO.File.html#writeBinaryFileDurable"><span class="hs-identifier">writeBinaryFileDurable</span></a></span><span>
+</span><span id="line-79"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="UnliftIO.IO.File.html#writeBinaryFileDurableAtomic"><span class="hs-identifier">writeBinaryFileDurableAtomic</span></a></span><span>
+</span><span id="line-80"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="UnliftIO.IO.html#withBinaryFile"><span class="hs-identifier">withBinaryFile</span></a></span><span>
+</span><span id="line-81"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="UnliftIO.IO.File.html#withBinaryFileAtomic"><span class="hs-identifier">withBinaryFileAtomic</span></a></span><span>
+</span><span id="line-82"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="UnliftIO.IO.File.html#withBinaryFileDurable"><span class="hs-identifier">withBinaryFileDurable</span></a></span><span>
+</span><span id="line-83"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="UnliftIO.IO.File.html#withBinaryFileDurableAtomic"><span class="hs-identifier">withBinaryFileDurableAtomic</span></a></span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="UnliftIO.IO.File.html#ensureFileDurable"><span class="hs-identifier">ensureFileDurable</span></a></span><span>
+</span><span id="line-85"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-86"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-87"></span><span>
+</span><span id="line-88"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteString</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">writeFile</span></span><span class="hs-special">)</span><span>
+</span><span id="line-89"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.IO.Unlift</span></span><span>
+</span><span id="line-90"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="UnliftIO.IO.html"><span class="hs-identifier">UnliftIO.IO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Handle</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">IOMode</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="UnliftIO.IO.html#withBinaryFile"><span class="hs-identifier">withBinaryFile</span></a></span><span class="hs-special">)</span><span class="hs-cpp">
+
+#if WINDOWS
+</span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span class="hs-identifier">ensureFileDurable</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="hs-special">`</span><span class="hs-identifier">seq</span><span class="hs-special">`</span><span> </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-96"></span><span>
+</span><span id="line-97"></span><span class="hs-identifier">writeBinaryFileDurable</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">writeBinaryFile</span><span>
+</span><span id="line-98"></span><span class="hs-identifier">writeBinaryFileDurableAtomic</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">writeBinaryFile</span><span>
+</span><span id="line-99"></span><span class="hs-identifier">writeBinaryFileAtomic</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">writeBinaryFile</span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span class="hs-identifier">withBinaryFileDurable</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">withBinaryFile</span><span>
+</span><span id="line-102"></span><span class="hs-identifier">withBinaryFileDurableAtomic</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">withBinaryFile</span><span>
+</span><span id="line-103"></span><span class="hs-identifier">withBinaryFileAtomic</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">withBinaryFile</span><span class="hs-cpp">
+
+#else
+</span><span>
+</span><span id="line-107"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">hPut</span></span><span class="hs-special">)</span><span>
+</span><span id="line-108"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="UnliftIO.IO.File.Posix.html"><span class="hs-identifier">UnliftIO.IO.File.Posix</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Posix</span></span><span>
+</span><span id="line-109"></span><span>
+</span><span id="line-110"></span><span id="ensureFileDurable"><span class="annot"><span class="annottext">ensureFileDurable :: forall (m :: * -&gt; *). MonadIO m =&gt; FilePath -&gt; m ()
+</span><a href="UnliftIO.IO.File.html#ensureFileDurable"><span class="hs-identifier hs-var hs-var">ensureFileDurable</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; m ()
+forall (m :: * -&gt; *). MonadIO m =&gt; FilePath -&gt; m ()
+</span><a href="UnliftIO.IO.File.Posix.html#ensureFileDurable"><span class="hs-identifier hs-var">Posix.ensureFileDurable</span></a></span><span>
+</span><span id="line-111"></span><span>
+</span><span id="line-112"></span><span id="writeBinaryFileDurable"><span class="annot"><span class="annottext">writeBinaryFileDurable :: forall (m :: * -&gt; *). MonadIO m =&gt; FilePath -&gt; ByteString -&gt; m ()
+</span><a href="UnliftIO.IO.File.html#writeBinaryFileDurable"><span class="hs-identifier hs-var hs-var">writeBinaryFileDurable</span></a></span></span><span> </span><span id="local-6989586621679102363"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679102363"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span id="local-6989586621679102364"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679102364"><span class="hs-identifier hs-var">bytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-113"></span><span>  </span><span class="annot"><span class="annottext">IO () -&gt; m ()
+forall a. IO a -&gt; m a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; m ()) -&gt; IO () -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IOMode -&gt; (Handle -&gt; IO ()) -&gt; IO ()
+forall (m :: * -&gt; *) r.
+MonadUnliftIO m =&gt;
+FilePath -&gt; IOMode -&gt; (Handle -&gt; m r) -&gt; m r
+</span><a href="UnliftIO.IO.File.html#withBinaryFileDurable"><span class="hs-identifier hs-var">withBinaryFileDurable</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679102363"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">IOMode
+</span><span class="hs-identifier hs-var">WriteMode</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Handle -&gt; ByteString -&gt; IO ()
+</span><span class="hs-operator hs-var">`B.hPut`</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679102364"><span class="hs-identifier hs-var">bytes</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span id="writeBinaryFileDurableAtomic"><span class="annot"><span class="annottext">writeBinaryFileDurableAtomic :: forall (m :: * -&gt; *). MonadIO m =&gt; FilePath -&gt; ByteString -&gt; m ()
+</span><a href="UnliftIO.IO.File.html#writeBinaryFileDurableAtomic"><span class="hs-identifier hs-var hs-var">writeBinaryFileDurableAtomic</span></a></span></span><span> </span><span id="local-6989586621679102370"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679102370"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span id="local-6989586621679102371"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679102371"><span class="hs-identifier hs-var">bytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-115"></span><span>  </span><span class="annot"><span class="annottext">IO () -&gt; m ()
+forall a. IO a -&gt; m a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; m ()) -&gt; IO () -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IOMode -&gt; (Handle -&gt; IO ()) -&gt; IO ()
+forall (m :: * -&gt; *) r.
+MonadUnliftIO m =&gt;
+FilePath -&gt; IOMode -&gt; (Handle -&gt; m r) -&gt; m r
+</span><a href="UnliftIO.IO.File.html#withBinaryFileDurableAtomic"><span class="hs-identifier hs-var">withBinaryFileDurableAtomic</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679102370"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">IOMode
+</span><span class="hs-identifier hs-var">WriteMode</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Handle -&gt; ByteString -&gt; IO ()
+</span><span class="hs-operator hs-var">`B.hPut`</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679102371"><span class="hs-identifier hs-var">bytes</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span id="writeBinaryFileAtomic"><span class="annot"><span class="annottext">writeBinaryFileAtomic :: forall (m :: * -&gt; *). MonadIO m =&gt; FilePath -&gt; ByteString -&gt; m ()
+</span><a href="UnliftIO.IO.File.html#writeBinaryFileAtomic"><span class="hs-identifier hs-var hs-var">writeBinaryFileAtomic</span></a></span></span><span> </span><span id="local-6989586621679102375"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679102375"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span id="local-6989586621679102376"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679102376"><span class="hs-identifier hs-var">bytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-117"></span><span>  </span><span class="annot"><span class="annottext">IO () -&gt; m ()
+forall a. IO a -&gt; m a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; m ()) -&gt; IO () -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IOMode -&gt; (Handle -&gt; IO ()) -&gt; IO ()
+forall (m :: * -&gt; *) r.
+MonadUnliftIO m =&gt;
+FilePath -&gt; IOMode -&gt; (Handle -&gt; m r) -&gt; m r
+</span><a href="UnliftIO.IO.File.html#withBinaryFileAtomic"><span class="hs-identifier hs-var">withBinaryFileAtomic</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679102375"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">IOMode
+</span><span class="hs-identifier hs-var">WriteMode</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Handle -&gt; ByteString -&gt; IO ()
+</span><span class="hs-operator hs-var">`B.hPut`</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679102376"><span class="hs-identifier hs-var">bytes</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-118"></span><span>
+</span><span id="line-119"></span><span id="withBinaryFileDurable"><span class="annot"><span class="annottext">withBinaryFileDurable :: forall (m :: * -&gt; *) r.
+MonadUnliftIO m =&gt;
+FilePath -&gt; IOMode -&gt; (Handle -&gt; m r) -&gt; m r
+</span><a href="UnliftIO.IO.File.html#withBinaryFileDurable"><span class="hs-identifier hs-var hs-var">withBinaryFileDurable</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IOMode -&gt; (Handle -&gt; m r) -&gt; m r
+forall (m :: * -&gt; *) r.
+MonadUnliftIO m =&gt;
+FilePath -&gt; IOMode -&gt; (Handle -&gt; m r) -&gt; m r
+</span><a href="UnliftIO.IO.File.Posix.html#withBinaryFileDurable"><span class="hs-identifier hs-var">Posix.withBinaryFileDurable</span></a></span><span>
+</span><span id="line-120"></span><span id="withBinaryFileDurableAtomic"><span class="annot"><span class="annottext">withBinaryFileDurableAtomic :: forall (m :: * -&gt; *) r.
+MonadUnliftIO m =&gt;
+FilePath -&gt; IOMode -&gt; (Handle -&gt; m r) -&gt; m r
+</span><a href="UnliftIO.IO.File.html#withBinaryFileDurableAtomic"><span class="hs-identifier hs-var hs-var">withBinaryFileDurableAtomic</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IOMode -&gt; (Handle -&gt; m r) -&gt; m r
+forall (m :: * -&gt; *) r.
+MonadUnliftIO m =&gt;
+FilePath -&gt; IOMode -&gt; (Handle -&gt; m r) -&gt; m r
+</span><a href="UnliftIO.IO.File.Posix.html#withBinaryFileDurableAtomic"><span class="hs-identifier hs-var">Posix.withBinaryFileDurableAtomic</span></a></span><span>
+</span><span id="line-121"></span><span id="withBinaryFileAtomic"><span class="annot"><span class="annottext">withBinaryFileAtomic :: forall (m :: * -&gt; *) r.
+MonadUnliftIO m =&gt;
+FilePath -&gt; IOMode -&gt; (Handle -&gt; m r) -&gt; m r
+</span><a href="UnliftIO.IO.File.html#withBinaryFileAtomic"><span class="hs-identifier hs-var hs-var">withBinaryFileAtomic</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IOMode -&gt; (Handle -&gt; m r) -&gt; m r
+forall (m :: * -&gt; *) r.
+MonadUnliftIO m =&gt;
+FilePath -&gt; IOMode -&gt; (Handle -&gt; m r) -&gt; m r
+</span><a href="UnliftIO.IO.File.Posix.html#withBinaryFileAtomic"><span class="hs-identifier hs-var">Posix.withBinaryFileAtomic</span></a></span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-124"></span><span class="hs-comment">-- | After a file is closed, this function opens it again and executes @fsync()@</span><span>
+</span><span id="line-125"></span><span class="hs-comment">-- internally on both the file and the directory that contains it. Note that this function</span><span>
+</span><span id="line-126"></span><span class="hs-comment">-- is intended to work around the non-durability of existing file APIs, as opposed to</span><span>
+</span><span id="line-127"></span><span class="hs-comment">-- being necessary for the API functions provided in this module.</span><span>
+</span><span id="line-128"></span><span class="hs-comment">--</span><span>
+</span><span id="line-129"></span><span class="hs-comment">-- [The effectiveness of calling this function is</span><span>
+</span><span id="line-130"></span><span class="hs-comment">-- debatable](https://stackoverflow.com/questions/37288453/calling-fsync2-after-close2/50158433#50158433),</span><span>
+</span><span id="line-131"></span><span class="hs-comment">-- as it relies on internal implementation details at the Kernel level that might</span><span>
+</span><span id="line-132"></span><span class="hs-comment">-- change. We argue that, despite this fact, calling this function may bring benefits in</span><span>
+</span><span id="line-133"></span><span class="hs-comment">-- terms of durability.</span><span>
+</span><span id="line-134"></span><span class="hs-comment">--</span><span>
+</span><span id="line-135"></span><span class="hs-comment">-- This function does not provide the same guarantee as if you would open and modify a</span><span>
+</span><span id="line-136"></span><span class="hs-comment">-- file using `withBinaryFileDurable` or `writeBinaryFileDurable`, since they ensure that</span><span>
+</span><span id="line-137"></span><span class="hs-comment">-- the @fsync()@ is called before the file is closed, so if possible use those instead.</span><span>
+</span><span id="line-138"></span><span class="hs-comment">--</span><span>
+</span><span id="line-139"></span><span class="hs-comment">-- === Cross-Platform support</span><span>
+</span><span id="line-140"></span><span class="hs-comment">--</span><span>
+</span><span id="line-141"></span><span class="hs-comment">-- This function is a noop on Windows platforms.</span><span>
+</span><span id="line-142"></span><span class="hs-comment">--</span><span>
+</span><span id="line-143"></span><span class="hs-comment">-- @since 0.2.12</span><span>
+</span><span id="line-144"></span><span id="local-6989586621679102316"><span class="annot"><a href="UnliftIO.IO.File.html#ensureFileDurable"><span class="hs-identifier hs-type">ensureFileDurable</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadIO</span></span><span> </span><span class="annot"><a href="#local-6989586621679102316"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102316"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-145"></span><span class="hs-comment">-- Implementation is at the top of the module</span><span>
+</span><span id="line-146"></span><span>
+</span><span id="line-147"></span><span>
+</span><span id="line-148"></span><span class="hs-comment">-- | Similar to 'writeBinaryFile', but it also ensures that changes executed to the file</span><span>
+</span><span id="line-149"></span><span class="hs-comment">-- are guaranteed to be durable. It internally uses @fsync()@ and makes sure it</span><span>
+</span><span id="line-150"></span><span class="hs-comment">-- synchronizes the file on disk.</span><span>
+</span><span id="line-151"></span><span class="hs-comment">--</span><span>
+</span><span id="line-152"></span><span class="hs-comment">-- === Cross-Platform support</span><span>
+</span><span id="line-153"></span><span class="hs-comment">--</span><span>
+</span><span id="line-154"></span><span class="hs-comment">-- This function behaves the same as 'RIO.writeBinaryFile' on Windows platforms.</span><span>
+</span><span id="line-155"></span><span class="hs-comment">--</span><span>
+</span><span id="line-156"></span><span class="hs-comment">-- @since 0.2.12</span><span>
+</span><span id="line-157"></span><span id="local-6989586621679102320"><span class="annot"><a href="UnliftIO.IO.File.html#writeBinaryFileDurable"><span class="hs-identifier hs-type">writeBinaryFileDurable</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadIO</span></span><span> </span><span class="annot"><a href="#local-6989586621679102320"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102320"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-158"></span><span class="hs-comment">-- Implementation is at the top of the module</span><span>
+</span><span id="line-159"></span><span>
+</span><span id="line-160"></span><span class="hs-comment">-- | Similar to 'writeBinaryFile', but it also guarantes that changes executed to the file</span><span>
+</span><span id="line-161"></span><span class="hs-comment">-- are durable, also, in case of failure, the modified file is never going to get</span><span>
+</span><span id="line-162"></span><span class="hs-comment">-- corrupted. It internally uses @fsync()@ and makes sure it synchronizes the file on</span><span>
+</span><span id="line-163"></span><span class="hs-comment">-- disk.</span><span>
+</span><span id="line-164"></span><span class="hs-comment">--</span><span>
+</span><span id="line-165"></span><span class="hs-comment">-- === Cross-Platform support</span><span>
+</span><span id="line-166"></span><span class="hs-comment">--</span><span>
+</span><span id="line-167"></span><span class="hs-comment">-- This function behaves the same as 'writeBinaryFile' on Windows platforms.</span><span>
+</span><span id="line-168"></span><span class="hs-comment">--</span><span>
+</span><span id="line-169"></span><span class="hs-comment">-- @since 0.2.12</span><span>
+</span><span id="line-170"></span><span id="local-6989586621679102386"><span class="annot"><a href="UnliftIO.IO.File.html#writeBinaryFileDurableAtomic"><span class="hs-identifier hs-type">writeBinaryFileDurableAtomic</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadIO</span></span><span> </span><span class="annot"><a href="#local-6989586621679102386"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102386"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-171"></span><span class="hs-comment">-- Implementation is at the top of the module</span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span class="hs-comment">-- | Same as 'writeBinaryFileDurableAtomic', except it does not guarantee durability.</span><span>
+</span><span id="line-174"></span><span class="hs-comment">--</span><span>
+</span><span id="line-175"></span><span class="hs-comment">-- === Cross-Platform support</span><span>
+</span><span id="line-176"></span><span class="hs-comment">--</span><span>
+</span><span id="line-177"></span><span class="hs-comment">-- This function behaves the same as 'writeBinaryFile' on Windows platforms.</span><span>
+</span><span id="line-178"></span><span class="hs-comment">--</span><span>
+</span><span id="line-179"></span><span class="hs-comment">-- @since 0.2.12</span><span>
+</span><span id="line-180"></span><span id="local-6989586621679102387"><span class="annot"><a href="UnliftIO.IO.File.html#writeBinaryFileAtomic"><span class="hs-identifier hs-type">writeBinaryFileAtomic</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadIO</span></span><span> </span><span class="annot"><a href="#local-6989586621679102387"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102387"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-181"></span><span class="hs-comment">-- Implementation is at the top of the module</span><span>
+</span><span id="line-182"></span><span>
+</span><span id="line-183"></span><span class="hs-comment">-- | Opens a file with the following guarantees:</span><span>
+</span><span id="line-184"></span><span class="hs-comment">--</span><span>
+</span><span id="line-185"></span><span class="hs-comment">-- * It successfully closes the file in case of an asynchronous exception</span><span>
+</span><span id="line-186"></span><span class="hs-comment">--</span><span>
+</span><span id="line-187"></span><span class="hs-comment">-- * It reliably saves the file in the correct directory; including edge case situations</span><span>
+</span><span id="line-188"></span><span class="hs-comment">--   like a different device being mounted to the current directory, or the current</span><span>
+</span><span id="line-189"></span><span class="hs-comment">--   directory being renamed to some other name while the file is being used.</span><span>
+</span><span id="line-190"></span><span class="hs-comment">--</span><span>
+</span><span id="line-191"></span><span class="hs-comment">-- * It ensures durability by executing an @fsync()@ call before closing the file handle</span><span>
+</span><span id="line-192"></span><span class="hs-comment">--</span><span>
+</span><span id="line-193"></span><span class="hs-comment">-- === Cross-Platform support</span><span>
+</span><span id="line-194"></span><span class="hs-comment">--</span><span>
+</span><span id="line-195"></span><span class="hs-comment">-- This function behaves the same as 'System.IO.withBinaryFile' on Windows platforms.</span><span>
+</span><span id="line-196"></span><span class="hs-comment">--</span><span>
+</span><span id="line-197"></span><span class="hs-comment">-- @since 0.2.12</span><span>
+</span><span id="line-198"></span><span id="local-6989586621679102331"><span id="local-6989586621679102332"><span class="annot"><a href="UnliftIO.IO.File.html#withBinaryFileDurable"><span class="hs-identifier hs-type">withBinaryFileDurable</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-199"></span><span>     </span><span class="annot"><span class="hs-identifier hs-type">MonadUnliftIO</span></span><span> </span><span class="annot"><a href="#local-6989586621679102331"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IOMode</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Handle</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102331"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102332"><span class="hs-identifier hs-type">r</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102331"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102332"><span class="hs-identifier hs-type">r</span></a></span></span></span><span>
+</span><span id="line-200"></span><span class="hs-comment">-- Implementation is at the top of the module</span><span>
+</span><span id="line-201"></span><span>
+</span><span id="line-202"></span><span class="hs-comment">-- | Opens a file with the following guarantees:</span><span>
+</span><span id="line-203"></span><span class="hs-comment">--</span><span>
+</span><span id="line-204"></span><span class="hs-comment">-- * It successfully closes the file in case of an asynchronous exception</span><span>
+</span><span id="line-205"></span><span class="hs-comment">--</span><span>
+</span><span id="line-206"></span><span class="hs-comment">-- * It reliably saves the file in the correct directory; including edge case situations</span><span>
+</span><span id="line-207"></span><span class="hs-comment">--   like a different device being mounted to the current directory, or the current</span><span>
+</span><span id="line-208"></span><span class="hs-comment">--   directory being renamed to some other name while the file is being used.</span><span>
+</span><span id="line-209"></span><span class="hs-comment">--</span><span>
+</span><span id="line-210"></span><span class="hs-comment">-- * It ensures durability by executing an @fsync()@ call before closing the file handle</span><span>
+</span><span id="line-211"></span><span class="hs-comment">--</span><span>
+</span><span id="line-212"></span><span class="hs-comment">-- * It keeps all changes in a temporary file, and after it is closed it atomically moves</span><span>
+</span><span id="line-213"></span><span class="hs-comment">--   the temporary file to the original filepath, in case of catastrophic failure, the</span><span>
+</span><span id="line-214"></span><span class="hs-comment">--   original file stays unaffected.</span><span>
+</span><span id="line-215"></span><span class="hs-comment">--</span><span>
+</span><span id="line-216"></span><span class="hs-comment">-- If you do not need durability but only atomicity, use `withBinaryFileAtomic` instead,</span><span>
+</span><span id="line-217"></span><span class="hs-comment">-- which is faster as it does not perform @fsync()@.</span><span>
+</span><span id="line-218"></span><span class="hs-comment">--</span><span>
+</span><span id="line-219"></span><span class="hs-comment">-- __Important__ - Make sure not to close the `Handle`, it will be closed for you,</span><span>
+</span><span id="line-220"></span><span class="hs-comment">-- otherwise it will result in @invalid argument (Bad file descriptor)@ exception.</span><span>
+</span><span id="line-221"></span><span class="hs-comment">--</span><span>
+</span><span id="line-222"></span><span class="hs-comment">-- === Performance Considerations</span><span>
+</span><span id="line-223"></span><span class="hs-comment">--</span><span>
+</span><span id="line-224"></span><span class="hs-comment">-- When using a writable but non-truncating 'IOMode' (i.e. 'ReadWriteMode' and</span><span>
+</span><span id="line-225"></span><span class="hs-comment">-- 'AppendMode'), this function performs a copy operation of the specified input file to</span><span>
+</span><span id="line-226"></span><span class="hs-comment">-- guarantee the original file is intact in case of a catastrophic failure (no partial</span><span>
+</span><span id="line-227"></span><span class="hs-comment">-- writes). This approach may be prohibitive in scenarios where the input file is expected</span><span>
+</span><span id="line-228"></span><span class="hs-comment">-- to be large in size.</span><span>
+</span><span id="line-229"></span><span class="hs-comment">--</span><span>
+</span><span id="line-230"></span><span class="hs-comment">-- === Cross-Platform support</span><span>
+</span><span id="line-231"></span><span class="hs-comment">--</span><span>
+</span><span id="line-232"></span><span class="hs-comment">-- This function behaves the same as 'System.IO.withBinaryFile' on Windows platforms.</span><span>
+</span><span id="line-233"></span><span class="hs-comment">--</span><span>
+</span><span id="line-234"></span><span class="hs-comment">-- @since 0.2.12</span><span>
+</span><span id="line-235"></span><span id="local-6989586621679102390"><span id="local-6989586621679102391"><span class="annot"><a href="UnliftIO.IO.File.html#withBinaryFileDurableAtomic"><span class="hs-identifier hs-type">withBinaryFileDurableAtomic</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-236"></span><span>     </span><span class="annot"><span class="hs-identifier hs-type">MonadUnliftIO</span></span><span> </span><span class="annot"><a href="#local-6989586621679102390"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IOMode</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Handle</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102390"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102391"><span class="hs-identifier hs-type">r</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102390"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102391"><span class="hs-identifier hs-type">r</span></a></span></span></span><span>
+</span><span id="line-237"></span><span class="hs-comment">-- Implementation is at the top of the module</span><span>
+</span><span id="line-238"></span><span>
+</span><span id="line-239"></span><span>
+</span><span id="line-240"></span><span class="hs-comment">-- | Perform an action on a new or existing file at the destination file path. If</span><span>
+</span><span id="line-241"></span><span class="hs-comment">-- previously the file existed at the supplied file path then:</span><span>
+</span><span id="line-242"></span><span class="hs-comment">--</span><span>
+</span><span id="line-243"></span><span class="hs-comment">-- * in case of `WriteMode` it will be overwritten</span><span>
+</span><span id="line-244"></span><span class="hs-comment">--</span><span>
+</span><span id="line-245"></span><span class="hs-comment">-- * upon `ReadWriteMode` or `AppendMode` files contents will be copied over into a</span><span>
+</span><span id="line-246"></span><span class="hs-comment">-- temporary file, thus making sure no corruption can happen to an existing file upon any</span><span>
+</span><span id="line-247"></span><span class="hs-comment">-- failures, even catastrophic one, yet its contents are availble for modification.</span><span>
+</span><span id="line-248"></span><span class="hs-comment">--</span><span>
+</span><span id="line-249"></span><span class="hs-comment">-- * There is nothing atomic about `ReadMode`, so no special treatment there.</span><span>
+</span><span id="line-250"></span><span class="hs-comment">--</span><span>
+</span><span id="line-251"></span><span class="hs-comment">-- It is similar to `withBinaryFileDurableAtomic`, but without the durability part. It</span><span>
+</span><span id="line-252"></span><span class="hs-comment">-- means that all modification can still disappear after it has been succesfully written</span><span>
+</span><span id="line-253"></span><span class="hs-comment">-- due to some extreme event like an abrupt power loss, but the contents will not be</span><span>
+</span><span id="line-254"></span><span class="hs-comment">-- corrupted in case when the file write did not end successfully.</span><span>
+</span><span id="line-255"></span><span class="hs-comment">--</span><span>
+</span><span id="line-256"></span><span class="hs-comment">-- The same performance caveats apply as for `withBinaryFileDurableAtomic` due to making a</span><span>
+</span><span id="line-257"></span><span class="hs-comment">-- copy of the content of existing files during non-truncating writes.</span><span>
+</span><span id="line-258"></span><span class="hs-comment">--</span><span>
+</span><span id="line-259"></span><span class="hs-comment">-- __Important__ - Do not close the handle, otherwise it will result in @invalid argument</span><span>
+</span><span id="line-260"></span><span class="hs-comment">-- (Bad file descriptor)@ exception</span><span>
+</span><span id="line-261"></span><span class="hs-comment">--</span><span>
+</span><span id="line-262"></span><span class="hs-comment">-- __Note__ - on Linux operating system and only with supported file systems an anonymous</span><span>
+</span><span id="line-263"></span><span class="hs-comment">-- temporary file will be used while working on the file (see @O_TMPFILE@ in @man</span><span>
+</span><span id="line-264"></span><span class="hs-comment">-- openat@). In case when such feature is not available or not supported a temporary file</span><span>
+</span><span id="line-265"></span><span class="hs-comment">-- &quot;.target-file-nameXXX.ext.tmp&quot;, where XXX is some random number, will be created</span><span>
+</span><span id="line-266"></span><span class="hs-comment">-- alongside the target file in the same directory</span><span>
+</span><span id="line-267"></span><span class="hs-comment">--</span><span>
+</span><span id="line-268"></span><span class="hs-comment">-- @since 0.2.12</span><span>
+</span><span id="line-269"></span><span id="local-6989586621679102393"><span id="local-6989586621679102394"><span class="annot"><a href="UnliftIO.IO.File.html#withBinaryFileAtomic"><span class="hs-identifier hs-type">withBinaryFileAtomic</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-270"></span><span>     </span><span class="annot"><span class="hs-identifier hs-type">MonadUnliftIO</span></span><span> </span><span class="annot"><a href="#local-6989586621679102393"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IOMode</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Handle</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102393"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102394"><span class="hs-identifier hs-type">r</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102393"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102394"><span class="hs-identifier hs-type">r</span></a></span></span></span><span>
+</span><span id="line-271"></span><span class="hs-comment">-- Implementation is at the top of the module</span><span>
+</span><span id="line-272"></span><span>
+</span><span id="line-273"></span><span>
+</span><span id="line-274"></span><span class="hs-comment">-- | Lifted version of `B.writeFile`</span><span>
+</span><span id="line-275"></span><span class="hs-comment">--</span><span>
+</span><span id="line-276"></span><span class="hs-comment">-- @since 0.2.12</span><span>
+</span><span id="line-277"></span><span id="local-6989586621679102395"><span class="annot"><a href="UnliftIO.IO.File.html#writeBinaryFile"><span class="hs-identifier hs-type">writeBinaryFile</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MonadIO</span></span><span> </span><span class="annot"><a href="#local-6989586621679102395"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102395"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-278"></span><span id="writeBinaryFile"><span class="annot"><span class="annottext">writeBinaryFile :: forall (m :: * -&gt; *). MonadIO m =&gt; FilePath -&gt; ByteString -&gt; m ()
+</span><a href="UnliftIO.IO.File.html#writeBinaryFile"><span class="hs-identifier hs-var hs-var">writeBinaryFile</span></a></span></span><span> </span><span id="local-6989586621679102398"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679102398"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; m ()
+forall a. IO a -&gt; m a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; m ()) -&gt; (ByteString -&gt; IO ()) -&gt; ByteString -&gt; m ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; ByteString -&gt; IO ()
+</span><span class="hs-identifier hs-var">B.writeFile</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679102398"><span class="hs-identifier hs-var">fp</span></a></span><span>
+</span><span id="line-279"></span></pre></body></html>

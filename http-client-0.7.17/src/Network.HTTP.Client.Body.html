@@ -1,0 +1,935 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE RecordWildCards #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE MultiWayIf #-}</span><span>
+</span><span id="line-4"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.HTTP.Client.Body</span><span>
+</span><span id="line-5"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html#makeChunkedReader"><span class="hs-identifier">makeChunkedReader</span></a></span><span>
+</span><span id="line-6"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html#makeLengthReader"><span class="hs-identifier">makeLengthReader</span></a></span><span>
+</span><span id="line-7"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html#makeGzipReader"><span class="hs-identifier">makeGzipReader</span></a></span><span>
+</span><span id="line-8"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html#makeUnlimitedReader"><span class="hs-identifier">makeUnlimitedReader</span></a></span><span>
+</span><span id="line-9"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html#brConsume"><span class="hs-identifier">brConsume</span></a></span><span>
+</span><span id="line-10"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html#brEmpty"><span class="hs-identifier">brEmpty</span></a></span><span>
+</span><span id="line-11"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html#constBodyReader"><span class="hs-identifier">constBodyReader</span></a></span><span>
+</span><span id="line-12"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html#brReadSome"><span class="hs-identifier">brReadSome</span></a></span><span>
+</span><span id="line-13"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html#brRead"><span class="hs-identifier">brRead</span></a></span><span>
+</span><span id="line-14"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-15"></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Connection.html"><span class="hs-identifier">Network.HTTP.Client.Connection</span></a></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html"><span class="hs-identifier">Network.HTTP.Client.Types</span></a></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">assert</span></span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">empty</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">uncons</span></span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.IORef</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Lazy</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">L</span></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unless</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">when</span></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Streaming.Zlib</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Z</span></span><span>
+</span><span id="line-25"></span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- | Get a single chunk of data from the response body, or an empty</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- bytestring if no more data is available.</span><span>
+</span><span id="line-28"></span><span class="hs-comment">--</span><span>
+</span><span id="line-29"></span><span class="hs-comment">-- Note that in order to consume the entire request body, you will need to</span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- repeatedly call this function until you receive an empty @ByteString@ as a</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- result.</span><span>
+</span><span id="line-32"></span><span class="hs-comment">--</span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- Since 0.1.0</span><span>
+</span><span id="line-34"></span><span class="annot"><a href="Network.HTTP.Client.Body.html#brRead"><span class="hs-identifier hs-type">brRead</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier hs-type">BodyReader</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">S.ByteString</span></span><span>
+</span><span id="line-35"></span><span id="brRead"><span class="annot"><span class="annottext">brRead :: BodyReader -&gt; BodyReader
+</span><a href="Network.HTTP.Client.Body.html#brRead"><span class="hs-identifier hs-var hs-var">brRead</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">BodyReader -&gt; BodyReader
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span>
+</span><span id="line-36"></span><span>
+</span><span id="line-37"></span><span class="hs-comment">-- | Continuously call 'brRead', building up a lazy ByteString until a chunk is</span><span>
+</span><span id="line-38"></span><span class="hs-comment">-- constructed that is at least as many bytes as requested.</span><span>
+</span><span id="line-39"></span><span class="hs-comment">--</span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- Since 0.4.20</span><span>
+</span><span id="line-41"></span><span class="annot"><a href="Network.HTTP.Client.Body.html#brReadSome"><span class="hs-identifier hs-type">brReadSome</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier hs-type">BodyReader</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">L.ByteString</span></span><span>
+</span><span id="line-42"></span><span id="brReadSome"><span class="annot"><span class="annottext">brReadSome :: BodyReader -&gt; Int -&gt; IO ByteString
+</span><a href="Network.HTTP.Client.Body.html#brReadSome"><span class="hs-identifier hs-var hs-var">brReadSome</span></a></span></span><span> </span><span id="local-6989586621679105314"><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105314"><span class="hs-identifier hs-var">brRead'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-43"></span><span>    </span><span class="annot"><span class="annottext">([ByteString] -&gt; [ByteString]) -&gt; Int -&gt; IO ByteString
+</span><a href="#local-6989586621679105315"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; [ByteString]
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span>
+</span><span id="line-44"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-45"></span><span>    </span><span id="local-6989586621679105315"><span class="annot"><span class="annottext">loop :: ([ByteString] -&gt; [ByteString]) -&gt; Int -&gt; IO ByteString
+</span><a href="#local-6989586621679105315"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span id="local-6989586621679105322"><span class="annot"><span class="annottext">[ByteString] -&gt; [ByteString]
+</span><a href="#local-6989586621679105322"><span class="hs-identifier hs-var">front</span></a></span></span><span> </span><span id="local-6989586621679105323"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105323"><span class="hs-identifier hs-var">rem'</span></a></span></span><span>
+</span><span id="line-46"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105323"><span class="hs-identifier hs-var">rem'</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ByteString) -&gt; ByteString -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; ByteString
+</span><span class="hs-identifier hs-var">L.fromChunks</span></span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; ByteString) -&gt; [ByteString] -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; [ByteString]
+</span><a href="#local-6989586621679105322"><span class="hs-identifier hs-var">front</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-47"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-48"></span><span>            </span><span id="local-6989586621679105326"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105326"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105314"><span class="hs-identifier hs-var">brRead'</span></a></span><span>
+</span><span id="line-49"></span><span>            </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105326"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-50"></span><span>                </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ByteString) -&gt; ByteString -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; ByteString
+</span><span class="hs-identifier hs-var">L.fromChunks</span></span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; ByteString) -&gt; [ByteString] -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; [ByteString]
+</span><a href="#local-6989586621679105322"><span class="hs-identifier hs-var">front</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-51"></span><span>                </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; [ByteString]) -&gt; Int -&gt; IO ByteString
+</span><a href="#local-6989586621679105315"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[ByteString] -&gt; [ByteString]
+</span><a href="#local-6989586621679105322"><span class="hs-identifier hs-var">front</span></a></span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; [ByteString])
+-&gt; ([ByteString] -&gt; [ByteString]) -&gt; [ByteString] -&gt; [ByteString]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105326"><span class="hs-identifier hs-var">bs</span></a></span><span class="annot"><span class="annottext">ByteString -&gt; [ByteString] -&gt; [ByteString]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105323"><span class="hs-identifier hs-var">rem'</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">S.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105326"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span>
+</span><span id="line-53"></span><span class="annot"><a href="Network.HTTP.Client.Body.html#brEmpty"><span class="hs-identifier hs-type">brEmpty</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier hs-type">BodyReader</span></a></span><span>
+</span><span id="line-54"></span><span id="brEmpty"><span class="annot"><span class="annottext">brEmpty :: BodyReader
+</span><a href="Network.HTTP.Client.Body.html#brEmpty"><span class="hs-identifier hs-var hs-var">brEmpty</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">S.empty</span></span><span>
+</span><span id="line-55"></span><span>
+</span><span id="line-56"></span><span class="annot"><a href="Network.HTTP.Client.Body.html#constBodyReader"><span class="hs-identifier hs-type">constBodyReader</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">S.ByteString</span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier hs-type">BodyReader</span></a></span><span>
+</span><span id="line-57"></span><span id="constBodyReader"><span class="annot"><span class="annottext">constBodyReader :: [ByteString] -&gt; IO BodyReader
+</span><a href="Network.HTTP.Client.Body.html#constBodyReader"><span class="hs-identifier hs-var hs-var">constBodyReader</span></a></span></span><span> </span><span id="local-6989586621679105330"><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679105330"><span class="hs-identifier hs-var">input</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-58"></span><span>  </span><span id="local-6989586621679105331"><span class="annot"><span class="annottext">IORef [ByteString]
+</span><a href="#local-6989586621679105331"><span class="hs-identifier hs-var">iinput</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; IO (IORef [ByteString])
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679105330"><span class="hs-identifier hs-var">input</span></a></span><span>
+</span><span id="line-59"></span><span>  </span><span class="annot"><span class="annottext">BodyReader -&gt; IO BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(BodyReader -&gt; IO BodyReader) -&gt; BodyReader -&gt; IO BodyReader
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IORef [ByteString]
+-&gt; ([ByteString] -&gt; ([ByteString], ByteString)) -&gt; BodyReader
+forall a b. IORef a -&gt; (a -&gt; (a, b)) -&gt; IO b
+</span><span class="hs-identifier hs-var">atomicModifyIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef [ByteString]
+</span><a href="#local-6989586621679105331"><span class="hs-identifier hs-var">iinput</span></a></span><span> </span><span class="annot"><span class="annottext">(([ByteString] -&gt; ([ByteString], ByteString)) -&gt; BodyReader)
+-&gt; ([ByteString] -&gt; ([ByteString], ByteString)) -&gt; BodyReader
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679105334"><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679105334"><span class="hs-identifier hs-var">input'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-60"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679105334"><span class="hs-identifier hs-var">input'</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-61"></span><span>            </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">S.empty</span></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>            </span><span id="local-6989586621679105335"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105335"><span class="hs-identifier hs-var">x</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621679105336"><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679105336"><span class="hs-identifier hs-var">xs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[ByteString]
+</span><a href="#local-6989586621679105336"><span class="hs-identifier hs-var">xs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105335"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- | Strictly consume all remaining chunks of data from the stream.</span><span>
+</span><span id="line-65"></span><span class="hs-comment">--</span><span>
+</span><span id="line-66"></span><span class="hs-comment">-- Since 0.1.0</span><span>
+</span><span id="line-67"></span><span class="annot"><a href="Network.HTTP.Client.Body.html#brConsume"><span class="hs-identifier hs-type">brConsume</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier hs-type">BodyReader</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">S.ByteString</span></span><span class="hs-special">]</span><span>
+</span><span id="line-68"></span><span id="brConsume"><span class="annot"><span class="annottext">brConsume :: BodyReader -&gt; IO [ByteString]
+</span><a href="Network.HTTP.Client.Body.html#brConsume"><span class="hs-identifier hs-var hs-var">brConsume</span></a></span></span><span> </span><span id="local-6989586621679105337"><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105337"><span class="hs-identifier hs-var">brRead'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-69"></span><span>    </span><span class="annot"><span class="annottext">([ByteString] -&gt; [ByteString]) -&gt; IO [ByteString]
+forall {c}. ([ByteString] -&gt; c) -&gt; IO c
+</span><a href="#local-6989586621679105338"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; [ByteString]
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span>
+</span><span id="line-70"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-71"></span><span>    </span><span id="local-6989586621679105338"><span class="annot"><span class="annottext">go :: ([ByteString] -&gt; c) -&gt; IO c
+</span><a href="#local-6989586621679105338"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679105341"><span class="annot"><span class="annottext">[ByteString] -&gt; c
+</span><a href="#local-6989586621679105341"><span class="hs-identifier hs-var">front</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-72"></span><span>        </span><span id="local-6989586621679105342"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105342"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105337"><span class="hs-identifier hs-var">brRead'</span></a></span><span>
+</span><span id="line-73"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105342"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-74"></span><span>            </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">c -&gt; IO c
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(c -&gt; IO c) -&gt; c -&gt; IO c
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[ByteString] -&gt; c
+</span><a href="#local-6989586621679105341"><span class="hs-identifier hs-var">front</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-75"></span><span>            </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; c) -&gt; IO c
+</span><a href="#local-6989586621679105338"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[ByteString] -&gt; c
+</span><a href="#local-6989586621679105341"><span class="hs-identifier hs-var">front</span></a></span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; c)
+-&gt; ([ByteString] -&gt; [ByteString]) -&gt; [ByteString] -&gt; c
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105342"><span class="hs-identifier hs-var">x</span></a></span><span class="annot"><span class="annottext">ByteString -&gt; [ByteString] -&gt; [ByteString]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-76"></span><span>
+</span><span id="line-77"></span><span class="annot"><a href="Network.HTTP.Client.Body.html#makeGzipReader"><span class="hs-identifier hs-type">makeGzipReader</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier hs-type">BodyReader</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier hs-type">BodyReader</span></a></span><span>
+</span><span id="line-78"></span><span id="makeGzipReader"><span class="annot"><span class="annottext">makeGzipReader :: BodyReader -&gt; IO BodyReader
+</span><a href="Network.HTTP.Client.Body.html#makeGzipReader"><span class="hs-identifier hs-var hs-var">makeGzipReader</span></a></span></span><span> </span><span id="local-6989586621679105343"><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105343"><span class="hs-identifier hs-var">brRead'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-79"></span><span>    </span><span id="local-6989586621679105344"><span class="annot"><span class="annottext">Inflate
+</span><a href="#local-6989586621679105344"><span class="hs-identifier hs-var">inf</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">WindowBits -&gt; IO Inflate
+</span><span class="hs-identifier hs-var">Z.initInflate</span></span><span> </span><span class="annot"><span class="annottext">(WindowBits -&gt; IO Inflate) -&gt; WindowBits -&gt; IO Inflate
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; WindowBits
+</span><span class="hs-identifier hs-var">Z.WindowBits</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">31</span></span><span>
+</span><span id="line-80"></span><span>    </span><span id="local-6989586621679105347"><span class="annot"><span class="annottext">IORef (Maybe (IO PopperRes))
+</span><a href="#local-6989586621679105347"><span class="hs-identifier hs-var">istate</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Maybe (IO PopperRes) -&gt; IO (IORef (Maybe (IO PopperRes)))
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">Maybe (IO PopperRes)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-81"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679105357"><span class="annot"><span class="annottext">goPopper :: IO PopperRes -&gt; BodyReader
+</span><a href="#local-6989586621679105357"><span class="hs-identifier hs-var hs-var">goPopper</span></a></span></span><span> </span><span id="local-6989586621679105358"><span class="annot"><span class="annottext">IO PopperRes
+</span><a href="#local-6989586621679105358"><span class="hs-identifier hs-var">popper</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-82"></span><span>            </span><span id="local-6989586621679105359"><span class="annot"><span class="annottext">PopperRes
+</span><a href="#local-6989586621679105359"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO PopperRes
+</span><a href="#local-6989586621679105358"><span class="hs-identifier hs-var">popper</span></a></span><span>
+</span><span id="line-83"></span><span>            </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">PopperRes
+</span><a href="#local-6989586621679105359"><span class="hs-identifier hs-var">res</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-84"></span><span>                </span><span class="annot"><span class="hs-identifier hs-type">Z.PRNext</span></span><span> </span><span id="local-6989586621679105361"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105361"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-85"></span><span>                    </span><span class="annot"><span class="annottext">IORef (Maybe (IO PopperRes)) -&gt; Maybe (IO PopperRes) -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe (IO PopperRes))
+</span><a href="#local-6989586621679105347"><span class="hs-identifier hs-var">istate</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe (IO PopperRes) -&gt; IO ()) -&gt; Maybe (IO PopperRes) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IO PopperRes -&gt; Maybe (IO PopperRes)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">IO PopperRes
+</span><a href="#local-6989586621679105358"><span class="hs-identifier hs-var">popper</span></a></span><span>
+</span><span id="line-86"></span><span>                    </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105361"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-87"></span><span>                </span><span class="annot"><span class="annottext">PopperRes
+</span><span class="hs-identifier hs-var">Z.PRDone</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-88"></span><span>                    </span><span id="local-6989586621679105364"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105364"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Inflate -&gt; BodyReader
+</span><span class="hs-identifier hs-var">Z.flushInflate</span></span><span> </span><span class="annot"><span class="annottext">Inflate
+</span><a href="#local-6989586621679105344"><span class="hs-identifier hs-var">inf</span></a></span><span>
+</span><span id="line-89"></span><span>                    </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105364"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-90"></span><span>                        </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105366"><span class="hs-identifier hs-var">start</span></a></span><span>
+</span><span id="line-91"></span><span>                        </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-92"></span><span>                            </span><span class="annot"><span class="annottext">IORef (Maybe (IO PopperRes)) -&gt; Maybe (IO PopperRes) -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe (IO PopperRes))
+</span><a href="#local-6989586621679105347"><span class="hs-identifier hs-var">istate</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (IO PopperRes)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-93"></span><span>                            </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105364"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-94"></span><span>                </span><span class="annot"><span class="hs-identifier hs-type">Z.PRError</span></span><span> </span><span id="local-6989586621679105368"><span class="annot"><span class="annottext">ZlibException
+</span><a href="#local-6989586621679105368"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">HttpExceptionContent -&gt; BodyReader
+forall a. HttpExceptionContent -&gt; IO a
+</span><a href="Network.HTTP.Client.Types.html#throwHttp"><span class="hs-identifier hs-var">throwHttp</span></a></span><span> </span><span class="annot"><span class="annottext">(HttpExceptionContent -&gt; BodyReader)
+-&gt; HttpExceptionContent -&gt; BodyReader
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ZlibException -&gt; HttpExceptionContent
+</span><a href="Network.HTTP.Client.Types.html#HttpZlibException"><span class="hs-identifier hs-var">HttpZlibException</span></a></span><span> </span><span class="annot"><span class="annottext">ZlibException
+</span><a href="#local-6989586621679105368"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-95"></span><span>        </span><span id="local-6989586621679105366"><span class="annot"><span class="annottext">start :: BodyReader
+</span><a href="#local-6989586621679105366"><span class="hs-identifier hs-var hs-var">start</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-96"></span><span>            </span><span id="local-6989586621679105371"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105371"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105343"><span class="hs-identifier hs-var">brRead'</span></a></span><span>
+</span><span id="line-97"></span><span>            </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105371"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-98"></span><span>                </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">S.empty</span></span><span>
+</span><span id="line-99"></span><span>                </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-100"></span><span>                    </span><span id="local-6989586621679105372"><span class="annot"><span class="annottext">IO PopperRes
+</span><a href="#local-6989586621679105372"><span class="hs-identifier hs-var">popper</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Inflate -&gt; ByteString -&gt; IO (IO PopperRes)
+</span><span class="hs-identifier hs-var">Z.feedInflate</span></span><span> </span><span class="annot"><span class="annottext">Inflate
+</span><a href="#local-6989586621679105344"><span class="hs-identifier hs-var">inf</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105371"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-101"></span><span>                    </span><span class="annot"><span class="annottext">IO PopperRes -&gt; BodyReader
+</span><a href="#local-6989586621679105357"><span class="hs-identifier hs-var">goPopper</span></a></span><span> </span><span class="annot"><span class="annottext">IO PopperRes
+</span><a href="#local-6989586621679105372"><span class="hs-identifier hs-var">popper</span></a></span><span>
+</span><span id="line-102"></span><span>    </span><span class="annot"><span class="annottext">BodyReader -&gt; IO BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(BodyReader -&gt; IO BodyReader) -&gt; BodyReader -&gt; IO BodyReader
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-103"></span><span>        </span><span id="local-6989586621679105374"><span class="annot"><span class="annottext">Maybe (IO PopperRes)
+</span><a href="#local-6989586621679105374"><span class="hs-identifier hs-var">state</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef (Maybe (IO PopperRes)) -&gt; IO (Maybe (IO PopperRes))
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe (IO PopperRes))
+</span><a href="#local-6989586621679105347"><span class="hs-identifier hs-var">istate</span></a></span><span>
+</span><span id="line-104"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe (IO PopperRes)
+</span><a href="#local-6989586621679105374"><span class="hs-identifier hs-var">state</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-105"></span><span>            </span><span class="annot"><span class="annottext">Maybe (IO PopperRes)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105366"><span class="hs-identifier hs-var">start</span></a></span><span>
+</span><span id="line-106"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679105376"><span class="annot"><span class="annottext">IO PopperRes
+</span><a href="#local-6989586621679105376"><span class="hs-identifier hs-var">popper</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO PopperRes -&gt; BodyReader
+</span><a href="#local-6989586621679105357"><span class="hs-identifier hs-var">goPopper</span></a></span><span> </span><span class="annot"><span class="annottext">IO PopperRes
+</span><a href="#local-6989586621679105376"><span class="hs-identifier hs-var">popper</span></a></span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="annot"><a href="Network.HTTP.Client.Body.html#makeUnlimitedReader"><span class="hs-identifier hs-type">makeUnlimitedReader</span></a></span><span>
+</span><span id="line-109"></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-comment">-- ^ cleanup</span></span><span>
+</span><span id="line-110"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Connection"><span class="hs-identifier hs-type">Connection</span></a></span><span>
+</span><span id="line-111"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier hs-type">BodyReader</span></a></span><span>
+</span><span id="line-112"></span><span id="makeUnlimitedReader"><span class="annot"><span class="annottext">makeUnlimitedReader :: IO () -&gt; Connection -&gt; IO BodyReader
+</span><a href="Network.HTTP.Client.Body.html#makeUnlimitedReader"><span class="hs-identifier hs-var hs-var">makeUnlimitedReader</span></a></span></span><span> </span><span id="local-6989586621679105377"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679105377"><span class="hs-identifier hs-var">cleanup</span></a></span></span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Connection"><span class="hs-identifier hs-type">Connection</span></a></span><span> </span><span class="hs-special">{</span><span id="local-6989586621679105379"><span id="local-6989586621679105380"><span id="local-6989586621679105381"><span id="local-6989586621679105382"><span class="annot"><span class="annottext">IO ()
+BodyReader
+ByteString -&gt; IO ()
+connectionRead :: BodyReader
+connectionUnread :: ByteString -&gt; IO ()
+connectionWrite :: ByteString -&gt; IO ()
+connectionClose :: IO ()
+connectionRead :: Connection -&gt; BodyReader
+connectionUnread :: Connection -&gt; ByteString -&gt; IO ()
+connectionWrite :: Connection -&gt; ByteString -&gt; IO ()
+connectionClose :: Connection -&gt; IO ()
+</span><a href="#local-6989586621679105379"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-113"></span><span>    </span><span id="local-6989586621679105387"><span class="annot"><span class="annottext">IORef Bool
+</span><a href="#local-6989586621679105387"><span class="hs-identifier hs-var">icomplete</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; IO (IORef Bool)
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-114"></span><span>    </span><span class="annot"><span class="annottext">BodyReader -&gt; IO BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(BodyReader -&gt; IO BodyReader) -&gt; BodyReader -&gt; IO BodyReader
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-115"></span><span>        </span><span id="local-6989586621679105388"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105388"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105379"><span class="hs-identifier hs-var">connectionRead</span></a></span><span>
+</span><span id="line-116"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105388"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-117"></span><span>          </span><span class="annot"><span class="annottext">IORef Bool -&gt; Bool -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Bool
+</span><a href="#local-6989586621679105387"><span class="hs-identifier hs-var">icomplete</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-118"></span><span>          </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679105377"><span class="hs-identifier hs-var">cleanup</span></a></span><span>
+</span><span id="line-119"></span><span>        </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105388"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-120"></span><span>
+</span><span id="line-121"></span><span class="annot"><a href="Network.HTTP.Client.Body.html#makeLengthReader"><span class="hs-identifier hs-type">makeLengthReader</span></a></span><span>
+</span><span id="line-122"></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-comment">-- ^ cleanup</span></span><span>
+</span><span id="line-123"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-124"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Connection"><span class="hs-identifier hs-type">Connection</span></a></span><span>
+</span><span id="line-125"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier hs-type">BodyReader</span></a></span><span>
+</span><span id="line-126"></span><span id="makeLengthReader"><span class="annot"><span class="annottext">makeLengthReader :: IO () -&gt; Int -&gt; Connection -&gt; IO BodyReader
+</span><a href="Network.HTTP.Client.Body.html#makeLengthReader"><span class="hs-identifier hs-var hs-var">makeLengthReader</span></a></span></span><span> </span><span id="local-6989586621679105389"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679105389"><span class="hs-identifier hs-var">cleanup</span></a></span></span><span> </span><span id="local-6989586621679105390"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105390"><span class="hs-identifier hs-var">count0</span></a></span></span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Connection"><span class="hs-identifier hs-type">Connection</span></a></span><span> </span><span class="hs-special">{</span><span id="local-6989586621679105391"><span id="local-6989586621679105392"><span id="local-6989586621679105393"><span id="local-6989586621679105394"><span class="annot"><span class="annottext">IO ()
+BodyReader
+ByteString -&gt; IO ()
+connectionRead :: Connection -&gt; BodyReader
+connectionUnread :: Connection -&gt; ByteString -&gt; IO ()
+connectionWrite :: Connection -&gt; ByteString -&gt; IO ()
+connectionClose :: Connection -&gt; IO ()
+connectionRead :: BodyReader
+connectionUnread :: ByteString -&gt; IO ()
+connectionWrite :: ByteString -&gt; IO ()
+connectionClose :: IO ()
+</span><a href="Network.HTTP.Client.Types.html#connectionRead"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-127"></span><span>    </span><span id="local-6989586621679105395"><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679105395"><span class="hs-identifier hs-var">icount</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO (IORef Int)
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105390"><span class="hs-identifier hs-var">count0</span></a></span><span>
+</span><span id="line-128"></span><span>    </span><span class="annot"><span class="annottext">BodyReader -&gt; IO BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(BodyReader -&gt; IO BodyReader) -&gt; BodyReader -&gt; IO BodyReader
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-129"></span><span>        </span><span id="local-6989586621679105396"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105396"><span class="hs-identifier hs-var">count</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef Int -&gt; IO Int
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679105395"><span class="hs-identifier hs-var">icount</span></a></span><span>
+</span><span id="line-130"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105396"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-131"></span><span>            </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">empty</span></span><span>
+</span><span id="line-132"></span><span>            </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-133"></span><span>                </span><span id="local-6989586621679105397"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105397"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105391"><span class="hs-identifier hs-var">connectionRead</span></a></span><span>
+</span><span id="line-134"></span><span>                </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105397"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">HttpExceptionContent -&gt; IO ()
+forall a. HttpExceptionContent -&gt; IO a
+</span><a href="Network.HTTP.Client.Types.html#throwHttp"><span class="hs-identifier hs-var">throwHttp</span></a></span><span> </span><span class="annot"><span class="annottext">(HttpExceptionContent -&gt; IO ()) -&gt; HttpExceptionContent -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; HttpExceptionContent
+</span><a href="Network.HTTP.Client.Types.html#ResponseBodyTooShort"><span class="hs-identifier hs-var">ResponseBodyTooShort</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105390"><span class="hs-identifier hs-var">count0</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Word64) -&gt; Int -&gt; Word64
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105390"><span class="hs-identifier hs-var">count0</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105396"><span class="hs-identifier hs-var">count</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span>                </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Ordering
+forall a. Ord a =&gt; a -&gt; a -&gt; Ordering
+</span><span class="hs-identifier hs-var">compare</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105396"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Ordering) -&gt; Int -&gt; Ordering
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">S.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105397"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-136"></span><span>                    </span><span class="annot"><span class="annottext">Ordering
+</span><span class="hs-identifier hs-var">LT</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-137"></span><span>                        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679105400"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105400"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679105401"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105401"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; (ByteString, ByteString)
+</span><span class="hs-identifier hs-var">S.splitAt</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105396"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105397"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-138"></span><span>                        </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679105392"><span class="hs-identifier hs-var">connectionUnread</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105401"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-139"></span><span>                        </span><span class="annot"><span class="annottext">IORef Int -&gt; Int -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679105395"><span class="hs-identifier hs-var">icount</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-140"></span><span>                        </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679105389"><span class="hs-identifier hs-var">cleanup</span></a></span><span>
+</span><span id="line-141"></span><span>                        </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105400"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-142"></span><span>                    </span><span class="annot"><span class="annottext">Ordering
+</span><span class="hs-identifier hs-var">EQ</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-143"></span><span>                        </span><span class="annot"><span class="annottext">IORef Int -&gt; Int -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679105395"><span class="hs-identifier hs-var">icount</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-144"></span><span>                        </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679105389"><span class="hs-identifier hs-var">cleanup</span></a></span><span>
+</span><span id="line-145"></span><span>                        </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105397"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-146"></span><span>                    </span><span class="annot"><span class="annottext">Ordering
+</span><span class="hs-identifier hs-var">GT</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-147"></span><span>                        </span><span class="annot"><span class="annottext">IORef Int -&gt; Int -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679105395"><span class="hs-identifier hs-var">icount</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105396"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">S.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105397"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-148"></span><span>                        </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105397"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-149"></span><span>
+</span><span id="line-150"></span><span class="annot"><a href="Network.HTTP.Client.Body.html#makeChunkedReader"><span class="hs-identifier hs-type">makeChunkedReader</span></a></span><span>
+</span><span id="line-151"></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#MaxHeaderLength"><span class="hs-identifier hs-type">MaxHeaderLength</span></a></span><span>
+</span><span id="line-152"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-comment">-- ^ cleanup</span></span><span>
+</span><span id="line-153"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ raw</span></span><span>
+</span><span id="line-154"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Connection"><span class="hs-identifier hs-type">Connection</span></a></span><span>
+</span><span id="line-155"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier hs-type">BodyReader</span></a></span><span>
+</span><span id="line-156"></span><span id="makeChunkedReader"><span class="annot"><span class="annottext">makeChunkedReader :: Maybe MaxHeaderLength
+-&gt; IO () -&gt; Bool -&gt; Connection -&gt; IO BodyReader
+</span><a href="Network.HTTP.Client.Body.html#makeChunkedReader"><span class="hs-identifier hs-var hs-var">makeChunkedReader</span></a></span></span><span> </span><span id="local-6989586621679105403"><span class="annot"><span class="annottext">Maybe MaxHeaderLength
+</span><a href="#local-6989586621679105403"><span class="hs-identifier hs-var">mhl</span></a></span></span><span> </span><span id="local-6989586621679105404"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679105404"><span class="hs-identifier hs-var">cleanup</span></a></span></span><span> </span><span id="local-6989586621679105405"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679105405"><span class="hs-identifier hs-var">raw</span></a></span></span><span> </span><span id="local-6989586621679105406"><span class="annot"><span class="annottext">conn :: Connection
+</span><a href="#local-6989586621679105406"><span class="hs-identifier hs-var">conn</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="Network.HTTP.Client.Types.html#Connection"><span class="hs-identifier hs-type">Connection</span></a></span><span> </span><span class="hs-special">{</span><span id="local-6989586621679105407"><span id="local-6989586621679105408"><span id="local-6989586621679105409"><span id="local-6989586621679105410"><span class="annot"><span class="annottext">IO ()
+BodyReader
+ByteString -&gt; IO ()
+connectionRead :: Connection -&gt; BodyReader
+connectionUnread :: Connection -&gt; ByteString -&gt; IO ()
+connectionWrite :: Connection -&gt; ByteString -&gt; IO ()
+connectionClose :: Connection -&gt; IO ()
+connectionRead :: BodyReader
+connectionUnread :: ByteString -&gt; IO ()
+connectionWrite :: ByteString -&gt; IO ()
+connectionClose :: IO ()
+</span><a href="Network.HTTP.Client.Types.html#connectionRead"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-157"></span><span>    </span><span id="local-6989586621679105411"><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679105411"><span class="hs-identifier hs-var">icount</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO (IORef Int)
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-158"></span><span>    </span><span class="annot"><span class="annottext">BodyReader -&gt; IO BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(BodyReader -&gt; IO BodyReader) -&gt; BodyReader -&gt; IO BodyReader
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-159"></span><span>      </span><span id="local-6989586621679105412"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105412"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef Int -&gt; BodyReader
+</span><a href="#local-6989586621679105413"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679105411"><span class="hs-identifier hs-var">icount</span></a></span><span>
+</span><span id="line-160"></span><span>      </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105412"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679105404"><span class="hs-identifier hs-var">cleanup</span></a></span><span>
+</span><span id="line-161"></span><span>      </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105412"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-162"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-163"></span><span>    </span><span id="local-6989586621679105413"><span class="annot"><span class="annottext">go :: IORef Int -&gt; BodyReader
+</span><a href="#local-6989586621679105413"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679105439"><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679105439"><span class="hs-identifier hs-var">icount</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-164"></span><span>        </span><span id="local-6989586621679105440"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105440"><span class="hs-identifier hs-var">count0</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef Int -&gt; IO Int
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679105439"><span class="hs-identifier hs-var">icount</span></a></span><span>
+</span><span id="line-165"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621679105441"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105441"><span class="hs-identifier hs-var">rawCount</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679105442"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105442"><span class="hs-identifier hs-var">count</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-166"></span><span>            </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105440"><span class="hs-identifier hs-var">count0</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-167"></span><span>                </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">IO (ByteString, Int)
+</span><a href="#local-6989586621679105443"><span class="hs-identifier hs-var">readHeader</span></a></span><span>
+</span><span id="line-168"></span><span>                </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">(ByteString, Int) -&gt; IO (ByteString, Int)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">empty</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105440"><span class="hs-identifier hs-var">count0</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-169"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105442"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-170"></span><span>            </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-171"></span><span>                </span><span class="hs-comment">-- count == -1 indicates that all chunks have been consumed</span><span>
+</span><span id="line-172"></span><span>                </span><span class="annot"><span class="annottext">IORef Int -&gt; Int -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679105439"><span class="hs-identifier hs-var">icount</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-173"></span><span>                </span><span class="hs-keyword">if</span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105442"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679105405"><span class="hs-identifier hs-var">raw</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">S.append</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105441"><span class="hs-identifier hs-var">rawCount</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; BodyReader -&gt; BodyReader
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105448"><span class="hs-identifier hs-var">readTrailersRaw</span></a></span><span>
+</span><span id="line-174"></span><span>                   </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105442"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679105449"><span class="hs-identifier hs-var">consumeTrailers</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; BodyReader -&gt; BodyReader
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f a -&gt; f b -&gt; f b
+</span><span class="hs-operator hs-var">*&gt;</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">empty</span></span><span>
+</span><span id="line-175"></span><span>                   </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">empty</span></span><span>
+</span><span id="line-176"></span><span>            </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-177"></span><span>                </span><span class="hs-special">(</span><span id="local-6989586621679105450"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105450"><span class="hs-identifier hs-var">bs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679105451"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105451"><span class="hs-identifier hs-var">count'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO (ByteString, Int)
+</span><a href="#local-6989586621679105452"><span class="hs-identifier hs-var">readChunk</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105442"><span class="hs-identifier hs-var">count</span></a></span><span>
+</span><span id="line-178"></span><span>                </span><span class="annot"><span class="annottext">IORef Int -&gt; Int -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Int
+</span><a href="#local-6989586621679105439"><span class="hs-identifier hs-var">icount</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105451"><span class="hs-identifier hs-var">count'</span></a></span><span>
+</span><span id="line-179"></span><span>                </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; BodyReader) -&gt; ByteString -&gt; BodyReader
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><a href="#local-6989586621679105453"><span class="hs-identifier hs-var">appendHeader</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105441"><span class="hs-identifier hs-var">rawCount</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105450"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-180"></span><span>
+</span><span id="line-181"></span><span>    </span><span id="local-6989586621679105453"><span class="annot"><span class="annottext">appendHeader :: ByteString -&gt; ByteString -&gt; ByteString
+</span><a href="#local-6989586621679105453"><span class="hs-identifier hs-var hs-var">appendHeader</span></a></span></span><span>
+</span><span id="line-182"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679105405"><span class="hs-identifier hs-var">raw</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">S.append</span></span><span>
+</span><span id="line-183"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString -&gt; ByteString)
+-&gt; ByteString -&gt; ByteString -&gt; ByteString
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span>
+</span><span id="line-184"></span><span>
+</span><span id="line-185"></span><span>    </span><span id="local-6989586621679105452"><span class="annot"><span class="annottext">readChunk :: Int -&gt; IO (ByteString, Int)
+</span><a href="#local-6989586621679105452"><span class="hs-identifier hs-var hs-var">readChunk</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(ByteString, Int) -&gt; IO (ByteString, Int)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">empty</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span>
+</span><span id="line-186"></span><span>    </span><span class="annot"><a href="#local-6989586621679105452"><span class="hs-identifier hs-var">readChunk</span></a></span><span> </span><span id="local-6989586621679105475"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105475"><span class="hs-identifier hs-var">remainder</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-187"></span><span>        </span><span id="local-6989586621679105476"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105476"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105407"><span class="hs-identifier hs-var">connectionRead</span></a></span><span>
+</span><span id="line-188"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105476"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">HttpExceptionContent -&gt; IO ()
+forall a. HttpExceptionContent -&gt; IO a
+</span><a href="Network.HTTP.Client.Types.html#throwHttp"><span class="hs-identifier hs-var">throwHttp</span></a></span><span> </span><span class="annot"><span class="annottext">HttpExceptionContent
+</span><a href="Network.HTTP.Client.Types.html#InvalidChunkHeaders"><span class="hs-identifier hs-var">InvalidChunkHeaders</span></a></span><span>
+</span><span id="line-189"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Ordering
+forall a. Ord a =&gt; a -&gt; a -&gt; Ordering
+</span><span class="hs-identifier hs-var">compare</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105475"><span class="hs-identifier hs-var">remainder</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Ordering) -&gt; Int -&gt; Ordering
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">S.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105476"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-190"></span><span>            </span><span class="annot"><span class="annottext">Ordering
+</span><span class="hs-identifier hs-var">LT</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-191"></span><span>                </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679105478"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105478"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679105479"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105479"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; (ByteString, ByteString)
+</span><span class="hs-identifier hs-var">S.splitAt</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105475"><span class="hs-identifier hs-var">remainder</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105476"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-192"></span><span>                </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall a. (?callStack::CallStack) =&gt; Bool -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var hs-var">assert</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Bool) -&gt; Bool -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105479"><span class="hs-identifier hs-var">y</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ()
+</span><a href="#local-6989586621679105408"><span class="hs-identifier hs-var">connectionUnread</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105479"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-193"></span><span>                </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679105481"><span class="hs-identifier hs-var">requireNewline</span></a></span><span>
+</span><span id="line-194"></span><span>                </span><span class="annot"><span class="annottext">ByteString -&gt; IO (ByteString, Int)
+forall {m :: * -&gt; *} {b}.
+(Monad m, Num b) =&gt;
+ByteString -&gt; m (ByteString, b)
+</span><a href="#local-6989586621679105482"><span class="hs-identifier hs-var">done</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105478"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-195"></span><span>            </span><span class="annot"><span class="annottext">Ordering
+</span><span class="hs-identifier hs-var">EQ</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-196"></span><span>                </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679105481"><span class="hs-identifier hs-var">requireNewline</span></a></span><span>
+</span><span id="line-197"></span><span>                </span><span class="annot"><span class="annottext">ByteString -&gt; IO (ByteString, Int)
+forall {m :: * -&gt; *} {b}.
+(Monad m, Num b) =&gt;
+ByteString -&gt; m (ByteString, b)
+</span><a href="#local-6989586621679105482"><span class="hs-identifier hs-var">done</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105476"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-198"></span><span>            </span><span class="annot"><span class="annottext">Ordering
+</span><span class="hs-identifier hs-var">GT</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(ByteString, Int) -&gt; IO (ByteString, Int)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105476"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105475"><span class="hs-identifier hs-var">remainder</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">S.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105476"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-199"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-200"></span><span>        </span><span id="local-6989586621679105482"><span class="annot"><span class="annottext">done :: ByteString -&gt; m (ByteString, b)
+</span><a href="#local-6989586621679105482"><span class="hs-identifier hs-var hs-var">done</span></a></span></span><span> </span><span id="local-6989586621679105497"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105497"><span class="hs-identifier hs-var">x</span></a></span></span><span>
+</span><span id="line-201"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679105405"><span class="hs-identifier hs-var">raw</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(ByteString, b) -&gt; m (ByteString, b)
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105497"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><span class="hs-operator hs-var">`S.append`</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;\r\n&quot;</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">b
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span>
+</span><span id="line-202"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(ByteString, b) -&gt; m (ByteString, b)
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105497"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">b
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span>
+</span><span id="line-203"></span><span>
+</span><span id="line-204"></span><span>    </span><span id="local-6989586621679105481"><span class="annot"><span class="annottext">requireNewline :: IO ()
+</span><a href="#local-6989586621679105481"><span class="hs-identifier hs-var hs-var">requireNewline</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-205"></span><span>        </span><span id="local-6989586621679105500"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105500"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Maybe MaxHeaderLength -&gt; Connection -&gt; BodyReader
+</span><a href="Network.HTTP.Client.Connection.html#connectionReadLine"><span class="hs-identifier hs-var">connectionReadLine</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe MaxHeaderLength
+</span><a href="#local-6989586621679105403"><span class="hs-identifier hs-var">mhl</span></a></span><span> </span><span class="annot"><span class="annottext">Connection
+</span><a href="#local-6989586621679105406"><span class="hs-identifier hs-var">conn</span></a></span><span>
+</span><span id="line-206"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">unless</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105500"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">HttpExceptionContent -&gt; IO ()
+forall a. HttpExceptionContent -&gt; IO a
+</span><a href="Network.HTTP.Client.Types.html#throwHttp"><span class="hs-identifier hs-var">throwHttp</span></a></span><span> </span><span class="annot"><span class="annottext">HttpExceptionContent
+</span><a href="Network.HTTP.Client.Types.html#InvalidChunkHeaders"><span class="hs-identifier hs-var">InvalidChunkHeaders</span></a></span><span>
+</span><span id="line-207"></span><span>
+</span><span id="line-208"></span><span>    </span><span id="local-6989586621679105443"><span class="annot"><span class="annottext">readHeader :: IO (ByteString, Int)
+</span><a href="#local-6989586621679105443"><span class="hs-identifier hs-var hs-var">readHeader</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-209"></span><span>        </span><span id="local-6989586621679105506"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105506"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Maybe MaxHeaderLength -&gt; Connection -&gt; BodyReader
+</span><a href="Network.HTTP.Client.Connection.html#connectionReadLine"><span class="hs-identifier hs-var">connectionReadLine</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe MaxHeaderLength
+</span><a href="#local-6989586621679105403"><span class="hs-identifier hs-var">mhl</span></a></span><span> </span><span class="annot"><span class="annottext">Connection
+</span><a href="#local-6989586621679105406"><span class="hs-identifier hs-var">conn</span></a></span><span>
+</span><span id="line-210"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Maybe Int
+forall {a}. Num a =&gt; ByteString -&gt; Maybe a
+</span><a href="#local-6989586621679105507"><span class="hs-identifier hs-var">parseHex</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105506"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-211"></span><span>            </span><span class="annot"><span class="annottext">Maybe Int
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">HttpExceptionContent -&gt; IO (ByteString, Int)
+forall a. HttpExceptionContent -&gt; IO a
+</span><a href="Network.HTTP.Client.Types.html#throwHttp"><span class="hs-identifier hs-var">throwHttp</span></a></span><span> </span><span class="annot"><span class="annottext">HttpExceptionContent
+</span><a href="Network.HTTP.Client.Types.html#InvalidChunkHeaders"><span class="hs-identifier hs-var">InvalidChunkHeaders</span></a></span><span>
+</span><span id="line-212"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679105508"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105508"><span class="hs-identifier hs-var">hex</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(ByteString, Int) -&gt; IO (ByteString, Int)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105506"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><span class="hs-operator hs-var">`S.append`</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;\r\n&quot;</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679105508"><span class="hs-identifier hs-var">hex</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-213"></span><span>
+</span><span id="line-214"></span><span>    </span><span id="local-6989586621679105507"><span class="annot"><span class="annottext">parseHex :: ByteString -&gt; Maybe a
+</span><a href="#local-6989586621679105507"><span class="hs-identifier hs-var hs-var">parseHex</span></a></span></span><span> </span><span id="local-6989586621679105514"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105514"><span class="hs-identifier hs-var">bs0</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-215"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Maybe (Word8, ByteString)
+</span><span class="hs-identifier hs-var">uncons</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105514"><span class="hs-identifier hs-var">bs0</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-216"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679105515"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679105515"><span class="hs-identifier hs-var">w0</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679105516"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105516"><span class="hs-identifier hs-var">bs'</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-217"></span><span>                </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679105517"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679105517"><span class="hs-identifier hs-var">i0</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Maybe a
+forall {a} {a}. (Integral a, Num a) =&gt; a -&gt; Maybe a
+</span><a href="#local-6989586621679105518"><span class="hs-identifier hs-var">toI</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679105515"><span class="hs-identifier hs-var">w0</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a -&gt; Maybe a
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; Maybe a) -&gt; a -&gt; Maybe a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; ByteString -&gt; a
+forall {t}. Num t =&gt; t -&gt; ByteString -&gt; t
+</span><a href="#local-6989586621679105519"><span class="hs-identifier hs-var">parseHex'</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679105517"><span class="hs-identifier hs-var">i0</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105516"><span class="hs-identifier hs-var">bs'</span></a></span><span>
+</span><span id="line-218"></span><span>            </span><span class="annot"><span class="annottext">Maybe (Word8, ByteString)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-219"></span><span>    </span><span id="local-6989586621679105519"><span class="annot"><span class="annottext">parseHex' :: t -&gt; ByteString -&gt; t
+</span><a href="#local-6989586621679105519"><span class="hs-identifier hs-var hs-var">parseHex'</span></a></span></span><span> </span><span id="local-6989586621679105526"><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679105526"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621679105527"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105527"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-220"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Maybe (Word8, ByteString)
+</span><span class="hs-identifier hs-var">uncons</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105527"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-221"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679105528"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679105528"><span class="hs-identifier hs-var">w</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679105529"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105529"><span class="hs-identifier hs-var">bs'</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-222"></span><span>                </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679105530"><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679105530"><span class="hs-identifier hs-var">i'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Maybe t
+forall {a} {a}. (Integral a, Num a) =&gt; a -&gt; Maybe a
+</span><a href="#local-6989586621679105518"><span class="hs-identifier hs-var">toI</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679105528"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">t -&gt; ByteString -&gt; t
+</span><a href="#local-6989586621679105519"><span class="hs-identifier hs-var">parseHex'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679105526"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">t -&gt; t -&gt; t
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">t
+</span><span class="hs-number">16</span></span><span> </span><span class="annot"><span class="annottext">t -&gt; t -&gt; t
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679105530"><span class="hs-identifier hs-var">i'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105529"><span class="hs-identifier hs-var">bs'</span></a></span><span>
+</span><span id="line-223"></span><span>            </span><span class="annot"><span class="annottext">Maybe (Word8, ByteString)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679105526"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-224"></span><span>
+</span><span id="line-225"></span><span>    </span><span id="local-6989586621679105518"><span class="annot"><span class="annottext">toI :: a -&gt; Maybe a
+</span><a href="#local-6989586621679105518"><span class="hs-identifier hs-var hs-var">toI</span></a></span></span><span> </span><span id="local-6989586621679105575"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679105575"><span class="hs-identifier hs-var">w</span></a></span></span><span>
+</span><span id="line-226"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">48</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679105575"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679105575"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">57</span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Maybe a
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; Maybe a) -&gt; a -&gt; Maybe a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; a
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679105575"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">48</span></span><span>
+</span><span id="line-227"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">65</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679105575"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679105575"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">70</span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Maybe a
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; Maybe a) -&gt; a -&gt; Maybe a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; a
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679105575"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">55</span></span><span>
+</span><span id="line-228"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">97</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679105575"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679105575"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">102</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Maybe a
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; Maybe a) -&gt; a -&gt; Maybe a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; a
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679105575"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">87</span></span><span>
+</span><span id="line-229"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-230"></span><span>
+</span><span id="line-231"></span><span>    </span><span id="local-6989586621679105448"><span class="annot"><span class="annottext">readTrailersRaw :: BodyReader
+</span><a href="#local-6989586621679105448"><span class="hs-identifier hs-var hs-var">readTrailersRaw</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-232"></span><span>        </span><span id="local-6989586621679105581"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105581"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Maybe MaxHeaderLength -&gt; Connection -&gt; BodyReader
+</span><a href="Network.HTTP.Client.Connection.html#connectionReadLine"><span class="hs-identifier hs-var">connectionReadLine</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe MaxHeaderLength
+</span><a href="#local-6989586621679105403"><span class="hs-identifier hs-var">mhl</span></a></span><span> </span><span class="annot"><span class="annottext">Connection
+</span><a href="#local-6989586621679105406"><span class="hs-identifier hs-var">conn</span></a></span><span>
+</span><span id="line-233"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105581"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-234"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; BodyReader
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;\r\n&quot;</span></span><span>
+</span><span id="line-235"></span><span>        </span><span class="hs-keyword">else</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679105581"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><span class="hs-operator hs-var">`S.append`</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;\r\n&quot;</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><span class="hs-operator hs-var">`S.append`</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; BodyReader -&gt; BodyReader
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">BodyReader
+</span><a href="#local-6989586621679105448"><span class="hs-identifier hs-var">readTrailersRaw</span></a></span><span>
+</span><span id="line-236"></span><span>
+</span><span id="line-237"></span><span>    </span><span id="local-6989586621679105449"><span class="annot"><span class="annottext">consumeTrailers :: IO ()
+</span><a href="#local-6989586621679105449"><span class="hs-identifier hs-var hs-var">consumeTrailers</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe MaxHeaderLength -&gt; Connection -&gt; IO ()
+</span><a href="Network.HTTP.Client.Connection.html#connectionDropTillBlankLine"><span class="hs-identifier hs-var">connectionDropTillBlankLine</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe MaxHeaderLength
+</span><a href="#local-6989586621679105403"><span class="hs-identifier hs-var">mhl</span></a></span><span> </span><span class="annot"><span class="annottext">Connection
+</span><a href="#local-6989586621679105406"><span class="hs-identifier hs-var">conn</span></a></span><span>
+</span><span id="line-238"></span></pre></body></html>

@@ -1,0 +1,188 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.Socket.BufferPool.Buffer</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-2"></span><span>    </span><span class="annot"><a href="Network.Socket.BufferPool.Buffer.html#newBufferPool"><span class="hs-identifier">newBufferPool</span></a></span><span>
+</span><span id="line-3"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Buffer.html#withBufferPool"><span class="hs-identifier">withBufferPool</span></a></span><span>
+</span><span id="line-4"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Buffer.html#mallocBS"><span class="hs-identifier">mallocBS</span></a></span><span>
+</span><span id="line-5"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Buffer.html#copy"><span class="hs-identifier">copy</span></a></span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-7"></span><span>
+</span><span id="line-8"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BS</span></span><span>
+</span><span id="line-9"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Internal</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteString</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">memcpy</span></span><span class="hs-special">)</span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Unsafe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unsafeTake</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">unsafeDrop</span></span><span class="hs-special">)</span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">newIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">readIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">writeIORef</span></span><span class="hs-special">)</span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.ForeignPtr</span></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Marshal.Alloc</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">mallocBytes</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">finalizerFree</span></span><span class="hs-special">)</span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">castPtr</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">plusPtr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-15"></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Types.html"><span class="hs-identifier">Network.Socket.BufferPool.Types</span></a></span><span>
+</span><span id="line-17"></span><span>
+</span><span id="line-18"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-19"></span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- | Creating a buffer pool.</span><span>
+</span><span id="line-21"></span><span class="hs-comment">--   The first argument is the lower limit.</span><span>
+</span><span id="line-22"></span><span class="hs-comment">--   When the size of the buffer in the poll is lower than this limit,</span><span>
+</span><span id="line-23"></span><span class="hs-comment">--   the buffer is thrown awany (and is eventually freed).</span><span>
+</span><span id="line-24"></span><span class="hs-comment">--   Then a new buffer is allocated.</span><span>
+</span><span id="line-25"></span><span class="hs-comment">--   The second argument is the size for the new allocation.</span><span>
+</span><span id="line-26"></span><span class="annot"><a href="Network.Socket.BufferPool.Buffer.html#newBufferPool"><span class="hs-identifier hs-type">newBufferPool</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Types.html#BufferPool"><span class="hs-identifier hs-type">BufferPool</span></a></span><span>
+</span><span id="line-27"></span><span id="newBufferPool"><span class="annot"><span class="annottext">newBufferPool :: Int -&gt; Int -&gt; IO BufferPool
+</span><a href="Network.Socket.BufferPool.Buffer.html#newBufferPool"><span class="hs-identifier hs-var hs-var">newBufferPool</span></a></span></span><span> </span><span id="local-6989586621679043691"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043691"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span id="local-6989586621679043692"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043692"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; IORef ByteString -&gt; BufferPool
+</span><a href="Network.Socket.BufferPool.Types.html#BufferPool"><span class="hs-identifier hs-var">BufferPool</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043691"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043692"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">(IORef ByteString -&gt; BufferPool)
+-&gt; IO (IORef ByteString) -&gt; IO BufferPool
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO (IORef ByteString)
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">BS.empty</span></span><span>
+</span><span id="line-28"></span><span>
+</span><span id="line-29"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- | Using a buffer pool.</span><span>
+</span><span id="line-32"></span><span class="hs-comment">--   The second argument is a function which returns</span><span>
+</span><span id="line-33"></span><span class="hs-comment">--   how many bytes are filled in the buffer.</span><span>
+</span><span id="line-34"></span><span class="hs-comment">--   The buffer in the buffer pool is automatically managed.</span><span>
+</span><span id="line-35"></span><span class="annot"><a href="Network.Socket.BufferPool.Buffer.html#withBufferPool"><span class="hs-identifier hs-type">withBufferPool</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Types.html#BufferPool"><span class="hs-identifier hs-type">BufferPool</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Socket.BufferPool.Types.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Types.html#BufSize"><span class="hs-identifier hs-type">BufSize</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-36"></span><span id="withBufferPool"><span class="annot"><span class="annottext">withBufferPool :: BufferPool -&gt; (Buffer -&gt; Int -&gt; IO Int) -&gt; IO ByteString
+</span><a href="Network.Socket.BufferPool.Buffer.html#withBufferPool"><span class="hs-identifier hs-var hs-var">withBufferPool</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Socket.BufferPool.Types.html#BufferPool"><span class="hs-identifier hs-type">BufferPool</span></a></span><span> </span><span id="local-6989586621679043697"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043697"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span id="local-6989586621679043698"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043698"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679043699"><span class="annot"><span class="annottext">IORef ByteString
+</span><a href="#local-6989586621679043699"><span class="hs-identifier hs-var">ref</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679043700"><span class="annot"><span class="annottext">Buffer -&gt; Int -&gt; IO Int
+</span><a href="#local-6989586621679043700"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-37"></span><span>    </span><span id="local-6989586621679043701"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679043701"><span class="hs-identifier hs-var">buf0</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef ByteString -&gt; IO ByteString
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef ByteString
+</span><a href="#local-6989586621679043699"><span class="hs-identifier hs-var">ref</span></a></span><span>
+</span><span id="line-38"></span><span>    </span><span id="local-6989586621679043702"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679043702"><span class="hs-identifier hs-var">buf</span></a></span></span><span>  </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">BS.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679043701"><span class="hs-identifier hs-var">buf0</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043697"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679043701"><span class="hs-identifier hs-var">buf0</span></a></span><span>
+</span><span id="line-39"></span><span>                                   </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO ByteString
+</span><a href="Network.Socket.BufferPool.Buffer.html#mallocBS"><span class="hs-identifier hs-var">mallocBS</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043698"><span class="hs-identifier hs-var">h</span></a></span><span>
+</span><span id="line-40"></span><span>    </span><span id="local-6989586621679043704"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043704"><span class="hs-identifier hs-var">consumed</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; (Buffer -&gt; Int -&gt; IO Int) -&gt; IO Int
+</span><a href="Network.Socket.BufferPool.Buffer.html#withForeignBuffer"><span class="hs-identifier hs-var">withForeignBuffer</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679043702"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; Int -&gt; IO Int
+</span><a href="#local-6989586621679043700"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-41"></span><span>    </span><span class="annot"><span class="annottext">IORef ByteString -&gt; ByteString -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef ByteString
+</span><a href="#local-6989586621679043699"><span class="hs-identifier hs-var">ref</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ()) -&gt; ByteString -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">unsafeDrop</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043704"><span class="hs-identifier hs-var">consumed</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679043702"><span class="hs-identifier hs-var">buf</span></a></span><span>
+</span><span id="line-42"></span><span>    </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ByteString) -&gt; ByteString -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">unsafeTake</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043704"><span class="hs-identifier hs-var">consumed</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679043702"><span class="hs-identifier hs-var">buf</span></a></span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span class="annot"><a href="Network.Socket.BufferPool.Buffer.html#withForeignBuffer"><span class="hs-identifier hs-type">withForeignBuffer</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Socket.BufferPool.Types.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Types.html#BufSize"><span class="hs-identifier hs-type">BufSize</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-45"></span><span id="withForeignBuffer"><span class="annot"><span class="annottext">withForeignBuffer :: ByteString -&gt; (Buffer -&gt; Int -&gt; IO Int) -&gt; IO Int
+</span><a href="Network.Socket.BufferPool.Buffer.html#withForeignBuffer"><span class="hs-identifier hs-var hs-var">withForeignBuffer</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PS</span></span><span> </span><span id="local-6989586621679043707"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679043707"><span class="hs-identifier hs-var">ps</span></a></span></span><span> </span><span id="local-6989586621679043708"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043708"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679043709"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043709"><span class="hs-identifier hs-var">l</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679043710"><span class="annot"><span class="annottext">Buffer -&gt; Int -&gt; IO Int
+</span><a href="#local-6989586621679043710"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; (Buffer -&gt; IO Int) -&gt; IO Int
+forall a b. ForeignPtr a -&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><span class="hs-identifier hs-var">withForeignPtr</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679043707"><span class="hs-identifier hs-var">ps</span></a></span><span> </span><span class="annot"><span class="annottext">((Buffer -&gt; IO Int) -&gt; IO Int) -&gt; (Buffer -&gt; IO Int) -&gt; IO Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679043712"><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679043712"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; Int -&gt; IO Int
+</span><a href="#local-6989586621679043710"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Buffer -&gt; Ptr Any
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679043712"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Any -&gt; Int -&gt; Buffer
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043708"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043709"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-46"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Buffer.html#withForeignBuffer"><span class="hs-pragma hs-type">withForeignBuffer</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span class="annot"><span class="hs-comment">-- | Allocating a byte string.</span></span><span>
+</span><span id="line-51"></span><span class="annot"><a href="Network.Socket.BufferPool.Buffer.html#mallocBS"><span class="hs-identifier hs-type">mallocBS</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-52"></span><span id="mallocBS"><span class="annot"><span class="annottext">mallocBS :: Int -&gt; IO ByteString
+</span><a href="Network.Socket.BufferPool.Buffer.html#mallocBS"><span class="hs-identifier hs-var hs-var">mallocBS</span></a></span></span><span> </span><span id="local-6989586621679043713"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043713"><span class="hs-identifier hs-var">size</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-53"></span><span>    </span><span id="local-6989586621679043714"><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679043714"><span class="hs-identifier hs-var">ptr</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO Buffer
+forall a. Int -&gt; IO (Ptr a)
+</span><span class="hs-identifier hs-var">mallocBytes</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043713"><span class="hs-identifier hs-var">size</span></a></span><span>
+</span><span id="line-54"></span><span>    </span><span id="local-6989586621679043715"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679043715"><span class="hs-identifier hs-var">fptr</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FinalizerPtr Word8 -&gt; Buffer -&gt; IO (ForeignPtr Word8)
+forall a. FinalizerPtr a -&gt; Ptr a -&gt; IO (ForeignPtr a)
+</span><span class="hs-identifier hs-var">newForeignPtr</span></span><span> </span><span class="annot"><span class="annottext">FinalizerPtr Word8
+forall a. FinalizerPtr a
+</span><span class="hs-identifier hs-var">finalizerFree</span></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679043714"><span class="hs-identifier hs-var">ptr</span></a></span><span>
+</span><span id="line-55"></span><span>    </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ByteString) -&gt; ByteString -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; ByteString
+</span><span class="hs-identifier hs-var">PS</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679043715"><span class="hs-identifier hs-var">fptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043713"><span class="hs-identifier hs-var">size</span></a></span><span>
+</span><span id="line-56"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Buffer.html#mallocBS"><span class="hs-pragma hs-type">mallocBS</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span class="hs-comment">-- | Copying the bytestring to the buffer.</span><span>
+</span><span id="line-59"></span><span class="hs-comment">--   This function returns the point where the next copy should start.</span><span>
+</span><span id="line-60"></span><span class="annot"><a href="Network.Socket.BufferPool.Buffer.html#copy"><span class="hs-identifier hs-type">copy</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Types.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Types.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span>
+</span><span id="line-61"></span><span id="copy"><span class="annot"><span class="annottext">copy :: Buffer -&gt; ByteString -&gt; IO Buffer
+</span><a href="Network.Socket.BufferPool.Buffer.html#copy"><span class="hs-identifier hs-var hs-var">copy</span></a></span></span><span> </span><span id="local-6989586621679043717"><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679043717"><span class="hs-identifier hs-var">ptr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PS</span></span><span> </span><span id="local-6989586621679043718"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679043718"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span id="local-6989586621679043719"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043719"><span class="hs-identifier hs-var">o</span></a></span></span><span> </span><span id="local-6989586621679043720"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043720"><span class="hs-identifier hs-var">l</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; (Buffer -&gt; IO Buffer) -&gt; IO Buffer
+forall a b. ForeignPtr a -&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><span class="hs-identifier hs-var">withForeignPtr</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679043718"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">((Buffer -&gt; IO Buffer) -&gt; IO Buffer)
+-&gt; (Buffer -&gt; IO Buffer) -&gt; IO Buffer
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679043721"><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679043721"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-62"></span><span>    </span><span class="annot"><span class="annottext">Buffer -&gt; Buffer -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">memcpy</span></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679043717"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679043721"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; Int -&gt; Buffer
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043719"><span class="hs-identifier hs-var">o</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043720"><span class="hs-identifier hs-var">l</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span>    </span><span class="annot"><span class="annottext">Buffer -&gt; IO Buffer
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Buffer -&gt; IO Buffer) -&gt; Buffer -&gt; IO Buffer
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679043717"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; Int -&gt; Buffer
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679043720"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-64"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Network.Socket.BufferPool.Buffer.html#copy"><span class="hs-pragma hs-type">copy</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-65"></span></pre></body></html>

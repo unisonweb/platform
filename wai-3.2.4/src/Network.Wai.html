@@ -1,0 +1,988 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="annot"><span class="hs-comment">{-|
+
+This module defines a generic web application interface. It is a common
+protocol between web servers and web applications.
+
+The overriding design principles here are performance and generality. To
+address performance, this library uses a streaming interface for request and
+response bodies, paired with bytestring's 'Builder' type.  The advantages of a
+streaming API over lazy IO have been debated elsewhere and so will not be
+addressed here.  However, helper functions like 'responseLBS' allow you to
+continue using lazy IO if you so desire.
+
+Generality is achieved by removing many variables commonly found in similar
+projects that are not universal to all servers. The goal is that the 'Request'
+object contains only data which is meaningful in all circumstances.
+
+Please remember when using this package that, while your application may
+compile without a hitch against many different servers, there are other
+considerations to be taken when moving to a new backend. For example, if you
+transfer from a CGI application to a FastCGI one, you might suddenly find you
+have a memory leak. Conversely, a FastCGI application would be well served to
+preload all templates from disk when first starting; this would kill the
+performance of a CGI application.
+
+This package purposely provides very little functionality. You can find various
+middlewares, backends and utilities on Hackage. Some of the most commonly used
+include:
+
+[warp] &lt;http://hackage.haskell.org/package/warp&gt;
+
+[wai-extra] &lt;http://hackage.haskell.org/package/wai-extra&gt;
+
+-}</span></span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- Ignore deprecations, because this module needs to use the deprecated requestBody to construct a response.</span><span>
+</span><span id="line-35"></span><span class="hs-pragma">{-# OPTIONS_GHC -fno-warn-deprecations #-}</span><span>
+</span><span id="line-36"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.Wai</span><span>
+</span><span id="line-37"></span><span>    </span><span class="hs-special">(</span><span>
+</span><span id="line-38"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Types</span></span><span>
+</span><span id="line-39"></span><span>      </span><span class="annot"><a href="Network.Wai.html#Application"><span class="hs-identifier">Application</span></a></span><span>
+</span><span id="line-40"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#Middleware"><span class="hs-identifier">Middleware</span></a></span><span>
+</span><span id="line-41"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#ResponseReceived"><span class="hs-identifier">ResponseReceived</span></a></span><span>
+</span><span id="line-42"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Request</span></span><span>
+</span><span id="line-43"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier">Request</span></a></span><span>
+</span><span id="line-44"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#defaultRequest"><span class="hs-identifier">defaultRequest</span></a></span><span>
+</span><span id="line-45"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#RequestBodyLength"><span class="hs-identifier">RequestBodyLength</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-46"></span><span>      </span><span class="annot"><span class="hs-comment">-- ** Request accessors</span></span><span>
+</span><span id="line-47"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#requestMethod"><span class="hs-identifier">requestMethod</span></a></span><span>
+</span><span id="line-48"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#httpVersion"><span class="hs-identifier">httpVersion</span></a></span><span>
+</span><span id="line-49"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#rawPathInfo"><span class="hs-identifier">rawPathInfo</span></a></span><span>
+</span><span id="line-50"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#rawQueryString"><span class="hs-identifier">rawQueryString</span></a></span><span>
+</span><span id="line-51"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#requestHeaders"><span class="hs-identifier">requestHeaders</span></a></span><span>
+</span><span id="line-52"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#isSecure"><span class="hs-identifier">isSecure</span></a></span><span>
+</span><span id="line-53"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#remoteHost"><span class="hs-identifier">remoteHost</span></a></span><span>
+</span><span id="line-54"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#pathInfo"><span class="hs-identifier">pathInfo</span></a></span><span>
+</span><span id="line-55"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#queryString"><span class="hs-identifier">queryString</span></a></span><span>
+</span><span id="line-56"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#getRequestBodyChunk"><span class="hs-identifier">getRequestBodyChunk</span></a></span><span>
+</span><span id="line-57"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#requestBody"><span class="hs-identifier">requestBody</span></a></span><span>
+</span><span id="line-58"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#vault"><span class="hs-identifier">vault</span></a></span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#requestBodyLength"><span class="hs-identifier">requestBodyLength</span></a></span><span>
+</span><span id="line-60"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#requestHeaderHost"><span class="hs-identifier">requestHeaderHost</span></a></span><span>
+</span><span id="line-61"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#requestHeaderRange"><span class="hs-identifier">requestHeaderRange</span></a></span><span>
+</span><span id="line-62"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#requestHeaderReferer"><span class="hs-identifier">requestHeaderReferer</span></a></span><span>
+</span><span id="line-63"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#requestHeaderUserAgent"><span class="hs-identifier">requestHeaderUserAgent</span></a></span><span>
+</span><span id="line-64"></span><span>    </span><span class="annot"><span class="hs-comment">-- $streamingRequestBodies</span></span><span>
+</span><span id="line-65"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#strictRequestBody"><span class="hs-identifier">strictRequestBody</span></a></span><span>
+</span><span id="line-66"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#consumeRequestBodyStrict"><span class="hs-identifier">consumeRequestBodyStrict</span></a></span><span>
+</span><span id="line-67"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#lazyRequestBody"><span class="hs-identifier">lazyRequestBody</span></a></span><span>
+</span><span id="line-68"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#consumeRequestBodyLazy"><span class="hs-identifier">consumeRequestBodyLazy</span></a></span><span>
+</span><span id="line-69"></span><span>      </span><span class="annot"><span class="hs-comment">-- ** Request modifiers</span></span><span>
+</span><span id="line-70"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#setRequestBodyChunks"><span class="hs-identifier">setRequestBodyChunks</span></a></span><span>
+</span><span id="line-71"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#mapRequestHeaders"><span class="hs-identifier">mapRequestHeaders</span></a></span><span>
+</span><span id="line-72"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Response</span></span><span>
+</span><span id="line-73"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier">Response</span></a></span><span>
+</span><span id="line-74"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#StreamingBody"><span class="hs-identifier">StreamingBody</span></a></span><span>
+</span><span id="line-75"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#FilePart"><span class="hs-identifier">FilePart</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-76"></span><span>      </span><span class="annot"><span class="hs-comment">-- ** Response composers</span></span><span>
+</span><span id="line-77"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#responseFile"><span class="hs-identifier">responseFile</span></a></span><span>
+</span><span id="line-78"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#responseBuilder"><span class="hs-identifier">responseBuilder</span></a></span><span>
+</span><span id="line-79"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#responseLBS"><span class="hs-identifier">responseLBS</span></a></span><span>
+</span><span id="line-80"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#responseStream"><span class="hs-identifier">responseStream</span></a></span><span>
+</span><span id="line-81"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#responseRaw"><span class="hs-identifier">responseRaw</span></a></span><span>
+</span><span id="line-82"></span><span>      </span><span class="annot"><span class="hs-comment">-- ** Response accessors</span></span><span>
+</span><span id="line-83"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#responseStatus"><span class="hs-identifier">responseStatus</span></a></span><span>
+</span><span id="line-84"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#responseHeaders"><span class="hs-identifier">responseHeaders</span></a></span><span>
+</span><span id="line-85"></span><span>      </span><span class="annot"><span class="hs-comment">-- ** Response modifiers</span></span><span>
+</span><span id="line-86"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#responseToStream"><span class="hs-identifier">responseToStream</span></a></span><span>
+</span><span id="line-87"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#mapResponseHeaders"><span class="hs-identifier">mapResponseHeaders</span></a></span><span>
+</span><span id="line-88"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#mapResponseStatus"><span class="hs-identifier">mapResponseStatus</span></a></span><span>
+</span><span id="line-89"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Middleware composition</span></span><span>
+</span><span id="line-90"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#ifRequest"><span class="hs-identifier">ifRequest</span></a></span><span>
+</span><span id="line-91"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#modifyRequest"><span class="hs-identifier">modifyRequest</span></a></span><span>
+</span><span id="line-92"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.html#modifyResponse"><span class="hs-identifier">modifyResponse</span></a></span><span>
+</span><span id="line-93"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.ByteString.Builder</span></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Builder</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">byteString</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">lazyByteString</span></span><span class="hs-special">)</span><span>
+</span><span id="line-96"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unless</span></span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span>              </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-98"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Lazy</span></span><span>         </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">L</span></span><span>
+</span><span id="line-99"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Lazy.Internal</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">LI</span></span><span>
+</span><span id="line-100"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.ByteString.Lazy.Internal</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">defaultChunkSize</span></span><span class="hs-special">)</span><span>
+</span><span id="line-101"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Function</span></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">fix</span></span><span class="hs-special">)</span><span>
+</span><span id="line-102"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Network.HTTP.Types</span></span><span>           </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">H</span></span><span>
+</span><span id="line-103"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Network.Socket</span></span><span>               </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">SockAddr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">SockAddrInet</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-104"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Network.Wai.Internal.html"><span class="hs-identifier">Network.Wai.Internal</span></a></span><span>
+</span><span id="line-105"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">System.IO</span></span><span>                    </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">IO</span></span><span>
+</span><span id="line-106"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">System.IO.Unsafe</span></span><span>             </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unsafeInterleaveIO</span></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-109"></span><span>
+</span><span id="line-110"></span><span class="hs-comment">-- | Creating 'Response' from a file.</span><span>
+</span><span id="line-111"></span><span class="hs-comment">--</span><span>
+</span><span id="line-112"></span><span class="hs-comment">-- @since 2.0.0</span><span>
+</span><span id="line-113"></span><span class="annot"><a href="Network.Wai.html#responseFile"><span class="hs-identifier hs-type">responseFile</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.Status</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.ResponseHeaders</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#FilePart"><span class="hs-identifier hs-type">FilePart</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span>
+</span><span id="line-114"></span><span id="responseFile"><span class="annot"><span class="annottext">responseFile :: Status -&gt; ResponseHeaders -&gt; FilePath -&gt; Maybe FilePart -&gt; Response
+</span><a href="Network.Wai.html#responseFile"><span class="hs-identifier hs-var hs-var">responseFile</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status -&gt; ResponseHeaders -&gt; FilePath -&gt; Maybe FilePart -&gt; Response
+</span><a href="Network.Wai.Internal.html#ResponseFile"><span class="hs-identifier hs-var">ResponseFile</span></a></span><span>
+</span><span id="line-115"></span><span>
+</span><span id="line-116"></span><span class="hs-comment">-- | Creating 'Response' from 'Builder'.</span><span>
+</span><span id="line-117"></span><span class="hs-comment">--</span><span>
+</span><span id="line-118"></span><span class="hs-comment">-- Some questions and answers about the usage of 'Builder' here:</span><span>
+</span><span id="line-119"></span><span class="hs-comment">--</span><span>
+</span><span id="line-120"></span><span class="hs-comment">-- Q1. Shouldn't it be at the user's discretion to use Builders internally and</span><span>
+</span><span id="line-121"></span><span class="hs-comment">-- then create a stream of ByteStrings?</span><span>
+</span><span id="line-122"></span><span class="hs-comment">--</span><span>
+</span><span id="line-123"></span><span class="hs-comment">-- A1. That would be less efficient, as we wouldn't get cheap concatenation</span><span>
+</span><span id="line-124"></span><span class="hs-comment">-- with the response headers.</span><span>
+</span><span id="line-125"></span><span class="hs-comment">--</span><span>
+</span><span id="line-126"></span><span class="hs-comment">-- Q2. Isn't it really inefficient to convert from ByteString to Builder, and</span><span>
+</span><span id="line-127"></span><span class="hs-comment">-- then right back to ByteString?</span><span>
+</span><span id="line-128"></span><span class="hs-comment">--</span><span>
+</span><span id="line-129"></span><span class="hs-comment">-- A2. No. If the ByteStrings are small, then they will be copied into a larger</span><span>
+</span><span id="line-130"></span><span class="hs-comment">-- buffer, which should be a performance gain overall (less system calls). If</span><span>
+</span><span id="line-131"></span><span class="hs-comment">-- they are already large, then an insert operation is used</span><span>
+</span><span id="line-132"></span><span class="hs-comment">-- to avoid copying.</span><span>
+</span><span id="line-133"></span><span class="hs-comment">--</span><span>
+</span><span id="line-134"></span><span class="hs-comment">-- Q3. Doesn't this prevent us from creating comet-style servers, since data</span><span>
+</span><span id="line-135"></span><span class="hs-comment">-- will be cached?</span><span>
+</span><span id="line-136"></span><span class="hs-comment">--</span><span>
+</span><span id="line-137"></span><span class="hs-comment">-- A3. You can force a Builder to output a ByteString before it is an</span><span>
+</span><span id="line-138"></span><span class="hs-comment">-- optimal size by sending a flush command.</span><span>
+</span><span id="line-139"></span><span class="hs-comment">--</span><span>
+</span><span id="line-140"></span><span class="hs-comment">-- @since 2.0.0</span><span>
+</span><span id="line-141"></span><span class="annot"><a href="Network.Wai.html#responseBuilder"><span class="hs-identifier hs-type">responseBuilder</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.Status</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.ResponseHeaders</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Builder</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span>
+</span><span id="line-142"></span><span id="responseBuilder"><span class="annot"><span class="annottext">responseBuilder :: Status -&gt; ResponseHeaders -&gt; Builder -&gt; Response
+</span><a href="Network.Wai.html#responseBuilder"><span class="hs-identifier hs-var hs-var">responseBuilder</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status -&gt; ResponseHeaders -&gt; Builder -&gt; Response
+</span><a href="Network.Wai.Internal.html#ResponseBuilder"><span class="hs-identifier hs-var">ResponseBuilder</span></a></span><span>
+</span><span id="line-143"></span><span>
+</span><span id="line-144"></span><span class="hs-comment">-- | Creating 'Response' from 'L.ByteString'. This is a wrapper for</span><span>
+</span><span id="line-145"></span><span class="hs-comment">--   'responseBuilder'.</span><span>
+</span><span id="line-146"></span><span class="hs-comment">--</span><span>
+</span><span id="line-147"></span><span class="hs-comment">-- @since 0.3.0</span><span>
+</span><span id="line-148"></span><span class="annot"><a href="Network.Wai.html#responseLBS"><span class="hs-identifier hs-type">responseLBS</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.Status</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.ResponseHeaders</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">L.ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span>
+</span><span id="line-149"></span><span id="responseLBS"><span class="annot"><span class="annottext">responseLBS :: Status -&gt; ResponseHeaders -&gt; ByteString -&gt; Response
+</span><a href="Network.Wai.html#responseLBS"><span class="hs-identifier hs-var hs-var">responseLBS</span></a></span></span><span> </span><span id="local-6989586621679060063"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060063"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679060064"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060064"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status -&gt; ResponseHeaders -&gt; Builder -&gt; Response
+</span><a href="Network.Wai.Internal.html#ResponseBuilder"><span class="hs-identifier hs-var">ResponseBuilder</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060063"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060064"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder -&gt; Response)
+-&gt; (ByteString -&gt; Builder) -&gt; ByteString -&gt; Response
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Builder
+</span><span class="hs-identifier hs-var">lazyByteString</span></span><span>
+</span><span id="line-150"></span><span>
+</span><span id="line-151"></span><span class="hs-comment">-- | Creating 'Response' from a stream of values.</span><span>
+</span><span id="line-152"></span><span class="hs-comment">--</span><span>
+</span><span id="line-153"></span><span class="hs-comment">-- In order to allocate resources in an exception-safe manner, you can use the</span><span>
+</span><span id="line-154"></span><span class="hs-comment">-- @bracket@ pattern outside of the call to @responseStream@. As a trivial</span><span>
+</span><span id="line-155"></span><span class="hs-comment">-- example:</span><span>
+</span><span id="line-156"></span><span class="hs-comment">--</span><span>
+</span><span id="line-157"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-158"></span><span class="hs-comment">-- app :: Application</span><span>
+</span><span id="line-159"></span><span class="hs-comment">-- app req respond = bracket_</span><span>
+</span><span id="line-160"></span><span class="hs-comment">--     (putStrLn \&quot;Allocating scarce resource\&quot;)</span><span>
+</span><span id="line-161"></span><span class="hs-comment">--     (putStrLn \&quot;Cleaning up\&quot;)</span><span>
+</span><span id="line-162"></span><span class="hs-comment">--     $ respond $ responseStream status200 [] $ \\write flush -&gt; do</span><span>
+</span><span id="line-163"></span><span class="hs-comment">--         write $ byteString \&quot;Hello\\n\&quot;</span><span>
+</span><span id="line-164"></span><span class="hs-comment">--         flush</span><span>
+</span><span id="line-165"></span><span class="hs-comment">--         write $ byteString \&quot;World\\n\&quot;</span><span>
+</span><span id="line-166"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-167"></span><span class="hs-comment">--</span><span>
+</span><span id="line-168"></span><span class="hs-comment">-- Note that in some cases you can use @bracket@ from inside @responseStream@</span><span>
+</span><span id="line-169"></span><span class="hs-comment">-- as well. However, placing the call on the outside allows your status value</span><span>
+</span><span id="line-170"></span><span class="hs-comment">-- and response headers to depend on the scarce resource.</span><span>
+</span><span id="line-171"></span><span class="hs-comment">--</span><span>
+</span><span id="line-172"></span><span class="hs-comment">-- @since 3.0.0</span><span>
+</span><span id="line-173"></span><span class="annot"><a href="Network.Wai.html#responseStream"><span class="hs-identifier hs-type">responseStream</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.Status</span></span><span>
+</span><span id="line-174"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.ResponseHeaders</span></span><span>
+</span><span id="line-175"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#StreamingBody"><span class="hs-identifier hs-type">StreamingBody</span></a></span><span>
+</span><span id="line-176"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span>
+</span><span id="line-177"></span><span id="responseStream"><span class="annot"><span class="annottext">responseStream :: Status -&gt; ResponseHeaders -&gt; StreamingBody -&gt; Response
+</span><a href="Network.Wai.html#responseStream"><span class="hs-identifier hs-var hs-var">responseStream</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status -&gt; ResponseHeaders -&gt; StreamingBody -&gt; Response
+</span><a href="Network.Wai.Internal.html#ResponseStream"><span class="hs-identifier hs-var">ResponseStream</span></a></span><span>
+</span><span id="line-178"></span><span>
+</span><span id="line-179"></span><span class="hs-comment">-- | Create a response for a raw application. This is useful for \&quot;upgrade\&quot;</span><span>
+</span><span id="line-180"></span><span class="hs-comment">-- situations such as WebSockets, where an application requests for the server</span><span>
+</span><span id="line-181"></span><span class="hs-comment">-- to grant it raw network access.</span><span>
+</span><span id="line-182"></span><span class="hs-comment">--</span><span>
+</span><span id="line-183"></span><span class="hs-comment">-- This function requires a backup response to be provided, for the case where</span><span>
+</span><span id="line-184"></span><span class="hs-comment">-- the handler in question does not support such upgrading (e.g., CGI apps).</span><span>
+</span><span id="line-185"></span><span class="hs-comment">--</span><span>
+</span><span id="line-186"></span><span class="hs-comment">-- In the event that you read from the request body before returning a</span><span>
+</span><span id="line-187"></span><span class="hs-comment">-- @responseRaw@, behavior is undefined.</span><span>
+</span><span id="line-188"></span><span class="hs-comment">--</span><span>
+</span><span id="line-189"></span><span class="hs-comment">-- @since 2.1.0</span><span>
+</span><span id="line-190"></span><span class="annot"><a href="Network.Wai.html#responseRaw"><span class="hs-identifier hs-type">responseRaw</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-191"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span>
+</span><span id="line-192"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span>
+</span><span id="line-193"></span><span id="responseRaw"><span class="annot"><span class="annottext">responseRaw :: (IO ByteString -&gt; (ByteString -&gt; IO ()) -&gt; IO ())
+-&gt; Response -&gt; Response
+</span><a href="Network.Wai.html#responseRaw"><span class="hs-identifier hs-var hs-var">responseRaw</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(IO ByteString -&gt; (ByteString -&gt; IO ()) -&gt; IO ())
+-&gt; Response -&gt; Response
+</span><a href="Network.Wai.Internal.html#ResponseRaw"><span class="hs-identifier hs-var">ResponseRaw</span></a></span><span>
+</span><span id="line-194"></span><span>
+</span><span id="line-195"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-196"></span><span>
+</span><span id="line-197"></span><span class="hs-comment">-- | Accessing 'H.Status' in 'Response'.</span><span>
+</span><span id="line-198"></span><span class="hs-comment">--</span><span>
+</span><span id="line-199"></span><span class="hs-comment">-- @since 1.2.0</span><span>
+</span><span id="line-200"></span><span class="annot"><a href="Network.Wai.html#responseStatus"><span class="hs-identifier hs-type">responseStatus</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.Status</span></span><span>
+</span><span id="line-201"></span><span id="responseStatus"><span class="annot"><span class="annottext">responseStatus :: Response -&gt; Status
+</span><a href="Network.Wai.html#responseStatus"><span class="hs-identifier hs-var hs-var">responseStatus</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseFile"><span class="hs-identifier hs-type">ResponseFile</span></a></span><span>    </span><span id="local-6989586621679060069"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060069"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Maybe FilePart
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060069"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-202"></span><span class="annot"><a href="Network.Wai.html#responseStatus"><span class="hs-identifier hs-var">responseStatus</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseBuilder"><span class="hs-identifier hs-type">ResponseBuilder</span></a></span><span> </span><span id="local-6989586621679060070"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060070"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Builder
+</span><span class="hs-identifier">_</span></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060070"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-203"></span><span class="annot"><a href="Network.Wai.html#responseStatus"><span class="hs-identifier hs-var">responseStatus</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseStream"><span class="hs-identifier hs-type">ResponseStream</span></a></span><span>  </span><span id="local-6989586621679060071"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060071"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">StreamingBody
+</span><span class="hs-identifier">_</span></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060071"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-204"></span><span class="annot"><a href="Network.Wai.html#responseStatus"><span class="hs-identifier hs-var">responseStatus</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseRaw"><span class="hs-identifier hs-type">ResponseRaw</span></a></span><span> </span><span class="annot"><span class="annottext">IO ByteString -&gt; (ByteString -&gt; IO ()) -&gt; IO ()
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679060072"><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679060072"><span class="hs-identifier hs-var">res</span></a></span></span><span>      </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Response -&gt; Status
+</span><a href="Network.Wai.html#responseStatus"><span class="hs-identifier hs-var">responseStatus</span></a></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679060072"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-205"></span><span>
+</span><span id="line-206"></span><span class="hs-comment">-- | Accessing 'H.ResponseHeaders' in 'Response'.</span><span>
+</span><span id="line-207"></span><span class="hs-comment">--</span><span>
+</span><span id="line-208"></span><span class="hs-comment">-- @since 2.0.0</span><span>
+</span><span id="line-209"></span><span class="annot"><a href="Network.Wai.html#responseHeaders"><span class="hs-identifier hs-type">responseHeaders</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.ResponseHeaders</span></span><span>
+</span><span id="line-210"></span><span id="responseHeaders"><span class="annot"><span class="annottext">responseHeaders :: Response -&gt; ResponseHeaders
+</span><a href="Network.Wai.html#responseHeaders"><span class="hs-identifier hs-var hs-var">responseHeaders</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseFile"><span class="hs-identifier hs-type">ResponseFile</span></a></span><span>    </span><span class="annot"><span class="annottext">Status
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679060073"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060073"><span class="hs-identifier hs-var">hs</span></a></span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Maybe FilePart
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060073"><span class="hs-identifier hs-var">hs</span></a></span><span>
+</span><span id="line-211"></span><span class="annot"><a href="Network.Wai.html#responseHeaders"><span class="hs-identifier hs-var">responseHeaders</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseBuilder"><span class="hs-identifier hs-type">ResponseBuilder</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679060074"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060074"><span class="hs-identifier hs-var">hs</span></a></span></span><span> </span><span class="annot"><span class="annottext">Builder
+</span><span class="hs-identifier">_</span></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060074"><span class="hs-identifier hs-var">hs</span></a></span><span>
+</span><span id="line-212"></span><span class="annot"><a href="Network.Wai.html#responseHeaders"><span class="hs-identifier hs-var">responseHeaders</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseStream"><span class="hs-identifier hs-type">ResponseStream</span></a></span><span>  </span><span class="annot"><span class="annottext">Status
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679060075"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060075"><span class="hs-identifier hs-var">hs</span></a></span></span><span> </span><span class="annot"><span class="annottext">StreamingBody
+</span><span class="hs-identifier">_</span></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060075"><span class="hs-identifier hs-var">hs</span></a></span><span>
+</span><span id="line-213"></span><span class="annot"><a href="Network.Wai.html#responseHeaders"><span class="hs-identifier hs-var">responseHeaders</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseRaw"><span class="hs-identifier hs-type">ResponseRaw</span></a></span><span> </span><span class="annot"><span class="annottext">IO ByteString -&gt; (ByteString -&gt; IO ()) -&gt; IO ()
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679060076"><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679060076"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">)</span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Response -&gt; ResponseHeaders
+</span><a href="Network.Wai.html#responseHeaders"><span class="hs-identifier hs-var">responseHeaders</span></a></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679060076"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-214"></span><span>
+</span><span id="line-215"></span><span class="hs-comment">-- | Converting the body information in 'Response' to a 'StreamingBody'.</span><span>
+</span><span id="line-216"></span><span class="hs-comment">--</span><span>
+</span><span id="line-217"></span><span class="hs-comment">-- @since 3.0.0</span><span>
+</span><span id="line-218"></span><span id="local-6989586621679059975"><span class="annot"><a href="Network.Wai.html#responseToStream"><span class="hs-identifier hs-type">responseToStream</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span>
+</span><span id="line-219"></span><span>                 </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.Status</span></span><span>
+</span><span id="line-220"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.ResponseHeaders</span></span><span>
+</span><span id="line-221"></span><span>                    </span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#StreamingBody"><span class="hs-identifier hs-type">StreamingBody</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679059975"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679059975"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-222"></span><span>                    </span><span class="hs-special">)</span></span><span>
+</span><span id="line-223"></span><span id="responseToStream"><span class="annot"><span class="annottext">responseToStream :: forall a.
+Response
+-&gt; (Status, ResponseHeaders, (StreamingBody -&gt; IO a) -&gt; IO a)
+</span><a href="Network.Wai.html#responseToStream"><span class="hs-identifier hs-var hs-var">responseToStream</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseStream"><span class="hs-identifier hs-type">ResponseStream</span></a></span><span> </span><span id="local-6989586621679060086"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060086"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679060087"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060087"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679060088"><span class="annot"><span class="annottext">StreamingBody
+</span><a href="#local-6989586621679060088"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060086"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060087"><span class="hs-identifier hs-var">h</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(StreamingBody -&gt; IO a) -&gt; StreamingBody -&gt; IO a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">StreamingBody
+</span><a href="#local-6989586621679060088"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-224"></span><span class="annot"><a href="Network.Wai.html#responseToStream"><span class="hs-identifier hs-var">responseToStream</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseFile"><span class="hs-identifier hs-type">ResponseFile</span></a></span><span> </span><span id="local-6989586621679060089"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060089"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679060090"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060090"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679060091"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679060091"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679060092"><span class="annot"><span class="annottext">FilePart
+</span><a href="#local-6989586621679060092"><span class="hs-identifier hs-var">part</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-225"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060089"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-226"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060090"><span class="hs-identifier hs-var">h</span></a></span><span>
+</span><span id="line-227"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679060093"><span class="annot"><span class="annottext">StreamingBody -&gt; IO a
+</span><a href="#local-6989586621679060093"><span class="hs-identifier hs-var">withBody</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IOMode -&gt; (Handle -&gt; IO a) -&gt; IO a
+forall r. FilePath -&gt; IOMode -&gt; (Handle -&gt; IO r) -&gt; IO r
+</span><span class="hs-identifier hs-var">IO.withBinaryFile</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679060091"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">IOMode
+</span><span class="hs-identifier hs-var">IO.ReadMode</span></span><span> </span><span class="annot"><span class="annottext">((Handle -&gt; IO a) -&gt; IO a) -&gt; (Handle -&gt; IO a) -&gt; IO a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679060096"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679060096"><span class="hs-identifier hs-var">handle</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">StreamingBody -&gt; IO a
+</span><a href="#local-6989586621679060093"><span class="hs-identifier hs-var">withBody</span></a></span><span> </span><span class="annot"><span class="annottext">(StreamingBody -&gt; IO a) -&gt; StreamingBody -&gt; IO a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679060097"><span class="annot"><span class="annottext">Builder -&gt; IO ()
+</span><a href="#local-6989586621679060097"><span class="hs-identifier hs-var">sendChunk</span></a></span></span><span> </span><span id="local-6989586621679060098"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679060098"><span class="hs-identifier hs-var">_flush</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-228"></span><span>        </span><span class="annot"><span class="annottext">Handle -&gt; SeekMode -&gt; Integer -&gt; IO ()
+</span><span class="hs-identifier hs-var">IO.hSeek</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679060096"><span class="hs-identifier hs-var">handle</span></a></span><span> </span><span class="annot"><span class="annottext">SeekMode
+</span><span class="hs-identifier hs-var">IO.AbsoluteSeek</span></span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; IO ()) -&gt; Integer -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FilePart -&gt; Integer
+</span><a href="Network.Wai.Internal.html#filePartOffset"><span class="hs-identifier hs-var">filePartOffset</span></a></span><span> </span><span class="annot"><span class="annottext">FilePart
+</span><a href="#local-6989586621679060092"><span class="hs-identifier hs-var">part</span></a></span><span>
+</span><span id="line-229"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679060110"><span class="annot"><span class="annottext">loop :: Int -&gt; IO ()
+</span><a href="#local-6989586621679060110"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span id="local-6989586621679060111"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679060111"><span class="hs-identifier hs-var">remaining</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679060111"><span class="hs-identifier hs-var">remaining</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-230"></span><span>            </span><span class="annot"><a href="#local-6989586621679060110"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span id="local-6989586621679060113"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679060113"><span class="hs-identifier hs-var">remaining</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-231"></span><span>                </span><span id="local-6989586621679060114"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060114"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Int -&gt; IO ByteString
+</span><span class="hs-identifier hs-var">B.hGetSome</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679060096"><span class="hs-identifier hs-var">handle</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier hs-var">defaultChunkSize</span></span><span>
+</span><span id="line-232"></span><span>                </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">unless</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">B.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060114"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-233"></span><span>                    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679060117"><span class="annot"><span class="annottext">x :: ByteString
+</span><a href="#local-6989586621679060117"><span class="hs-identifier hs-var hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">B.take</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679060113"><span class="hs-identifier hs-var">remaining</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060114"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-234"></span><span>                    </span><span class="annot"><span class="annottext">Builder -&gt; IO ()
+</span><a href="#local-6989586621679060097"><span class="hs-identifier hs-var">sendChunk</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder -&gt; IO ()) -&gt; Builder -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Builder
+</span><span class="hs-identifier hs-var">byteString</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060117"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-235"></span><span>                    </span><span class="annot"><span class="annottext">Int -&gt; IO ()
+</span><a href="#local-6989586621679060110"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; IO ()) -&gt; Int -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679060113"><span class="hs-identifier hs-var">remaining</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060117"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-236"></span><span>        </span><span class="annot"><span class="annottext">Int -&gt; IO ()
+</span><a href="#local-6989586621679060110"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; IO ()) -&gt; Int -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; Int) -&gt; Integer -&gt; Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FilePart -&gt; Integer
+</span><a href="Network.Wai.Internal.html#filePartByteCount"><span class="hs-identifier hs-var">filePartByteCount</span></a></span><span> </span><span class="annot"><span class="annottext">FilePart
+</span><a href="#local-6989586621679060092"><span class="hs-identifier hs-var">part</span></a></span><span>
+</span><span id="line-237"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-238"></span><span class="annot"><a href="Network.Wai.html#responseToStream"><span class="hs-identifier hs-var">responseToStream</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseFile"><span class="hs-identifier hs-type">ResponseFile</span></a></span><span> </span><span id="local-6989586621679060121"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060121"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679060122"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060122"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679060123"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679060123"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="annot"><span class="annottext">Maybe FilePart
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-239"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060121"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-240"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060122"><span class="hs-identifier hs-var">h</span></a></span><span>
+</span><span id="line-241"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679060124"><span class="annot"><span class="annottext">StreamingBody -&gt; IO a
+</span><a href="#local-6989586621679060124"><span class="hs-identifier hs-var">withBody</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IOMode -&gt; (Handle -&gt; IO a) -&gt; IO a
+forall r. FilePath -&gt; IOMode -&gt; (Handle -&gt; IO r) -&gt; IO r
+</span><span class="hs-identifier hs-var">IO.withBinaryFile</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679060123"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">IOMode
+</span><span class="hs-identifier hs-var">IO.ReadMode</span></span><span> </span><span class="annot"><span class="annottext">((Handle -&gt; IO a) -&gt; IO a) -&gt; (Handle -&gt; IO a) -&gt; IO a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679060125"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679060125"><span class="hs-identifier hs-var">handle</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-242"></span><span>       </span><span class="annot"><span class="annottext">StreamingBody -&gt; IO a
+</span><a href="#local-6989586621679060124"><span class="hs-identifier hs-var">withBody</span></a></span><span> </span><span class="annot"><span class="annottext">(StreamingBody -&gt; IO a) -&gt; StreamingBody -&gt; IO a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679060126"><span class="annot"><span class="annottext">Builder -&gt; IO ()
+</span><a href="#local-6989586621679060126"><span class="hs-identifier hs-var">sendChunk</span></a></span></span><span> </span><span id="local-6989586621679060127"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679060127"><span class="hs-identifier hs-var">_flush</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO ()
+forall a. (a -&gt; a) -&gt; a
+</span><span class="hs-identifier hs-var">fix</span></span><span> </span><span class="annot"><span class="annottext">((IO () -&gt; IO ()) -&gt; IO ()) -&gt; (IO () -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679060128"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679060128"><span class="hs-identifier hs-var">loop</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-243"></span><span>            </span><span id="local-6989586621679060129"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060129"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Int -&gt; IO ByteString
+</span><span class="hs-identifier hs-var">B.hGetSome</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679060125"><span class="hs-identifier hs-var">handle</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier hs-var">defaultChunkSize</span></span><span>
+</span><span id="line-244"></span><span>            </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">unless</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">B.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060129"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-245"></span><span>                </span><span class="annot"><span class="annottext">Builder -&gt; IO ()
+</span><a href="#local-6989586621679060126"><span class="hs-identifier hs-var">sendChunk</span></a></span><span> </span><span class="annot"><span class="annottext">(Builder -&gt; IO ()) -&gt; Builder -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Builder
+</span><span class="hs-identifier hs-var">byteString</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060129"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-246"></span><span>                </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679060128"><span class="hs-identifier hs-var">loop</span></a></span><span>
+</span><span id="line-247"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-248"></span><span class="annot"><a href="Network.Wai.html#responseToStream"><span class="hs-identifier hs-var">responseToStream</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseBuilder"><span class="hs-identifier hs-type">ResponseBuilder</span></a></span><span> </span><span id="local-6989586621679060130"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060130"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679060131"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060131"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679060132"><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679060132"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-249"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060130"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060131"><span class="hs-identifier hs-var">h</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679060133"><span class="annot"><span class="annottext">StreamingBody -&gt; IO a
+</span><a href="#local-6989586621679060133"><span class="hs-identifier hs-var">withBody</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">StreamingBody -&gt; IO a
+</span><a href="#local-6989586621679060133"><span class="hs-identifier hs-var">withBody</span></a></span><span> </span><span class="annot"><span class="annottext">(StreamingBody -&gt; IO a) -&gt; StreamingBody -&gt; IO a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679060134"><span class="annot"><span class="annottext">Builder -&gt; IO ()
+</span><a href="#local-6989586621679060134"><span class="hs-identifier hs-var">sendChunk</span></a></span></span><span> </span><span id="local-6989586621679060135"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679060135"><span class="hs-identifier hs-var">_flush</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Builder -&gt; IO ()
+</span><a href="#local-6989586621679060134"><span class="hs-identifier hs-var">sendChunk</span></a></span><span> </span><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679060132"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-250"></span><span class="annot"><a href="Network.Wai.html#responseToStream"><span class="hs-identifier hs-var">responseToStream</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseRaw"><span class="hs-identifier hs-type">ResponseRaw</span></a></span><span> </span><span class="annot"><span class="annottext">IO ByteString -&gt; (ByteString -&gt; IO ()) -&gt; IO ()
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679060136"><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679060136"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Response
+-&gt; (Status, ResponseHeaders, (StreamingBody -&gt; IO a) -&gt; IO a)
+forall a.
+Response
+-&gt; (Status, ResponseHeaders, (StreamingBody -&gt; IO a) -&gt; IO a)
+</span><a href="Network.Wai.html#responseToStream"><span class="hs-identifier hs-var">responseToStream</span></a></span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679060136"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-251"></span><span>
+</span><span id="line-252"></span><span class="hs-comment">-- | Apply the provided function to the response header list of the Response.</span><span>
+</span><span id="line-253"></span><span class="hs-comment">--</span><span>
+</span><span id="line-254"></span><span class="hs-comment">-- @since 3.0.3.0</span><span>
+</span><span id="line-255"></span><span class="annot"><a href="Network.Wai.html#mapResponseHeaders"><span class="hs-identifier hs-type">mapResponseHeaders</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">H.ResponseHeaders</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.ResponseHeaders</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span>
+</span><span id="line-256"></span><span id="mapResponseHeaders"><span class="annot"><span class="annottext">mapResponseHeaders :: (ResponseHeaders -&gt; ResponseHeaders) -&gt; Response -&gt; Response
+</span><a href="Network.Wai.html#mapResponseHeaders"><span class="hs-identifier hs-var hs-var">mapResponseHeaders</span></a></span></span><span> </span><span id="local-6989586621679060137"><span class="annot"><span class="annottext">ResponseHeaders -&gt; ResponseHeaders
+</span><a href="#local-6989586621679060137"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseFile"><span class="hs-identifier hs-type">ResponseFile</span></a></span><span> </span><span id="local-6989586621679060138"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060138"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679060139"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060139"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679060140"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679060140"><span class="hs-identifier hs-var">b1</span></a></span></span><span> </span><span id="local-6989586621679060141"><span class="annot"><span class="annottext">Maybe FilePart
+</span><a href="#local-6989586621679060141"><span class="hs-identifier hs-var">b2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status -&gt; ResponseHeaders -&gt; FilePath -&gt; Maybe FilePart -&gt; Response
+</span><a href="Network.Wai.Internal.html#ResponseFile"><span class="hs-identifier hs-var">ResponseFile</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060138"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ResponseHeaders -&gt; ResponseHeaders
+</span><a href="#local-6989586621679060137"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060139"><span class="hs-identifier hs-var">h</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679060140"><span class="hs-identifier hs-var">b1</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe FilePart
+</span><a href="#local-6989586621679060141"><span class="hs-identifier hs-var">b2</span></a></span><span>
+</span><span id="line-257"></span><span class="annot"><a href="Network.Wai.html#mapResponseHeaders"><span class="hs-identifier hs-var">mapResponseHeaders</span></a></span><span> </span><span id="local-6989586621679060142"><span class="annot"><span class="annottext">ResponseHeaders -&gt; ResponseHeaders
+</span><a href="#local-6989586621679060142"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseBuilder"><span class="hs-identifier hs-type">ResponseBuilder</span></a></span><span> </span><span id="local-6989586621679060143"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060143"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679060144"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060144"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679060145"><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679060145"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status -&gt; ResponseHeaders -&gt; Builder -&gt; Response
+</span><a href="Network.Wai.Internal.html#ResponseBuilder"><span class="hs-identifier hs-var">ResponseBuilder</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060143"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ResponseHeaders -&gt; ResponseHeaders
+</span><a href="#local-6989586621679060142"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060144"><span class="hs-identifier hs-var">h</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679060145"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-258"></span><span class="annot"><a href="Network.Wai.html#mapResponseHeaders"><span class="hs-identifier hs-var">mapResponseHeaders</span></a></span><span> </span><span id="local-6989586621679060146"><span class="annot"><span class="annottext">ResponseHeaders -&gt; ResponseHeaders
+</span><a href="#local-6989586621679060146"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseStream"><span class="hs-identifier hs-type">ResponseStream</span></a></span><span> </span><span id="local-6989586621679060147"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060147"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679060148"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060148"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679060149"><span class="annot"><span class="annottext">StreamingBody
+</span><a href="#local-6989586621679060149"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status -&gt; ResponseHeaders -&gt; StreamingBody -&gt; Response
+</span><a href="Network.Wai.Internal.html#ResponseStream"><span class="hs-identifier hs-var">ResponseStream</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060147"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ResponseHeaders -&gt; ResponseHeaders
+</span><a href="#local-6989586621679060146"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060148"><span class="hs-identifier hs-var">h</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">StreamingBody
+</span><a href="#local-6989586621679060149"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-259"></span><span class="annot"><a href="Network.Wai.html#mapResponseHeaders"><span class="hs-identifier hs-var">mapResponseHeaders</span></a></span><span> </span><span class="annot"><span class="annottext">ResponseHeaders -&gt; ResponseHeaders
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679060150"><span class="annot"><span class="annottext">r :: Response
+</span><a href="#local-6989586621679060150"><span class="hs-identifier hs-var">r</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseRaw"><span class="hs-identifier hs-type">ResponseRaw</span></a></span><span> </span><span class="annot"><span class="annottext">IO ByteString -&gt; (ByteString -&gt; IO ()) -&gt; IO ()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Response
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679060150"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-260"></span><span>
+</span><span id="line-261"></span><span class="hs-comment">-- | Apply the provided function to the response status of the Response.</span><span>
+</span><span id="line-262"></span><span class="hs-comment">--</span><span>
+</span><span id="line-263"></span><span class="hs-comment">-- @since 3.2.1</span><span>
+</span><span id="line-264"></span><span class="annot"><a href="Network.Wai.html#mapResponseStatus"><span class="hs-identifier hs-type">mapResponseStatus</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">H.Status</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.Status</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span>
+</span><span id="line-265"></span><span id="mapResponseStatus"><span class="annot"><span class="annottext">mapResponseStatus :: (Status -&gt; Status) -&gt; Response -&gt; Response
+</span><a href="Network.Wai.html#mapResponseStatus"><span class="hs-identifier hs-var hs-var">mapResponseStatus</span></a></span></span><span> </span><span id="local-6989586621679060151"><span class="annot"><span class="annottext">Status -&gt; Status
+</span><a href="#local-6989586621679060151"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseFile"><span class="hs-identifier hs-type">ResponseFile</span></a></span><span> </span><span id="local-6989586621679060152"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060152"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679060153"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060153"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679060154"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679060154"><span class="hs-identifier hs-var">b1</span></a></span></span><span> </span><span id="local-6989586621679060155"><span class="annot"><span class="annottext">Maybe FilePart
+</span><a href="#local-6989586621679060155"><span class="hs-identifier hs-var">b2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status -&gt; ResponseHeaders -&gt; FilePath -&gt; Maybe FilePart -&gt; Response
+</span><a href="Network.Wai.Internal.html#ResponseFile"><span class="hs-identifier hs-var">ResponseFile</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Status -&gt; Status
+</span><a href="#local-6989586621679060151"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060152"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060153"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679060154"><span class="hs-identifier hs-var">b1</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe FilePart
+</span><a href="#local-6989586621679060155"><span class="hs-identifier hs-var">b2</span></a></span><span>
+</span><span id="line-266"></span><span class="annot"><a href="Network.Wai.html#mapResponseStatus"><span class="hs-identifier hs-var">mapResponseStatus</span></a></span><span> </span><span id="local-6989586621679060156"><span class="annot"><span class="annottext">Status -&gt; Status
+</span><a href="#local-6989586621679060156"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseBuilder"><span class="hs-identifier hs-type">ResponseBuilder</span></a></span><span> </span><span id="local-6989586621679060157"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060157"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679060158"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060158"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679060159"><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679060159"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status -&gt; ResponseHeaders -&gt; Builder -&gt; Response
+</span><a href="Network.Wai.Internal.html#ResponseBuilder"><span class="hs-identifier hs-var">ResponseBuilder</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Status -&gt; Status
+</span><a href="#local-6989586621679060156"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060157"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060158"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679060159"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-267"></span><span class="annot"><a href="Network.Wai.html#mapResponseStatus"><span class="hs-identifier hs-var">mapResponseStatus</span></a></span><span> </span><span id="local-6989586621679060160"><span class="annot"><span class="annottext">Status -&gt; Status
+</span><a href="#local-6989586621679060160"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseStream"><span class="hs-identifier hs-type">ResponseStream</span></a></span><span> </span><span id="local-6989586621679060161"><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060161"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679060162"><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060162"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679060163"><span class="annot"><span class="annottext">StreamingBody
+</span><a href="#local-6989586621679060163"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Status -&gt; ResponseHeaders -&gt; StreamingBody -&gt; Response
+</span><a href="Network.Wai.Internal.html#ResponseStream"><span class="hs-identifier hs-var">ResponseStream</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Status -&gt; Status
+</span><a href="#local-6989586621679060160"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="#local-6989586621679060161"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ResponseHeaders
+</span><a href="#local-6989586621679060162"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">StreamingBody
+</span><a href="#local-6989586621679060163"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-268"></span><span class="annot"><a href="Network.Wai.html#mapResponseStatus"><span class="hs-identifier hs-var">mapResponseStatus</span></a></span><span> </span><span class="annot"><span class="annottext">Status -&gt; Status
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679060164"><span class="annot"><span class="annottext">r :: Response
+</span><a href="#local-6989586621679060164"><span class="hs-identifier hs-var">r</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#ResponseRaw"><span class="hs-identifier hs-type">ResponseRaw</span></a></span><span> </span><span class="annot"><span class="annottext">IO ByteString -&gt; (ByteString -&gt; IO ()) -&gt; IO ()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Response
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Response
+</span><a href="#local-6989586621679060164"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-269"></span><span>
+</span><span id="line-270"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-271"></span><span>
+</span><span id="line-272"></span><span class="hs-comment">-- | The WAI application.</span><span>
+</span><span id="line-273"></span><span class="hs-comment">--</span><span>
+</span><span id="line-274"></span><span class="hs-comment">-- Note that, since WAI 3.0, this type is structured in continuation passing</span><span>
+</span><span id="line-275"></span><span class="hs-comment">-- style to allow for proper safe resource handling. This was handled in the</span><span>
+</span><span id="line-276"></span><span class="hs-comment">-- past via other means (e.g., @ResourceT@). As a demonstration:</span><span>
+</span><span id="line-277"></span><span class="hs-comment">--</span><span>
+</span><span id="line-278"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-279"></span><span class="hs-comment">-- app :: Application</span><span>
+</span><span id="line-280"></span><span class="hs-comment">-- app req respond = bracket_</span><span>
+</span><span id="line-281"></span><span class="hs-comment">--     (putStrLn \&quot;Allocating scarce resource\&quot;)</span><span>
+</span><span id="line-282"></span><span class="hs-comment">--     (putStrLn \&quot;Cleaning up\&quot;)</span><span>
+</span><span id="line-283"></span><span class="hs-comment">--     (respond $ responseLBS status200 [] \&quot;Hello World\&quot;)</span><span>
+</span><span id="line-284"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-285"></span><span class="hs-keyword">type</span><span> </span><span id="Application"><span class="annot"><a href="Network.Wai.html#Application"><span class="hs-identifier hs-var">Application</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#ResponseReceived"><span class="hs-identifier hs-type">ResponseReceived</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#ResponseReceived"><span class="hs-identifier hs-type">ResponseReceived</span></a></span><span>
+</span><span id="line-286"></span><span>
+</span><span id="line-287"></span><span>
+</span><span id="line-288"></span><span class="hs-comment">-- | A default, blank request.</span><span>
+</span><span id="line-289"></span><span class="hs-comment">--</span><span>
+</span><span id="line-290"></span><span class="hs-comment">-- @since 2.0.0</span><span>
+</span><span id="line-291"></span><span class="annot"><a href="Network.Wai.html#defaultRequest"><span class="hs-identifier hs-type">defaultRequest</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span>
+</span><span id="line-292"></span><span id="defaultRequest"><span class="annot"><span class="annottext">defaultRequest :: Request
+</span><a href="Network.Wai.html#defaultRequest"><span class="hs-identifier hs-var hs-var">defaultRequest</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span>
+</span><span id="line-293"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">requestMethod :: ByteString
+</span><a href="Network.Wai.Internal.html#requestMethod"><span class="hs-identifier hs-var">requestMethod</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">H.methodGet</span></span><span>
+</span><span id="line-294"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">httpVersion :: HttpVersion
+</span><a href="Network.Wai.Internal.html#httpVersion"><span class="hs-identifier hs-var">httpVersion</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">HttpVersion
+</span><span class="hs-identifier hs-var">H.http10</span></span><span>
+</span><span id="line-295"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">rawPathInfo :: ByteString
+</span><a href="Network.Wai.Internal.html#rawPathInfo"><span class="hs-identifier hs-var">rawPathInfo</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">B.empty</span></span><span>
+</span><span id="line-296"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">rawQueryString :: ByteString
+</span><a href="Network.Wai.Internal.html#rawQueryString"><span class="hs-identifier hs-var">rawQueryString</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">B.empty</span></span><span>
+</span><span id="line-297"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">requestHeaders :: ResponseHeaders
+</span><a href="Network.Wai.Internal.html#requestHeaders"><span class="hs-identifier hs-var">requestHeaders</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-298"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">isSecure :: Bool
+</span><a href="Network.Wai.Internal.html#isSecure"><span class="hs-identifier hs-var">isSecure</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-299"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">remoteHost :: SockAddr
+</span><a href="Network.Wai.Internal.html#remoteHost"><span class="hs-identifier hs-var">remoteHost</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PortNumber -&gt; HostAddress -&gt; SockAddr
+</span><span class="hs-identifier hs-var">SockAddrInet</span></span><span> </span><span class="annot"><span class="annottext">PortNumber
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">HostAddress
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-300"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">pathInfo :: [Text]
+</span><a href="Network.Wai.Internal.html#pathInfo"><span class="hs-identifier hs-var">pathInfo</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-301"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">queryString :: Query
+</span><a href="Network.Wai.Internal.html#queryString"><span class="hs-identifier hs-var">queryString</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-302"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">requestBody :: IO ByteString
+</span><a href="Network.Wai.Internal.html#requestBody"><span class="hs-identifier hs-var">requestBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">B.empty</span></span><span>
+</span><span id="line-303"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">vault :: Vault
+</span><a href="Network.Wai.Internal.html#vault"><span class="hs-identifier hs-var">vault</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Vault
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-304"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">requestBodyLength :: RequestBodyLength
+</span><a href="Network.Wai.Internal.html#requestBodyLength"><span class="hs-identifier hs-var">requestBodyLength</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; RequestBodyLength
+</span><a href="Network.Wai.Internal.html#KnownLength"><span class="hs-identifier hs-var">KnownLength</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-305"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">requestHeaderHost :: Maybe ByteString
+</span><a href="Network.Wai.Internal.html#requestHeaderHost"><span class="hs-identifier hs-var">requestHeaderHost</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-306"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">requestHeaderRange :: Maybe ByteString
+</span><a href="Network.Wai.Internal.html#requestHeaderRange"><span class="hs-identifier hs-var">requestHeaderRange</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-307"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">requestHeaderReferer :: Maybe ByteString
+</span><a href="Network.Wai.Internal.html#requestHeaderReferer"><span class="hs-identifier hs-var">requestHeaderReferer</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-308"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">requestHeaderUserAgent :: Maybe ByteString
+</span><a href="Network.Wai.Internal.html#requestHeaderUserAgent"><span class="hs-identifier hs-var">requestHeaderUserAgent</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-309"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-310"></span><span>
+</span><span id="line-311"></span><span>
+</span><span id="line-312"></span><span class="hs-comment">-- | A @Middleware@ is a component that sits between the server and application.</span><span>
+</span><span id="line-313"></span><span class="hs-comment">--</span><span>
+</span><span id="line-314"></span><span class="hs-comment">-- It can modify both the 'Request' and 'Response',</span><span>
+</span><span id="line-315"></span><span class="hs-comment">-- to provide simple transformations that are required for all (or most of)</span><span>
+</span><span id="line-316"></span><span class="hs-comment">-- your web server&#8217;s routes.</span><span>
+</span><span id="line-317"></span><span class="hs-comment">--</span><span>
+</span><span id="line-318"></span><span class="hs-comment">-- = Users of middleware</span><span>
+</span><span id="line-319"></span><span class="hs-comment">--</span><span>
+</span><span id="line-320"></span><span class="hs-comment">-- If you are trying to apply one or more 'Middleware's to your 'Application',</span><span>
+</span><span id="line-321"></span><span class="hs-comment">-- just call them as functions.</span><span>
+</span><span id="line-322"></span><span class="hs-comment">--</span><span>
+</span><span id="line-323"></span><span class="hs-comment">-- For example, if you have @corsMiddleware@ and @authorizationMiddleware@,</span><span>
+</span><span id="line-324"></span><span class="hs-comment">-- and you want to authorize first, you can do:</span><span>
+</span><span id="line-325"></span><span class="hs-comment">--</span><span>
+</span><span id="line-326"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-327"></span><span class="hs-comment">-- let allMiddleware app = authorizationMiddleware (corsMiddleware app)</span><span>
+</span><span id="line-328"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-329"></span><span class="hs-comment">--</span><span>
+</span><span id="line-330"></span><span class="hs-comment">-- to get a new 'Middleware', which first authorizes, then sets, CORS headers.</span><span>
+</span><span id="line-331"></span><span class="hs-comment">-- The &#8220;outer&#8221; middleware is called first.</span><span>
+</span><span id="line-332"></span><span class="hs-comment">--</span><span>
+</span><span id="line-333"></span><span class="hs-comment">-- You can also chain them via '(.)':</span><span>
+</span><span id="line-334"></span><span class="hs-comment">--</span><span>
+</span><span id="line-335"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-336"></span><span class="hs-comment">-- let allMiddleware =</span><span>
+</span><span id="line-337"></span><span class="hs-comment">--         authorizationMiddleware</span><span>
+</span><span id="line-338"></span><span class="hs-comment">--       . corsMiddleware</span><span>
+</span><span id="line-339"></span><span class="hs-comment">--       . &#8230; more middleware here &#8230;</span><span>
+</span><span id="line-340"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-341"></span><span class="hs-comment">--</span><span>
+</span><span id="line-342"></span><span class="hs-comment">-- Then, once you have an @app :: Application@, you can wrap it</span><span>
+</span><span id="line-343"></span><span class="hs-comment">-- in your middleware:</span><span>
+</span><span id="line-344"></span><span class="hs-comment">--</span><span>
+</span><span id="line-345"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-346"></span><span class="hs-comment">-- let myApp = allMiddleware app :: Application</span><span>
+</span><span id="line-347"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-348"></span><span class="hs-comment">--</span><span>
+</span><span id="line-349"></span><span class="hs-comment">-- and run it as usual:</span><span>
+</span><span id="line-350"></span><span class="hs-comment">--</span><span>
+</span><span id="line-351"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-352"></span><span class="hs-comment">-- Warp.run port myApp</span><span>
+</span><span id="line-353"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-354"></span><span class="hs-comment">--</span><span>
+</span><span id="line-355"></span><span class="hs-comment">-- = Authors of middleware</span><span>
+</span><span id="line-356"></span><span class="hs-comment">--</span><span>
+</span><span id="line-357"></span><span class="hs-comment">-- When fully expanded, 'Middleware' has the type signature:</span><span>
+</span><span id="line-358"></span><span class="hs-comment">--</span><span>
+</span><span id="line-359"></span><span class="hs-comment">-- &gt; (Request -&gt; (Response -&gt; IO ResponseReceived) -&gt; IO ResponseReceived) -&gt; Request -&gt; (Response -&gt; IO ResponseReceived) -&gt; IO ResponseReceived</span><span>
+</span><span id="line-360"></span><span class="hs-comment">--</span><span>
+</span><span id="line-361"></span><span class="hs-comment">-- or if we shorten to @type Respond = Response -&gt; IO ResponseReceived@:</span><span>
+</span><span id="line-362"></span><span class="hs-comment">--</span><span>
+</span><span id="line-363"></span><span class="hs-comment">-- &gt; (Request -&gt; Respond -&gt; IO ResponseReceived) -&gt; Request -&gt; Respond -&gt; IO ResponseReceived</span><span>
+</span><span id="line-364"></span><span class="hs-comment">--</span><span>
+</span><span id="line-365"></span><span class="hs-comment">-- so a middleware definition takes 3 arguments, an inner application, a request and a response callback.</span><span>
+</span><span id="line-366"></span><span class="hs-comment">--</span><span>
+</span><span id="line-367"></span><span class="hs-comment">-- Compare with the type of a simple `Application`:</span><span>
+</span><span id="line-368"></span><span class="hs-comment">--</span><span>
+</span><span id="line-369"></span><span class="hs-comment">-- &gt; Request -&gt; Respond -&gt; IO ResponseReceived</span><span>
+</span><span id="line-370"></span><span class="hs-comment">--</span><span>
+</span><span id="line-371"></span><span class="hs-comment">-- It takes the 'Request' and @Respond@, but not the extra application.</span><span>
+</span><span id="line-372"></span><span class="hs-comment">--</span><span>
+</span><span id="line-373"></span><span class="hs-comment">-- Said differently, a middleware has the power of a normal 'Application'</span><span>
+</span><span id="line-374"></span><span class="hs-comment">-- &#8212; it can inspect the 'Request' and return a 'Response' &#8212;</span><span>
+</span><span id="line-375"></span><span class="hs-comment">-- but it can (and in many cases it /should/) also call the 'Application' which was passed to it.</span><span>
+</span><span id="line-376"></span><span class="hs-comment">--</span><span>
+</span><span id="line-377"></span><span class="hs-comment">-- == Modifying the 'Request'</span><span>
+</span><span id="line-378"></span><span class="hs-comment">--</span><span>
+</span><span id="line-379"></span><span class="hs-comment">-- A lot of middleware just looks at the request and does something based on its values.</span><span>
+</span><span id="line-380"></span><span class="hs-comment">--</span><span>
+</span><span id="line-381"></span><span class="hs-comment">-- For example, the @authorizationMiddleware@ from above could look at the @Authorization@</span><span>
+</span><span id="line-382"></span><span class="hs-comment">-- HTTP header and run &lt;https://jwt.io/ JWT&gt; verification logic against the database.</span><span>
+</span><span id="line-383"></span><span class="hs-comment">--</span><span>
+</span><span id="line-384"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-385"></span><span class="hs-comment">-- authorizationMiddleware app req respond = do</span><span>
+</span><span id="line-386"></span><span class="hs-comment">--   case verifyJWT ('requestHeaders' req) of</span><span>
+</span><span id="line-387"></span><span class="hs-comment">--     InvalidJWT err -&gt; respond (invalidJWTResponse err)</span><span>
+</span><span id="line-388"></span><span class="hs-comment">--     ValidJWT -&gt; app req respond</span><span>
+</span><span id="line-389"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-390"></span><span class="hs-comment">--</span><span>
+</span><span id="line-391"></span><span class="hs-comment">-- Notice how the inner app is called when the validation was successful.</span><span>
+</span><span id="line-392"></span><span class="hs-comment">-- If it was not, we can respond</span><span>
+</span><span id="line-393"></span><span class="hs-comment">-- e.g. with &lt;https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401 HTTP 401 Unauthorized&gt;,</span><span>
+</span><span id="line-394"></span><span class="hs-comment">-- by constructing a 'Response' with 'responseLBS' and passing it to @respond@.</span><span>
+</span><span id="line-395"></span><span class="hs-comment">--</span><span>
+</span><span id="line-396"></span><span class="hs-comment">-- == Passing arguments to and from your 'Middleware'</span><span>
+</span><span id="line-397"></span><span class="hs-comment">--</span><span>
+</span><span id="line-398"></span><span class="hs-comment">-- Middleware must often be configurable.</span><span>
+</span><span id="line-399"></span><span class="hs-comment">-- Let&#8217;s say you have a type @JWTSettings@ that you want to be passed to the middleware.</span><span>
+</span><span id="line-400"></span><span class="hs-comment">-- Simply pass an extra argument to your middleware. Then your middleware type turns into:</span><span>
+</span><span id="line-401"></span><span class="hs-comment">--</span><span>
+</span><span id="line-402"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-403"></span><span class="hs-comment">-- authorizationMiddleware :: JWTSettings -&gt; Application -&gt; Request -&gt; Respond -&gt; IO ResponseReceived</span><span>
+</span><span id="line-404"></span><span class="hs-comment">-- authorizationMiddleware jwtSettings req respond =</span><span>
+</span><span id="line-405"></span><span class="hs-comment">--   case verifyJWT jwtSettings ('requestHeaders' req) of</span><span>
+</span><span id="line-406"></span><span class="hs-comment">--     InvalidJWT err -&gt; respond (invalidJWTResponse err)</span><span>
+</span><span id="line-407"></span><span class="hs-comment">--     ValidJWT -&gt; app req respond</span><span>
+</span><span id="line-408"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-409"></span><span class="hs-comment">--</span><span>
+</span><span id="line-410"></span><span class="hs-comment">-- or alternatively:</span><span>
+</span><span id="line-411"></span><span class="hs-comment">--</span><span>
+</span><span id="line-412"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-413"></span><span class="hs-comment">-- authorizationMiddleware :: JWTSettings -&gt; Middleware</span><span>
+</span><span id="line-414"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-415"></span><span class="hs-comment">--</span><span>
+</span><span id="line-416"></span><span class="hs-comment">-- Perhaps less intuitively, you can also /pass on/ data from middleware to the wrapped 'Application':</span><span>
+</span><span id="line-417"></span><span class="hs-comment">--</span><span>
+</span><span id="line-418"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-419"></span><span class="hs-comment">-- authorizationMiddleware :: JWTSettings -&gt; (JWT -&gt; Application) -&gt; Request -&gt; Respond -&gt; IO ResponseReceived</span><span>
+</span><span id="line-420"></span><span class="hs-comment">-- authorizationMiddleware jwtSettings req respond =</span><span>
+</span><span id="line-421"></span><span class="hs-comment">--   case verifyJWT jwtSettings ('requestHeaders' req) of</span><span>
+</span><span id="line-422"></span><span class="hs-comment">--     InvalidJWT err -&gt; respond (invalidJWTResponse err)</span><span>
+</span><span id="line-423"></span><span class="hs-comment">--     ValidJWT jwt -&gt; app jwt req respond</span><span>
+</span><span id="line-424"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-425"></span><span class="hs-comment">--</span><span>
+</span><span id="line-426"></span><span class="hs-comment">-- although then, chaining different middleware has to take this extra argument into account:</span><span>
+</span><span id="line-427"></span><span class="hs-comment">--</span><span>
+</span><span id="line-428"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-429"></span><span class="hs-comment">-- let finalApp =</span><span>
+</span><span id="line-430"></span><span class="hs-comment">--       authorizationMiddleware</span><span>
+</span><span id="line-431"></span><span class="hs-comment">--         (\\jwt -&gt; corsMiddleware</span><span>
+</span><span id="line-432"></span><span class="hs-comment">--            (&#8230; more middleware here &#8230;</span><span>
+</span><span id="line-433"></span><span class="hs-comment">--              (app jwt)))</span><span>
+</span><span id="line-434"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-435"></span><span class="hs-comment">--</span><span>
+</span><span id="line-436"></span><span class="hs-comment">-- == Modifying the 'Response'</span><span>
+</span><span id="line-437"></span><span class="hs-comment">--</span><span>
+</span><span id="line-438"></span><span class="hs-comment">-- 'Middleware' can also modify the 'Response' that is returned by the inner application.</span><span>
+</span><span id="line-439"></span><span class="hs-comment">--</span><span>
+</span><span id="line-440"></span><span class="hs-comment">-- This is done by taking the @respond@ callback, using it to define a new @respond'@,</span><span>
+</span><span id="line-441"></span><span class="hs-comment">-- and passing this new @respond'@ to the @app@:</span><span>
+</span><span id="line-442"></span><span class="hs-comment">--</span><span>
+</span><span id="line-443"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-444"></span><span class="hs-comment">-- gzipMiddleware app req respond = do</span><span>
+</span><span id="line-445"></span><span class="hs-comment">--   let respond' resp = do</span><span>
+</span><span id="line-446"></span><span class="hs-comment">--         resp' &lt;- gzipResponseBody resp</span><span>
+</span><span id="line-447"></span><span class="hs-comment">--         respond resp'</span><span>
+</span><span id="line-448"></span><span class="hs-comment">--   app req respond'</span><span>
+</span><span id="line-449"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-450"></span><span class="hs-comment">--</span><span>
+</span><span id="line-451"></span><span class="hs-comment">-- However, modifying the response (especially the response body) is not trivial,</span><span>
+</span><span id="line-452"></span><span class="hs-comment">-- so in order to get a sense of how to do it (dealing with the type of 'responseToStream'),</span><span>
+</span><span id="line-453"></span><span class="hs-comment">-- it&#8217;s best to look at an example, for example &lt;https://hackage.haskell.org/package/wai-extra/docs/src/Network.Wai.Middleware.Gzip.html#gzip the GZIP middleware of wai-extra&gt;.</span><span>
+</span><span id="line-454"></span><span>
+</span><span id="line-455"></span><span class="hs-keyword">type</span><span> </span><span id="Middleware"><span class="annot"><a href="Network.Wai.html#Middleware"><span class="hs-identifier hs-var">Middleware</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.Wai.html#Application"><span class="hs-identifier hs-type">Application</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.html#Application"><span class="hs-identifier hs-type">Application</span></a></span><span>
+</span><span id="line-456"></span><span>
+</span><span id="line-457"></span><span class="hs-comment">-- | Apply a function that modifies a request as a 'Middleware'</span><span>
+</span><span id="line-458"></span><span class="hs-comment">--</span><span>
+</span><span id="line-459"></span><span class="hs-comment">-- @since 3.2.4</span><span>
+</span><span id="line-460"></span><span class="annot"><a href="Network.Wai.html#modifyRequest"><span class="hs-identifier hs-type">modifyRequest</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.html#Middleware"><span class="hs-identifier hs-type">Middleware</span></a></span><span>
+</span><span id="line-461"></span><span id="modifyRequest"><span class="annot"><span class="annottext">modifyRequest :: (Request -&gt; Request) -&gt; Middleware
+</span><a href="Network.Wai.html#modifyRequest"><span class="hs-identifier hs-var hs-var">modifyRequest</span></a></span></span><span> </span><span id="local-6989586621679060169"><span class="annot"><span class="annottext">Request -&gt; Request
+</span><a href="#local-6989586621679060169"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679060170"><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679060170"><span class="hs-identifier hs-var">app</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679060170"><span class="hs-identifier hs-var">app</span></a></span><span> </span><span class="annot"><span class="annottext">Application -&gt; (Request -&gt; Request) -&gt; Application
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Request -&gt; Request
+</span><a href="#local-6989586621679060169"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-462"></span><span>
+</span><span id="line-463"></span><span class="hs-comment">-- | Apply a function that modifies a response as a 'Middleware'</span><span>
+</span><span id="line-464"></span><span class="hs-comment">--</span><span>
+</span><span id="line-465"></span><span class="hs-comment">-- @since 3.0.3.0</span><span>
+</span><span id="line-466"></span><span class="annot"><a href="Network.Wai.html#modifyResponse"><span class="hs-identifier hs-type">modifyResponse</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.html#Middleware"><span class="hs-identifier hs-type">Middleware</span></a></span><span>
+</span><span id="line-467"></span><span id="modifyResponse"><span class="annot"><span class="annottext">modifyResponse :: (Response -&gt; Response) -&gt; Middleware
+</span><a href="Network.Wai.html#modifyResponse"><span class="hs-identifier hs-var hs-var">modifyResponse</span></a></span></span><span> </span><span id="local-6989586621679060171"><span class="annot"><span class="annottext">Response -&gt; Response
+</span><a href="#local-6989586621679060171"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679060172"><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679060172"><span class="hs-identifier hs-var">app</span></a></span></span><span> </span><span id="local-6989586621679060173"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679060173"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span id="local-6989586621679060174"><span class="annot"><span class="annottext">Response -&gt; IO ResponseReceived
+</span><a href="#local-6989586621679060174"><span class="hs-identifier hs-var">respond</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679060172"><span class="hs-identifier hs-var">app</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679060173"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">((Response -&gt; IO ResponseReceived) -&gt; IO ResponseReceived)
+-&gt; (Response -&gt; IO ResponseReceived) -&gt; IO ResponseReceived
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Response -&gt; IO ResponseReceived
+</span><a href="#local-6989586621679060174"><span class="hs-identifier hs-var">respond</span></a></span><span> </span><span class="annot"><span class="annottext">(Response -&gt; IO ResponseReceived)
+-&gt; (Response -&gt; Response) -&gt; Response -&gt; IO ResponseReceived
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Response -&gt; Response
+</span><a href="#local-6989586621679060171"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-468"></span><span>
+</span><span id="line-469"></span><span class="hs-comment">-- | Conditionally apply a 'Middleware'</span><span>
+</span><span id="line-470"></span><span class="hs-comment">--</span><span>
+</span><span id="line-471"></span><span class="hs-comment">-- @since 3.0.3.0</span><span>
+</span><span id="line-472"></span><span class="annot"><a href="Network.Wai.html#ifRequest"><span class="hs-identifier hs-type">ifRequest</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.html#Middleware"><span class="hs-identifier hs-type">Middleware</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.html#Middleware"><span class="hs-identifier hs-type">Middleware</span></a></span><span>
+</span><span id="line-473"></span><span id="ifRequest"><span class="annot"><span class="annottext">ifRequest :: (Request -&gt; Bool) -&gt; Middleware -&gt; Middleware
+</span><a href="Network.Wai.html#ifRequest"><span class="hs-identifier hs-var hs-var">ifRequest</span></a></span></span><span> </span><span id="local-6989586621679060175"><span class="annot"><span class="annottext">Request -&gt; Bool
+</span><a href="#local-6989586621679060175"><span class="hs-identifier hs-var">rpred</span></a></span></span><span> </span><span id="local-6989586621679060176"><span class="annot"><span class="annottext">Middleware
+</span><a href="#local-6989586621679060176"><span class="hs-identifier hs-var">middle</span></a></span></span><span> </span><span id="local-6989586621679060177"><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679060177"><span class="hs-identifier hs-var">app</span></a></span></span><span> </span><span id="local-6989586621679060178"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679060178"><span class="hs-identifier hs-var">req</span></a></span></span><span>
+</span><span id="line-474"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Request -&gt; Bool
+</span><a href="#local-6989586621679060175"><span class="hs-identifier hs-var">rpred</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679060178"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Middleware
+</span><a href="#local-6989586621679060176"><span class="hs-identifier hs-var">middle</span></a></span><span> </span><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679060177"><span class="hs-identifier hs-var">app</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679060178"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-475"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>        </span><span class="annot"><span class="annottext">Application
+</span><a href="#local-6989586621679060177"><span class="hs-identifier hs-var">app</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679060178"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-476"></span><span>
+</span><span id="line-477"></span><span class="hs-comment">-- $streamingRequestBodies</span><span>
+</span><span id="line-478"></span><span class="hs-comment">--</span><span>
+</span><span id="line-479"></span><span class="hs-comment">-- == Streaming Request Bodies</span><span>
+</span><span id="line-480"></span><span class="hs-comment">--</span><span>
+</span><span id="line-481"></span><span class="hs-comment">-- WAI is designed for streaming in request bodies, which allows you to process them incrementally.</span><span>
+</span><span id="line-482"></span><span class="hs-comment">-- You can stream in the request body using functions like 'getRequestBodyChunk',</span><span>
+</span><span id="line-483"></span><span class="hs-comment">-- the @wai-conduit@ package, or Yesod's @rawRequestBody@.</span><span>
+</span><span id="line-484"></span><span class="hs-comment">--</span><span>
+</span><span id="line-485"></span><span class="hs-comment">-- In the normal case, incremental processing is more efficient, since it</span><span>
+</span><span id="line-486"></span><span class="hs-comment">-- reduces maximum total memory usage.</span><span>
+</span><span id="line-487"></span><span class="hs-comment">-- In the worst case, it helps protect your server against denial-of-service (DOS) attacks, in which</span><span>
+</span><span id="line-488"></span><span class="hs-comment">-- an attacker sends huge request bodies to your server.</span><span>
+</span><span id="line-489"></span><span class="hs-comment">--</span><span>
+</span><span id="line-490"></span><span class="hs-comment">-- Consider these tips to avoid reading the entire request body into memory:</span><span>
+</span><span id="line-491"></span><span class="hs-comment">--</span><span>
+</span><span id="line-492"></span><span class="hs-comment">-- * Look for library functions that support incremental processing. Sometimes these will use streaming</span><span>
+</span><span id="line-493"></span><span class="hs-comment">-- libraries like @conduit@, @pipes@, or @streaming@.</span><span>
+</span><span id="line-494"></span><span class="hs-comment">-- * Any attoparsec parser supports streaming input. For an example of this, see the</span><span>
+</span><span id="line-495"></span><span class="hs-comment">-- &quot;Data.Conduit.Attoparsec&quot; module in @conduit-extra@.</span><span>
+</span><span id="line-496"></span><span class="hs-comment">-- * Consider streaming directly to a file on disk. For an example of this, see the</span><span>
+</span><span id="line-497"></span><span class="hs-comment">-- &quot;Data.Conduit.Binary&quot; module in @conduit-extra@.</span><span>
+</span><span id="line-498"></span><span class="hs-comment">-- * If you need to direct the request body to multiple destinations, you can stream to both those</span><span>
+</span><span id="line-499"></span><span class="hs-comment">-- destinations at the same time.</span><span>
+</span><span id="line-500"></span><span class="hs-comment">-- For example, if you wanted to run an HMAC on the request body as well as parse it into JSON,</span><span>
+</span><span id="line-501"></span><span class="hs-comment">-- you could use Conduit's @zipSinks@ to send the data to @cryptonite-conduit@'s 'sinkHMAC' and</span><span>
+</span><span id="line-502"></span><span class="hs-comment">-- @aeson@'s Attoparsec parser.</span><span>
+</span><span id="line-503"></span><span class="hs-comment">-- * If possible, avoid processing large data on your server at all.</span><span>
+</span><span id="line-504"></span><span class="hs-comment">-- For example, instead of uploading a file to your server and then to AWS S3,</span><span>
+</span><span id="line-505"></span><span class="hs-comment">-- you can have the browser upload directly to S3.</span><span>
+</span><span id="line-506"></span><span class="hs-comment">--</span><span>
+</span><span id="line-507"></span><span class="hs-comment">-- That said, sometimes it is convenient, or even necessary to read the whole request body into memory.</span><span>
+</span><span id="line-508"></span><span class="hs-comment">-- For these purposes, functions like 'strictRequestBody' or 'lazyRequestBody' can be used.</span><span>
+</span><span id="line-509"></span><span class="hs-comment">-- When this is the case, consider these strategies to mitigating potential DOS attacks:</span><span>
+</span><span id="line-510"></span><span class="hs-comment">--</span><span>
+</span><span id="line-511"></span><span class="hs-comment">-- * Set a limit on the request body size you allow.</span><span>
+</span><span id="line-512"></span><span class="hs-comment">-- If certain endpoints need larger bodies, whitelist just those endpoints for the large size.</span><span>
+</span><span id="line-513"></span><span class="hs-comment">-- Be especially cautious about endpoints that don't require authentication, since these are easier to DOS.</span><span>
+</span><span id="line-514"></span><span class="hs-comment">-- You can accomplish this with @wai-extra@'s @requestSizeLimitMiddleware@ or Yesod's @maximumContentLength@.</span><span>
+</span><span id="line-515"></span><span class="hs-comment">-- * Consider rate limiting not just on total requests, but also on total bytes sent in.</span><span>
+</span><span id="line-516"></span><span class="hs-comment">-- * Consider using services that allow you to identify and blacklist attackers.</span><span>
+</span><span id="line-517"></span><span class="hs-comment">-- * Minimize the amount of time the request body stays in memory.</span><span>
+</span><span id="line-518"></span><span class="hs-comment">-- * If you need to share request bodies across middleware and your application, you can do so using Wai's 'vault'.</span><span>
+</span><span id="line-519"></span><span class="hs-comment">-- If you do this, remove the request body from the vault as soon as possible.</span><span>
+</span><span id="line-520"></span><span class="hs-comment">--</span><span>
+</span><span id="line-521"></span><span class="hs-comment">-- Warning: Incremental processing will not always be sufficient to prevent a DOS attack.</span><span>
+</span><span id="line-522"></span><span class="hs-comment">-- For example, if an attacker sends you a JSON body with a 2MB long string inside,</span><span>
+</span><span id="line-523"></span><span class="hs-comment">-- even if you process the body incrementally, you'll still end up with a 2MB-sized 'Text'.</span><span>
+</span><span id="line-524"></span><span class="hs-comment">--</span><span>
+</span><span id="line-525"></span><span class="hs-comment">-- To mitigate this, employ some of the countermeasures listed above,</span><span>
+</span><span id="line-526"></span><span class="hs-comment">-- and try to reject such payloads as early as possible in your codebase.</span><span>
+</span><span id="line-527"></span><span>
+</span><span id="line-528"></span><span class="hs-comment">-- | Get the request body as a lazy ByteString. However, do /not/ use any lazy</span><span>
+</span><span id="line-529"></span><span class="hs-comment">-- I\/O, instead reading the entire body into memory strictly.</span><span>
+</span><span id="line-530"></span><span class="hs-comment">--</span><span>
+</span><span id="line-531"></span><span class="hs-comment">-- Note: Since this function consumes the request body, future calls to it will return the empty string.</span><span>
+</span><span id="line-532"></span><span class="hs-comment">--</span><span>
+</span><span id="line-533"></span><span class="hs-comment">-- @since 3.0.1</span><span>
+</span><span id="line-534"></span><span class="annot"><a href="Network.Wai.html#strictRequestBody"><span class="hs-identifier hs-type">strictRequestBody</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">L.ByteString</span></span><span>
+</span><span id="line-535"></span><span id="strictRequestBody"><span class="annot"><span class="annottext">strictRequestBody :: Request -&gt; IO ByteString
+</span><a href="Network.Wai.html#strictRequestBody"><span class="hs-identifier hs-var hs-var">strictRequestBody</span></a></span></span><span> </span><span id="local-6989586621679060179"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679060179"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-536"></span><span>    </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; IO ByteString
+forall {c}. (ByteString -&gt; c) -&gt; IO c
+</span><a href="#local-6989586621679060180"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span>
+</span><span id="line-537"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-538"></span><span>    </span><span id="local-6989586621679060180"><span class="annot"><span class="annottext">loop :: (ByteString -&gt; c) -&gt; IO c
+</span><a href="#local-6989586621679060180"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span id="local-6989586621679060184"><span class="annot"><span class="annottext">ByteString -&gt; c
+</span><a href="#local-6989586621679060184"><span class="hs-identifier hs-var">front</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-539"></span><span>        </span><span id="local-6989586621679060185"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060185"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Request -&gt; IO ByteString
+</span><a href="Network.Wai.Internal.html#getRequestBodyChunk"><span class="hs-identifier hs-var">getRequestBodyChunk</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679060179"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-540"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">B.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060185"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-541"></span><span>            </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">c -&gt; IO c
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(c -&gt; IO c) -&gt; c -&gt; IO c
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; c
+</span><a href="#local-6989586621679060184"><span class="hs-identifier hs-var">front</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">LI.Empty</span></span><span>
+</span><span id="line-542"></span><span>            </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; c) -&gt; IO c
+</span><a href="#local-6989586621679060180"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; c
+</span><a href="#local-6989586621679060184"><span class="hs-identifier hs-var">front</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; c) -&gt; (ByteString -&gt; ByteString) -&gt; ByteString -&gt; c
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">LI.Chunk</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060185"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-543"></span><span>
+</span><span id="line-544"></span><span class="hs-comment">-- | Synonym for 'strictRequestBody'.</span><span>
+</span><span id="line-545"></span><span class="hs-comment">-- This function name is meant to signal the non-idempotent nature of 'strictRequestBody'.</span><span>
+</span><span id="line-546"></span><span class="hs-comment">--</span><span>
+</span><span id="line-547"></span><span class="hs-comment">-- @since 3.2.3</span><span>
+</span><span id="line-548"></span><span class="annot"><a href="Network.Wai.html#consumeRequestBodyStrict"><span class="hs-identifier hs-type">consumeRequestBodyStrict</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">L.ByteString</span></span><span>
+</span><span id="line-549"></span><span id="consumeRequestBodyStrict"><span class="annot"><span class="annottext">consumeRequestBodyStrict :: Request -&gt; IO ByteString
+</span><a href="Network.Wai.html#consumeRequestBodyStrict"><span class="hs-identifier hs-var hs-var">consumeRequestBodyStrict</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Request -&gt; IO ByteString
+</span><a href="Network.Wai.html#strictRequestBody"><span class="hs-identifier hs-var">strictRequestBody</span></a></span><span>
+</span><span id="line-550"></span><span>
+</span><span id="line-551"></span><span class="hs-comment">-- | Get the request body as a lazy ByteString. This uses lazy I\/O under the</span><span>
+</span><span id="line-552"></span><span class="hs-comment">-- surface, and therefore all typical warnings regarding lazy I/O apply.</span><span>
+</span><span id="line-553"></span><span class="hs-comment">--</span><span>
+</span><span id="line-554"></span><span class="hs-comment">-- Note: Since this function consumes the request body, future calls to it will return the empty string.</span><span>
+</span><span id="line-555"></span><span class="hs-comment">--</span><span>
+</span><span id="line-556"></span><span class="hs-comment">-- @since 1.4.1</span><span>
+</span><span id="line-557"></span><span class="annot"><a href="Network.Wai.html#lazyRequestBody"><span class="hs-identifier hs-type">lazyRequestBody</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">L.ByteString</span></span><span>
+</span><span id="line-558"></span><span id="lazyRequestBody"><span class="annot"><span class="annottext">lazyRequestBody :: Request -&gt; IO ByteString
+</span><a href="Network.Wai.html#lazyRequestBody"><span class="hs-identifier hs-var hs-var">lazyRequestBody</span></a></span></span><span> </span><span id="local-6989586621679060188"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679060188"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-559"></span><span>    </span><span class="annot"><span class="annottext">IO ByteString
+</span><a href="#local-6989586621679060189"><span class="hs-identifier hs-var">loop</span></a></span><span>
+</span><span id="line-560"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-561"></span><span>    </span><span id="local-6989586621679060189"><span class="annot"><span class="annottext">loop :: IO ByteString
+</span><a href="#local-6989586621679060189"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO ByteString -&gt; IO ByteString
+forall a. IO a -&gt; IO a
+</span><span class="hs-identifier hs-var">unsafeInterleaveIO</span></span><span> </span><span class="annot"><span class="annottext">(IO ByteString -&gt; IO ByteString) -&gt; IO ByteString -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-562"></span><span>        </span><span id="local-6989586621679060194"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060194"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Request -&gt; IO ByteString
+</span><a href="Network.Wai.Internal.html#getRequestBodyChunk"><span class="hs-identifier hs-var">getRequestBodyChunk</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679060188"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-563"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">B.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060194"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-564"></span><span>            </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">LI.Empty</span></span><span>
+</span><span id="line-565"></span><span>            </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-566"></span><span>                </span><span id="local-6989586621679060195"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060195"><span class="hs-identifier hs-var">bss</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO ByteString
+</span><a href="#local-6989586621679060189"><span class="hs-identifier hs-var">loop</span></a></span><span>
+</span><span id="line-567"></span><span>                </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ByteString) -&gt; ByteString -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><span class="hs-identifier hs-var">LI.Chunk</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060194"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679060195"><span class="hs-identifier hs-var">bss</span></a></span><span>
+</span><span id="line-568"></span><span>
+</span><span id="line-569"></span><span class="hs-comment">-- | Synonym for 'lazyRequestBody'.</span><span>
+</span><span id="line-570"></span><span class="hs-comment">-- This function name is meant to signal the non-idempotent nature of 'lazyRequestBody'.</span><span>
+</span><span id="line-571"></span><span class="hs-comment">--</span><span>
+</span><span id="line-572"></span><span class="hs-comment">-- @since 3.2.3</span><span>
+</span><span id="line-573"></span><span class="annot"><a href="Network.Wai.html#consumeRequestBodyLazy"><span class="hs-identifier hs-type">consumeRequestBodyLazy</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">L.ByteString</span></span><span>
+</span><span id="line-574"></span><span id="consumeRequestBodyLazy"><span class="annot"><span class="annottext">consumeRequestBodyLazy :: Request -&gt; IO ByteString
+</span><a href="Network.Wai.html#consumeRequestBodyLazy"><span class="hs-identifier hs-var hs-var">consumeRequestBodyLazy</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Request -&gt; IO ByteString
+</span><a href="Network.Wai.html#lazyRequestBody"><span class="hs-identifier hs-var">lazyRequestBody</span></a></span><span>
+</span><span id="line-575"></span><span>
+</span><span id="line-576"></span><span class="hs-comment">-- | Apply the provided function to the request header list of the 'Request'.</span><span>
+</span><span id="line-577"></span><span class="hs-comment">--</span><span>
+</span><span id="line-578"></span><span class="hs-comment">-- @since 3.2.4</span><span>
+</span><span id="line-579"></span><span class="annot"><a href="Network.Wai.html#mapRequestHeaders"><span class="hs-identifier hs-type">mapRequestHeaders</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">H.RequestHeaders</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">H.RequestHeaders</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span>
+</span><span id="line-580"></span><span id="mapRequestHeaders"><span class="annot"><span class="annottext">mapRequestHeaders :: (ResponseHeaders -&gt; ResponseHeaders) -&gt; Request -&gt; Request
+</span><a href="Network.Wai.html#mapRequestHeaders"><span class="hs-identifier hs-var hs-var">mapRequestHeaders</span></a></span></span><span> </span><span id="local-6989586621679060197"><span class="annot"><span class="annottext">ResponseHeaders -&gt; ResponseHeaders
+</span><a href="#local-6989586621679060197"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679060198"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679060198"><span class="hs-identifier hs-var">request</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679060198"><span class="hs-identifier hs-var">request</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="Network.Wai.Internal.html#requestHeaders"><span class="hs-identifier hs-var">requestHeaders</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621679060197"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Internal.html#requestHeaders"><span class="hs-identifier hs-var">requestHeaders</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679060198"><span class="hs-identifier hs-type">request</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-581"></span></pre></body></html>

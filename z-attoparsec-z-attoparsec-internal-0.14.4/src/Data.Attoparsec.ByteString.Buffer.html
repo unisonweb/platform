@@ -1,0 +1,558 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- Module      :  Data.Attoparsec.ByteString.Buffer</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Copyright   :  Bryan O'Sullivan 2007-2015</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- License     :  BSD3</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- Maintainer  :  bos@serpentine.com</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Stability   :  experimental</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- Portability :  GHC</span><span>
+</span><span id="line-10"></span><span class="hs-comment">--</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- An &quot;immutable&quot; buffer that supports cheap appends.</span><span>
+</span><span id="line-12"></span><span class="hs-comment">--</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- A Buffer is divided into an immutable read-only zone, followed by a</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- mutable area that we've preallocated, but not yet written to.</span><span>
+</span><span id="line-15"></span><span class="hs-comment">--</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- We overallocate at the end of a Buffer so that we can cheaply</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- append.  Since a user of an existing Buffer cannot see past the end</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- of its immutable zone into the data that will change during an</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- append, this is safe.</span><span>
+</span><span id="line-20"></span><span class="hs-comment">--</span><span>
+</span><span id="line-21"></span><span class="hs-comment">-- Once we run out of space at the end of a Buffer, we do the usual</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- doubling of the buffer size.</span><span>
+</span><span id="line-23"></span><span class="hs-comment">--</span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- The fact of having a mutable buffer really helps with performance,</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- but it does have a consequence: if someone misuses the Partial API</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- that attoparsec uses by calling the same continuation repeatedly</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- (which never makes sense in practice), they could overwrite data.</span><span>
+</span><span id="line-28"></span><span class="hs-comment">--</span><span>
+</span><span id="line-29"></span><span class="hs-comment">-- Since the API *looks* pure, it should *act* pure, too, so we use</span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- two generation counters (one mutable, one immutable) to track the</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- number of appends to a mutable buffer. If the counters ever get out</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- of sync, someone is appending twice to a mutable buffer, so we</span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- duplicate the entire buffer in order to preserve the immutability</span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- of its older self.</span><span>
+</span><span id="line-35"></span><span class="hs-comment">--</span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- While we could go a step further and gain protection against API</span><span>
+</span><span id="line-37"></span><span class="hs-comment">-- abuse on a multicore system, by use of an atomic increment</span><span>
+</span><span id="line-38"></span><span class="hs-comment">-- instruction to bump the mutable generation counter, that would be</span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- very expensive, and feels like it would also be in the realm of the</span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- ridiculous.  Clients should never call a continuation more than</span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- once; we lack a linear type system that could enforce this; and</span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- there's only so far we should go to accommodate broken uses.</span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Data.Attoparsec.ByteString.Buffer</span><span>
+</span><span id="line-45"></span><span>    </span><span class="hs-special">(</span><span>
+</span><span id="line-46"></span><span>      </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier">Buffer</span></a></span><span>
+</span><span id="line-47"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#buffer"><span class="hs-identifier">buffer</span></a></span><span>
+</span><span id="line-48"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#unbuffer"><span class="hs-identifier">unbuffer</span></a></span><span>
+</span><span id="line-49"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#pappend"><span class="hs-identifier">pappend</span></a></span><span>
+</span><span id="line-50"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#length"><span class="hs-identifier">length</span></a></span><span>
+</span><span id="line-51"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#unsafeIndex"><span class="hs-identifier">unsafeIndex</span></a></span><span>
+</span><span id="line-52"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#substring"><span class="hs-identifier">substring</span></a></span><span>
+</span><span id="line-53"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#unsafeDrop"><span class="hs-identifier">unsafeDrop</span></a></span><span>
+</span><span id="line-54"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-55"></span><span>
+</span><span id="line-56"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">assert</span></span><span class="hs-special">)</span><span>
+</span><span id="line-57"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Internal</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteString</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">memcpy</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">nullForeignPtr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-58"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Attoparsec.Internal.Fhthagn.html"><span class="hs-identifier">Data.Attoparsec.Internal.Fhthagn</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Attoparsec.Internal.Fhthagn.html#inlinePerformIO"><span class="hs-identifier">inlinePerformIO</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-59"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Attoparsec.Internal.Compat.html"><span class="hs-identifier">Data.Attoparsec.Internal.Compat</span></a></span><span>
+</span><span id="line-60"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">foldl1'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-61"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Monoid</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Mon</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Monoid</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Semigroup</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Semigroup</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Word8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.ForeignPtr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ForeignPtr</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">withForeignPtr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-65"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">castPtr</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">plusPtr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-66"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Storable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">peek</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">peekByteOff</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">poke</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">sizeOf</span></span><span class="hs-special">)</span><span>
+</span><span id="line-67"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">GHC.ForeignPtr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">mallocPlainForeignPtrBytes</span></span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">length</span></span><span class="hs-special">)</span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- If _cap is zero, this buffer is empty.</span><span>
+</span><span id="line-71"></span><span class="hs-keyword">data</span><span> </span><span id="Buffer"><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-var">Buffer</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Buf"><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-var">Buf</span></a></span></span><span> </span><span class="hs-special">{</span><span>
+</span><span id="line-72"></span><span>      </span><span id="_fp"><span class="annot"><span class="annottext">Buffer -&gt; ForeignPtr Word8
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#_fp"><span class="hs-identifier hs-var hs-var">_fp</span></a></span></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ForeignPtr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-73"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="_off"><span class="annot"><span class="annottext">Buffer -&gt; Int
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#_off"><span class="hs-identifier hs-var hs-var">_off</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-74"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="_len"><span class="annot"><span class="annottext">Buffer -&gt; Int
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#_len"><span class="hs-identifier hs-var hs-var">_len</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-75"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="_cap"><span class="annot"><span class="annottext">Buffer -&gt; Int
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#_cap"><span class="hs-identifier hs-var hs-var">_cap</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-76"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="_gen"><span class="annot"><span class="annottext">Buffer -&gt; Int
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#_gen"><span class="hs-identifier hs-var hs-var">_gen</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-77"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-78"></span><span>
+</span><span id="line-79"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679045758"><span id="local-6989586621679045762"><span class="annot"><span class="hs-identifier hs-type">Show</span></span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-80"></span><span>    </span><span id="local-6989586621679045767"><span class="annot"><span class="annottext">showsPrec :: Int -&gt; Buffer -&gt; ShowS
+</span><a href="#local-6989586621679045767"><span class="hs-identifier hs-var hs-var hs-var hs-var">showsPrec</span></a></span></span><span> </span><span id="local-6989586621679045769"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045769"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ByteString -&gt; ShowS
+forall a. Show a =&gt; Int -&gt; a -&gt; ShowS
+</span><span class="hs-identifier hs-var">showsPrec</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045769"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ShowS) -&gt; (Buffer -&gt; ByteString) -&gt; Buffer -&gt; ShowS
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; ByteString
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#unbuffer"><span class="hs-identifier hs-var">unbuffer</span></a></span><span>
+</span><span id="line-81"></span><span>
+</span><span id="line-82"></span><span class="hs-comment">-- | The initial 'Buffer' has no mutable zone, so we can avoid all</span><span>
+</span><span id="line-83"></span><span class="hs-comment">-- copies in the (hopefully) common case of no further input being fed</span><span>
+</span><span id="line-84"></span><span class="hs-comment">-- to us.</span><span>
+</span><span id="line-85"></span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#buffer"><span class="hs-identifier hs-type">buffer</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span>
+</span><span id="line-86"></span><span id="buffer"><span class="annot"><span class="annottext">buffer :: ByteString -&gt; Buffer
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#buffer"><span class="hs-identifier hs-var hs-var">buffer</span></a></span></span><span> </span><span id="local-6989586621679045771"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679045771"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; (ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; Buffer) -&gt; Buffer
+forall r. ByteString -&gt; (ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; r) -&gt; r
+</span><a href="Data.Attoparsec.Internal.Compat.html#withPS"><span class="hs-identifier hs-var">withPS</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679045771"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">((ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; Buffer) -&gt; Buffer)
+-&gt; (ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; Buffer) -&gt; Buffer
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679045773"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045773"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span id="local-6989586621679045774"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045774"><span class="hs-identifier hs-var">off</span></a></span></span><span> </span><span id="local-6989586621679045775"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045775"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; Buffer
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-var">Buf</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045773"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045774"><span class="hs-identifier hs-var">off</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045775"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045775"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-87"></span><span>
+</span><span id="line-88"></span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#unbuffer"><span class="hs-identifier hs-type">unbuffer</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-89"></span><span id="unbuffer"><span class="annot"><span class="annottext">unbuffer :: Buffer -&gt; ByteString
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#unbuffer"><span class="hs-identifier hs-var hs-var">unbuffer</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-type">Buf</span></a></span><span> </span><span id="local-6989586621679045776"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045776"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span id="local-6989586621679045777"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045777"><span class="hs-identifier hs-var">off</span></a></span></span><span> </span><span id="local-6989586621679045778"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045778"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; ByteString
+</span><a href="Data.Attoparsec.Internal.Compat.html#mkPS"><span class="hs-identifier hs-var">mkPS</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045776"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045777"><span class="hs-identifier hs-var">off</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045778"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679045782"><span id="local-6989586621679045786"><span class="annot"><span class="hs-identifier hs-type">Semigroup</span></span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-92"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-type">Buf</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679045795"><span class="annot"><span class="annottext">&lt;&gt; :: Buffer -&gt; Buffer -&gt; Buffer
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;&gt;</span></span></span><span> </span><span id="local-6989586621679045796"><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679045796"><span class="hs-identifier hs-var">b</span></a></span></span><span>                    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679045796"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-93"></span><span>    </span><span id="local-6989586621679045797"><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679045797"><span class="hs-identifier hs-var">a</span></a></span></span><span>               </span><span class="annot"><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-type">Buf</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679045797"><span class="hs-identifier hs-var">a</span></a></span><span>
+</span><span id="line-94"></span><span>    </span><span id="local-6989586621679045798"><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679045798"><span class="hs-identifier hs-var">buf</span></a></span></span><span>             </span><span class="annot"><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-type">Buf</span></a></span><span> </span><span id="local-6989586621679045799"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045799"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span id="local-6989586621679045800"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045800"><span class="hs-identifier hs-var">off</span></a></span></span><span> </span><span id="local-6989586621679045801"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045801"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; Buffer
+forall a. Buffer -&gt; ForeignPtr a -&gt; Int -&gt; Int -&gt; Buffer
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#append"><span class="hs-identifier hs-var">append</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679045798"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045799"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045800"><span class="hs-identifier hs-var">off</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045801"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-95"></span><span>
+</span><span id="line-96"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-97"></span><span>    </span><span id="local-6989586621679045810"><span class="annot"><span class="annottext">mempty :: Buffer
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">mempty</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; Buffer
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-var">Buf</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><span class="hs-identifier hs-var">nullForeignPtr</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-98"></span><span>
+</span><span id="line-99"></span><span>    </span><span id="local-6989586621679045812"><span class="annot"><span class="annottext">mappend :: Buffer -&gt; Buffer -&gt; Buffer
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">mappend</span></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; Buffer -&gt; Buffer
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">(&lt;&gt;)</span></span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span>    </span><span id="local-6989586621679045817"><span class="annot"><span class="annottext">mconcat :: [Buffer] -&gt; Buffer
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">mconcat</span></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Buffer
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">Mon.mempty</span></span><span>
+</span><span id="line-102"></span><span>    </span><span class="annot"><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span id="local-6989586621679045818"><span class="annot"><span class="annottext">[Buffer]
+</span><a href="#local-6989586621679045818"><span class="hs-identifier hs-var">xs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Buffer -&gt; Buffer -&gt; Buffer) -&gt; [Buffer] -&gt; Buffer
+forall a. (?callStack::CallStack) =&gt; (a -&gt; a -&gt; a) -&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">foldl1'</span></span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; Buffer -&gt; Buffer
+forall a. Monoid a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">mappend</span></span><span> </span><span class="annot"><span class="annottext">[Buffer]
+</span><a href="#local-6989586621679045818"><span class="hs-identifier hs-var">xs</span></a></span><span>
+</span><span id="line-103"></span><span>
+</span><span id="line-104"></span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#pappend"><span class="hs-identifier hs-type">pappend</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span>
+</span><span id="line-105"></span><span id="pappend"><span class="annot"><span class="annottext">pappend :: Buffer -&gt; ByteString -&gt; Buffer
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#pappend"><span class="hs-identifier hs-var hs-var">pappend</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-type">Buf</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679045819"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679045819"><span class="hs-identifier hs-var">bs</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Buffer
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#buffer"><span class="hs-identifier hs-var">buffer</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679045819"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-106"></span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#pappend"><span class="hs-identifier hs-var">pappend</span></a></span><span> </span><span id="local-6989586621679045820"><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679045820"><span class="hs-identifier hs-var">buf</span></a></span></span><span>             </span><span id="local-6989586621679045821"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679045821"><span class="hs-identifier hs-var">bs</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; (ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; Buffer) -&gt; Buffer
+forall r. ByteString -&gt; (ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; r) -&gt; r
+</span><a href="Data.Attoparsec.Internal.Compat.html#withPS"><span class="hs-identifier hs-var">withPS</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679045821"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">((ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; Buffer) -&gt; Buffer)
+-&gt; (ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; Buffer) -&gt; Buffer
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679045822"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045822"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span id="local-6989586621679045823"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045823"><span class="hs-identifier hs-var">off</span></a></span></span><span> </span><span id="local-6989586621679045824"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045824"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Buffer -&gt; ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; Buffer
+forall a. Buffer -&gt; ForeignPtr a -&gt; Int -&gt; Int -&gt; Buffer
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#append"><span class="hs-identifier hs-var">append</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer
+</span><a href="#local-6989586621679045820"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045822"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045823"><span class="hs-identifier hs-var">off</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045824"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span id="local-6989586621679045672"><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#append"><span class="hs-identifier hs-type">append</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ForeignPtr</span></span><span> </span><span class="annot"><a href="#local-6989586621679045672"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span></span><span>
+</span><span id="line-109"></span><span id="append"><span class="annot"><span class="annottext">append :: forall a. Buffer -&gt; ForeignPtr a -&gt; Int -&gt; Int -&gt; Buffer
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#append"><span class="hs-identifier hs-var hs-var">append</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-type">Buf</span></a></span><span> </span><span id="local-6989586621679045854"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045854"><span class="hs-identifier hs-var">fp0</span></a></span></span><span> </span><span id="local-6989586621679045855"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045855"><span class="hs-identifier hs-var">off0</span></a></span></span><span> </span><span id="local-6989586621679045856"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045856"><span class="hs-identifier hs-var">len0</span></a></span></span><span> </span><span id="local-6989586621679045857"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045857"><span class="hs-identifier hs-var">cap0</span></a></span></span><span> </span><span id="local-6989586621679045858"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045858"><span class="hs-identifier hs-var">gen0</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679045859"><span class="annot"><span class="annottext">ForeignPtr a
+</span><a href="#local-6989586621679045859"><span class="hs-identifier hs-var">fp1</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679045860"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045860"><span class="hs-identifier hs-var">off1</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679045861"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045861"><span class="hs-identifier hs-var">len1</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-110"></span><span>  </span><span class="annot"><span class="annottext">IO Buffer -&gt; Buffer
+forall a. IO a -&gt; a
+</span><a href="Data.Attoparsec.Internal.Fhthagn.html#inlinePerformIO"><span class="hs-identifier hs-var">inlinePerformIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO Buffer -&gt; Buffer)
+-&gt; ((Ptr Word8 -&gt; IO Buffer) -&gt; IO Buffer)
+-&gt; (Ptr Word8 -&gt; IO Buffer)
+-&gt; Buffer
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; (Ptr Word8 -&gt; IO Buffer) -&gt; IO Buffer
+forall a b. ForeignPtr a -&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><span class="hs-identifier hs-var">withForeignPtr</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045854"><span class="hs-identifier hs-var">fp0</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO Buffer) -&gt; Buffer)
+-&gt; (Ptr Word8 -&gt; IO Buffer) -&gt; Buffer
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679045862"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679045862"><span class="hs-identifier hs-var">ptr0</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-111"></span><span>    </span><span class="annot"><span class="annottext">ForeignPtr a -&gt; (Ptr a -&gt; IO Buffer) -&gt; IO Buffer
+forall a b. ForeignPtr a -&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><span class="hs-identifier hs-var">withForeignPtr</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr a
+</span><a href="#local-6989586621679045859"><span class="hs-identifier hs-var">fp1</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr a -&gt; IO Buffer) -&gt; IO Buffer)
+-&gt; (Ptr a -&gt; IO Buffer) -&gt; IO Buffer
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679045863"><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679045863"><span class="hs-identifier hs-var">ptr1</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-112"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679045865"><span class="annot"><span class="annottext">genSize :: Int
+</span><a href="#local-6989586621679045865"><span class="hs-identifier hs-var hs-var">genSize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int
+forall a. Storable a =&gt; a -&gt; Int
+</span><span class="hs-identifier hs-var">sizeOf</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-glyph">::</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span>
+</span><span id="line-113"></span><span>          </span><span id="local-6989586621679045867"><span class="annot"><span class="annottext">newlen :: Int
+</span><a href="#local-6989586621679045867"><span class="hs-identifier hs-var hs-var">newlen</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045856"><span class="hs-identifier hs-var">len0</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045861"><span class="hs-identifier hs-var">len1</span></a></span><span>
+</span><span id="line-114"></span><span>      </span><span id="local-6989586621679045869"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045869"><span class="hs-identifier hs-var">gen</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045858"><span class="hs-identifier hs-var">gen0</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-115"></span><span>             </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO Int
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-116"></span><span>             </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">Ptr Int -&gt; IO Int
+forall a. Storable a =&gt; Ptr a -&gt; IO a
+</span><span class="hs-identifier hs-var">peek</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Int
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679045862"><span class="hs-identifier hs-var">ptr0</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-117"></span><span>      </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045869"><span class="hs-identifier hs-var">gen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045858"><span class="hs-identifier hs-var">gen0</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045867"><span class="hs-identifier hs-var">newlen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045857"><span class="hs-identifier hs-var">cap0</span></a></span><span>
+</span><span id="line-118"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-119"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679045874"><span class="annot"><span class="annottext">newgen :: Int
+</span><a href="#local-6989586621679045874"><span class="hs-identifier hs-var hs-var">newgen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045869"><span class="hs-identifier hs-var">gen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-120"></span><span>          </span><span class="annot"><span class="annottext">Ptr Int -&gt; Int -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">poke</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Int
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679045862"><span class="hs-identifier hs-var">ptr0</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045874"><span class="hs-identifier hs-var">newgen</span></a></span><span>
+</span><span id="line-121"></span><span>          </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">memcpy</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679045862"><span class="hs-identifier hs-var">ptr0</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045855"><span class="hs-identifier hs-var">off0</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045856"><span class="hs-identifier hs-var">len0</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-122"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679045863"><span class="hs-identifier hs-var">ptr1</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr a -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045860"><span class="hs-identifier hs-var">off1</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045861"><span class="hs-identifier hs-var">len1</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-124"></span><span>          </span><span class="annot"><span class="annottext">Buffer -&gt; IO Buffer
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; Buffer
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-var">Buf</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045854"><span class="hs-identifier hs-var">fp0</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045855"><span class="hs-identifier hs-var">off0</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045867"><span class="hs-identifier hs-var">newlen</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045857"><span class="hs-identifier hs-var">cap0</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045874"><span class="hs-identifier hs-var">newgen</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-125"></span><span>        </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-126"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679045877"><span class="annot"><span class="annottext">newcap :: Int
+</span><a href="#local-6989586621679045877"><span class="hs-identifier hs-var hs-var">newcap</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045867"><span class="hs-identifier hs-var">newlen</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-127"></span><span>          </span><span id="local-6989586621679045879"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045879"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO (ForeignPtr Word8)
+forall a. Int -&gt; IO (ForeignPtr a)
+</span><span class="hs-identifier hs-var">mallocPlainForeignPtrBytes</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045877"><span class="hs-identifier hs-var">newcap</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045865"><span class="hs-identifier hs-var">genSize</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-128"></span><span>          </span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; (Ptr Word8 -&gt; IO Buffer) -&gt; IO Buffer
+forall a b. ForeignPtr a -&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><span class="hs-identifier hs-var">withForeignPtr</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045879"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO Buffer) -&gt; IO Buffer)
+-&gt; (Ptr Word8 -&gt; IO Buffer) -&gt; IO Buffer
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679045880"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679045880"><span class="hs-identifier hs-var">ptr_</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-129"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679045881"><span class="annot"><span class="annottext">ptr :: Ptr b
+</span><a href="#local-6989586621679045881"><span class="hs-identifier hs-var hs-var">ptr</span></a></span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679045880"><span class="hs-identifier hs-var">ptr_</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr b
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045865"><span class="hs-identifier hs-var">genSize</span></a></span><span>
+</span><span id="line-130"></span><span>                </span><span id="local-6989586621679045883"><span class="annot"><span class="annottext">newgen :: Int
+</span><a href="#local-6989586621679045883"><span class="hs-identifier hs-var hs-var">newgen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-131"></span><span>            </span><span class="annot"><span class="annottext">Ptr Int -&gt; Int -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">poke</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Int
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679045880"><span class="hs-identifier hs-var">ptr_</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045883"><span class="hs-identifier hs-var">newgen</span></a></span><span>
+</span><span id="line-132"></span><span>            </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">memcpy</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+forall {b}. Ptr b
+</span><a href="#local-6989586621679045881"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679045862"><span class="hs-identifier hs-var">ptr0</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045855"><span class="hs-identifier hs-var">off0</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045856"><span class="hs-identifier hs-var">len0</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-133"></span><span>            </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">memcpy</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Any
+forall {b}. Ptr b
+</span><a href="#local-6989586621679045881"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Any -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045856"><span class="hs-identifier hs-var">len0</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679045863"><span class="hs-identifier hs-var">ptr1</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr a -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045860"><span class="hs-identifier hs-var">off1</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-134"></span><span>                   </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045861"><span class="hs-identifier hs-var">len1</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span>            </span><span class="annot"><span class="annottext">Buffer -&gt; IO Buffer
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; Int -&gt; Int -&gt; Buffer
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-var">Buf</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045879"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045865"><span class="hs-identifier hs-var">genSize</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045867"><span class="hs-identifier hs-var">newlen</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045877"><span class="hs-identifier hs-var">newcap</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045883"><span class="hs-identifier hs-var">newgen</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-136"></span><span>
+</span><span id="line-137"></span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#length"><span class="hs-identifier hs-type">length</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-138"></span><span id="length"><span class="annot"><span class="annottext">length :: Buffer -&gt; Int
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#length"><span class="hs-identifier hs-var hs-var">length</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-type">Buf</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679045884"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045884"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045884"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-139"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#length"><span class="hs-pragma hs-type">length</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-140"></span><span>
+</span><span id="line-141"></span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#unsafeIndex"><span class="hs-identifier hs-type">unsafeIndex</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span>
+</span><span id="line-142"></span><span id="unsafeIndex"><span class="annot"><span class="annottext">unsafeIndex :: Buffer -&gt; Int -&gt; Word8
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#unsafeIndex"><span class="hs-identifier hs-var hs-var">unsafeIndex</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-type">Buf</span></a></span><span> </span><span id="local-6989586621679045885"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045885"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span id="local-6989586621679045886"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045886"><span class="hs-identifier hs-var">off</span></a></span></span><span> </span><span id="local-6989586621679045887"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045887"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679045888"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045888"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Word8 -&gt; Word8
+forall a. (?callStack::CallStack) =&gt; Bool -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var hs-var">assert</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045888"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045888"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045887"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Word8 -&gt; Word8)
+-&gt; ((Ptr Word8 -&gt; IO Word8) -&gt; Word8)
+-&gt; (Ptr Word8 -&gt; IO Word8)
+-&gt; Word8
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span>
+</span><span id="line-143"></span><span>    </span><span class="annot"><span class="annottext">IO Word8 -&gt; Word8
+forall a. IO a -&gt; a
+</span><a href="Data.Attoparsec.Internal.Fhthagn.html#inlinePerformIO"><span class="hs-identifier hs-var">inlinePerformIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO Word8 -&gt; Word8)
+-&gt; ((Ptr Word8 -&gt; IO Word8) -&gt; IO Word8)
+-&gt; (Ptr Word8 -&gt; IO Word8)
+-&gt; Word8
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; (Ptr Word8 -&gt; IO Word8) -&gt; IO Word8
+forall a b. ForeignPtr a -&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><span class="hs-identifier hs-var">withForeignPtr</span></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045885"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO Word8) -&gt; Word8)
+-&gt; (Ptr Word8 -&gt; IO Word8) -&gt; Word8
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Ptr Word8 -&gt; Int -&gt; IO Word8) -&gt; Int -&gt; Ptr Word8 -&gt; IO Word8
+forall a b c. (a -&gt; b -&gt; c) -&gt; b -&gt; a -&gt; c
+</span><span class="hs-identifier hs-var">flip</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; IO Word8
+forall b. Ptr b -&gt; Int -&gt; IO Word8
+forall a b. Storable a =&gt; Ptr b -&gt; Int -&gt; IO a
+</span><span class="hs-identifier hs-var">peekByteOff</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045886"><span class="hs-identifier hs-var">off</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045888"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-144"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#unsafeIndex"><span class="hs-pragma hs-type">unsafeIndex</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-145"></span><span>
+</span><span id="line-146"></span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#substring"><span class="hs-identifier hs-type">substring</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-147"></span><span id="substring"><span class="annot"><span class="annottext">substring :: Int -&gt; Int -&gt; Buffer -&gt; ByteString
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#substring"><span class="hs-identifier hs-var hs-var">substring</span></a></span></span><span> </span><span id="local-6989586621679045891"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045891"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621679045892"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045892"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-type">Buf</span></a></span><span> </span><span id="local-6989586621679045893"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045893"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span id="local-6989586621679045894"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045894"><span class="hs-identifier hs-var">off</span></a></span></span><span> </span><span id="local-6989586621679045895"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045895"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-148"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; ByteString -&gt; ByteString
+forall a. (?callStack::CallStack) =&gt; Bool -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var hs-var">assert</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045891"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045891"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045895"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString)
+-&gt; (ByteString -&gt; ByteString) -&gt; ByteString -&gt; ByteString
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span>
+</span><span id="line-149"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; ByteString -&gt; ByteString
+forall a. (?callStack::CallStack) =&gt; Bool -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var hs-var">assert</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045892"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045892"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045895"><span class="hs-identifier hs-var">len</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045891"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; ByteString -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-150"></span><span>  </span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; ByteString
+</span><a href="Data.Attoparsec.Internal.Compat.html#mkPS"><span class="hs-identifier hs-var">mkPS</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045893"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045894"><span class="hs-identifier hs-var">off</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045891"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045892"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-151"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#substring"><span class="hs-pragma hs-type">substring</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-152"></span><span>
+</span><span id="line-153"></span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#unsafeDrop"><span class="hs-identifier hs-type">unsafeDrop</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-154"></span><span id="unsafeDrop"><span class="annot"><span class="annottext">unsafeDrop :: Int -&gt; Buffer -&gt; ByteString
+</span><a href="Data.Attoparsec.ByteString.Buffer.html#unsafeDrop"><span class="hs-identifier hs-var hs-var">unsafeDrop</span></a></span></span><span> </span><span id="local-6989586621679045896"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045896"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#Buf"><span class="hs-identifier hs-type">Buf</span></a></span><span> </span><span id="local-6989586621679045897"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045897"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span id="local-6989586621679045898"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045898"><span class="hs-identifier hs-var">off</span></a></span></span><span> </span><span id="local-6989586621679045899"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045899"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-155"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; ByteString -&gt; ByteString
+forall a. (?callStack::CallStack) =&gt; Bool -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var hs-var">assert</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045896"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">&amp;&amp;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045896"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045899"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; ByteString) -&gt; ByteString -&gt; ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-156"></span><span>  </span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; Int -&gt; Int -&gt; ByteString
+</span><a href="Data.Attoparsec.Internal.Compat.html#mkPS"><span class="hs-identifier hs-var">mkPS</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679045897"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045898"><span class="hs-identifier hs-var">off</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045896"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045899"><span class="hs-identifier hs-var">len</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679045896"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-157"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Attoparsec.ByteString.Buffer.html#unsafeDrop"><span class="hs-pragma hs-type">unsafeDrop</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-158"></span></pre></body></html>

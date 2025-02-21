@@ -1,0 +1,348 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns, CPP #-}</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- Module      : Data.Text.Lazy.Fusion</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Copyright   : (c) 2009, 2010 Bryan O'Sullivan</span><span>
+</span><span id="line-5"></span><span class="hs-comment">--</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- License     : BSD-style</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- Maintainer  : bos@serpentine.com</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Stability   : experimental</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- Portability : GHC</span><span>
+</span><span id="line-10"></span><span class="hs-comment">--</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- /Warning/: this is an internal module, and does not have a stable</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- API or name. Functions in this module may not check or enforce</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- preconditions expected by public modules. Use at your own risk!</span><span>
+</span><span id="line-14"></span><span class="hs-comment">--</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- Core stream fusion functionality for text.</span><span>
+</span><span id="line-16"></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Data.Text.Internal.Lazy.Fusion</span><span>
+</span><span id="line-18"></span><span>    </span><span class="hs-special">(</span><span>
+</span><span id="line-19"></span><span>      </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#stream"><span class="hs-identifier">stream</span></a></span><span>
+</span><span id="line-20"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#unstream"><span class="hs-identifier">unstream</span></a></span><span>
+</span><span id="line-21"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#unstreamChunks"><span class="hs-identifier">unstreamChunks</span></a></span><span>
+</span><span id="line-22"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#length"><span class="hs-identifier">length</span></a></span><span>
+</span><span id="line-23"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#unfoldrN"><span class="hs-identifier">unfoldrN</span></a></span><span>
+</span><span id="line-24"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#index"><span class="hs-identifier">index</span></a></span><span>
+</span><span id="line-25"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#countChar"><span class="hs-identifier">countChar</span></a></span><span>
+</span><span id="line-26"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-27"></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Prelude.html#/Prelude.html"><span class="hs-identifier">Prelude</span></a></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Foldable.html#length/Data.Foldable.html#length"><span class="hs-identifier">length</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Bits.html#/Data.Bits.html"><span class="hs-identifier">Data.Bits</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Bits.html#shiftL/GHC.Bits.html#shiftL"><span class="hs-identifier">shiftL</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Common.html"><span class="hs-identifier">Data.Text.Internal.Fusion.Common</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Monad.ST.html#/Control.Monad.ST.html"><span class="hs-identifier">Control.Monad.ST</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.ST.html#runST/GHC.ST.html#runST"><span class="hs-identifier">runST</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html"><span class="hs-identifier">Data.Text.Internal.Fusion.Types</span></a></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Size.html"><span class="hs-identifier">Data.Text.Internal.Fusion.Size</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Text.Internal.Fusion.Size.html#isEmpty"><span class="hs-identifier">isEmpty</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Size.html#unknownSize"><span class="hs-identifier">unknownSize</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.html"><span class="hs-identifier">Data.Text.Internal.Lazy</span></a></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Data.Text.Internal.html"><span class="hs-identifier">Data.Text.Internal</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">I</span></span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Data.Text.Array.html"><span class="hs-identifier">Data.Text.Array</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">A</span></span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Text.Internal.Unsafe.Char.html"><span class="hs-identifier">Data.Text.Internal.Unsafe.Char</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Text.Internal.Unsafe.Char.html#unsafeWrite"><span class="hs-identifier">unsafeWrite</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Text.Unsafe.html"><span class="hs-identifier">Data.Text.Unsafe</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Text.Unsafe.html#Iter"><span class="hs-identifier">Iter</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Text.Unsafe.html#iter"><span class="hs-identifier">iter</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Int.html#/Data.Int.html"><span class="hs-identifier">Data.Int</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Int.html#Int64/GHC.Int.html#Int64"><span class="hs-identifier">Int64</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Stack.html#/GHC.Stack.html"><span class="hs-identifier">GHC.Stack</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Stack.Types.html#HasCallStack/GHC.Stack.Types.html#HasCallStack"><span class="hs-identifier">HasCallStack</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">default</span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Int.html#Int64/GHC.Int.html#Int64"><span class="hs-identifier hs-type">Int64</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span class="annot"><span class="hs-comment">-- | /O(n)/ Convert a 'Text' into a 'Stream Char'.</span></span><span>
+</span><span id="line-45"></span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#stream"><span class="hs-identifier hs-type">stream</span></a></span><span> </span><span class="hs-glyph">::</span><span class="hs-cpp">
+#if defined(ASSERTS)
+</span><span>  </span><span class="hs-identifier">HasCallStack</span><span> </span><span class="hs-glyph">=&gt;</span><span class="hs-cpp">
+#endif
+</span><span>  </span><span class="annot"><a href="Data.Text.Internal.Lazy.html#Text"><span class="hs-identifier hs-type">Text</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Stream"><span class="hs-identifier hs-type">Stream</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Char/GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span>
+</span><span id="line-50"></span><span id="stream"><span class="annot"><span class="annottext">stream :: Text -&gt; Stream Char
+</span><a href="Data.Text.Internal.Lazy.Fusion.html#stream"><span class="hs-identifier hs-var hs-var">stream</span></a></span></span><span> </span><span id="local-6989586621679132516"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679132516"><span class="hs-identifier hs-var">text</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(PairS Text Int -&gt; Step (PairS Text Int) Char)
+-&gt; PairS Text Int -&gt; Size -&gt; Stream Char
+forall a s. (s -&gt; Step s a) -&gt; s -&gt; Size -&gt; Stream a
+</span><a href="Data.Text.Internal.Fusion.Types.html#Stream"><span class="hs-identifier hs-var">Stream</span></a></span><span> </span><span class="annot"><span class="annottext">PairS Text Int -&gt; Step (PairS Text Int) Char
+</span><a href="#local-6989586621679132518"><span class="hs-identifier hs-var">next</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679132516"><span class="hs-identifier hs-var">text</span></a></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Int -&gt; PairS Text Int
+forall a b. a -&gt; b -&gt; PairS a b
+</span><a href="Data.Text.Internal.Fusion.Types.html#%3A%2A%3A"><span class="hs-operator hs-var">:*:</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Size
+</span><a href="Data.Text.Internal.Fusion.Size.html#unknownSize"><span class="hs-identifier hs-var">unknownSize</span></a></span><span>
+</span><span id="line-51"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-52"></span><span>    </span><span id="local-6989586621679132518"><span class="annot"><span class="annottext">next :: PairS Text Int -&gt; Step (PairS Text Int) Char
+</span><a href="#local-6989586621679132518"><span class="hs-identifier hs-var hs-var">next</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><a href="Data.Text.Internal.Lazy.html#Empty"><span class="hs-identifier hs-var">Empty</span></a></span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#%3A%2A%3A"><span class="hs-operator hs-type">:*:</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Step (PairS Text Int) Char
+forall s a. Step s a
+</span><a href="Data.Text.Internal.Fusion.Types.html#Done"><span class="hs-identifier hs-var">Done</span></a></span><span>
+</span><span id="line-53"></span><span>    </span><span class="annot"><a href="#local-6989586621679132518"><span class="hs-identifier hs-var">next</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679132526"><span class="annot"><span class="annottext">txt :: Text
+</span><a href="#local-6989586621679132526"><span class="hs-identifier hs-var">txt</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Data.Text.Internal.Lazy.html#Chunk"><span class="hs-identifier hs-type">Chunk</span></a></span><span> </span><span id="local-6989586621679132528"><span class="annot"><span class="annottext">t :: Text
+</span><a href="#local-6989586621679132528"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Data.Text.Internal.html#Text"><span class="hs-identifier hs-type">I.Text</span></a></span><span> </span><span class="annot"><span class="annottext">Array
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679132530"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132530"><span class="hs-identifier hs-var">len</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679132531"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679132531"><span class="hs-identifier hs-var">ts</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#%3A%2A%3A"><span class="hs-operator hs-type">:*:</span></a></span><span> </span><span id="local-6989586621679132532"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132532"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-54"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132532"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3E%3D/GHC.Classes.html#%3E%3D"><span class="hs-operator hs-var">&gt;=</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132530"><span class="hs-identifier hs-var">len</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PairS Text Int -&gt; Step (PairS Text Int) Char
+</span><a href="#local-6989586621679132518"><span class="hs-identifier hs-var">next</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679132531"><span class="hs-identifier hs-var">ts</span></a></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Int -&gt; PairS Text Int
+forall a b. a -&gt; b -&gt; PairS a b
+</span><a href="Data.Text.Internal.Fusion.Types.html#%3A%2A%3A"><span class="hs-operator hs-var">:*:</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span>
+</span><span id="line-55"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char -&gt; PairS Text Int -&gt; Step (PairS Text Int) Char
+forall s a. a -&gt; s -&gt; Step s a
+</span><a href="Data.Text.Internal.Fusion.Types.html#Yield"><span class="hs-identifier hs-var">Yield</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679132534"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679132526"><span class="hs-identifier hs-var">txt</span></a></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Int -&gt; PairS Text Int
+forall a b. a -&gt; b -&gt; PairS a b
+</span><a href="Data.Text.Internal.Fusion.Types.html#%3A%2A%3A"><span class="hs-operator hs-var">:*:</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132532"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132536"><span class="hs-identifier hs-var">d</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-56"></span><span>        </span><span class="hs-keyword">where</span><span> </span><span class="annot"><a href="Data.Text.Unsafe.html#Iter"><span class="hs-identifier hs-type">Iter</span></a></span><span> </span><span id="local-6989586621679132534"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679132534"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621679132536"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132536"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; Int -&gt; Iter
+</span><a href="Data.Text.Unsafe.html#iter"><span class="hs-identifier hs-var">iter</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679132528"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132532"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-57"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="hs-pragma">[</span><span class="hs-pragma">0</span><span class="hs-pragma">]</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#stream"><span class="hs-pragma hs-type">stream</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-58"></span><span>
+</span><span id="line-59"></span><span class="hs-comment">-- | /O(n)/ Convert a 'Stream Char' into a 'Text', using the given</span><span>
+</span><span id="line-60"></span><span class="hs-comment">-- chunk size.</span><span>
+</span><span id="line-61"></span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#unstreamChunks"><span class="hs-identifier hs-type">unstreamChunks</span></a></span><span> </span><span class="hs-glyph">::</span><span class="hs-cpp">
+#if defined(ASSERTS)
+</span><span>  </span><span class="hs-identifier">HasCallStack</span><span> </span><span class="hs-glyph">=&gt;</span><span class="hs-cpp">
+#endif
+</span><span>  </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Stream"><span class="hs-identifier hs-type">Stream</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Char/GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.html#Text"><span class="hs-identifier hs-type">Text</span></a></span><span>
+</span><span id="line-66"></span><span id="unstreamChunks"><span class="annot"><span class="annottext">unstreamChunks :: Int -&gt; Stream Char -&gt; Text
+</span><a href="Data.Text.Internal.Lazy.Fusion.html#unstreamChunks"><span class="hs-identifier hs-var hs-var">unstreamChunks</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679132538"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132538"><span class="hs-identifier hs-var">chunkSize</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Stream"><span class="hs-identifier hs-type">Stream</span></a></span><span> </span><span id="local-6989586621679132539"><span class="annot"><span class="annottext">s -&gt; Step s Char
+</span><a href="#local-6989586621679132539"><span class="hs-identifier hs-var">next</span></a></span></span><span> </span><span id="local-6989586621679132540"><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132540"><span class="hs-identifier hs-var">s0</span></a></span></span><span> </span><span id="local-6989586621679132541"><span class="annot"><span class="annottext">Size
+</span><a href="#local-6989586621679132541"><span class="hs-identifier hs-var">len0</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-67"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Size -&gt; Bool
+</span><a href="Data.Text.Internal.Fusion.Size.html#isEmpty"><span class="hs-identifier hs-var">isEmpty</span></a></span><span> </span><span class="annot"><span class="annottext">Size
+</span><a href="#local-6989586621679132541"><span class="hs-identifier hs-var">len0</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="Data.Text.Internal.Lazy.html#Empty"><span class="hs-identifier hs-var">Empty</span></a></span><span>
+</span><span id="line-68"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">s -&gt; Text
+</span><a href="#local-6989586621679132542"><span class="hs-identifier hs-var">outer</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132540"><span class="hs-identifier hs-var">s0</span></a></span><span>
+</span><span id="line-69"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-70"></span><span>    </span><span id="local-6989586621679132542"><span class="annot"><span class="annottext">outer :: s -&gt; Text
+</span><a href="#local-6989586621679132542"><span class="hs-identifier hs-var hs-var">outer</span></a></span></span><span> </span><span id="local-6989586621679132543"><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132543"><span class="hs-identifier hs-var">so</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-pragma">{-# SCC</span><span> </span><span class="hs-pragma">&quot;unstreamChunks/outer&quot;</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-71"></span><span>              </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">s -&gt; Step s Char
+</span><a href="#local-6989586621679132539"><span class="hs-identifier hs-var">next</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132543"><span class="hs-identifier hs-var">so</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-72"></span><span>                </span><span class="annot"><span class="annottext">Step s Char
+</span><a href="Data.Text.Internal.Fusion.Types.html#Done"><span class="hs-identifier hs-var">Done</span></a></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="Data.Text.Internal.Lazy.html#Empty"><span class="hs-identifier hs-var">Empty</span></a></span><span>
+</span><span id="line-73"></span><span>                </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Skip"><span class="hs-identifier hs-type">Skip</span></a></span><span> </span><span id="local-6989586621679132545"><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132545"><span class="hs-identifier hs-var">s'</span></a></span></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">s -&gt; Text
+</span><a href="#local-6989586621679132542"><span class="hs-identifier hs-var">outer</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132545"><span class="hs-identifier hs-var">s'</span></a></span><span>
+</span><span id="line-74"></span><span>                </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Yield"><span class="hs-identifier hs-type">Yield</span></a></span><span> </span><span id="local-6989586621679132546"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679132546"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679132547"><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132547"><span class="hs-identifier hs-var">s'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(forall s. ST s Text) -&gt; Text
+forall a. (forall s. ST s a) -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.ST.html#runST/GHC.ST.html#runST"><span class="hs-identifier hs-var">runST</span></a></span><span> </span><span class="annot"><span class="annottext">((forall s. ST s Text) -&gt; Text) -&gt; (forall s. ST s Text) -&gt; Text
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-75"></span><span>                                </span><span id="local-6989586621679132551"><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132551"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ST s (MArray s)
+forall s. Int -&gt; ST s (MArray s)
+</span><a href="Data.Text.Array.html#new"><span class="hs-identifier hs-var">A.new</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132553"><span class="hs-identifier hs-var">unknownLength</span></a></span><span>
+</span><span id="line-76"></span><span>                                </span><span class="annot"><span class="annottext">MArray s -&gt; Int -&gt; Char -&gt; ST s Int
+forall s. MArray s -&gt; Int -&gt; Char -&gt; ST s Int
+</span><a href="Data.Text.Internal.Unsafe.Char.html#unsafeWrite"><span class="hs-identifier hs-var">unsafeWrite</span></a></span><span> </span><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132551"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679132546"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">ST s Int -&gt; (Int -&gt; ST s Text) -&gt; ST s Text
+forall a b. ST s a -&gt; (a -&gt; ST s b) -&gt; ST s b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3E%3E%3D/GHC.Base.html#%3E%3E%3D"><span class="hs-operator hs-var">&gt;&gt;=</span></a></span><span> </span><span class="annot"><span class="annottext">MArray s -&gt; Int -&gt; s -&gt; Int -&gt; ST s Text
+forall {s}. MArray s -&gt; Int -&gt; s -&gt; Int -&gt; ST s Text
+</span><a href="#local-6989586621679132554"><span class="hs-identifier hs-var">inner</span></a></span><span> </span><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132551"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132553"><span class="hs-identifier hs-var">unknownLength</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132547"><span class="hs-identifier hs-var">s'</span></a></span><span>
+</span><span id="line-77"></span><span>                    </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679132553"><span class="annot"><span class="annottext">unknownLength :: Int
+</span><a href="#local-6989586621679132553"><span class="hs-identifier hs-var hs-var">unknownLength</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span>
+</span><span id="line-78"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-79"></span><span>        </span><span id="local-6989586621679132554"><span class="annot"><span class="annottext">inner :: MArray s -&gt; Int -&gt; s -&gt; Int -&gt; ST s Text
+</span><a href="#local-6989586621679132554"><span class="hs-identifier hs-var hs-var">inner</span></a></span></span><span> </span><span id="local-6989586621679132566"><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132566"><span class="hs-identifier hs-var">marr</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679132567"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132567"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span id="local-6989586621679132568"><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132568"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679132569"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132569"><span class="hs-identifier hs-var">i</span></a></span></span><span>
+</span><span id="line-80"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132569"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3E%3D/GHC.Classes.html#%3E%3D"><span class="hs-operator hs-var">&gt;=</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132538"><span class="hs-identifier hs-var">chunkSize</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MArray s -&gt; Int -&gt; s -&gt; ST s Text
+forall {s}. MArray s -&gt; Int -&gt; s -&gt; ST s Text
+</span><a href="#local-6989586621679132570"><span class="hs-identifier hs-var">finish</span></a></span><span> </span><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132566"><span class="hs-identifier hs-var">marr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132569"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132568"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-81"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132569"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3E%3D/GHC.Classes.html#%3E%3D"><span class="hs-operator hs-var">&gt;=</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132567"><span class="hs-identifier hs-var">len</span></a></span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="hs-pragma">{-# SCC</span><span> </span><span class="hs-pragma">&quot;unstreamChunks/resize&quot;</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-82"></span><span>                </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679132574"><span class="annot"><span class="annottext">newLen :: Int
+</span><a href="#local-6989586621679132574"><span class="hs-identifier hs-var hs-var">newLen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Ord a =&gt; a -&gt; a -&gt; a
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#min/GHC.Classes.html#min"><span class="hs-identifier hs-var">min</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132567"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Bits.html#shiftL/GHC.Bits.html#shiftL"><span class="hs-operator hs-var">`shiftL`</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132538"><span class="hs-identifier hs-var">chunkSize</span></a></span><span>
+</span><span id="line-83"></span><span>                </span><span id="local-6989586621679132576"><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132576"><span class="hs-identifier hs-var">marr'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ST s (MArray s)
+forall s. Int -&gt; ST s (MArray s)
+</span><a href="Data.Text.Array.html#new"><span class="hs-identifier hs-var">A.new</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132574"><span class="hs-identifier hs-var">newLen</span></a></span><span>
+</span><span id="line-84"></span><span>                </span><span class="annot"><span class="annottext">MArray s -&gt; Int -&gt; MArray s -&gt; Int -&gt; Int -&gt; ST s ()
+forall s. MArray s -&gt; Int -&gt; MArray s -&gt; Int -&gt; Int -&gt; ST s ()
+</span><a href="Data.Text.Array.html#copyM"><span class="hs-identifier hs-var">A.copyM</span></a></span><span> </span><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132576"><span class="hs-identifier hs-var">marr'</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132566"><span class="hs-identifier hs-var">marr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132567"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-85"></span><span>                </span><span class="annot"><span class="annottext">MArray s -&gt; Int -&gt; s -&gt; Int -&gt; ST s Text
+</span><a href="#local-6989586621679132554"><span class="hs-identifier hs-var">inner</span></a></span><span> </span><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132576"><span class="hs-identifier hs-var">marr'</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132574"><span class="hs-identifier hs-var">newLen</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132568"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132569"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-86"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-87"></span><span>                </span><span class="hs-pragma">{-# SCC</span><span> </span><span class="hs-pragma">&quot;unstreamChunks/inner&quot;</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-88"></span><span>                </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">s -&gt; Step s Char
+</span><a href="#local-6989586621679132539"><span class="hs-identifier hs-var">next</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132568"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-89"></span><span>                  </span><span class="annot"><span class="annottext">Step s Char
+</span><a href="Data.Text.Internal.Fusion.Types.html#Done"><span class="hs-identifier hs-var">Done</span></a></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">MArray s -&gt; Int -&gt; s -&gt; ST s Text
+forall {s}. MArray s -&gt; Int -&gt; s -&gt; ST s Text
+</span><a href="#local-6989586621679132570"><span class="hs-identifier hs-var">finish</span></a></span><span> </span><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132566"><span class="hs-identifier hs-var">marr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132569"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132568"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-90"></span><span>                  </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Skip"><span class="hs-identifier hs-type">Skip</span></a></span><span> </span><span id="local-6989586621679132578"><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132578"><span class="hs-identifier hs-var">s'</span></a></span></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">MArray s -&gt; Int -&gt; s -&gt; Int -&gt; ST s Text
+</span><a href="#local-6989586621679132554"><span class="hs-identifier hs-var">inner</span></a></span><span> </span><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132566"><span class="hs-identifier hs-var">marr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132567"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132578"><span class="hs-identifier hs-var">s'</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132569"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-91"></span><span>                  </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Yield"><span class="hs-identifier hs-type">Yield</span></a></span><span> </span><span id="local-6989586621679132579"><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679132579"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679132580"><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132580"><span class="hs-identifier hs-var">s'</span></a></span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621679132581"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132581"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MArray s -&gt; Int -&gt; Char -&gt; ST s Int
+forall s. MArray s -&gt; Int -&gt; Char -&gt; ST s Int
+</span><a href="Data.Text.Internal.Unsafe.Char.html#unsafeWrite"><span class="hs-identifier hs-var">unsafeWrite</span></a></span><span> </span><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132566"><span class="hs-identifier hs-var">marr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132569"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Char
+</span><a href="#local-6989586621679132579"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-92"></span><span>                                    </span><span class="annot"><span class="annottext">MArray s -&gt; Int -&gt; s -&gt; Int -&gt; ST s Text
+</span><a href="#local-6989586621679132554"><span class="hs-identifier hs-var">inner</span></a></span><span> </span><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132566"><span class="hs-identifier hs-var">marr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132567"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132580"><span class="hs-identifier hs-var">s'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132569"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132581"><span class="hs-identifier hs-var">d</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span>        </span><span id="local-6989586621679132570"><span class="annot"><span class="annottext">finish :: MArray s -&gt; Int -&gt; s -&gt; ST s Text
+</span><a href="#local-6989586621679132570"><span class="hs-identifier hs-var hs-var">finish</span></a></span></span><span> </span><span id="local-6989586621679132585"><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132585"><span class="hs-identifier hs-var">marr</span></a></span></span><span> </span><span id="local-6989586621679132586"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132586"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span id="local-6989586621679132587"><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132587"><span class="hs-identifier hs-var">s'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-94"></span><span>          </span><span class="annot"><span class="annottext">MArray s -&gt; Int -&gt; ST s ()
+forall s. MArray s -&gt; Int -&gt; ST s ()
+</span><a href="Data.Text.Array.html#shrinkM"><span class="hs-identifier hs-var">A.shrinkM</span></a></span><span> </span><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132585"><span class="hs-identifier hs-var">marr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132586"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-95"></span><span>          </span><span id="local-6989586621679132589"><span class="annot"><span class="annottext">Array
+</span><a href="#local-6989586621679132589"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MArray s -&gt; ST s Array
+forall s. MArray s -&gt; ST s Array
+</span><a href="Data.Text.Array.html#unsafeFreeze"><span class="hs-identifier hs-var">A.unsafeFreeze</span></a></span><span> </span><span class="annot"><span class="annottext">MArray s
+</span><a href="#local-6989586621679132585"><span class="hs-identifier hs-var">marr</span></a></span><span>
+</span><span id="line-96"></span><span>          </span><span class="annot"><span class="annottext">Text -&gt; ST s Text
+forall a. a -&gt; ST s a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Array -&gt; Int -&gt; Int -&gt; Text
+</span><a href="Data.Text.Internal.html#Text"><span class="hs-identifier hs-var">I.Text</span></a></span><span> </span><span class="annot"><span class="annottext">Array
+</span><a href="#local-6989586621679132589"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679132586"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+</span><a href="Data.Text.Internal.Lazy.html#Chunk"><span class="hs-operator hs-var">`Chunk`</span></a></span><span> </span><span class="annot"><span class="annottext">s -&gt; Text
+</span><a href="#local-6989586621679132542"><span class="hs-identifier hs-var">outer</span></a></span><span> </span><span class="annot"><span class="annottext">s
+</span><a href="#local-6989586621679132587"><span class="hs-identifier hs-var">s'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="hs-pragma">[</span><span class="hs-pragma">0</span><span class="hs-pragma">]</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#unstreamChunks"><span class="hs-pragma hs-type">unstreamChunks</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-98"></span><span>
+</span><span id="line-99"></span><span class="hs-comment">-- | /O(n)/ Convert a 'Stream Char' into a 'Text', using</span><span>
+</span><span id="line-100"></span><span class="hs-comment">-- 'defaultChunkSize'.</span><span>
+</span><span id="line-101"></span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#unstream"><span class="hs-identifier hs-type">unstream</span></a></span><span> </span><span class="hs-glyph">::</span><span class="hs-cpp">
+#if defined(ASSERTS)
+</span><span>  </span><span class="hs-identifier">HasCallStack</span><span> </span><span class="hs-glyph">=&gt;</span><span class="hs-cpp">
+#endif
+</span><span>  </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Stream"><span class="hs-identifier hs-type">Stream</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Char/GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.html#Text"><span class="hs-identifier hs-type">Text</span></a></span><span>
+</span><span id="line-106"></span><span id="unstream"><span class="annot"><span class="annottext">unstream :: Stream Char -&gt; Text
+</span><a href="Data.Text.Internal.Lazy.Fusion.html#unstream"><span class="hs-identifier hs-var hs-var">unstream</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Stream Char -&gt; Text
+</span><a href="Data.Text.Internal.Lazy.Fusion.html#unstreamChunks"><span class="hs-identifier hs-var">unstreamChunks</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.Text.Internal.Lazy.html#defaultChunkSize"><span class="hs-identifier hs-var">defaultChunkSize</span></a></span><span>
+</span><span id="line-107"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="hs-pragma">[</span><span class="hs-pragma">0</span><span class="hs-pragma">]</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#unstream"><span class="hs-pragma hs-type">unstream</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-108"></span><span>
+</span><span id="line-109"></span><span class="annot"><span class="hs-comment">-- | /O(n)/ Returns the number of characters in a text.</span></span><span>
+</span><span id="line-110"></span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#length"><span class="hs-identifier hs-type">length</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Stream"><span class="hs-identifier hs-type">Stream</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Char/GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Int.html#Int64/GHC.Int.html#Int64"><span class="hs-identifier hs-type">Int64</span></a></span><span>
+</span><span id="line-111"></span><span id="length"><span class="annot"><span class="annottext">length :: Stream Char -&gt; Int64
+</span><a href="Data.Text.Internal.Lazy.Fusion.html#length"><span class="hs-identifier hs-var hs-var">length</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stream Char -&gt; Int64
+forall a. Integral a =&gt; Stream Char -&gt; a
+</span><a href="Data.Text.Internal.Fusion.Common.html#lengthI"><span class="hs-identifier hs-var">S.lengthI</span></a></span><span>
+</span><span id="line-112"></span><span class="hs-pragma">{-# INLINE</span><span class="hs-pragma">[</span><span class="hs-pragma">0</span><span class="hs-pragma">]</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#length"><span class="hs-pragma hs-type">length</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span class="hs-pragma">{-# RULES</span><span> </span><span class="annot"><span class="hs-pragma">&quot;LAZY STREAM stream/unstream fusion&quot;</span></span><span> </span><span class="hs-pragma">forall</span><span> </span><span id="local-6989586621679132593"><span class="annot"><a href="#local-6989586621679132593"><span class="hs-pragma hs-var">s</span></a></span></span><span class="hs-pragma">.</span><span>
+</span><span id="line-115"></span><span>    </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#stream"><span class="hs-pragma hs-type">stream</span></a></span><span> </span><span class="hs-pragma">(</span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#unstream"><span class="hs-pragma hs-type">unstream</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679132593"><span class="hs-pragma hs-type">s</span></a></span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">=</span><span> </span><span class="annot"><a href="#local-6989586621679132593"><span class="hs-pragma hs-type">s</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-116"></span><span>
+</span><span id="line-117"></span><span class="hs-comment">-- | /O(n)/ Like 'unfoldr', 'unfoldrN' builds a stream from a seed</span><span>
+</span><span id="line-118"></span><span class="hs-comment">-- value. However, the length of the result is limited by the</span><span>
+</span><span id="line-119"></span><span class="hs-comment">-- first argument to 'unfoldrN'. This function is more efficient than</span><span>
+</span><span id="line-120"></span><span class="hs-comment">-- 'unfoldr' when the length of the result is known.</span><span>
+</span><span id="line-121"></span><span id="local-6989586621679132490"><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#unfoldrN"><span class="hs-identifier hs-type">unfoldrN</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Int.html#Int64/GHC.Int.html#Int64"><span class="hs-identifier hs-type">Int64</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679132490"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Char/GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span class="hs-special">,</span><span class="annot"><a href="#local-6989586621679132490"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679132490"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Stream"><span class="hs-identifier hs-type">Stream</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Char/GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span></span><span>
+</span><span id="line-122"></span><span id="unfoldrN"><span class="annot"><span class="annottext">unfoldrN :: forall a. Int64 -&gt; (a -&gt; Maybe (Char, a)) -&gt; a -&gt; Stream Char
+</span><a href="Data.Text.Internal.Lazy.Fusion.html#unfoldrN"><span class="hs-identifier hs-var hs-var">unfoldrN</span></a></span></span><span> </span><span id="local-6989586621679132595"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679132595"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; (a -&gt; Maybe (Char, a)) -&gt; a -&gt; Stream Char
+forall a b.
+Integral a =&gt;
+a -&gt; (b -&gt; Maybe (Char, b)) -&gt; b -&gt; Stream Char
+</span><a href="Data.Text.Internal.Fusion.Common.html#unfoldrNI"><span class="hs-identifier hs-var">S.unfoldrNI</span></a></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679132595"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-123"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="hs-pragma">[</span><span class="hs-pragma">0</span><span class="hs-pragma">]</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#unfoldrN"><span class="hs-pragma hs-type">unfoldrN</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-124"></span><span>
+</span><span id="line-125"></span><span class="annot"><span class="hs-comment">-- | /O(n)/ stream index (subscript) operator, starting from 0.</span></span><span>
+</span><span id="line-126"></span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#index"><span class="hs-identifier hs-type">index</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Stack.Types.html#HasCallStack/GHC.Stack.Types.html#HasCallStack"><span class="hs-identifier hs-type">HasCallStack</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Stream"><span class="hs-identifier hs-type">Stream</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Char/GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Int.html#Int64/GHC.Int.html#Int64"><span class="hs-identifier hs-type">Int64</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Char/GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span>
+</span><span id="line-127"></span><span id="index"><span class="annot"><span class="annottext">index :: HasCallStack =&gt; Stream Char -&gt; Int64 -&gt; Char
+</span><a href="Data.Text.Internal.Lazy.Fusion.html#index"><span class="hs-identifier hs-var hs-var">index</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stream Char -&gt; Int64 -&gt; Char
+forall a. (HasCallStack, Integral a) =&gt; Stream Char -&gt; a -&gt; Char
+</span><a href="Data.Text.Internal.Fusion.Common.html#indexI"><span class="hs-identifier hs-var">S.indexI</span></a></span><span>
+</span><span id="line-128"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="hs-pragma">[</span><span class="hs-pragma">0</span><span class="hs-pragma">]</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#index"><span class="hs-pragma hs-type">index</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-129"></span><span>
+</span><span id="line-130"></span><span class="hs-comment">-- | /O(n)/ The 'count' function returns the number of times the query</span><span>
+</span><span id="line-131"></span><span class="hs-comment">-- element appears in the given stream.</span><span>
+</span><span id="line-132"></span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#countChar"><span class="hs-identifier hs-type">countChar</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Char/GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Stream"><span class="hs-identifier hs-type">Stream</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Char/GHC.Types.html#Char"><span class="hs-identifier hs-type">Char</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Int.html#Int64/GHC.Int.html#Int64"><span class="hs-identifier hs-type">Int64</span></a></span><span>
+</span><span id="line-133"></span><span id="countChar"><span class="annot"><span class="annottext">countChar :: Char -&gt; Stream Char -&gt; Int64
+</span><a href="Data.Text.Internal.Lazy.Fusion.html#countChar"><span class="hs-identifier hs-var hs-var">countChar</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Char -&gt; Stream Char -&gt; Int64
+forall a. Integral a =&gt; Char -&gt; Stream Char -&gt; a
+</span><a href="Data.Text.Internal.Fusion.Common.html#countCharI"><span class="hs-identifier hs-var">S.countCharI</span></a></span><span>
+</span><span id="line-134"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="hs-pragma">[</span><span class="hs-pragma">0</span><span class="hs-pragma">]</span><span> </span><span class="annot"><a href="Data.Text.Internal.Lazy.Fusion.html#countChar"><span class="hs-pragma hs-type">countChar</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-135"></span></pre></body></html>
