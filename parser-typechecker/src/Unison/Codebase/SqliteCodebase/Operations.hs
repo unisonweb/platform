@@ -101,6 +101,7 @@ createSchema = do
   (_, emptyCausalHashId) <- emptyCausalHash
   (_, ProjectBranch {projectId, branchId}) <- insertProjectAndBranch scratchProjectName scratchBranchName emptyCausalHashId
   Q.setCurrentProjectPath projectId branchId []
+  Q.trackLatestRemoteHead
   where
     scratchProjectName = UnsafeProjectName "scratch"
     scratchBranchName = UnsafeProjectBranchName "main"
