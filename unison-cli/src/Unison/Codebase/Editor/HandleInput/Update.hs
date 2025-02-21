@@ -205,15 +205,15 @@ handleUpdate input optionalPatch requestedNames = do
     Nothing -> pure updatedProjectRootBranch
     Just (updatedPatch, _, _) -> do
       -- Propagate the patch to the whole project.
-      let scopePath = Path.empty
+      let scopePath = mempty
       propagatePatch updatedPatch scopePath updatedProjectRootBranch
   let description = case patchPath of
         Nothing -> "update.nopatch"
         Just p ->
           p
-            & Path.unsplit'
+            & Path.unsplit
             & Path.resolve @_ @_ @Path.Absolute currentPathAbs
-            & tShow
+            & Path.toText
   void $ Cli.updateAt description ppRoot (const projectRootBranchWithPropagatedPatch)
   let codebaseAndFileNames = UF.addNamesFromTypeCheckedUnisonFile (Slurp.originalFile sr) (Branch.toNames $ Branch.head projectRootBranchWithPropagatedPatch)
   let pped = PPED.makePPED (PPE.hqNamer 10 codebaseAndFileNames) (PPE.suffixifyByHash codebaseAndFileNames)

@@ -159,6 +159,7 @@ import Unison.Typechecker.TypeLookup (TypeLookup (TypeLookup))
 import Unison.Typechecker.TypeLookup qualified as TL
 import Unison.UnisonFile qualified as UF
 import Unison.Util.Defns (Defns (..), DefnsF)
+import Unison.Util.Recursion (XNor (Both, Neither), cata)
 import Unison.Util.Relation qualified as Rel
 import Unison.Var (Var)
 import Unison.WatchKind qualified as WK
@@ -199,14 +200,9 @@ getShallowCausalAtPath ::
   Path ->
   (V2Branch.CausalBranch Sqlite.Transaction) ->
   Sqlite.Transaction (V2Branch.CausalBranch Sqlite.Transaction)
-getShallowCausalAtPath path causal = do
-  case path of
-    Path.Empty -> pure causal
-    ns Path.:< p -> do
-      b <- V2Causal.value causal
-      case V2Branch.childAt ns b of
-        Nothing -> pure (Cv.causalbranch1to2 Branch.empty)
-        Just childCausal -> getShallowCausalAtPath p childCausal
+getShallowCausalAtPath = cata \case
+  Neither -> pure
+  Both ns fn -> maybe (pure $ Cv.causalbranch1to2 Branch.empty) fn . V2Branch.childAt ns <=< V2Causal.value
 
 -- | Recursively descend into causals following the given path,
 -- Use the root causal if none is provided.
@@ -222,15 +218,9 @@ getMaybeShallowBranchAtPath ::
   Path ->
   V2Branch.Branch Sqlite.Transaction ->
   Sqlite.Transaction (Maybe (V2Branch.Branch Sqlite.Transaction))
-getMaybeShallowBranchAtPath path branch = do
-  case path of
-    Path.Empty -> pure $ Just branch
-    ns Path.:< p -> do
-      case V2Branch.childAt ns branch of
-        Nothing -> pure Nothing
-        Just childCausal -> do
-          childBranch <- V2Causal.value childCausal
-          getMaybeShallowBranchAtPath p childBranch
+getMaybeShallowBranchAtPath = cata \case
+  Neither -> pure . Just
+  Both ns fn -> maybe (pure Nothing) (fn <=< V2Causal.value) . V2Branch.childAt ns
 
 -- | Recursively descend into causals following the given path,
 -- Use the root causal if none is provided.

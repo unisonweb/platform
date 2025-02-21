@@ -147,7 +147,7 @@ serveFuzzyFind ::
   Maybe String ->
   Backend.Backend m [(FZF.Alignment, FoundResult)]
 serveFuzzyFind codebase root relativeTo limit typeWidth query = do
-  let path = fromMaybe Path.empty relativeTo
+  let path = fromMaybe mempty relativeTo
   rootCausal <-
     Backend.hoistBackend (Codebase.runTransaction codebase) do
       Backend.normaliseRootCausalHash root

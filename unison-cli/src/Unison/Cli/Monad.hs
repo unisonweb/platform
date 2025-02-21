@@ -397,7 +397,7 @@ cd path = do
 switchProject :: ProjectAndBranch ProjectId ProjectBranchId -> Cli ()
 switchProject pab@(ProjectAndBranch projectId branchId) = do
   env <- ask
-  let newPP = PP.ProjectPath projectId branchId Path.absoluteEmpty
+  let newPP = PP.ProjectPath projectId branchId Path.Root
   #projectPathStack %= NonEmpty.cons newPP
   runTransaction do
     Q.setMostRecentBranch projectId branchId

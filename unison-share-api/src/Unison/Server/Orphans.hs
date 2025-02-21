@@ -337,7 +337,7 @@ instance FromJSON Path.Path where
     Right p -> pure p
 
 instance ToJSON Path.Absolute where
-  toJSON p = Aeson.String (Path.absToText p)
+  toJSON p = Aeson.String (Path.toText p)
 
 instance FromJSON Path.Absolute where
   parseJSON = Aeson.withText "Path" \txt -> case Path.parsePath' (Text.unpack txt) of

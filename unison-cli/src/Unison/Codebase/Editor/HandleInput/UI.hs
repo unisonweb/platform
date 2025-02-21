@@ -1,6 +1,5 @@
 module Unison.Codebase.Editor.HandleInput.UI (openUI) where
 
-import Control.Lens qualified as Lens
 import Control.Monad.Reader (ask)
 import Data.List qualified as List
 import Data.Map qualified as Map
@@ -52,7 +51,7 @@ openUIForProject url pp@(PP.ProjectPath project projectBranch perspective) defnP
     getDefinitionRef :: Path.Absolute -> Cli (Maybe (Server.DefinitionReference))
     getDefinitionRef perspective = runMaybeT $ do
       Cli.Env {codebase} <- lift ask
-      (pathToDefinitionNamespace, _nameSeg) <- hoistMaybe $ Lens.unsnoc defnPath
+      pathToDefinitionNamespace <- hoistMaybe $ Path.ascend defnPath
       let defnNamespaceProjectPath = pp & PP.absPath_ .~ pathToDefinitionNamespace
       namespaceBranch <- lift . Cli.runTransaction $ Codebase.getShallowBranchAtProjectPath defnNamespaceProjectPath
       fqn <- hoistMaybe $ do

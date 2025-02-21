@@ -4,8 +4,6 @@ module Unison.Codebase.Editor.HandleInput.DeleteNamespace
   )
 where
 
-import Control.Lens hiding (from)
-import Control.Lens qualified as Lens
 import Control.Monad.State qualified as State
 import Data.Map qualified as Map
 import Data.Set qualified as Set
@@ -20,12 +18,9 @@ import Unison.Codebase.Branch qualified as Branch
 import Unison.Codebase.Branch.Names qualified as Branch
 import Unison.Codebase.Editor.Input
 import Unison.Codebase.Editor.Output
-import Unison.Codebase.Path (Path)
 import Unison.Codebase.Path qualified as Path
-import Unison.Codebase.ProjectPath qualified as ProjectPath
 import Unison.LabeledDependency (LabeledDependency)
 import Unison.LabeledDependency qualified as LD
-import Unison.NameSegment qualified as NameSegment
 import Unison.Names (Names)
 import Unison.Names qualified as Names
 import Unison.Prelude
@@ -34,7 +29,7 @@ import Unison.PrettyPrintEnvDecl.Names qualified as PPED
 import Unison.Referent qualified as Referent
 import Unison.Sqlite qualified as Sqlite
 
-handleDeleteNamespace :: Input -> Insistence -> Maybe (Path, NameSegment.NameSegment) -> Cli ()
+handleDeleteNamespace :: Input -> Insistence -> Maybe (Path.Split Path.Relative) -> Cli ()
 handleDeleteNamespace input insistence = \case
   Nothing -> do
     loopState <- State.get
@@ -48,7 +43,7 @@ handleDeleteNamespace input insistence = \case
     branch <- Cli.expectBranchAtPath (Path.unsplit p)
     let toDelete =
           Names.prefix0
-            (Path.nameFromSplit' $ first (Path.RelativePath' . Path.Relative) p)
+            (Path.nameFromSplit (parentPath, childName))
             (Branch.toNames (Branch.head branch))
     afterDelete <- do
       currentBranch <- Cli.getCurrentProjectRoot0
@@ -66,8 +61,8 @@ handleDeleteNamespace input insistence = \case
           let ppeDecl = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
           Cli.respondNumbered $ CantDeleteNamespace ppeDecl endangerments
           Cli.returnEarlyWithoutOutput
-    parentPathAbs <- Cli.resolvePath parentPath
-    let description = commandName <> " " <> into @Text (parentPathAbs & ProjectPath.absPath_ %~ (`Lens.snoc` childName))
+    parentPathAbs <- Cli.resolvePath' $ Path.RelativePath' parentPath
+    let description = commandName <> " " <> into @Text (Path.descend parentPathAbs childName)
     -- We have to modify the parent in order to also wipe out the history at the
     -- child.
     Cli.updateAt description parentPathAbs (Branch.modifyAt (Path.singleton childName) \_ -> Branch.empty)

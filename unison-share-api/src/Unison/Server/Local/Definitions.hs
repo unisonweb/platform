@@ -16,7 +16,7 @@ import U.Codebase.Reference (TermReference, TypeReference)
 import Unison.Codebase (Codebase)
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Editor.DisplayObject (DisplayObject)
-import Unison.Codebase.Path (Path)
+import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.Runtime qualified as Rt
 import Unison.DataDeclaration qualified as DD
 import Unison.HashQualified qualified as HQ
@@ -52,7 +52,7 @@ prettyDefinitionsForHQName ::
   -- | The path representing the user's current perspective.
   -- Searches will be limited to definitions within this path, and names will be relative to
   -- this path.
-  Path ->
+  Path.Absolute ->
   -- | The root branch to use
   V2Branch.CausalBranch Sqlite.Transaction ->
   Maybe Width ->
@@ -67,21 +67,18 @@ prettyDefinitionsForHQName ::
 prettyDefinitionsForHQName perspective shallowRoot renderWidth suffixifyBindings rt codebase perspectiveQuery = do
   result <- liftIO . Codebase.runTransaction codebase $ do
     shallowBranch <- V2Causal.value shallowRoot
-    Local.relocateToNameRoot perspective perspectiveQuery shallowBranch >>= \case
-      Left err -> pure $ Left err
-      Right (namesRoot, locatedQuery) -> do
-        pure $ Right (shallowRoot, namesRoot, locatedQuery)
-  (shallowRoot, namesRoot, query) <- either throwError pure result
+    Local.relocateToNameRoot perspective perspectiveQuery shallowBranch
+  (namesRoot, query) <- either throwError pure result
   -- Bias towards both relative and absolute path to queries,
   -- This allows us to still bias towards definitions outside our perspective but within the
   -- same tree;
-  -- e.g. if the query is `map` and we're in `base.trunk.List`,
+  -- e.g. if the query is `map` and we're in `base.trunk.List`,o
   -- we bias towards `map` and `.base.trunk.List.map` which ensures we still prefer names in
   -- `trunk` over those in other releases.
   -- ppe which returns names fully qualified to the current perspective,  not to the codebase root.
   let biases = maybeToList $ HQ.toName query
   hqLength <- liftIO $ Codebase.runTransaction codebase $ Codebase.hashLength
-  (localNamesOnly, unbiasedPPED) <- namesAtPathFromRootBranchHash codebase shallowRoot namesRoot
+  (localNamesOnly, unbiasedPPED) <- namesAtPathFromRootBranchHash codebase shallowRoot $ Path.unabsolute namesRoot
   let pped = PPED.biasTo biases unbiasedPPED
   let nameSearch = makeNameSearch hqLength localNamesOnly
   (DefinitionResults terms types misses) <- liftIO $ Codebase.runTransaction codebase do

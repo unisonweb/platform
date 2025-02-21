@@ -171,7 +171,7 @@ import U.Codebase.Sqlite.Project qualified as Sqlite
 import U.Codebase.Sqlite.Queries qualified as Queries
 import Unison.Auth.HTTPClient (AuthenticatedHttpClient)
 import Unison.Cli.Pretty
-  ( prettyPath',
+  ( prettyPath,
     prettyProjectAndBranchName,
     prettyProjectBranchName,
     prettyProjectName,
@@ -237,7 +237,6 @@ import Unison.Server.Backend (ShallowListEntry (..))
 import Unison.Server.Backend qualified as Backend
 import Unison.Server.SearchResult (SearchResult)
 import Unison.Server.SearchResult qualified as SR
-import Unison.ShortHash (ShortHash)
 import Unison.Syntax.HashQualified qualified as HQ (parseText, toText)
 import Unison.Syntax.Name qualified as Name (parseTextEither, toText)
 import Unison.Syntax.NameSegment qualified as NameSegment
@@ -472,7 +471,7 @@ handlePath'Arg =
       otherArgType ->
         bimap (const $ wrongStructuredArgument "a path" otherArgType) Path.fromName' . handleNameArg $ pure otherArgType
 
-handleNewName :: I.Argument -> Either (P.Pretty CT.ColorText) Path.Split'
+handleNewName :: I.Argument -> Either (P.Pretty CT.ColorText) (Path.Split Path')
 handleNewName =
   either
     (first P.text . Path.parseSplit')
@@ -485,25 +484,17 @@ handleNewPath =
     (const . Left $ "can’t use a numbered argument for a new namespace")
 
 -- | When only a relative name is allowed.
-handleSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) Path.Split
+handleSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) (Path.Split Path.Relative)
 handleSplitArg =
-  either
+  fmap (first Path.Relative) . either
     (first P.text . Path.parseSplit)
     \case
       SA.Name name | Name.isRelative name -> pure $ Path.splitFromName name
       SA.NameWithBranchPrefix _ name | Name.isRelative name -> pure $ Path.splitFromName name
       otherNumArg -> Left $ wrongStructuredArgument "a relative name" otherNumArg
 
-handleSplit'Arg :: I.Argument -> Either (P.Pretty CT.ColorText) Path.Split'
-handleSplit'Arg =
-  either
-    (first P.text . Path.parseSplit')
-    \case
-      SA.Name name -> pure $ Path.splitFromName' name
-      SA.NameWithBranchPrefix (BranchAtSCH _) name -> pure $ Path.splitFromName' name
-      SA.NameWithBranchPrefix (BranchAtPath prefix) name ->
-        pure . Path.splitFromName' $ Path.prefixNameIfRel (Path.AbsolutePath' prefix) name
-      otherNumArg -> Left $ wrongStructuredArgument "a name" otherNumArg
+handleSplit'Arg :: I.Argument -> Either (P.Pretty CT.ColorText) (Path.Split Path')
+handleSplit'Arg = fmap Path.parentOfName . handleNameArg
 
 handleProjectBranchNameArg :: I.Argument -> Either (P.Pretty CT.ColorText) ProjectBranchName
 handleProjectBranchNameArg =
@@ -580,8 +571,8 @@ handleBranchId2Arg =
         pure . pure . UnqualifiedPath . Path.fromName' $ Path.prefixNameIfRel (Path.AbsolutePath' prefix) name
       SA.ProjectBranch (ProjectAndBranch mproject branch) ->
         case mproject of
-          Just proj -> pure . pure $ QualifiedBranchPath proj branch Path.absoluteEmpty
-          Nothing -> pure . pure $ BranchPathInCurrentProject branch Path.absoluteEmpty
+          Just proj -> pure . pure $ QualifiedBranchPath proj branch Path.Root
+          Nothing -> pure . pure $ BranchPathInCurrentProject branch Path.Root
       otherNumArg -> Left $ wrongStructuredArgument "a branch id" otherNumArg
 
 handleBranchRelativePathArg :: I.Argument -> Either (P.Pretty P.ColorText) BranchRelativePath
@@ -596,68 +587,51 @@ handleBranchRelativePathArg =
         pure . UnqualifiedPath . Path.fromName' $ Path.prefixNameIfRel (Path.AbsolutePath' prefix) name
       SA.ProjectBranch (ProjectAndBranch mproject branch) ->
         case mproject of
-          Just proj -> pure $ QualifiedBranchPath proj branch Path.absoluteEmpty
-          Nothing -> pure $ BranchPathInCurrentProject branch Path.absoluteEmpty
+          Just proj -> pure $ QualifiedBranchPath proj branch Path.Root
+          Nothing -> pure $ BranchPathInCurrentProject branch Path.Root
       otherNumArg -> Left $ wrongStructuredArgument "a branch id" otherNumArg
 
-hqNameToSplit' :: HQ.HashQualified Name -> Either ShortHash Path.HQSplit'
-hqNameToSplit' = \case
-  HQ.HashOnly hash -> Left hash
-  HQ.NameOnly name -> pure . fmap HQ'.NameOnly $ Path.splitFromName' name
-  HQ.HashQualified name hash -> pure . fmap (`HQ'.HashQualified` hash) $ Path.splitFromName' name
-
-hqNameToSplit :: HQ.HashQualified Name -> Either ShortHash Path.HQSplit
-hqNameToSplit = \case
-  HQ.HashOnly hash -> Left hash
-  HQ.NameOnly name -> pure . fmap HQ'.NameOnly $ Path.splitFromName name
-  HQ.HashQualified name hash -> pure . fmap (`HQ'.HashQualified` hash) $ Path.splitFromName name
-
-hq'NameToSplit' :: HQ'.HashQualified Name -> Path.HQSplit'
-hq'NameToSplit' = \case
-  HQ'.NameOnly name -> HQ'.NameOnly <$> Path.splitFromName' name
-  HQ'.HashQualified name hash -> flip HQ'.HashQualified hash <$> Path.splitFromName' name
-
-hq'NameToSplit :: HQ'.HashQualified Name -> Path.HQSplit
-hq'NameToSplit = \case
-  HQ'.NameOnly name -> HQ'.NameOnly <$> Path.splitFromName name
-  HQ'.HashQualified name hash -> flip HQ'.HashQualified hash <$> Path.splitFromName name
-
-handleHashQualifiedSplit'Arg :: I.Argument -> Either (P.Pretty CT.ColorText) Path.HQSplit'
+handleHashQualifiedSplit'Arg :: I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashQualified (Path.Split Path'))
 handleHashQualifiedSplit'Arg =
   either
     (first P.text . Path.parseHQSplit')
     \case
-      SA.Name name -> pure $ Path.hqSplitFromName' name
-      hq@(SA.HashQualified name) -> first (const $ expectedButActually "a name" hq "a hash") $ hqNameToSplit' name
-      SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure $ hq'NameToSplit' hqname
+      SA.Name name -> pure $ HQ'.fromName $ Path.parentOfName name
+      hq@(SA.HashQualified name) ->
+        bimap (const $ expectedButActually "a name" hq "a hash") (Path.parentOfName <$>) $ HQ'.fromHQ name
+      SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure $ Path.parentOfName <$> hqname
       SA.HashQualifiedWithBranchPrefix (BranchAtPath prefix) hqname ->
-        pure . hq'NameToSplit' $ Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname
+        pure $ Path.parentOfName . Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname
       SA.ShallowListEntry prefix entry ->
-        pure . hq'NameToSplit' . fmap (Path.prefixNameIfRel prefix) $ shallowListEntryToHQ' entry
+        pure $ Path.parentOfName . Path.prefixNameIfRel prefix <$> shallowListEntryToHQ' entry
       sr@(SA.SearchResult mpath result) ->
-        first (const $ expectedButActually "a name" sr "a hash") . hqNameToSplit' $ searchResultToHQ mpath result
+        bimap (const $ expectedButActually "a name" sr "a hash") (Path.parentOfName <$>) . HQ'.fromHQ $
+          searchResultToHQ mpath result
       otherNumArg -> Left $ wrongStructuredArgument "a name" otherNumArg
 
-handleHashQualifiedSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) Path.HQSplit
+handleHashQualifiedSplitArg :: I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashQualified (Path.Split Path))
 handleHashQualifiedSplitArg =
   either
     (first P.text . Path.parseHQSplit)
     \case
       n@(SA.Name name) ->
-        bitraverse
-          ( \case
-              Path.AbsolutePath' _ -> Left $ expectedButActually "a relative name" n "an absolute name"
-              Path.RelativePath' p -> pure $ Path.unrelative p
-          )
-          pure
-          $ Path.hqSplitFromName' name
-      hq@(SA.HashQualified name) -> first (const $ expectedButActually "a name" hq "a hash") $ hqNameToSplit name
-      SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure $ hq'NameToSplit hqname
+        fmap HQ'.fromName
+          . bitraverse
+            ( \case
+                Path.AbsolutePath' _ -> Left $ expectedButActually "a relative name" n "an absolute name"
+                Path.RelativePath' p -> pure $ Path.unrelative p
+            )
+            pure
+          $ Path.parentOfName name
+      hq@(SA.HashQualified name) ->
+        first (const $ expectedButActually "a name" hq "a hash") . HQ'.fromHQ $ Path.splitFromName <$> name
+      SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure $ Path.splitFromName <$> hqname
       SA.HashQualifiedWithBranchPrefix (BranchAtPath prefix) hqname ->
-        pure . hq'NameToSplit $ Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname
-      SA.ShallowListEntry _ entry -> pure . hq'NameToSplit $ shallowListEntryToHQ' entry
+        pure $ Path.splitFromName . Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname
+      SA.ShallowListEntry _ entry -> pure $ Path.splitFromName <$> shallowListEntryToHQ' entry
       sr@(SA.SearchResult mpath result) ->
-        first (const $ expectedButActually "a name" sr "a hash") . hqNameToSplit $ searchResultToHQ mpath result
+        first (const $ expectedButActually "a name" sr "a hash") . HQ'.fromHQ $
+          Path.splitFromName <$> searchResultToHQ mpath result
       otherNumArg -> Left $ wrongStructuredArgument "a relative name" otherNumArg
 
 handleShortCausalHashArg :: I.Argument -> Either (P.Pretty CT.ColorText) ShortCausalHash
@@ -668,19 +642,19 @@ handleShortCausalHashArg =
       SA.Namespace hash -> pure $ SCH.fromFullHash hash
       otherNumArg -> Left $ wrongStructuredArgument "a causal hash" otherNumArg
 
-handleShortHashOrHQSplit'Arg ::
-  I.Argument -> Either (P.Pretty CT.ColorText) (Either ShortHash Path.HQSplit')
-handleShortHashOrHQSplit'Arg =
+handleHashOrHQSplit'Arg ::
+  I.Argument -> Either (P.Pretty CT.ColorText) (HQ'.HashOrHQ (Path.Split Path'))
+handleHashOrHQSplit'Arg =
   either
-    (first P.text . Path.parseShortHashOrHQSplit')
+    (first P.text . Path.parseHashOrHQSplit')
     \case
-      SA.HashQualified name -> pure $ hqNameToSplit' name
-      SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure . pure $ hq'NameToSplit' hqname
+      SA.HashQualified name -> pure . HQ'.fromHQ $ Path.parentOfName <$> name
+      SA.HashQualifiedWithBranchPrefix (BranchAtSCH _) hqname -> pure . pure $ Path.parentOfName <$> hqname
       SA.HashQualifiedWithBranchPrefix (BranchAtPath prefix) hqname ->
-        pure . pure $ hq'NameToSplit' (Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname)
+        pure . pure $ Path.parentOfName . Path.prefixNameIfRel (Path.AbsolutePath' prefix) <$> hqname
       SA.ShallowListEntry prefix entry ->
-        pure . pure . hq'NameToSplit' . fmap (Path.prefixNameIfRel prefix) $ shallowListEntryToHQ' entry
-      SA.SearchResult mpath result -> pure . hqNameToSplit' $ searchResultToHQ mpath result
+        pure . pure $ Path.parentOfName . Path.prefixNameIfRel prefix <$> shallowListEntryToHQ' entry
+      SA.SearchResult mpath result -> pure . HQ'.fromHQ $ Path.parentOfName <$> searchResultToHQ mpath result
       otherNumArg -> Left $ wrongStructuredArgument "a hash or name" otherNumArg
 
 handleRelativeNameSegmentArg :: I.Argument -> Either (P.Pretty CT.ColorText) NameSegment
@@ -811,7 +785,7 @@ mergeBuiltins =
     "Adds the builtins (excluding `io` and misc) to the specified namespace. Defaults to `builtin.`"
     \case
       [] -> pure . Input.MergeBuiltinsI $ Nothing
-      p : _ -> Input.MergeBuiltinsI . Just <$> handlePathArg p
+      p : _ -> Input.MergeBuiltinsI . pure . Path.Relative <$> handlePathArg p
 
 mergeIOBuiltins :: InputPattern
 mergeIOBuiltins =
@@ -823,7 +797,7 @@ mergeIOBuiltins =
     "Adds all the builtins, including `io` and misc., to the specified namespace. Defaults to `builtin.`"
     \case
       [] -> pure . Input.MergeIOBuiltinsI $ Nothing
-      p : _ -> Input.MergeIOBuiltinsI . Just <$> handlePathArg p
+      p : _ -> Input.MergeIOBuiltinsI . pure . Path.Relative <$> handlePathArg p
 
 updateBuiltins :: InputPattern
 updateBuiltins =
@@ -1125,7 +1099,7 @@ ui =
       params = Parameters [] $ Optional [("definition to load", namespaceOrDefinitionArg)] Nothing,
       help = P.wrap "`ui` opens the Local UI in the default browser.",
       parse = \case
-        [] -> pure $ Input.UiI Path.relativeEmpty'
+        [] -> pure $ Input.UiI Path.Current'
         path : _ -> Input.UiI <$> handlePath'Arg path
     }
 
@@ -1190,7 +1164,7 @@ sfind =
     parse
   where
     parse = \case
-      q : _ -> Input.StructuredFindI (Input.FindLocal Path.relativeEmpty') <$> handleHashQualifiedNameArg q
+      q : _ -> Input.StructuredFindI (Input.FindLocal Path.Current') <$> handleHashQualifiedNameArg q
       args -> wrongArgsLength "exactly one argument" args
     msg =
       P.lines
@@ -1254,10 +1228,10 @@ sfindReplace =
         ]
 
 find :: InputPattern
-find = find' "find" (Input.FindLocal Path.relativeEmpty')
+find = find' "find" (Input.FindLocal Path.Current')
 
 findAll :: InputPattern
-findAll = find' "find.all" (Input.FindLocalAndDeps Path.relativeEmpty')
+findAll = find' "find.all" (Input.FindLocalAndDeps Path.Current')
 
 findGlobal :: InputPattern
 findGlobal = find' "debug.find.global" Input.FindGlobal
@@ -1338,7 +1312,7 @@ findShallow =
         ]
     )
     ( fmap Input.FindShallowI . \case
-        [] -> pure Path.relativeEmpty'
+        [] -> pure Path.Current'
         path : _ -> handlePath'Arg path
     )
 
@@ -1352,7 +1326,7 @@ findVerbose =
     ( "`find.verbose` searches for definitions like `find`, but includes hashes "
         <> "and aliases in the results."
     )
-    (pure . Input.FindI True (Input.FindLocal Path.relativeEmpty') . fmap unifyArgument)
+    (pure . Input.FindI True (Input.FindLocal Path.Current') . fmap unifyArgument)
 
 findVerboseAll :: InputPattern
 findVerboseAll =
@@ -1364,7 +1338,7 @@ findVerboseAll =
     ( "`find.all.verbose` searches for definitions like `find.all`, but includes hashes "
         <> "and aliases in the results."
     )
-    (pure . Input.FindI True (Input.FindLocalAndDeps Path.relativeEmpty') . fmap unifyArgument)
+    (pure . Input.FindI True (Input.FindLocalAndDeps Path.Current') . fmap unifyArgument)
 
 renameTerm :: InputPattern
 renameTerm =
@@ -1405,7 +1379,8 @@ renameType =
       _ ->
         Left $ P.wrap "`rename.type` takes two arguments, like `rename.type oldname newname`."
 
-deleteGen :: Maybe String -> ParameterType -> String -> ([Path.HQSplit'] -> DeleteTarget) -> InputPattern
+deleteGen ::
+  Maybe String -> ParameterType -> String -> ([HQ'.HashQualified (Path.Split Path')] -> DeleteTarget) -> InputPattern
 deleteGen suffix queryCompletionArg target mkTarget =
   let cmd = maybe "delete" ("delete." <>) suffix
       info =
@@ -1505,7 +1480,7 @@ aliasTerm =
         Parameters [("term to alias", exactDefinitionTermQueryArg), ("alias name", newNameArg)] $ Optional [] Nothing,
       help = "`alias.term foo bar` introduces `bar` with the same definition as `foo`.",
       parse = \case
-        oldName : newName : _ -> Input.AliasTermI False <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
+        oldName : newName : _ -> Input.AliasTermI False <$> handleHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
         _ -> Left $ P.wrap "`alias.term` takes two arguments, like `alias.term oldname newname`."
     }
 
@@ -1519,7 +1494,7 @@ debugAliasTermForce =
         Parameters [("term to alias", exactDefinitionTermQueryArg), ("alias name", newNameArg)] $ Optional [] Nothing,
       help = "`debug.alias.term.force foo bar` introduces `bar` with the same definition as `foo`.",
       parse = \case
-        oldName : newName : _ -> Input.AliasTermI True <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
+        oldName : newName : _ -> Input.AliasTermI True <$> handleHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
         _ ->
           Left $
             P.wrap "`debug.alias.term.force` takes two arguments, like `debug.alias.term.force oldname newname`."
@@ -1534,7 +1509,7 @@ aliasType =
     (Parameters [("type to alias", exactDefinitionTypeQueryArg), ("alias name", newNameArg)] $ Optional [] Nothing)
     "`alias.type Foo Bar` introduces `Bar` with the same definition as `Foo`."
     \case
-      oldName : newName : _ -> Input.AliasTypeI False <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
+      oldName : newName : _ -> Input.AliasTypeI False <$> handleHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
       _ -> Left $ P.wrap "`alias.type` takes two arguments, like `alias.type oldname newname`."
 
 debugAliasTypeForce :: InputPattern
@@ -1547,7 +1522,7 @@ debugAliasTypeForce =
         Parameters [("type to alias", exactDefinitionTypeQueryArg), ("alias name", newNameArg)] $ Optional [] Nothing,
       help = "`debug.alias.type.force Foo Bar` introduces `Bar` with the same definition as `Foo`.",
       parse = \case
-        [oldName, newName] -> Input.AliasTypeI True <$> handleShortHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
+        [oldName, newName] -> Input.AliasTypeI True <$> handleHashOrHQSplit'Arg oldName <*> handleSplit'Arg newName
         _ ->
           Left $
             P.wrap "`debug.alias.type.force` takes two arguments, like `debug.alias.type.force oldname newname`."
@@ -1657,7 +1632,7 @@ deleteNamespaceForce =
 deleteNamespaceParser :: Input.Insistence -> I.Arguments -> Either (P.Pretty CT.ColorText) Input
 deleteNamespaceParser insistence = \case
   [Left "."] -> first fromString . pure $ Input.DeleteI (DeleteTarget'Namespace insistence Nothing)
-  [p] -> Input.DeleteI . DeleteTarget'Namespace insistence <$> (Just <$> handleSplitArg p)
+  [p] -> Input.DeleteI . DeleteTarget'Namespace insistence . pure <$> handleSplitArg p
   args -> wrongArgsLength "exactly one argument" args
 
 renameBranch :: InputPattern
@@ -1689,7 +1664,7 @@ history =
         ]
     )
     \case
-      [] -> pure $ Input.HistoryI (Just 10) (Just 10) (BranchAtPath Path.currentPath)
+      [] -> pure $ Input.HistoryI (Just 10) (Just 10) (BranchAtPath Path.Current')
       src : _ -> Input.HistoryI (Just 10) (Just 10) <$> handleBranchIdArg src
 
 forkLocal :: InputPattern
@@ -1891,7 +1866,7 @@ pullImpl name aliases pullMode addendum = do
                         RemoteRepo.ReadShare'ProjectBranch (These sourceProject (ProjectBranchNameOrLatestRelease'Name sourceBranch)) ->
                           prettyProjectAndBranchName (ProjectAndBranch sourceProject sourceBranch)
                       <> " into the "
-                      <> prettyPath' path
+                      <> prettyPath path
                       <> " namespace, but the "
                       <> makeExample' pull
                       <> " command only supports merging into the top level of a local project branch."
@@ -2410,7 +2385,7 @@ diffNamespace =
     )
     \case
       [before, after] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> handleBranchId2Arg after
-      [before] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> pure (Right . UnqualifiedPath $ Path.currentPath)
+      [before] -> Input.DiffNamespaceI <$> handleBranchId2Arg before <*> pure (Right . UnqualifiedPath $ Path.Current')
       args -> wrongArgsLength "one or two arguments" args
   where
     suggestionsConfig =
@@ -3037,13 +3012,13 @@ test =
                 False
                 Input.TestInput
                   { includeLibNamespace = False,
-                    path,
+                    path = Path.Relative path,
                     showFailures = True,
                     showSuccesses = True
                   }
           )
           . \case
-            [] -> pure Path.empty
+            [] -> pure mempty
             pathString : _ -> handlePathArg pathString
     }
 
@@ -3068,13 +3043,13 @@ testNative =
                 True
                 Input.TestInput
                   { includeLibNamespace = False,
-                    path,
+                    path = Path.Relative path,
                     showFailures = True,
                     showSuccesses = True
                   }
           )
           . \case
-            [] -> pure Path.empty
+            [] -> pure mempty
             pathString : _ -> handlePathArg pathString
     }
 
@@ -3092,7 +3067,7 @@ testAll =
       False
       Input.TestInput
         { includeLibNamespace = True,
-          path = Path.empty,
+          path = mempty,
           showFailures = True,
           showSuccesses = True
         }
@@ -3111,7 +3086,7 @@ testAllNative =
       True
       Input.TestInput
         { includeLibNamespace = True,
-          path = Path.empty,
+          path = mempty,
           showFailures = True,
           showSuccesses = True
         }
@@ -4274,10 +4249,10 @@ branchRelativePathSuggestions config inputStr codebase _httpClient pp = do
                     Queries.loadAllProjectBranchesBeginningWith projectId (into @Text <$> mbranch)
           pure (map (projectBranchToCompletionWithSep projectName) branches)
       BranchRelativePath.PathRelativeToCurrentBranch absPath -> Codebase.runTransaction codebase do
-        map prefixPathSep <$> prefixCompleteNamespace (Text.unpack . Path.toText' $ Path.AbsolutePath' absPath) pp
+        map prefixPathSep <$> prefixCompleteNamespace (Text.unpack $ Path.toText absPath) pp
       BranchRelativePath.IncompletePath projStuff mpath -> do
         Codebase.runTransaction codebase do
-          map (addBranchPrefix projStuff) <$> prefixCompleteNamespace (maybe "" (Text.unpack . Path.toText' . Path.AbsolutePath') mpath) pp
+          map (addBranchPrefix projStuff) <$> prefixCompleteNamespace (maybe "" (Text.unpack . Path.toText) mpath) pp
   where
     projectBranchToCompletionWithSep :: ProjectName -> (ProjectBranchId, ProjectBranchName) -> Completion
     projectBranchToCompletionWithSep projectName (_, branchName) =

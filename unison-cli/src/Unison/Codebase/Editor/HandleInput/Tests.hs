@@ -28,7 +28,6 @@ import Unison.Codebase.Editor.HandleInput.RuntimeUtils qualified as RuntimeUtils
 import Unison.Codebase.Editor.Input (TestInput (..))
 import Unison.Codebase.Editor.Output
 import Unison.Codebase.Editor.Output qualified as Output
-import Unison.Codebase.Path (Path)
 import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.Runtime qualified as Runtime
 import Unison.ConstructorReference (GConstructorReference (..))
@@ -155,7 +154,7 @@ handleIOTest native main = do
       refs
   Cli.respondNumbered $ TestResults Output.NewlyComputed suffixifiedPPE True True oks fails
 
-findTermsOfTypes :: Codebase.Codebase m Symbol Ann -> Bool -> Path -> NESet (Type.Type Symbol Ann) -> Cli (Set TermReferenceId)
+findTermsOfTypes :: Codebase.Codebase m Symbol Ann -> Bool -> Path.Relative -> NESet (Type.Type Symbol Ann) -> Cli (Set TermReferenceId)
 findTermsOfTypes codebase includeLib path filterTypes = do
   branch <- Cli.expectBranch0AtPath path
 
@@ -177,7 +176,7 @@ handleAllIOTests native = do
   names <- Cli.currentNames
   let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
-  ioTestRefs <- findTermsOfTypes codebase False Path.empty (Runtime.ioTestTypes runtime)
+  ioTestRefs <- findTermsOfTypes codebase False mempty (Runtime.ioTestTypes runtime)
   case NESet.nonEmptySet ioTestRefs of
     Nothing -> Cli.respondNumbered $ TestResults Output.NewlyComputed suffixifiedPPE True True Map.empty Map.empty
     Just neTestRefs -> do

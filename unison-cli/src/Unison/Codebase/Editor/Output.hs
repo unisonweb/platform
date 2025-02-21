@@ -220,14 +220,14 @@ data Output
   | BranchAlreadyExists Path'
   | FindNoLocalMatches
   | NoExactTypeMatches
-  | TypeAlreadyExists Path.Split' (Set Reference)
+  | TypeAlreadyExists (Path.Split Path') (Set Reference)
   | TypeParseError String (Parser.Err Symbol)
   | ParseResolutionFailures String [Names.ResolutionFailure Ann]
   | TypeHasFreeVars (Type Symbol Ann)
-  | TermAlreadyExists Path.Split' (Set Referent)
+  | TermAlreadyExists (Path.Split Path') (Set Referent)
   | LabeledReferenceAmbiguous Int (HQ.HashQualified Name) (Set LabeledDependency)
   | LabeledReferenceNotFound (HQ.HashQualified Name)
-  | DeleteNameAmbiguous Int Path.HQSplit' (Set Referent) (Set Reference)
+  | DeleteNameAmbiguous Int (HQ'.HashQualified (Path.Split Path')) (Set Referent) (Set Reference)
   | TermAmbiguous PPE.PrettyPrintEnv (HQ.HashQualified Name) (Set Referent)
   | HashAmbiguous ShortHash (Set Referent)
   | BranchHashAmbiguous ShortCausalHash (Set ShortCausalHash)
@@ -235,10 +235,10 @@ data Output
   | BranchNotFound Path'
   | EmptyLooseCodePush Path'
   | EmptyProjectBranchPush (ProjectAndBranch ProjectName ProjectBranchName)
-  | NameNotFound Path.HQSplit'
+  | NameNotFound (HQ'.HashQualified (Path.Split Path'))
   | NamesNotFound [Name]
-  | TypeNotFound Path.HQSplit'
-  | TermNotFound Path.HQSplit'
+  | TypeNotFound (HQ'.HashQualified (Path.Split Path'))
+  | TermNotFound (HQ'.HashQualified (Path.Split Path'))
   | MoveNothingFound Path'
   | TypeNotFound' ShortHash
   | TermNotFound' ShortHash

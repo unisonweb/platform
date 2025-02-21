@@ -84,7 +84,7 @@ instance Docs.ToSample NamespaceDetails where
     [ ( "When no value is provided for `namespace`, the root namespace `.` is "
           <> "listed by default",
         NamespaceDetails
-          Path.empty
+          mempty
           "#gjlk0dna8dongct6lsd19d1o9hi5n642t8jttga5e81e91fviqjdffem0tlddj7ahodjo5"
           Nothing
       )
