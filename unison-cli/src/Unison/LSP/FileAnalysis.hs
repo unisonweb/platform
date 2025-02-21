@@ -354,8 +354,10 @@ analyseNotes fileUri ppe src notes = do
 
     nameResolutionSuggestionPriority (Context.Suggestion {suggestionMatch, suggestionName}) = case suggestionMatch of
       Context.Exact -> (0 :: Int, suggestionName)
-      Context.WrongType -> (1, suggestionName)
-      Context.WrongName -> (2, suggestionName)
+      Context.RightNameWrongType -> (1, suggestionName)
+      Context.SimilarNameRightType -> (2, suggestionName)
+      Context.SimilarNameWrongType -> (3, suggestionName)
+      Context.WrongNameRightType -> (4, suggestionName)
 
     -- typeHoleReplacementCodeActions :: Symbol -> _ -> Lsp [a]
     typeHoleReplacementCodeActions diags v typ
