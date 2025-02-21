@@ -1437,8 +1437,15 @@ notifyUser dir = \case
               "",
               "Paste that output into http://bit-booster.com/graph.html"
             ]
-  ListDependents ppe lds types terms ->
-    pure $ listDependentsOrDependencies ppe "Dependents" "dependents" lds types terms
+  ListDependents ppe lds defns ->
+    pure $
+      listDependentsOrDependencies
+        ppe
+        "Dependents"
+        "dependents"
+        lds
+        (map (HQ'.toHQ . fst) defns.types)
+        (map (HQ'.toHQ . fst) defns.terms)
   ListDependencies ppe lds types terms ->
     pure $ listDependentsOrDependencies ppe "Dependencies" "dependencies" lds types terms
   ListStructuredFind terms ->
