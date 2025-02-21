@@ -1,72 +1,62 @@
-name: release
+name: build and push ucm docker image
 
-run-name: release ${{inputs.version}}
-
-defaults:
-  run:
-    shell: bash
+# Build docker image containing ucm executable
+# Push to the github docker image repo (a.k.a. 'packages')
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       version:
-        description: Release version; e.g. `0.5.19`. We'll create tag `release/${version}`.
-        required: true
+        description: Semver version of the release. E.g. 0.5.19
         type: string
+        required: false
+      is_release:
+        description: Whether this is a release build.
+        type: boolean
+        required: false
+        default: false
+
+  push:
+    branches:
+      - cp/test-ucm-docker-image
 
 jobs:
-  bundle-ucm:
-    name: build and bundle ucm
-    uses: ./.github/workflows/bundle-ucm.yaml
-    with:
-      ref: ${{github.ref}}
-
-  build-docker-image:
-    name: build ucm docker image
-    uses: ./.github/workflows/ucm-docker-image.yaml
-    needs:
-      - bundle-ucm
-    with:
-      version: ${{inputs.version}}
-      is_release: true
-
-  release:
-    name: create release
+  docker-image:
+    name: Build and push ucm docker image
     runs-on: ubuntu-20.04
-    needs:
-      - bundle-ucm
+
+    # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
+    permissions:
+      contents: read
+      # Allow uploading the docker image to the container registry
+      packages: write
+      # Allow creating and updating the artifact attestation
+      attestations: write
+      # Required to get user information for building attestations
+      id-token: write
+
+    env:
+      container_registry: ghcr.io
+      docker_image_name: ${{ github.repository }}
+
 
     steps:
-      - name: make download dir
-        run: mkdir /tmp/ucm
+      - uses: actions/checkout@v4
 
-      - name: "download artifacts"
+      - name: Download ucm executable and ucm UI
         uses: actions/download-artifact@v4
         with:
-          path: /tmp/ucm
+          name: bundle-linux
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 8975410616
+          path: ./tmp/downloads
 
-      - name: Create Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Unpack ucm bundle tar
         run: |
-          prev_tag="$( \
-            gh release view \
-              --repo unisonweb/unison \
-              --json tagName -t '{{printf .tagName}}' \
-          )"
-          if [ -z "$prev_tag" ]; then echo "No previous release found"; exit 1; fi
-
-          echo "Creating a release from these artifacts:"
-          ls -R /tmp/ucm/**/ucm-*.{zip,tar.gz}
-
-          gh release create "release/${{inputs.version}}" \
-            --repo unisonweb/unison \
-            --target "${{github.sha}}" \
-            --generate-notes \
-            --notes-start-tag "${prev_tag}" \
-            \
-            /tmp/ucm/**/ucm-*.{zip,tar.gz}
-
+          ls -lah ./tmp/downloads
+          mkdir -p ./tmp/ucm
+          tar -xvf ./tmp/downloads/ucm-*.tar.gz -C ./tmp/ucm
+          ls -lah ./tmp/ucm
 
       # Configure Docker's builder,
       # This seems necessary to support docker cache layers.
@@ -87,12 +77,17 @@ jobs:
         uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
         with:
           images: ${{ env.container_registry }}/${{ env.docker_image_name }}
+          flavor: |
+            # We tag latest manually below.
+            latest=false
           tags: |
             type=schedule
-            type=ref,event=branch
+            type=raw,value=v0.5.19,enable=true
             type=ref,event=tag
-            type=ref,event=pr
             type=sha,format=long
+            # set latest tag for pushes to trunk
+            type=raw,value=latest,enable=true
+            type=raw,value=nightly,enable=false
 
 
       # This step uses the `docker/build-push-action` action to build the image, based on your repository's `Dockerfile`. If the build succeeds, it pushes the image to GitHub Packages.
@@ -102,15 +97,11 @@ jobs:
         id: push
         uses: docker/build-push-action@2cdde995de11925a030ce8070c3d77a52ffcf1c0 # v5.3.0
         with:
-          context: ./docker/
-          push: ${{ env.is_published_build }}
+          context: ./
+          platforms: linux/amd64,linux/arm64
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Use github actions cache for docker image layers
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            SHARE_COMMIT=${{ github.sha }}
-          # Save image locally for use in tests even if we don't push it.
-          outputs: type=docker,dest=/tmp/share-docker-image.tar # export docker image
-
