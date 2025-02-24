@@ -10,8 +10,6 @@ import Unison.LabeledDependency qualified as LD
 import Unison.Name (Name)
 import Unison.Name qualified as Name
 import Unison.NameSegment (NameSegment)
-import Unison.NameSegment.Internal (NameSegment(NameSegment))
-import Data.List.NonEmpty (NonEmpty(..))
 import Unison.Prelude
 import Unison.Reference (Reference)
 import Unison.Referent (Referent)
