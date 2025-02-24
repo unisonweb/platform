@@ -5,6 +5,7 @@
 
 module Unison.CommandLine.OutputMessages where
 
+import Control.Arrow ((***))
 import Control.Lens hiding (at)
 import Control.Monad.State.Strict qualified as State
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -128,6 +129,7 @@ import Unison.Syntax.Name qualified as Name (toText)
 import Unison.Syntax.NamePrinter
   ( prettyHashQualified,
     prettyHashQualified',
+    prettyHashQualifiedFull,
     prettyName,
     prettyNamedReference,
     prettyNamedReferent,
@@ -1445,9 +1447,9 @@ notifyUser dir = \case
         "dependents"
         lds
         (map (HQ'.toHQ . fst) defns.types)
-        (map (HQ'.toHQ . fst) defns.terms)
+        (map (HQ'.toHQ *** HQ'.toHQ) defns.terms)
   ListDependencies ppe lds types terms ->
-    pure $ listDependentsOrDependencies ppe "Dependencies" "dependencies" lds types terms
+    pure $ listDependentsOrDependencies ppe "Dependencies" "dependencies" lds types (map (\x -> (x, x)) terms)
   ListStructuredFind terms ->
     pure $ listFind False Nothing terms
   ListTextFind True terms ->
@@ -3771,15 +3773,15 @@ listDependentsOrDependencies ::
   Text ->
   Set LabeledDependency ->
   [HQ.HashQualified Name] ->
-  [HQ.HashQualified Name] ->
+  [(HQ.HashQualified Name, HQ.HashQualified Name)] ->
   Pretty
 listDependentsOrDependencies ppe labelStart label lds types terms =
-  if null (types <> terms)
+  if null types && null terms
     then prettyLabeledDependencies ppe lds <> " has no " <> P.text label <> "."
     else P.sepNonEmpty "\n\n" [hdr, typesOut, termsOut, tip msg]
   where
     msg = "Try " <> IP.makeExample IP.view args <> " to see the source of any numbered item in the above list."
-    args = [P.shown (length (types <> terms))]
+    args = [P.shown (length types + length terms)]
     hdr = P.text labelStart <> " of: " <> prettyLabeledDependencies ppe lds
     typesOut =
       if null types
@@ -3797,7 +3799,7 @@ listDependentsOrDependencies ppe labelStart label lds types terms =
           P.lines
             [ P.indentN 2 $ P.bold "Terms:",
               "",
-              P.indentN 2 . P.numberedListFrom (length types) $ c . prettyHashQualified <$> terms
+              P.indentN 2 . P.numberedListFrom (length types) $ prettyHashQualifiedFull <$> terms
             ]
     c = P.syntaxToColor
 

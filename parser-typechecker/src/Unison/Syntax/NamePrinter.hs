@@ -1,11 +1,17 @@
 module Unison.Syntax.NamePrinter where
 
+import Data.Foldable qualified as Foldable
+import Data.List.NonEmpty qualified as List.Nonempty
 import Data.Text qualified as Text
 import Unison.HashQualified qualified as HQ
 import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.LabeledDependency (LabeledDependency)
 import Unison.LabeledDependency qualified as LD
 import Unison.Name (Name)
+import Unison.Name qualified as Name
+import Unison.NameSegment (NameSegment)
+import Unison.NameSegment.Internal (NameSegment(NameSegment))
+import Data.List.NonEmpty (NonEmpty(..))
 import Unison.Prelude
 import Unison.Reference (Reference)
 import Unison.Referent (Referent)
@@ -24,6 +30,33 @@ prettyName = PP.text . Name.toText
 
 prettyHashQualified :: HQ.HashQualified Name -> Pretty SyntaxText
 prettyHashQualified hq = styleHashQualified' id (fmt $ S.HashQualifier hq) hq
+
+-- | Given (full, suffixified), render a full hash-qualified name, but with a grayed-out prefix that doesn't contribute
+-- to the uniqueness of the suffix.
+--
+-- For example, if name "foo.bar.baz" has unique suffix "baz", then "foo.bar." will be grayed out.
+prettyHashQualifiedFull :: (HQ.HashQualified Name, HQ.HashQualified Name) -> Pretty PP.ColorText
+prettyHashQualifiedFull (hqFull, hqSuffixified) =
+  case (HQ.toName hqFull, HQ.toName hqSuffixified) of
+    (Just full, Just suffixified)
+      | Just prefix <- prefixify full suffixified ->
+          PP.hiBlack (PP.syntaxToColor (prettyHashQualified (HQ.NameOnly prefix)) <> ".")
+            <> PP.syntaxToColor (prettyHashQualified hqSuffixified)
+    _ -> PP.syntaxToColor (prettyHashQualified hqFull)
+  where
+    prefixify :: Name -> Name -> Maybe Name
+    prefixify full suffixified =
+      go (f full) (f suffixified)
+      where
+        f :: Name -> [NameSegment]
+        f = Foldable.toList . Name.reverseSegments
+
+        -- go ["baz", "bar", "foo"] ["baz"] = Just "foo.bar"
+        go :: [NameSegment] -> [NameSegment] -> Maybe Name
+        go xs [] = Name.fromReverseSegments <$> List.Nonempty.nonEmpty xs
+        go (_ : xs) (_ : ys) = go xs ys
+        -- Impossible, but eh, just return Nothing (could call bug instead)
+        go _ _ = Nothing
 
 prettyHashQualified' :: HQ'.HashQualified Name -> Pretty SyntaxText
 prettyHashQualified' = prettyHashQualified . HQ'.toHQ
