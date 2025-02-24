@@ -72,9 +72,12 @@ import Unison.Var qualified as Var
 
 type SyntaxText = S.SyntaxText' Reference
 
+goPretty :: (Var v) => PrettyPrintEnv -> Term2 v at ap v a -> Pretty SyntaxText
+goPretty ppe tm = runPretty (avoidShadowing tm ppe) $ pretty0 emptyAc $ printAnnotate ppe tm
+
 pretty :: (HasCallStack, Var v) => PrettyPrintEnv -> Term v a -> Pretty ColorText
 pretty ppe tm =
-  PP.syntaxToColor . runPretty (avoidShadowing tm ppe) $ pretty0 emptyAc $ printAnnotate ppe tm
+  PP.syntaxToColor $ goPretty ppe tm
 
 prettyBlock :: (Var v) => Bool -> PrettyPrintEnv -> Term v a -> Pretty ColorText
 prettyBlock elideUnit ppe = PP.syntaxToColor . prettyBlock' elideUnit ppe
@@ -85,9 +88,9 @@ prettyBlock' elideUnit ppe tm =
 
 pretty' :: (HasCallStack, Var v) => Maybe Width -> PrettyPrintEnv -> Term v a -> ColorText
 pretty' (Just width) n t =
-  PP.render width . PP.syntaxToColor . runPretty (avoidShadowing t n) $ pretty0 emptyAc (printAnnotate n t)
+  PP.render width . PP.syntaxToColor $ goPretty n t
 pretty' Nothing n t =
-  PP.renderUnbroken . PP.syntaxToColor . runPretty (avoidShadowing t n) $ pretty0 emptyAc (printAnnotate n t)
+  PP.renderUnbroken . PP.syntaxToColor $ goPretty n t
 
 -- Information about the context in which a term appears, which affects how the
 -- term should be rendered.
@@ -633,6 +636,7 @@ pretty0
                     pbs <- printCase im doc branches
                     pure . paren (p >= InfixOp Lowest) $
                       PP.group (fmt S.ControlKeyword "cases") `PP.hang` pbs
+                  (LamNamed' v (App' f (Var' v')), _) | v == v' && Var.name v == "_eta" -> pretty0 a f
                   LamsNamedPred' vs body -> do
                     prettyBody <- pretty0 (ac Control Normal im doc) body
                     let hang = case body of
