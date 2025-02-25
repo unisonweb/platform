@@ -18,7 +18,7 @@ import Data.Void (Void)
 import Data.Word (Word64)
 import GHC.Exts (IsList (..))
 import Unison.Runtime.ANF (PackedTag (..))
-import Unison.Runtime.Array (PrimArray)
+import Unison.Runtime.Array (Array)
 import Unison.Runtime.Foreign.Function.Type (ForeignFunc)
 import Unison.Runtime.MCode hiding (MatchT)
 import Unison.Runtime.Serialize
@@ -151,10 +151,18 @@ getSection =
       RMatch <$> gInt <*> getSection <*> getEnumMap gWord getBranch
 
 data InstrT
-  = UPrim1T
-  | UPrim2T
-  | BPrim1T
-  | BPrim2T
+  = Prim1T
+  | PrimXXT
+  | PrimIXT
+  | PrimXIT
+  | PrimDXT
+  | PrimXDT
+  | PrimTXT
+  | PrimXTT
+  | PrimMXT
+  | PrimXMT
+  | PrimYXT
+  | PrimXYT
   | ForeignCallT
   | SetDynT
   | CaptureT
@@ -172,54 +180,88 @@ data InstrT
   | SandboxingFailureT
 
 instance Tag InstrT where
-  tag2word UPrim1T = 0
-  tag2word UPrim2T = 1
-  tag2word BPrim1T = 2
-  tag2word BPrim2T = 3
-  tag2word ForeignCallT = 4
-  tag2word SetDynT = 5
-  tag2word CaptureT = 6
-  tag2word NameT = 7
-  tag2word InfoT = 8
-  tag2word PackT = 9
-  tag2word LitT = 10
-  tag2word PrintT = 11
-  tag2word ResetT = 12
-  tag2word ForkT = 13
-  tag2word AtomicallyT = 14
-  tag2word SeqT = 15
-  tag2word TryForceT = 16
-  tag2word RefCAST = 17
-  tag2word SandboxingFailureT = 18
+  tag2word Prim1T = 0
+  tag2word PrimXXT = 1
+  tag2word PrimIXT = 2
+  tag2word PrimXIT = 3
+  tag2word PrimDXT = 4
+  tag2word PrimXDT = 5
+  tag2word PrimTXT = 6
+  tag2word PrimXTT = 7
+  tag2word PrimMXT = 8
+  tag2word PrimXMT = 9
+  tag2word PrimYXT = 10
+  tag2word PrimXYT = 11
+  tag2word ForeignCallT = 12
+  tag2word SetDynT = 13
+  tag2word CaptureT = 14
+  tag2word NameT = 15
+  tag2word InfoT = 16
+  tag2word PackT = 17
+  tag2word LitT = 18
+  tag2word PrintT = 19
+  tag2word ResetT = 20
+  tag2word ForkT = 21
+  tag2word AtomicallyT = 22
+  tag2word SeqT = 23
+  tag2word TryForceT = 24
+  tag2word RefCAST = 25
+  tag2word SandboxingFailureT = 26
 
-  word2tag 0 = pure UPrim1T
-  word2tag 1 = pure UPrim2T
-  word2tag 2 = pure BPrim1T
-  word2tag 3 = pure BPrim2T
-  word2tag 4 = pure ForeignCallT
-  word2tag 5 = pure SetDynT
-  word2tag 6 = pure CaptureT
-  word2tag 7 = pure NameT
-  word2tag 8 = pure InfoT
-  word2tag 9 = pure PackT
-  word2tag 10 = pure LitT
-  word2tag 11 = pure PrintT
-  word2tag 12 = pure ResetT
-  word2tag 13 = pure ForkT
-  word2tag 14 = pure AtomicallyT
-  word2tag 15 = pure SeqT
-  word2tag 16 = pure TryForceT
-  word2tag 17 = pure RefCAST
-  word2tag 18 = pure SandboxingFailureT
+  word2tag 0 = pure Prim1T
+  word2tag 1 = pure PrimXXT
+  word2tag 2 = pure PrimIXT
+  word2tag 3 = pure PrimXIT
+  word2tag 4 = pure PrimDXT
+  word2tag 5 = pure PrimXDT
+  word2tag 6 = pure PrimTXT
+  word2tag 7 = pure PrimXTT
+  word2tag 8 = pure PrimMXT
+  word2tag 9 = pure PrimXMT
+  word2tag 10 = pure PrimYXT
+  word2tag 11 = pure PrimXYT
+  word2tag 12 = pure ForeignCallT
+  word2tag 13 = pure SetDynT
+  word2tag 14 = pure CaptureT
+  word2tag 15 = pure NameT
+  word2tag 16 = pure InfoT
+  word2tag 17 = pure PackT
+  word2tag 18 = pure LitT
+  word2tag 19 = pure PrintT
+  word2tag 20 = pure ResetT
+  word2tag 21 = pure ForkT
+  word2tag 22 = pure AtomicallyT
+  word2tag 23 = pure SeqT
+  word2tag 24 = pure TryForceT
+  word2tag 25 = pure RefCAST
+  word2tag 26 = pure SandboxingFailureT
   word2tag n = unknownTag "InstrT" n
 
 putInstr :: (MonadPut m) => GInstr cix -> m ()
 putInstr = \case
-  (UPrim1 up i) -> putTag UPrim1T *> putTag up *> pInt i
-  (UPrim2 up i j) -> putTag UPrim2T *> putTag up *> pInt i *> pInt j
-  (BPrim1 bp i) -> putTag BPrim1T *> putTag bp *> pInt i
-  (BPrim2 bp i j) -> putTag BPrim2T *> putTag bp *> pInt i *> pInt j
-  (RefCAS i j k) -> putTag RefCAST *> pInt i *> pInt j *> pInt k
+  (Prim1 p i) -> putTag Prim1T *> putTag p *> pInt i
+  (PrimXX bp i j) -> putTag PrimXXT *> putTag bp *> pInt i *> pInt j
+  (PrimIX bp tt i j) ->
+    putTag PrimIXT *> putTag bp *> putUTypeTag tt *> pInt i *> pInt j
+  (PrimXI bp i tt j) ->
+    putTag PrimXIT *> putTag bp *> pInt i *> putUTypeTag tt *> pInt j
+  (PrimDX bp i j) ->
+    putTag PrimDXT *> putTag bp *> putFloat i *> pInt j
+  (PrimXD bp i j) ->
+    putTag PrimXDT *> putTag bp *> pInt i *> putFloat j
+  (PrimTX bp i j) ->
+    putTag PrimMXT *> putTag bp *> putUText i *> pInt j
+  (PrimXT bp i j) ->
+    putTag PrimXMT *> putTag bp *> pInt i *> putUText j
+  (PrimMX bp i j) ->
+    putTag PrimMXT *> putTag bp *> putReferent i *> pInt j
+  (PrimXM bp i j) ->
+    putTag PrimXMT *> putTag bp *> pInt i *> putReferent j
+  (PrimYX bp i j) ->
+    putTag PrimYXT *> putTag bp *> putReference i *> pInt j
+  (PrimXY bp i j) ->
+    putTag PrimXYT *> putTag bp *> pInt i *> putReference j
+  (RefCAS i j k) -> putTag RefCAST *> pInt i *> pInt j *> putArg k
   (ForeignCall b ff a) -> putTag ForeignCallT *> serialize b *> putMForeignFunc ff *> putArgs a
   (SetDyn w i) -> putTag SetDynT *> pWord w *> pInt i
   (Capture w) -> putTag CaptureT *> pWord w
@@ -240,11 +282,19 @@ putInstr = \case
 getInstr :: (MonadGet m) => m Instr
 getInstr =
   getTag >>= \case
-    UPrim1T -> UPrim1 <$> getTag <*> gInt
-    UPrim2T -> UPrim2 <$> getTag <*> gInt <*> gInt
-    BPrim1T -> BPrim1 <$> getTag <*> gInt
-    BPrim2T -> BPrim2 <$> getTag <*> gInt <*> gInt
-    RefCAST -> RefCAS <$> gInt <*> gInt <*> gInt
+    Prim1T -> Prim1 <$> getTag <*> gInt
+    PrimXXT -> PrimXX <$> getTag <*> gInt <*> gInt
+    PrimIXT -> PrimIX <$> getTag <*> getUTypeTag <*> gInt <*> gInt
+    PrimXIT -> PrimXI <$> getTag <*> gInt <*> getUTypeTag <*> gInt
+    PrimDXT -> PrimDX <$> getTag <*> getFloat <*> gInt
+    PrimXDT -> PrimXD <$> getTag <*> gInt <*> getFloat
+    PrimTXT -> PrimTX <$> getTag <*> getUText <*> gInt
+    PrimXTT -> PrimXT <$> getTag <*> gInt <*> getUText
+    PrimMXT -> PrimMX <$> getTag <*> getReferent <*> gInt
+    PrimXMT -> PrimXM <$> getTag <*> gInt <*> getReferent
+    PrimYXT -> PrimYX <$> getTag <*> getReference <*> gInt
+    PrimXYT -> PrimXY <$> getTag <*> gInt <*> getReference
+    RefCAST -> RefCAS <$> gInt <*> gInt <*> getArg
     ForeignCallT -> ForeignCall <$> deserialize <*> getMForeignFunc <*> getArgs
     SetDynT -> SetDyn <$> gWord <*> gInt
     CaptureT -> Capture <$> gWord
@@ -284,22 +334,41 @@ instance Tag ArgsT where
   word2tag 5 = pure ArgVT
   word2tag n = unknownTag "ArgsT" n
 
+data ArgT = MLitT | IxT
+
+instance Tag ArgT where
+  tag2word MLitT = 0
+  tag2word IxT = 1
+
+  word2tag 0 = pure MLitT
+  word2tag 1 = pure IxT
+  word2tag n = unknownTag "ArgT" n
+
+putArg :: (MonadPut m) => Arg -> m ()
+putArg (MLit l) = putTag MLitT *> putLit l
+putArg (Ix i) = putTag IxT *> pInt i
+
+getArg :: (MonadGet m) => m Arg
+getArg = getTag >>= \case
+  MLitT -> MLit <$> getLit
+  IxT -> Ix <$> gInt
+
 putArgs :: (MonadPut m) => Args -> m ()
 putArgs ZArgs = putTag ZArgsT
-putArgs (VArg1 i) = putTag Arg1T *> pInt i
-putArgs (VArg2 i j) = putTag Arg2T *> pInt i *> pInt j
+putArgs (VArg1 i) = putTag Arg1T *> putArg i
+putArgs (VArg2 i j) = putTag Arg2T *> putArg i *> putArg j
 putArgs (VArgR i j) = putTag ArgRT *> pInt i *> pInt j
-putArgs (VArgN pa) = putTag ArgNT *> putIntArr pa
+putArgs (VArgN pa) = putTag ArgNT *> putArgArr pa
 putArgs (VArgV i) = putTag ArgVT *> pInt i
 
 getArgs :: (MonadGet m) => m Args
 getArgs =
   getTag >>= \case
     ZArgsT -> pure ZArgs
-    Arg1T -> VArg1 <$> gInt
-    Arg2T -> VArg2 <$> gInt <*> gInt
+    Arg1T -> VArg1 <$> getArg
+    Arg2T -> VArg2 <$> getArg <*> getArg
     ArgRT -> VArgR <$> gInt <*> gInt
-    ArgNT -> VArgN <$> getIntArr
+    ArgNT -> VArgN <$> getArgArr
     ArgVT -> VArgV <$> gInt
 
 data RefT = StkT | EnvT | DynT
@@ -354,12 +423,18 @@ instance Tag MLitT where
   word2tag 6 = pure MYT
   word2tag n = unknownTag "MLitT" n
 
+getUText :: (MonadGet m) => m Util.Text.Text
+getUText = Util.Text.fromText <$> getText
+
+putUText :: (MonadPut m) => Util.Text.Text -> m ()
+putUText = putText . Util.Text.toText
+
 putLit :: (MonadPut m) => MLit -> m ()
 putLit (MI i) = putTag MIT *> pInt i
 putLit (MN n) = putTag MNT *> pWord n
 putLit (MC c) = putTag MCT *> putChar c
 putLit (MD d) = putTag MDT *> putFloat d
-putLit (MT t) = putTag MTT *> putText (Util.Text.toText t)
+putLit (MT t) = putTag MTT *> putUText t
 putLit (MM r) = putTag MMT *> putReferent r
 putLit (MY r) = putTag MYT *> putReference r
 
@@ -370,7 +445,7 @@ getLit =
     MNT -> MN <$> gWord
     MCT -> MC <$> getChar
     MDT -> MD <$> getFloat
-    MTT -> MT . Util.Text.fromText <$> getText
+    MTT -> MT <$> getUText
     MMT -> MM <$> getReferent
     MYT -> MY <$> getReference
 
@@ -401,7 +476,7 @@ putBranch (Test2 a sa b sb d) =
 putBranch (TestW d m) =
   putTag TestWT *> putSection d *> putEnumMap pWord putSection m
 putBranch (TestT d m) =
-  putTag TestTT *> putSection d *> putMap (putText . Util.Text.toText) putSection m
+  putTag TestTT *> putSection d *> putMap putUText putSection m
 
 getBranch :: (MonadGet m) => m Branch
 getBranch =
@@ -429,8 +504,14 @@ gWord = unVarInt <$> deserialize
 pWord :: (MonadPut m) => Word64 -> m ()
 pWord w = serialize (VarInt w)
 
-putIntArr :: (MonadPut m) => PrimArray Int -> m ()
-putIntArr pa = putFoldable pInt $ toList pa
+putArgArr :: (MonadPut m) => Array Arg -> m ()
+putArgArr a = putFoldable putArg a
 
-getIntArr :: (MonadGet m) => m (PrimArray Int)
-getIntArr = fromList <$> getList gInt
+getArgArr :: (MonadGet m) => m (Array Arg)
+getArgArr = fromList <$> getList getArg
+
+putUTypeTag :: (MonadPut m) => UnboxedTypeTag -> m ()
+putUTypeTag = pInt . unboxedTypeTagToInt
+
+getUTypeTag :: (MonadGet m) => m UnboxedTypeTag
+getUTypeTag = unboxedTypeTagFromInt <$> gInt

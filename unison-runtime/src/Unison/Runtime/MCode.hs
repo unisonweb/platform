@@ -9,6 +9,7 @@
 module Unison.Runtime.MCode
   ( Args' (..),
     Args (..),
+    Arg (..),
     RefNums (..),
     MLit (..),
     GInstr (..),
@@ -28,20 +29,21 @@ module Unison.Runtime.MCode
     GRef (..),
     RRef,
     Ref,
-    UPrim1 (..),
-    UPrim2 (..),
-    BPrim1 (..),
-    BPrim2 (..),
+    Prim1 (..),
+    Prim2 (..),
     GBranch (..),
     Branch,
     RBranch,
+    UnboxedTypeTag (..),
+    unboxedTypeTagToInt,
+    unboxedTypeTagFromInt,
     emitCombs,
     emitComb,
     resolveCombs,
     sanitizeCombsOfForeignFuncs,
     absurdCombs,
     emptyRNs,
-    argsToLists,
+    argsToList,
     countArgs,
     combRef,
     combDeps,
@@ -54,33 +56,36 @@ where
 import Data.Bifoldable (Bifoldable (..))
 import Data.Bifunctor (Bifunctor, bimap, first)
 import Data.Bitraversable (Bitraversable (..), bifoldMapDefault, bimapDefault)
-import Data.Bits (shiftL, shiftR, (.|.))
+import Data.Bits (shiftL, shiftR, (.|.), (.&.), complement, countLeadingZeros, countTrailingZeros, xor, popCount)
+import Data.Char (chr, ord)
 import Data.Coerce
+import Data.Foldable as Foldable (toList)
 import Data.Functor ((<&>))
 import Data.Map.Strict qualified as M
-import Data.Primitive.PrimArray
-import Data.Primitive.PrimArray qualified as PA
+import Data.Primitive.Array (Array)
+import Data.Primitive.Array qualified as PA
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Void (Void, absurd)
 import Data.Word (Word16, Word64)
 import GHC.Stack (HasCallStack)
+import Text.Read (readMaybe)
 import Unison.ABT.Normalized (pattern TAbss)
+import Unison.Builtin.Decls qualified as Ty
 import Unison.Reference (Reference, showShort)
 import Unison.Referent (Referent)
+import Unison.Referent qualified as RN
 import Unison.Runtime.ANF
   ( ANormal,
+    AArg (..),
     Branched (..),
-    CTag,
     Direction (..),
     Func (..),
     Mem (..),
-    PackedTag (..),
     SuperGroup (..),
     SuperNormal (..),
     internalBug,
-    packTags,
     pattern TApp,
     pattern TBLit,
     pattern TFOp,
@@ -96,8 +101,13 @@ import Unison.Runtime.ANF
   )
 import Unison.Runtime.ANF qualified as ANF
 import Unison.Runtime.Foreign.Function.Type (ForeignFunc (..), foreignFuncBuiltinName)
+import Unison.Runtime.TypeTags
+import Unison.Runtime.Util
+import Unison.ShortHash qualified as SH
+import Unison.Type qualified as Ty
 import Unison.Util.EnumContainers as EC
 import Unison.Util.Text (Text)
+import Unison.Util.Text qualified as UText
 import Unison.Var (Var)
 
 -- This outlines some of the ideas/features in this core
@@ -260,45 +270,48 @@ import Unison.Var (Var)
 data Sandboxed = Tracked | Untracked
   deriving (Show, Eq, Ord)
 
+data Arg = MLit !MLit | Ix !Int
+  deriving (Eq, Ord, Show)
+
 data Args'
-  = Arg1 !Int
-  | Arg2 !Int !Int
+  = Arg1 !Arg
+  | Arg2 !Arg !Arg
   | -- frame index of each argument to the function
-    ArgN {-# UNPACK #-} !(PrimArray Int)
+    ArgN {-# UNPACK #-} !(Array Arg)
   | ArgR !Int !Int
   deriving (Show)
 
 data Args
   = ZArgs
-  | VArg1 !Int
-  | VArg2 !Int !Int
+  | VArg1 !Arg
+  | VArg2 !Arg !Arg
   | VArgR !Int !Int
-  | VArgN {-# UNPACK #-} !(PrimArray Int)
+  | VArgN {-# UNPACK #-} !(Array Arg)
   | VArgV !Int
   deriving (Show, Eq, Ord)
 
-argsToLists :: Args -> [Int]
-argsToLists = \case
+argsToList :: Args -> [Arg]
+argsToList = \case
   ZArgs -> []
   VArg1 i -> [i]
   VArg2 i j -> [i, j]
-  VArgR i l -> take l [i ..]
-  VArgN us -> primArrayToList us
+  VArgR i l -> Ix <$> take l [i ..]
+  VArgN us -> toList us
   VArgV _ -> internalBug "argsToLists: DArgV"
-{-# INLINEABLE argsToLists #-}
+{-# INLINEABLE argsToList #-}
 
 countArgs :: Args -> Int
 countArgs ZArgs = 0
 countArgs (VArg1 {}) = 1
 countArgs (VArg2 {}) = 2
 countArgs (VArgR _ l) = l
-countArgs (VArgN us) = sizeofPrimArray us
+countArgs (VArgN us) = length us
 countArgs (VArgV {}) = internalBug "countArgs: DArgV"
 {-# INLINEABLE countArgs #-}
 
-data UPrim1
-  = -- integral
-    DECI -- decrement
+data Prim1
+  -- integral
+  = DECI -- decrement
   | DECN
   | INCI -- increment
   | INCN
@@ -335,64 +348,8 @@ data UPrim1
   | TRNC -- truncate
   -- Bools
   | NOTB -- not
-  deriving (Show, Eq, Ord, Enum, Bounded)
-
-data UPrim2
-  = -- integral
-    ADDI -- +
-  | ADDN
-  | SUBI -- -
-  | SUBN
-  | MULI
-  | MULN
-  | DIVI -- /
-  | DIVN
-  | MODI -- mod
-  | MODN
-  | SHLI -- shiftl
-  | SHLN
-  | SHRI -- shiftr
-  | SHRN
-  | POWI -- pow
-  | POWN
-  | EQLI -- ==
-  | EQLN
-  | NEQI -- !=
-  | NEQN
-  | LEQI -- <=
-  | LEQN
-  | LESI -- <
-  | LESN
-  | ANDN -- and
-  | ANDI
-  | IORN -- or
-  | IORI
-  | XORN -- xor
-  | XORI
-  | -- floating
-    EQLF -- ==
-  | NEQF -- !=
-  | LEQF -- <=
-  | LESF -- <
-  | ADDF -- +
-  | SUBF -- -
-  | MULF
-  | DIVF -- /
-  | ATN2 -- atan2
-  | POWF -- pow
-  | LOGB -- logBase
-  | MAXF -- max
-  | MINF -- min
-  | CAST -- unboxed runtime type cast (int to nat, etc.)
-  | DRPN -- dropn
-  -- Bools
-  | ANDB -- and
-  | IORB -- or
-  deriving (Show, Eq, Ord, Enum, Bounded)
-
-data BPrim1
-  = -- text
-    SIZT -- size
+  -- text
+  | SIZT -- size
   | USNC -- unsnoc
   | UCNS -- uncons
   | ITOT -- intToText
@@ -429,43 +386,106 @@ data BPrim1
   | TIKR
   deriving (Show, Eq, Ord, Enum, Bounded)
 
-data BPrim2
-  = -- universal
-    EQLU -- ==
-  | CMPU -- compare
-  | LEQU -- <=
-  | LESU -- <
+
+-- Binary primops
+data Prim2
+  -- integers
+  = ADDI -- +
+  | SUBI -- -
+  | MULI -- *
+  | DIVI -- /
+  | MODI -- mod
+  | EQLI -- ==
+  | NEQI -- !=
+  | LEQI -- <=
+  | LESI -- <
+  | ANDI -- and
+  | IORI -- or
+  | XORI -- xor
+
+  | SHLI -- shiftl
+  | SHRI -- shiftr
+  | POWI -- ^
+
+  -- naturals
+  | ADDN -- +
+  | SUBN -- -
+  | MULN -- *
+  | DIVN -- /
+  | MODN -- mod
+  | SHLN -- shiftl
+  | SHRN -- shiftr
+  | POWN -- ^
+  | EQLN -- ==
+  | NEQN -- !=
+  | LEQN -- <=
+  | LESN -- <
+  | ANDN -- and
+  | IORN -- or
+  | XORN -- xor
+  | DRPN -- saturating -
+
+  -- floats
+  | EQLF -- ==
+  | NEQF -- !=
+  | LEQF -- <=
+  | LESF -- <
+  | ADDF -- +
+  | SUBF -- -
+  | MULF -- *
+  | DIVF -- /
+  | ATN2 -- atan2
+  | POWF -- pow
+  | LOGB -- logBase
+  | MAXF -- max
+  | MINF -- min
+
   -- text
   | DRPT -- drop
-  | CATT -- append
   | TAKT -- take
+  | CATT -- append
   | IXOT -- indexof
   | EQLT -- ==
   | LEQT -- <=
   | LEST -- <
-  -- sequence
+
+  -- universal
+  | EQLU -- ==
+  | CMPU -- compare
+  | LEQU -- <=
+  | LESU -- <
+
+  | THRO -- throw
+  | TRCE -- trace
+
+  -- sequences
   | DRPS -- drop
-  | CATS -- append
   | TAKS -- take
   | CONS -- cons
   | SNOC -- snoc
-  | IDXS -- index
-  | SPLL -- splitLeft
-  | SPLR -- splitRight
+  | IDXS -- index/at
+  | SPLL -- split from left
+  | SPLR -- split from right
+  | CATS -- append
+
   -- bytes
   | TAKB -- take
   | DRPB -- drop
-  | IDXB -- index
+  | IDXB -- index/at
   | CATB -- append
-  | IXOB -- indexof
-  -- general
-  | THRO -- throw
-  | TRCE -- trace
-  -- code
-  | SDBX -- sandbox
-  | SDBV -- sandbox Value
-  -- Refs
+  | IXOB -- index of
+
+  -- refs
   | REFW -- Ref.write
+
+  -- code
+  | SDBX -- reflection.validateSandboxed
+  | SDBV -- Value.validateSandboxed
+
+  | CAST
+
+  | ANDB -- &&
+  | IORB -- ||
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 data MLit
@@ -482,30 +502,86 @@ type Instr = GInstr CombIx
 
 type RInstr val = GInstr (RComb val)
 
+-- Don't re-order these, the ord instance affects Universal.compare
+data UnboxedTypeTag
+  = CharTag
+  | FloatTag
+  | IntTag
+  | NatTag
+  deriving stock (Show, Eq, Ord)
+
+unboxedTypeTagToInt :: UnboxedTypeTag -> Int
+unboxedTypeTagToInt = \case
+  CharTag -> 0
+  FloatTag -> 1
+  IntTag -> 2
+  NatTag -> 3
+
+unboxedTypeTagFromInt :: (HasCallStack) => Int -> UnboxedTypeTag
+unboxedTypeTagFromInt = \case
+  0 -> CharTag
+  1 -> FloatTag
+  2 -> IntTag
+  3 -> NatTag
+  _ -> error "intToUnboxedTypeTag: invalid tag"
+
 -- Instructions for manipulating the data stack in the main portion of
 -- a block
 data GInstr comb
-  = -- 1-argument unboxed primitive operations
-    UPrim1
-      !UPrim1 -- primitive instruction
-      !Int -- index of prim argument
-  | -- 2-argument unboxed primitive operations
-    UPrim2
-      !UPrim2 -- primitive instruction
-      !Int -- index of first prim argument
-      !Int -- index of second prim argument
-  | -- 1-argument primitive operations that may involve boxed values
-    BPrim1
-      !BPrim1
-      !Int
-  | -- 2-argument primitive operations that may involve boxed values
-    BPrim2
-      !BPrim2
-      !Int
-      !Int
+  -- 1-argument unboxed primitive operations
+  = Prim1
+      !Prim1 -- primitive instruction
+      !Int    -- argument
+  -- 2-argument unboxed primitive operations
+  | PrimXX
+      !Prim2 -- primitive instruction
+      !Int -- first argument index
+      !Int -- second argument index
+  | PrimIX
+      !Prim2
+      !UnboxedTypeTag -- type of literal; only sometimes used
+      !Int            -- literal value
+      !Int            -- second argument index
+  | PrimXI
+      !Prim2
+      !Int            -- first argument index
+      !UnboxedTypeTag -- type of literal; only sometimes used
+      !Int            -- literal int
+  | PrimDX
+      !Prim2
+      !Double -- literal double
+      !Int    -- second argument index
+  | PrimXD
+      !Prim2
+      !Int    -- first argument index
+      !Double -- literal double
+  | PrimTX
+      !Prim2
+      !Text -- literal text
+      !Int  -- second argument index
+  | PrimXT
+      !Prim2
+      !Int  -- first argument index
+      !Text -- literal text
+  | PrimMX
+      !Prim2
+      !Referent -- literal termlink
+      !Int      -- second argument index
+  | PrimXM
+      !Prim2
+      !Int      -- first argument index
+      !Referent -- literal termlink
+  | PrimYX
+      !Prim2
+      !Reference -- literal typelink
+      !Int       -- second argument index
+  | PrimXY
+      !Prim2
+      !Int       -- first argument index
+      !Reference -- literal typelink
   | -- Use a check-and-set ticket to update a reference
     -- (ref stack index, ticket stack index, new value stack index)
-    RefCAS !Int !Int !Int
+    RefCAS !Int !Int !Arg
   | -- Call out to a Haskell function.
     ForeignCall
       !Bool -- catch exceptions
@@ -804,6 +880,10 @@ ctxResolve ctx v = walk 0 ctx
       | v == x = Just (i, m)
       | otherwise = walk (i + 1) ctx
 
+argResolve :: (Var v) => Ctx v -> AArg v -> Maybe (Arg, Mem)
+argResolve _ (AALit l) = Just (MLit $ litToMLit l, BX)
+argResolve ctx (AAVar v) = first Ix <$> ctxResolve ctx v
+
 -- Add a sequence of variables and calling conventions to the context.
 pushCtx :: [(v, Mem)] -> Ctx v -> Ctx v
 pushCtx new old = foldr (uncurry Var) old new
@@ -999,7 +1079,8 @@ emitSection rns grpr grpn rec ctx (TName u (Right v) args bo)
               <$> emitSection rns grpr grpn rec (Var u BX ctx) bo
   | otherwise = emitSectionVErr v
 emitSection _ grpr grpn rec ctx (TVar v)
-  | Just (i, _) <- ctxResolve ctx v = countCtx ctx . Yield $ VArg1 i
+  | Just (i, _) <- ctxResolve ctx v =
+      countCtx ctx . Yield . VArg1 $ Ix i
   | Just j <- rctxResolve rec v =
       let cix = (CIx grpr grpn j)
        in countCtx ctx $ App False (Env cix cix) $ ZArgs
@@ -1024,7 +1105,7 @@ emitSection rns grpr grpn rec ctx (TApp f args) =
   emitClosures grpr grpn rec ctx args $ \ctx as ->
     countCtx ctx $ emitFunction rns grpr grpn rec ctx f as
 emitSection _ _ _ _ ctx (TLit l) =
-  c . countCtx ctx . Ins (emitLit l) . Yield $ VArg1 0
+  c . countCtx ctx . Ins (emitLit l) . Yield . VArg1 $ Ix 0
   where
     c
       | ANF.T {} <- l = addCount 1
@@ -1032,7 +1113,7 @@ emitSection _ _ _ _ ctx (TLit l) =
       | ANF.LY {} <- l = addCount 1
       | otherwise = addCount 1
 emitSection _ _ _ _ ctx (TBLit l) =
-  addCount 1 . countCtx ctx . Ins (emitLit l) . Yield $ VArg1 0
+  addCount 1 . countCtx ctx . Ins (emitLit l) . Yield . VArg1 $ Ix 0
 emitSection rns grpr grpn rec ctx (TMatch v bs)
   | Just (i, BX) <- ctxResolve ctx v,
     MatchData r cs df <- bs =
@@ -1145,7 +1226,7 @@ emitFunction rns _grpr _ _ _ (FComb r) as
 emitFunction rns _grpr _ _ _ (FCon r t) as =
   Ins (Pack r (packTags rt t) as)
     . Yield
-    $ VArg1 0
+    $ VArg1 (Ix 0)
   where
     rt = toEnum . fromIntegral $ dnum rns r
 emitFunction rns _grpr _ _ _ (FReq r e) as =
@@ -1154,7 +1235,7 @@ emitFunction rns _grpr _ _ _ (FReq r e) as =
   -- more than 2^16 types.
   Ins (Pack r (packTags rt e) as)
     . App True (Dyn a)
-    $ VArg1 0
+    $ VArg1 (Ix 0)
   where
     a = dnum rns r
     rt = toEnum . fromIntegral $ a
@@ -1324,74 +1405,74 @@ emitPOp ANF.ATN2 = emitP2 ATN2
 -- conversions
 emitPOp ANF.ITOF = emitP1 ITOF
 emitPOp ANF.NTOF = emitP1 NTOF
-emitPOp ANF.ITOT = emitBP1 ITOT
-emitPOp ANF.NTOT = emitBP1 NTOT
-emitPOp ANF.FTOT = emitBP1 FTOT
-emitPOp ANF.TTON = emitBP1 TTON
-emitPOp ANF.TTOI = emitBP1 TTOI
-emitPOp ANF.TTOF = emitBP1 TTOF
+emitPOp ANF.ITOT = emitP1 ITOT
+emitPOp ANF.NTOT = emitP1 NTOT
+emitPOp ANF.FTOT = emitP1 FTOT
+emitPOp ANF.TTON = emitP1 TTON
+emitPOp ANF.TTOI = emitP1 TTOI
+emitPOp ANF.TTOF = emitP1 TTOF
 emitPOp ANF.CAST = emitP2 CAST
 -- text
-emitPOp ANF.CATT = emitBP2 CATT
-emitPOp ANF.TAKT = emitBP2 TAKT
-emitPOp ANF.DRPT = emitBP2 DRPT
-emitPOp ANF.IXOT = emitBP2 IXOT
-emitPOp ANF.SIZT = emitBP1 SIZT
-emitPOp ANF.UCNS = emitBP1 UCNS
-emitPOp ANF.USNC = emitBP1 USNC
-emitPOp ANF.EQLT = emitBP2 EQLT
-emitPOp ANF.LEQT = emitBP2 LEQT
-emitPOp ANF.PAKT = emitBP1 PAKT
-emitPOp ANF.UPKT = emitBP1 UPKT
+emitPOp ANF.CATT = emitP2 CATT
+emitPOp ANF.TAKT = emitP2 TAKT
+emitPOp ANF.DRPT = emitP2 DRPT
+emitPOp ANF.IXOT = emitP2 IXOT
+emitPOp ANF.SIZT = emitP1 SIZT
+emitPOp ANF.UCNS = emitP1 UCNS
+emitPOp ANF.USNC = emitP1 USNC
+emitPOp ANF.EQLT = emitP2 EQLT
+emitPOp ANF.LEQT = emitP2 LEQT
+emitPOp ANF.PAKT = emitP1 PAKT
+emitPOp ANF.UPKT = emitP1 UPKT
 -- sequence
-emitPOp ANF.CATS = emitBP2 CATS
-emitPOp ANF.TAKS = emitBP2 TAKS
-emitPOp ANF.DRPS = emitBP2 DRPS
-emitPOp ANF.SIZS = emitBP1 SIZS
-emitPOp ANF.CONS = emitBP2 CONS
-emitPOp ANF.SNOC = emitBP2 SNOC
-emitPOp ANF.IDXS = emitBP2 IDXS
-emitPOp ANF.VWLS = emitBP1 VWLS
-emitPOp ANF.VWRS = emitBP1 VWRS
-emitPOp ANF.SPLL = emitBP2 SPLL
-emitPOp ANF.SPLR = emitBP2 SPLR
+emitPOp ANF.CATS = emitP2 CATS
+emitPOp ANF.TAKS = emitP2 TAKS
+emitPOp ANF.DRPS = emitP2 DRPS
+emitPOp ANF.SIZS = emitP1 SIZS
+emitPOp ANF.CONS = emitP2 CONS
+emitPOp ANF.SNOC = emitP2 SNOC
+emitPOp ANF.IDXS = emitP2 IDXS
+emitPOp ANF.VWLS = emitP1 VWLS
+emitPOp ANF.VWRS = emitP1 VWRS
+emitPOp ANF.SPLL = emitP2 SPLL
+emitPOp ANF.SPLR = emitP2 SPLR
 -- bytes
-emitPOp ANF.PAKB = emitBP1 PAKB
-emitPOp ANF.UPKB = emitBP1 UPKB
-emitPOp ANF.TAKB = emitBP2 TAKB
-emitPOp ANF.DRPB = emitBP2 DRPB
-emitPOp ANF.IXOB = emitBP2 IXOB
-emitPOp ANF.IDXB = emitBP2 IDXB
-emitPOp ANF.SIZB = emitBP1 SIZB
-emitPOp ANF.FLTB = emitBP1 FLTB
-emitPOp ANF.CATB = emitBP2 CATB
+emitPOp ANF.PAKB = emitP1 PAKB
+emitPOp ANF.UPKB = emitP1 UPKB
+emitPOp ANF.TAKB = emitP2 TAKB
+emitPOp ANF.DRPB = emitP2 DRPB
+emitPOp ANF.IXOB = emitP2 IXOB
+emitPOp ANF.IDXB = emitP2 IDXB
+emitPOp ANF.SIZB = emitP1 SIZB
+emitPOp ANF.FLTB = emitP1 FLTB
+emitPOp ANF.CATB = emitP2 CATB
 -- universal comparison
-emitPOp ANF.EQLU = emitBP2 EQLU
-emitPOp ANF.LEQU = emitBP2 LEQU
-emitPOp ANF.LESU = emitBP2 LESU
-emitPOp ANF.CMPU = emitBP2 CMPU
+emitPOp ANF.EQLU = emitP2 EQLU
+emitPOp ANF.LEQU = emitP2 LEQU
+emitPOp ANF.LESU = emitP2 LESU
+emitPOp ANF.CMPU = emitP2 CMPU
 -- code operations
-emitPOp ANF.MISS = emitBP1 MISS
-emitPOp ANF.CACH = emitBP1 CACH
-emitPOp ANF.LKUP = emitBP1 LKUP
-emitPOp ANF.TLTT = emitBP1 TLTT
-emitPOp ANF.CVLD = emitBP1 CVLD
-emitPOp ANF.LOAD = emitBP1 LOAD
-emitPOp ANF.VALU = emitBP1 VALU
-emitPOp ANF.SDBX = emitBP2 SDBX
-emitPOp ANF.SDBL = emitBP1 SDBL
-emitPOp ANF.SDBV = emitBP2 SDBV
+emitPOp ANF.MISS = emitP1 MISS
+emitPOp ANF.CACH = emitP1 CACH
+emitPOp ANF.LKUP = emitP1 LKUP
+emitPOp ANF.TLTT = emitP1 TLTT
+emitPOp ANF.CVLD = emitP1 CVLD
+emitPOp ANF.LOAD = emitP1 LOAD
+emitPOp ANF.VALU = emitP1 VALU
+emitPOp ANF.SDBX = emitP2 SDBX
+emitPOp ANF.SDBL = emitP1 SDBL
+emitPOp ANF.SDBV = emitP2 SDBV
 -- error call
-emitPOp ANF.EROR = emitBP2 THRO
-emitPOp ANF.TRCE = emitBP2 TRCE
-emitPOp ANF.DBTX = emitBP1 DBTX
+emitPOp ANF.EROR = emitP2 THRO
+emitPOp ANF.TRCE = emitP2 TRCE
+emitPOp ANF.DBTX = emitP1 DBTX
 -- Refs
-emitPOp ANF.REFN = emitBP1 REFN
-emitPOp ANF.REFR = emitBP1 REFR
-emitPOp ANF.REFW = emitBP2 REFW
+emitPOp ANF.REFN = emitP1 REFN
+emitPOp ANF.REFR = emitP1 REFR
+emitPOp ANF.REFW = emitP2 REFW
 emitPOp ANF.RCAS = refCAS
-emitPOp ANF.RRFC = emitBP1 RRFC
-emitPOp ANF.TIKR = emitBP1 TIKR
+emitPOp ANF.RRFC = emitP1 RRFC
+emitPOp ANF.TIKR = emitP1 TIKR
 -- non-prim translations
 emitPOp ANF.BLDS = Seq
 -- Bools
@@ -1399,20 +1480,20 @@ emitPOp ANF.NOTB = emitP1 NOTB
 emitPOp ANF.ANDB = emitP2 ANDB
 emitPOp ANF.IORB = emitP2 IORB
 emitPOp ANF.FORK = \case
-  VArg1 i -> Fork i
-  _ -> internalBug "fork takes exactly one boxed argument"
+  VArg1 (Ix i) -> Fork i
+  _ -> internalBug "fork takes exactly one argument index"
 emitPOp ANF.ATOM = \case
-  VArg1 i -> Atomically i
-  _ -> internalBug "atomically takes exactly one boxed argument"
+  VArg1 (Ix i) -> Atomically i
+  _ -> internalBug "atomically takes exactly one argument index"
 emitPOp ANF.PRNT = \case
-  VArg1 i -> Print i
-  _ -> internalBug "print takes exactly one boxed argument"
+  VArg1 (Ix i) -> Print i
+  _ -> internalBug "print takes exactly one argument index"
 emitPOp ANF.INFO = \case
   ZArgs -> Info "debug"
   _ -> internalBug "info takes no arguments"
 emitPOp ANF.TFRC = \case
-  VArg1 i -> TryForce i
-  _ -> internalBug "tryEval takes exactly one boxed argument"
+  VArg1 (Ix i) -> TryForce i
+  _ -> internalBug "tryEval takes exactly one argument index"
 
 -- handled in emitSection because Die is not an instruction
 
@@ -1425,36 +1506,40 @@ emitFOp fop = ForeignCall True fop
 
 -- Helper functions for packing the variable argument representation
 -- into the indexes stored in prim op instructions
-emitP1 :: UPrim1 -> Args -> Instr
-emitP1 p (VArg1 i) = UPrim1 p i
+emitP1 :: Prim1 -> Args -> Instr
+emitP1 p (VArg1 (MLit l)) = staticEval1 p l
+emitP1 p (VArg1 (Ix i)) = Prim1 p i
 emitP1 p a =
   internalBug $
     "wrong number of args for unary unboxed primop: "
       ++ show (p, a)
 
-emitP2 :: UPrim2 -> Args -> Instr
-emitP2 p (VArg2 i j) = UPrim2 p i j
+emitP2 :: Prim2 -> Args -> Instr
+emitP2 p (VArg2 (MLit l) (MLit r)) = staticEval2 p l r
+emitP2 p (VArg2 (MLit l) (Ix j)) = case l of
+  MD x -> PrimDX p x j
+  MI n -> PrimIX p IntTag n j
+  MN n -> PrimIX p NatTag (fromIntegral n) j
+  MC c -> PrimIX p CharTag (ord c) j
+  MT t -> PrimTX p t j
+  MM r -> PrimMX p r j
+  MY r -> PrimYX p r j
+emitP2 p (VArg2 (Ix i) (MLit l)) = case l of
+  MD x -> PrimXD p i x
+  MI n -> PrimXI p i IntTag n
+  MN n -> PrimXI p i NatTag (fromIntegral n)
+  MC c -> PrimXI p i CharTag (ord c)
+  MT t -> PrimXT p i t
+  MM r -> PrimXM p i r
+  MY r -> PrimXY p i r
+emitP2 p (VArg2 (Ix i) (Ix j)) = PrimXX p i j
 emitP2 p a =
   internalBug $
     "wrong number of args for binary unboxed primop: "
       ++ show (p, a)
 
-emitBP1 :: BPrim1 -> Args -> Instr
-emitBP1 p (VArg1 i) = BPrim1 p i
-emitBP1 p a =
-  internalBug $
-    "wrong number of args for unary boxed primop: "
-      ++ show (p, a)
-
-emitBP2 :: BPrim2 -> Args -> Instr
-emitBP2 p (VArg2 i j) = BPrim2 p i j
-emitBP2 p a =
-  internalBug $
-    "wrong number of args for binary boxed primop: "
-      ++ show (p, a)
-
 refCAS :: Args -> Instr
-refCAS (VArgN (primArrayToList -> [i, j, k])) = RefCAS i j k
+refCAS (VArgN (Foldable.toList -> [Ix i, Ix j, k])) = RefCAS i j k
 refCAS a =
   internalBug $
     "wrong number of args for refCAS: "
@@ -1591,14 +1676,15 @@ emitClosures ::
   Word64 ->
   RCtx v ->
   Ctx v ->
-  [v] ->
+  [AArg v] ->
   (Ctx v -> Args -> Emit Section) ->
   Emit Section
 emitClosures grpr grpn rec ctx args k =
   allocate ctx args $ \ctx -> k ctx $ emitArgs grpn ctx args
   where
     allocate ctx [] k = k ctx
-    allocate ctx (a : as) k
+    allocate ctx (AALit _ : as) k = allocate ctx as k
+    allocate ctx (AAVar a : as) k
       | Just _ <- ctxResolve ctx a = allocate ctx as k
       | Just n <- rctxResolve rec a =
           let cix = (CIx grpr grpn n)
@@ -1606,9 +1692,9 @@ emitClosures grpr grpn rec ctx args k =
       | otherwise =
           internalBug $ "emitClosures: unknown reference: " ++ show a ++ show grpr
 
-emitArgs :: (Var v) => Word64 -> Ctx v -> [v] -> Args
+emitArgs :: (Var v) => Word64 -> Ctx v -> [AArg v] -> Args
 emitArgs grpn ctx args
-  | Just l <- traverse (ctxResolve ctx) args = demuxArgs l
+  | Just l <- traverse (argResolve ctx) args = demuxArgs l
   | otherwise =
       internalBug $
         "emitArgs["
@@ -1619,12 +1705,12 @@ emitArgs grpn ctx args
 
 -- Turns a list of stack positions and calling conventions into the
 -- argument format expected in the machine code.
-demuxArgs :: [(Int, Mem)] -> Args
+demuxArgs :: [(Arg, Mem)] -> Args
 demuxArgs = \case
   [] -> ZArgs
   [(i, _)] -> VArg1 i
   [(i, _), (j, _)] -> VArg2 i j
-  args -> VArgN $ PA.primArrayFromList (fst <$> args)
+  args -> VArgN $ PA.arrayFromList (fst <$> args)
 
 combDeps :: GComb val comb -> [Word64]
 combDeps (Lam _ _ s) = sectionDeps s
@@ -1860,3 +1946,197 @@ sanitizeBranches sandboxedForeigns = \case
   Test2 i s j t d -> Test2 i (sanitizeSection sandboxedForeigns s) j (sanitizeSection sandboxedForeigns t) (sanitizeSection sandboxedForeigns d)
   TestW d m -> TestW (sanitizeSection sandboxedForeigns d) (fmap (sanitizeSection sandboxedForeigns) m)
   TestT d m -> TestT (sanitizeSection sandboxedForeigns d) (fmap (sanitizeSection sandboxedForeigns) m)
+
+-- static evaluation of unary primops to literals, to avoid having
+-- a literal arg case
+staticEval1 :: Prim1 -> MLit -> Instr
+staticEval1 DECI (MI i) = Lit . MI $ i-1
+staticEval1 DECN (MN n) = Lit . MN $ n-1
+staticEval1 INCI (MI i) = Lit . MI $ i+1
+staticEval1 INCN (MN n) = Lit . MN $ n+1
+staticEval1 NEGI (MI i) = Lit . MI $ -i
+staticEval1 SGNI (MI i) = Lit . MI $ signum i
+staticEval1 LZRO (MI n) = Lit . MN . fromIntegral $ countLeadingZeros n
+staticEval1 LZRO (MN n) = Lit . MN . fromIntegral $ countLeadingZeros n
+staticEval1 TZRO (MI n) = Lit . MN . fromIntegral $ countTrailingZeros n
+staticEval1 TZRO (MN n) = Lit . MN . fromIntegral $ countTrailingZeros n
+staticEval1 COMN (MN n) = Lit . MN $ complement n
+staticEval1 COMI (MI n) = Lit . MI $ complement n
+staticEval1 POPC (MI n) = Lit . MN . fromIntegral $ popCount n
+staticEval1 POPC (MN n) = Lit . MN . fromIntegral $ popCount n
+staticEval1 ABSF (MD d) = Lit . MD $ abs d
+staticEval1 EXPF (MD d) = Lit . MD $ exp d
+staticEval1 LOGF (MD d) = Lit . MD $ log d
+staticEval1 SQRT (MD d) = Lit . MD $ sqrt d
+staticEval1 COSF (MD d) = Lit . MD $ cos d
+staticEval1 ACOS (MD d) = Lit . MD $ acos d
+staticEval1 COSH (MD d) = Lit . MD $ cosh d
+staticEval1 ACSH (MD d) = Lit . MD $ acosh d
+staticEval1 SINF (MD d) = Lit . MD $ sin d
+staticEval1 ASIN (MD d) = Lit . MD $ asin d
+staticEval1 SINH (MD d) = Lit . MD $ sinh d
+staticEval1 ASNH (MD d) = Lit . MD $ asinh d
+staticEval1 TANF (MD d) = Lit . MD $ tan d
+staticEval1 ATAN (MD d) = Lit . MD $ atan d
+staticEval1 TANH (MD d) = Lit . MD $ tanh d
+staticEval1 ATNH (MD d) = Lit . MD $ atanh d
+staticEval1 ITOF (MI i) = Lit . MD $ intToDouble i
+staticEval1 NTOF (MN n) = Lit . MD . intToDouble $ fromIntegral n
+staticEval1 CEIL (MD d) = Lit . MI $ ceiling d
+staticEval1 FLOR (MD d) = Lit . MI $ floor d
+staticEval1 TRNF (MD d) = Lit . MI $ truncate d
+staticEval1 RNDF (MD d) = Lit . MI $ round d
+staticEval1 TRNC (MI i) = Lit . MN . fromIntegral $ max 0 i
+staticEval1 SIZT (MT t) = Lit . MN $ fromIntegral $ UText.size t
+staticEval1 ITOT (MI i) = Lit . MT . UText.pack $ show i
+staticEval1 NTOT (MN n) = Lit . MT . UText.pack $ show n
+staticEval1 FTOT (MD d) = Lit . MT . UText.pack $ show d
+staticEval1 TTOI (MT t) =
+  packMaybe $ clamp =<< readm (UText.unpack t)
+  where
+    readm ('+' : s) = readMaybe s
+    readm s = readMaybe s
+
+    clamp n
+      | fromIntegral (minBound :: Int) <= n,
+        n <= fromIntegral (maxBound :: Int) =
+          Just . MI $ fromInteger n
+      | otherwise = Nothing
+staticEval1 TTON (MT t) =
+  packMaybe $ clamp =<< readMaybe (UText.unpack t)
+  where
+    clamp i
+      | 0 <= i, i <= fromIntegral (maxBound :: Word64) =
+          Just . MN $ fromInteger i
+      | otherwise = Nothing
+staticEval1 TTOF (MT t) =
+  packMaybe $ MD <$> readMaybe (UText.unpack t)
+staticEval1 TLTT (MM r) =
+  Lit . MT . UText.fromText . SH.toText $ RN.toShortHash r
+staticEval1 p l =
+  error $ "staticEval1: could not statically evaluate (primop, lit) combination: " ++ show (p, l)
+
+packMaybe :: Maybe MLit -> Instr
+packMaybe Nothing = Pack Ty.optionalRef noneTag ZArgs
+packMaybe (Just l) = Pack Ty.optionalRef someTag . VArg1 $ MLit l
+
+packBool :: Bool -> Instr
+packBool False = Pack Ty.booleanRef falseTag ZArgs
+packBool True = Pack Ty.booleanRef trueTag ZArgs
+
+comparison :: Ordering -> Instr
+comparison = Lit . MI . pred . fromEnum
+
+staticEval2 :: Prim2 -> MLit -> MLit -> Instr
+staticEval2 ADDI (MI m) (MI n) = Lit . MI $ m + n
+staticEval2 SUBI (MI m) (MI n) = Lit . MI $ m - n
+staticEval2 MULI (MI m) (MI n) = Lit . MI $ m * n
+staticEval2 DIVI (MI m) (MI n) = Lit . MI $ m `div` n
+staticEval2 MODI (MI m) (MI n) = Lit . MI $ m `mod` n
+staticEval2 EQLI (MI m) (MI n) = packBool $ m == n
+staticEval2 NEQI (MI m) (MI n) = packBool $ m /= n
+staticEval2 LEQI (MI m) (MI n) = packBool $ m <= n
+staticEval2 LESI (MI m) (MI n) = packBool $ m < n
+staticEval2 ANDI (MI m) (MI n) = Lit . MI $ m .&. n
+staticEval2 IORI (MI m) (MI n) = Lit . MI $ m .|. n
+staticEval2 XORI (MI m) (MI n) = Lit . MI $ m `xor` n
+staticEval2 SHLI (MI m) (MN n) = Lit . MI $ m `shiftL` fromIntegral n
+staticEval2 SHRI (MI m) (MN n) = Lit . MI $ m `shiftR` fromIntegral n
+staticEval2 POWI (MI m) (MN n) = Lit . MI $ m ^ n
+staticEval2 ADDN (MN m) (MN n) = Lit . MN $ m + n
+staticEval2 SUBN (MN m) (MN n) = Lit . MN $ m - n
+staticEval2 MULN (MN m) (MN n) = Lit . MN $ m * n
+staticEval2 DIVN (MN m) (MN n) = Lit . MN $ m `div` n
+staticEval2 MODN (MN m) (MN n) = Lit . MN $ m `mod` n
+staticEval2 SHLN (MN m) (MN n) = Lit . MN $ m `shiftL` fromIntegral n
+staticEval2 SHRN (MN m) (MN n) = Lit . MN $ m `shiftR` fromIntegral n
+staticEval2 POWN (MN m) (MN n) = Lit . MN $ m ^ n
+staticEval2 EQLN (MN m) (MN n) = packBool $ m == n
+staticEval2 NEQN (MN m) (MN n) = packBool $ m /= n
+staticEval2 LEQN (MN m) (MN n) = packBool $ m <= n
+staticEval2 LESN (MN m) (MN n) = packBool $ m < n
+staticEval2 ANDN (MN m) (MN n) = Lit . MN $ m .&. n
+staticEval2 IORN (MN m) (MN n) = Lit . MN $ m .|. n
+staticEval2 XORN (MN m) (MN n) = Lit . MN $ m `xor` n
+staticEval2 DRPN (MN m) (MN n) = Lit . MN $ if n >= m then 0 else m - n
+staticEval2 EQLF (MD x) (MD y) = packBool $ x == y
+staticEval2 NEQF (MD x) (MD y) = packBool $ x /= y
+staticEval2 LEQF (MD x) (MD y) = packBool $ x <= y
+staticEval2 LESF (MD x) (MD y) = packBool $ x < y
+staticEval2 ADDF (MD x) (MD y) = Lit . MD $ x + y
+staticEval2 SUBF (MD x) (MD y) = Lit . MD $ x - y
+staticEval2 MULF (MD x) (MD y) = Lit . MD $ x * y
+staticEval2 DIVF (MD x) (MD y) = Lit . MD $ x / y
+staticEval2 ATN2 (MD x) (MD y) = Lit . MD $ atan2 x y
+staticEval2 POWF (MD x) (MD y) = Lit . MD $ x ** y
+staticEval2 LOGB (MD x) (MD y) = Lit . MD $ logBase x y
+staticEval2 MAXF (MD x) (MD y) = Lit . MD $ max x y
+staticEval2 MINF (MD x) (MD y) = Lit . MD $ min x  y
+staticEval2 DRPT (MN n) (MT t) = Lit . MT $ UText.drop (fromIntegral n) t
+staticEval2 TAKT (MN n) (MT t) = Lit . MT $ UText.take (fromIntegral n) t
+staticEval2 CATT (MT t) (MT u) = Lit . MT $ t <> u
+staticEval2 IXOT (MT t) (MT u) =
+  packMaybe $ MN <$> UText.indexOf t u
+staticEval2 EQLT (MT t) (MT u) = packBool $ t == u
+staticEval2 LEQT (MT t) (MT u) = packBool $ t <= u
+staticEval2 LEST (MT t) (MT u) = packBool $ t < u
+staticEval2 EQLU (MI m) (MI n) = packBool $ m == n
+staticEval2 EQLU (MN m) (MN n) = packBool $ m == n
+staticEval2 EQLU (MD m) (MD n) = packBool $ m == n
+staticEval2 EQLU (MC m) (MC n) = packBool $ m == n
+staticEval2 EQLU (MT m) (MT n) = packBool $ m == n
+staticEval2 EQLU (MM m) (MM n) = packBool $ m == n
+staticEval2 EQLU (MY m) (MY n) = packBool $ m == n
+staticEval2 CMPU (MI m) (MI n) = comparison $ compare m n
+staticEval2 CMPU (MN m) (MN n) = comparison $ compare m n
+staticEval2 CMPU (MD m) (MD n) = comparison $ compare m n
+staticEval2 CMPU (MC m) (MC n) = comparison $ compare m n
+staticEval2 CMPU (MT m) (MT n) = comparison $ compare m n
+staticEval2 CMPU (MM m) (MM n) = comparison $ compare m n
+staticEval2 CMPU (MY m) (MY n) = comparison $ compare m n
+staticEval2 LEQU (MN m) (MN n) = packBool $ m <= n
+staticEval2 LEQU (MD m) (MD n) = packBool $ m <= n
+staticEval2 LEQU (MC m) (MC n) = packBool $ m <= n
+staticEval2 LEQU (MT m) (MT n) = packBool $ m <= n
+staticEval2 LEQU (MM m) (MM n) = packBool $ m <= n
+staticEval2 LEQU (MY m) (MY n) = packBool $ m <= n
+staticEval2 LESU (MN m) (MN n) = packBool $ m < n
+staticEval2 LESU (MD m) (MD n) = packBool $ m < n
+staticEval2 LESU (MC m) (MC n) = packBool $ m < n
+staticEval2 LESU (MT m) (MT n) = packBool $ m < n
+staticEval2 LESU (MM m) (MM n) = packBool $ m < n
+staticEval2 LESU (MY m) (MY n) = packBool $ m < n
+staticEval2 CAST (MI 0) l = Lit . MC $ castToChar l
+staticEval2 CAST (MI 1) l = Lit . MD $ castToDouble l
+staticEval2 CAST (MI 2) l = Lit . MI $ castToInt l
+staticEval2 CAST (MI 3) l = Lit . MN $ castToNat l
+staticEval2 p l r =
+  error $ "staticEval2: could not process binary primop: " ++ show (p, l, r)
+
+castToNat :: MLit -> Word64
+castToNat (MI i) = fromIntegral i
+castToNat (MN n) = n
+castToNat (MD d) = fromIntegral $ doubleToInt d
+castToNat (MC c) = fromIntegral $ ord c
+castToNat l = error $ "could not cast literal `" ++ show l ++ "` to Nat"
+
+castToChar :: MLit -> Char
+castToChar (MI i) = chr i
+castToChar (MN n) = chr $ fromIntegral n
+castToChar (MD d) = chr $ doubleToInt d
+castToChar (MC c) = c
+castToChar l = error $ "could not cast literal `" ++ show l ++ "` to Char"
+
+castToInt :: MLit -> Int
+castToInt (MI i) = i
+castToInt (MN n) = fromIntegral n
+castToInt (MD d) = fromIntegral $ doubleToInt d
+castToInt (MC c) = ord c
+castToInt l = error $ "could not cast literal `" ++ show l ++ "` to Int"
+
+castToDouble :: MLit -> Double
+castToDouble (MI i) = intToDouble i
+castToDouble (MN n) = intToDouble $ fromIntegral n
+castToDouble (MD d) = d
+castToDouble (MC c) = intToDouble $ ord c
+castToDouble l = error $ "could not cast literal `" ++ show l ++ "` to Double"
