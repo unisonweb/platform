@@ -9,7 +9,8 @@ import Unison.Prelude
 import Unison.Var (Var (..))
 import Unison.Var qualified as Var
 
-data Symbol = Symbol !Word64 Var.Type deriving (Generic)
+data Symbol = Symbol !Word64 Var.Type
+  deriving stock (Generic, Eq, Ord)
 
 instance ABT.Var Symbol where
   freshIn vs s | Set.null vs || Set.notMember s vs = s -- already fresh!
@@ -21,12 +22,6 @@ instance Var Symbol where
   typeOf (Symbol _ t) = t
   freshId (Symbol id _) = id
   freshenId id (Symbol _ n) = Symbol id n
-
-instance Eq Symbol where
-  Symbol id1 name1 == Symbol id2 name2 = id1 == id2 && name1 == name2
-
-instance Ord Symbol where
-  Symbol id1 name1 `compare` Symbol id2 name2 = (id1, name1) `compare` (id2, name2)
 
 instance Show Symbol where
   show (Symbol 0 n) = show n
