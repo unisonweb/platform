@@ -2,7 +2,9 @@ module Unison.Test.Doc (test) where
 
 import Control.Comonad.Trans.Cofree (CofreeF ((:<)))
 import Data.Bifunctor (first)
+import Data.Char (isAlphaNum)
 import Data.List.NonEmpty (NonEmpty ((:|)))
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import EasyTest
 import Text.Megaparsec qualified as P
@@ -12,6 +14,7 @@ import Unison.Syntax.Name qualified as Name
 import Unison.Syntax.Parser.Doc qualified as DP
 import Unison.Syntax.Parser.Doc.Data qualified as Doc
 import Unison.Util.Recursion
+import Safe (headMay)
 
 test :: Test ()
 test =
@@ -133,7 +136,7 @@ t ::
   [Doc.Top String (Fix (Doc.Leaf Text String)) (Fix (Doc.Top String (Fix (Doc.Leaf Text String))))] ->
   Test ()
 t s expected =
-  scope s
+  scope simpleScope $ scope s
     . either
       (crash . P.errorBundlePretty)
       ( \actual ->
@@ -147,6 +150,8 @@ t s expected =
                   crash "actual != expected"
       )
     $ P.runParser (DP.doc (Name.toText . HQ'.toName . snd <$> typeOrTerm) (P.manyTill P.anySingle) P.eof) "test case" s
+  where
+    simpleScope = fromMaybe "default" $ headMay $ words $ filter isAlphaNum s
 
 -- * Helper functions to make it easier to read the examples.
 
