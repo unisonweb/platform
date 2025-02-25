@@ -21,6 +21,7 @@ import Unison.Result (Result, pattern Result)
 import Unison.Result qualified as Result
 import Unison.Runtime.Interface qualified as RTI
 import Unison.Symbol (Symbol)
+import Unison.Syntax.TermPrinter (pretty)
 import Unison.Term qualified as Term
 import Unison.Test.Common (parseAndSynthesizeAsFile, parsingEnv)
 import Unison.Test.Common qualified as Common
@@ -142,6 +143,14 @@ resultTest rt uf filepath = do
               tm' = Term.letRec' False (bindings <&> \(sym, tm) -> (sym, (), tm)) watchResult
           -- note . show $ tm'
           -- note . show $ Term.amap (const ()) tm
-          expectEqual tm' (Term.amap (const ()) tm)
+          expectResult tm' (Term.amap (const ()) tm)
         Left e -> crash $ PrintError.renderParseErrorAsANSI 80 values e
     else pure ()
+
+expectResult :: (HasCallStack) => Term.Term0 Symbol -> Term.Term0 Symbol -> Test ()
+expectResult expected actual =
+  if expected == actual
+    then ok
+    else crash $ unlines ["", pp actual, "** did not equal expected value **", pp expected]
+  where
+    pp = toPlain 50 . pretty PPE.empty
