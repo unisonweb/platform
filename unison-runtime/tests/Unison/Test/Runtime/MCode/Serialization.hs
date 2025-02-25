@@ -5,7 +5,7 @@ module Unison.Test.Runtime.MCode.Serialization (Unison.Test.Runtime.MCode.Serial
 
 import Data.Bytes.Get (runGetS)
 import Data.Bytes.Put (runPutS)
-import Data.Primitive (Prim, PrimArray, primArrayFromList)
+import Data.Primitive (Array, arrayFromList)
 import Data.Serialize.Get (Get)
 import Data.Serialize.Put (Put)
 import EasyTest qualified as EasyTest
@@ -15,7 +15,7 @@ import Hedgehog.Range qualified as Range
 import Unison.Prelude
 import Unison.Runtime.Foreign.Function.Type (ForeignFunc)
 import Unison.Runtime.Interface
-import Unison.Runtime.MCode (Args (..), BPrim1, BPrim2, Branch, Comb, CombIx (..), GBranch (..), GComb (..), GCombInfo (..), GInstr (..), GRef (..), GSection (..), Instr, MLit (..), Ref, Section, UPrim1, UPrim2)
+import Unison.Runtime.MCode (Arg (..), Args (..), Prim1, Prim2, Branch, Comb, CombIx (..), GBranch (..), GComb (..), GCombInfo (..), GInstr (..), GRef (..), GSection (..), Instr, MLit (..), Ref, Section, UnboxedTypeTag (..))
 import Unison.Runtime.Machine (Combs)
 import Unison.Runtime.TypeTags (PackedTag (..))
 import Unison.Test.Gen
@@ -46,17 +46,20 @@ genEnumSet gen = EC.setFromList <$> Gen.list (Range.linear 0 10) gen
 genCombs :: Gen Combs
 genCombs = genEnumMap genSmallWord64 genComb
 
-genPrimArray :: (Prim a) => Gen a -> Gen (PrimArray a)
-genPrimArray gen = primArrayFromList <$> Gen.list (Range.linear 0 10) gen
+genArray :: Gen a -> Gen (Array a)
+genArray gen = arrayFromList <$> Gen.list (Range.linear 0 10) gen
+
+genArg :: Gen Arg
+genArg = Gen.choice [ MLit <$> genMLit, Ix <$> genSmallInt ]
 
 genArgs :: Gen Args
 genArgs =
   Gen.choice
     [ pure ZArgs,
-      VArg1 <$> genSmallInt,
-      VArg2 <$> genSmallInt <*> genSmallInt,
+      VArg1 <$> genArg,
+      VArg2 <$> genArg <*> genArg,
       VArgR <$> genSmallInt <*> genSmallInt,
-      VArgN <$> genPrimArray genSmallInt,
+      VArgN <$> genArray genArg,
       VArgV <$> genSmallInt
     ]
 
@@ -88,17 +91,11 @@ genBranch =
       TestT <$> genSection <*> Gen.map (Range.linear 0 10) ((,) <$> genUText <*> genSection)
     ]
 
-genUPrim1 :: Gen UPrim1
-genUPrim1 = Gen.enumBounded
+genPrim1 :: Gen Prim1
+genPrim1 = Gen.enumBounded
 
-genUPrim2 :: Gen UPrim2
-genUPrim2 = Gen.enumBounded
-
-genBPrim1 :: Gen BPrim1
-genBPrim1 = Gen.enumBounded
-
-genBPrim2 :: Gen BPrim2
-genBPrim2 = Gen.enumBounded
+genPrim2 :: Gen Prim2
+genPrim2 = Gen.enumBounded
 
 genMLit :: Gen MLit
 genMLit =
@@ -116,10 +113,9 @@ genPackedTag = PackedTag <$> genSmallWord64
 genInstr :: Gen Instr
 genInstr =
   Gen.choice
-    [ UPrim1 <$> genUPrim1 <*> genSmallInt,
-      UPrim2 <$> genUPrim2 <*> genSmallInt <*> genSmallInt,
-      BPrim1 <$> genBPrim1 <*> genSmallInt,
-      BPrim2 <$> genBPrim2 <*> genSmallInt <*> genSmallInt,
+    [ Prim1 <$> genPrim1 <*> genSmallInt,
+      PrimXX <$> genPrim2 <*> genSmallInt <*> genSmallInt,
+      PrimIX <$> genPrim2 <*> genTypeTag <*> genSmallInt <*> genSmallInt,
       ForeignCall <$> Gen.bool <*> genForeignCall <*> genArgs,
       SetDyn <$> genSmallWord64 <*> genSmallInt,
       Capture <$> genSmallWord64,
@@ -172,6 +168,15 @@ genComb =
     [ Comb <$> genCombInfo
     -- We omit cached closures from roundtrip tests since we don't currently serialize cached closure results
     -- CachedClosure
+    ]
+
+genTypeTag :: Gen UnboxedTypeTag
+genTypeTag =
+  Gen.choice
+    [ pure CharTag
+    , pure FloatTag
+    , pure IntTag
+    , pure NatTag
     ]
 
 genStoredCache :: Gen StoredCache

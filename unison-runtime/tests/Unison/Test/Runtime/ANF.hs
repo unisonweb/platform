@@ -91,8 +91,8 @@ denormalize (TApp f args)
   | FCon r 0 <- f,
     r `elem` [Ty.natRef, Ty.intRef],
     [v] <- args =
-      Term.var () v
-denormalize (TApp f args) = Term.apps' df (Term.var () <$> args)
+      denormalizeArg v
+denormalize (TApp f args) = Term.apps' df (denormalizeArg <$> args)
   where
     df = case f of
       FVar v -> Term.var () v
@@ -104,6 +104,10 @@ denormalize (TApp f args) = Term.apps' df (Term.var () <$> args)
       FPrim _ -> error "FPrim"
       FCont _ -> error "denormalize FCont"
 denormalize (TFrc _) = error "denormalize TFrc"
+
+denormalizeArg :: Var v => AArg v -> Term.Term0 v
+denormalizeArg (AAVar v) = Term.var () v
+denormalizeArg (AALit l) = denormalizeLit l
 
 denormalizeRef :: RTag -> Reference
 denormalizeRef r

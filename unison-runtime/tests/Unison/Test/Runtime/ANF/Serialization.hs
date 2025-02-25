@@ -3,6 +3,7 @@
 -- | Round trip tests for ANF serialization.
 module Unison.Test.Runtime.ANF.Serialization (Unison.Test.Runtime.ANF.Serialization.test) where
 
+import Control.Monad.Reader (runReaderT)
 import Data.Bytes.Get (runGetS)
 import Data.Bytes.Put (runPutS)
 import Data.Primitive.Array (Array)
@@ -93,7 +94,7 @@ genValue = Gen.sized \n -> do
 
 valueRoundtrip :: Property
 valueRoundtrip =
-  getPutRoundtrip getValue putValue genValue
+  getPutRoundtrip (runReaderT getValue) (flip $ runReaderT . putValue) genValue
 
 getPutRoundtrip :: (Eq a, Show a) => (Version -> Get a) -> (Version -> a -> Put) -> Gen a -> Property
 getPutRoundtrip get put builder =
