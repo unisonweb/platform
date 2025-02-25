@@ -1,0 +1,318 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE DeriveDataTypeable #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="annot"><span class="hs-comment">-- | Some helpers for interrogating a WAI 'Request'.</span></span><span>
+</span><span id="line-4"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.Wai.Request</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-5"></span><span>    </span><span class="annot"><a href="Network.Wai.Request.html#appearsSecure"><span class="hs-identifier">appearsSecure</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-6"></span><span>    </span><span class="annot"><a href="Network.Wai.Request.html#guessApproot"><span class="hs-identifier">guessApproot</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Network.Wai.Request.html#RequestSizeException"><span class="hs-identifier">RequestSizeException</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>    </span><span class="annot"><a href="Network.Wai.Request.html#requestSizeCheck"><span class="hs-identifier">requestSizeCheck</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-9"></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-10"></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Exception</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">throwIO</span></span><span class="hs-special">)</span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteString</span></span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Char8</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">C</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">atomicModifyIORef'</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">newIORef</span></span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">fromMaybe</span></span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Typeable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Typeable</span></span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Word64</span></span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.HTTP.Types</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">HeaderName</span></span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Wai</span></span><span>
+</span><span id="line-21"></span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- | Does this request appear to have been made over an SSL connection?</span><span>
+</span><span id="line-23"></span><span class="hs-comment">--</span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- This function first checks @'isSecure'@, but also checks for headers that may</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- indicate a secure connection even in the presence of reverse proxies.</span><span>
+</span><span id="line-26"></span><span class="hs-comment">--</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- Note: these headers can be easily spoofed, so decisions which require a true</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- SSL connection (i.e. sending sensitive information) should only use</span><span>
+</span><span id="line-29"></span><span class="hs-comment">-- @'isSecure'@. This is not always the case though: for example, deciding to</span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- force a non-SSL request to SSL by redirect. One can safely choose not to</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- redirect when the request /appears/ secure, even if it's actually not.</span><span>
+</span><span id="line-32"></span><span class="hs-comment">--</span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- @since 3.0.7</span><span>
+</span><span id="line-34"></span><span class="annot"><a href="Network.Wai.Request.html#appearsSecure"><span class="hs-identifier hs-type">appearsSecure</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-35"></span><span id="appearsSecure"><span class="annot"><span class="annottext">appearsSecure :: Request -&gt; Bool
+</span><a href="Network.Wai.Request.html#appearsSecure"><span class="hs-identifier hs-var hs-var">appearsSecure</span></a></span></span><span> </span><span id="local-6989586621679128942"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679128942"><span class="hs-identifier hs-var">request</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-36"></span><span>    </span><span class="annot"><span class="annottext">Request -&gt; Bool
+</span><span class="hs-identifier hs-var">isSecure</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679128942"><span class="hs-identifier hs-var">request</span></a></span><span>
+</span><span id="line-37"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">((HeaderName, ByteString -&gt; Bool) -&gt; Bool)
+-&gt; [(HeaderName, ByteString -&gt; Bool)] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">any</span></span><span>
+</span><span id="line-38"></span><span>            </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(HeaderName -&gt; (ByteString -&gt; Bool) -&gt; Bool)
+-&gt; (HeaderName, ByteString -&gt; Bool) -&gt; Bool
+forall a b c. (a -&gt; b -&gt; c) -&gt; (a, b) -&gt; c
+</span><span class="hs-identifier hs-var">uncurry</span></span><span> </span><span class="annot"><span class="annottext">HeaderName -&gt; (ByteString -&gt; Bool) -&gt; Bool
+</span><a href="#local-6989586621679128946"><span class="hs-identifier hs-var">matchHeader</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span>            </span><span class="hs-special">[</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HeaderName
+</span><span class="hs-string">&quot;HTTPS&quot;</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;on&quot;</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HeaderName
+</span><span class="hs-string">&quot;HTTP_X_FORWARDED_SSL&quot;</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;on&quot;</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HeaderName
+</span><span class="hs-string">&quot;HTTP_X_FORWARDED_SCHEME&quot;</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;https&quot;</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-42"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HeaderName
+</span><span class="hs-string">&quot;HTTP_X_FORWARDED_PROTO&quot;</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[ByteString] -&gt; [ByteString] -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;https&quot;</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; Bool)
+-&gt; (ByteString -&gt; [ByteString]) -&gt; ByteString -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; [ByteString] -&gt; [ByteString]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">take</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; [ByteString])
+-&gt; (ByteString -&gt; [ByteString]) -&gt; ByteString -&gt; [ByteString]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Char -&gt; ByteString -&gt; [ByteString]
+</span><span class="hs-identifier hs-var">C.split</span></span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">','</span></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HeaderName
+</span><span class="hs-string">&quot;X-Forwarded-Proto&quot;</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;https&quot;</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-comment">-- Used by Nginx and AWS ELB.</span><span>
+</span><span id="line-44"></span><span>            </span><span class="hs-special">]</span><span>
+</span><span id="line-45"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-46"></span><span>    </span><span class="annot"><a href="#local-6989586621679128946"><span class="hs-identifier hs-type">matchHeader</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">HeaderName</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-47"></span><span>    </span><span id="local-6989586621679128946"><span class="annot"><span class="annottext">matchHeader :: HeaderName -&gt; (ByteString -&gt; Bool) -&gt; Bool
+</span><a href="#local-6989586621679128946"><span class="hs-identifier hs-var hs-var">matchHeader</span></a></span></span><span> </span><span id="local-6989586621679128950"><span class="annot"><span class="annottext">HeaderName
+</span><a href="#local-6989586621679128950"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679128951"><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><a href="#local-6989586621679128951"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; (ByteString -&gt; Bool) -&gt; Maybe ByteString -&gt; Bool
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><a href="#local-6989586621679128951"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe ByteString -&gt; Bool) -&gt; Maybe ByteString -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">HeaderName -&gt; [(HeaderName, ByteString)] -&gt; Maybe ByteString
+forall a b. Eq a =&gt; a -&gt; [(a, b)] -&gt; Maybe b
+</span><span class="hs-identifier hs-var">lookup</span></span><span> </span><span class="annot"><span class="annottext">HeaderName
+</span><a href="#local-6989586621679128950"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">([(HeaderName, ByteString)] -&gt; Maybe ByteString)
+-&gt; [(HeaderName, ByteString)] -&gt; Maybe ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Request -&gt; [(HeaderName, ByteString)]
+</span><span class="hs-identifier hs-var">requestHeaders</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679128942"><span class="hs-identifier hs-var">request</span></a></span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- | Guess the \&quot;application root\&quot; based on the given request.</span><span>
+</span><span id="line-50"></span><span class="hs-comment">--</span><span>
+</span><span id="line-51"></span><span class="hs-comment">-- The application root is the basis for forming URLs pointing at the current</span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- application. For more information and relevant caveats, please see</span><span>
+</span><span id="line-53"></span><span class="hs-comment">-- &quot;Network.Wai.Middleware.Approot&quot;.</span><span>
+</span><span id="line-54"></span><span class="hs-comment">--</span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- @since 3.0.7</span><span>
+</span><span id="line-56"></span><span class="annot"><a href="Network.Wai.Request.html#guessApproot"><span class="hs-identifier hs-type">guessApproot</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span>
+</span><span id="line-57"></span><span id="guessApproot"><span class="annot"><span class="annottext">guessApproot :: Request -&gt; ByteString
+</span><a href="Network.Wai.Request.html#guessApproot"><span class="hs-identifier hs-var hs-var">guessApproot</span></a></span></span><span> </span><span id="local-6989586621679128955"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679128955"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-58"></span><span>    </span><span class="hs-special">(</span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Request -&gt; Bool
+</span><a href="Network.Wai.Request.html#appearsSecure"><span class="hs-identifier hs-var">appearsSecure</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679128955"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;https://&quot;</span></span><span> </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;http://&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-59"></span><span>        </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString -&gt; ByteString
+</span><span class="hs-operator hs-var">`S.append`</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Maybe ByteString -&gt; ByteString
+forall a. a -&gt; Maybe a -&gt; a
+</span><span class="hs-identifier hs-var">fromMaybe</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;localhost&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Request -&gt; Maybe ByteString
+</span><span class="hs-identifier hs-var">requestHeaderHost</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679128955"><span class="hs-identifier hs-var">req</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span class="hs-comment">-- | see 'requestSizeCheck'</span><span>
+</span><span id="line-62"></span><span class="hs-comment">--</span><span>
+</span><span id="line-63"></span><span class="hs-comment">-- @since 3.0.15</span><span>
+</span><span id="line-64"></span><span class="hs-keyword">newtype</span><span> </span><span id="RequestSizeException"><span class="annot"><a href="Network.Wai.Request.html#RequestSizeException"><span class="hs-identifier hs-var">RequestSizeException</span></a></span></span><span>
+</span><span id="line-65"></span><span>    </span><span class="hs-glyph">=</span><span> </span><span id="RequestSizeException"><span class="annot"><a href="Network.Wai.Request.html#RequestSizeException"><span class="hs-identifier hs-var">RequestSizeException</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span>
+</span><span id="line-66"></span><span>    </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679128960"><span id="local-6989586621679128965"><span class="annot"><span class="annottext">RequestSizeException -&gt; RequestSizeException -&gt; Bool
+(RequestSizeException -&gt; RequestSizeException -&gt; Bool)
+-&gt; (RequestSizeException -&gt; RequestSizeException -&gt; Bool)
+-&gt; Eq RequestSizeException
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: RequestSizeException -&gt; RequestSizeException -&gt; Bool
+== :: RequestSizeException -&gt; RequestSizeException -&gt; Bool
+$c/= :: RequestSizeException -&gt; RequestSizeException -&gt; Bool
+/= :: RequestSizeException -&gt; RequestSizeException -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679128973"><span id="local-6989586621679128977"><span id="local-6989586621679128981"><span id="local-6989586621679128985"><span id="local-6989586621679128989"><span id="local-6989586621679128993"><span id="local-6989586621679128997"><span class="annot"><span class="annottext">Eq RequestSizeException
+Eq RequestSizeException =&gt;
+(RequestSizeException -&gt; RequestSizeException -&gt; Ordering)
+-&gt; (RequestSizeException -&gt; RequestSizeException -&gt; Bool)
+-&gt; (RequestSizeException -&gt; RequestSizeException -&gt; Bool)
+-&gt; (RequestSizeException -&gt; RequestSizeException -&gt; Bool)
+-&gt; (RequestSizeException -&gt; RequestSizeException -&gt; Bool)
+-&gt; (RequestSizeException
+    -&gt; RequestSizeException -&gt; RequestSizeException)
+-&gt; (RequestSizeException
+    -&gt; RequestSizeException -&gt; RequestSizeException)
+-&gt; Ord RequestSizeException
+RequestSizeException -&gt; RequestSizeException -&gt; Bool
+RequestSizeException -&gt; RequestSizeException -&gt; Ordering
+RequestSizeException
+-&gt; RequestSizeException -&gt; RequestSizeException
+forall a.
+Eq a =&gt;
+(a -&gt; a -&gt; Ordering)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; Bool)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; (a -&gt; a -&gt; a)
+-&gt; Ord a
+$ccompare :: RequestSizeException -&gt; RequestSizeException -&gt; Ordering
+compare :: RequestSizeException -&gt; RequestSizeException -&gt; Ordering
+$c&lt; :: RequestSizeException -&gt; RequestSizeException -&gt; Bool
+&lt; :: RequestSizeException -&gt; RequestSizeException -&gt; Bool
+$c&lt;= :: RequestSizeException -&gt; RequestSizeException -&gt; Bool
+&lt;= :: RequestSizeException -&gt; RequestSizeException -&gt; Bool
+$c&gt; :: RequestSizeException -&gt; RequestSizeException -&gt; Bool
+&gt; :: RequestSizeException -&gt; RequestSizeException -&gt; Bool
+$c&gt;= :: RequestSizeException -&gt; RequestSizeException -&gt; Bool
+&gt;= :: RequestSizeException -&gt; RequestSizeException -&gt; Bool
+$cmax :: RequestSizeException
+-&gt; RequestSizeException -&gt; RequestSizeException
+max :: RequestSizeException
+-&gt; RequestSizeException -&gt; RequestSizeException
+$cmin :: RequestSizeException
+-&gt; RequestSizeException -&gt; RequestSizeException
+min :: RequestSizeException
+-&gt; RequestSizeException -&gt; RequestSizeException
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Ord</span></span></span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Typeable</span></span><span class="hs-special">)</span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679129008"><span id="local-6989586621679129011"><span id="local-6989586621679129014"><span class="annot"><span class="hs-identifier hs-type">Exception</span></span><span> </span><span class="annot"><a href="Network.Wai.Request.html#RequestSizeException"><span class="hs-identifier hs-type">RequestSizeException</span></a></span></span></span></span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679129019"><span id="local-6989586621679129022"><span class="annot"><span class="hs-identifier hs-type">Show</span></span><span> </span><span class="annot"><a href="Network.Wai.Request.html#RequestSizeException"><span class="hs-identifier hs-type">RequestSizeException</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-71"></span><span>    </span><span id="local-6989586621679129027"><span class="annot"><span class="annottext">showsPrec :: Int -&gt; RequestSizeException -&gt; ShowS
+</span><a href="#local-6989586621679129027"><span class="hs-identifier hs-var hs-var hs-var hs-var">showsPrec</span></a></span></span><span> </span><span id="local-6989586621679129029"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679129029"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Request.html#RequestSizeException"><span class="hs-identifier hs-type">RequestSizeException</span></a></span><span> </span><span id="local-6989586621679129030"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129030"><span class="hs-identifier hs-var">limit</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-72"></span><span>        </span><span class="annot"><span class="annottext">String -&gt; ShowS
+</span><span class="hs-identifier hs-var">showString</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Request Body is larger than &quot;</span></span><span>
+</span><span id="line-73"></span><span>            </span><span class="annot"><span class="annottext">ShowS -&gt; ShowS -&gt; ShowS
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word64 -&gt; ShowS
+forall a. Show a =&gt; Int -&gt; a -&gt; ShowS
+</span><span class="hs-identifier hs-var">showsPrec</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679129029"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129030"><span class="hs-identifier hs-var">limit</span></a></span><span>
+</span><span id="line-74"></span><span>            </span><span class="annot"><span class="annottext">ShowS -&gt; ShowS -&gt; ShowS
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; ShowS
+</span><span class="hs-identifier hs-var">showString</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot; bytes.&quot;</span></span><span>
+</span><span id="line-75"></span><span>
+</span><span id="line-76"></span><span class="hs-comment">-- | Check request body size to avoid server crash when request is too large.</span><span>
+</span><span id="line-77"></span><span class="hs-comment">--</span><span>
+</span><span id="line-78"></span><span class="hs-comment">-- This function first checks @'requestBodyLength'@, if content-length is known</span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- but larger than limit, or it's unknown but we have received too many chunks,</span><span>
+</span><span id="line-80"></span><span class="hs-comment">-- a 'RequestSizeException' are thrown when user use @'requestBody'@ to extract</span><span>
+</span><span id="line-81"></span><span class="hs-comment">-- request body inside IO.</span><span>
+</span><span id="line-82"></span><span class="hs-comment">--</span><span>
+</span><span id="line-83"></span><span class="hs-comment">-- @since 3.0.15</span><span>
+</span><span id="line-84"></span><span class="annot"><a href="Network.Wai.Request.html#requestSizeCheck"><span class="hs-identifier hs-type">requestSizeCheck</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span>
+</span><span id="line-85"></span><span id="requestSizeCheck"><span class="annot"><span class="annottext">requestSizeCheck :: Word64 -&gt; Request -&gt; IO Request
+</span><a href="Network.Wai.Request.html#requestSizeCheck"><span class="hs-identifier hs-var hs-var">requestSizeCheck</span></a></span></span><span> </span><span id="local-6989586621679129034"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129034"><span class="hs-identifier hs-var">maxSize</span></a></span></span><span> </span><span id="local-6989586621679129035"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679129035"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-86"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Request -&gt; RequestBodyLength
+</span><span class="hs-identifier hs-var">requestBodyLength</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679129035"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-87"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">KnownLength</span></span><span> </span><span id="local-6989586621679129037"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129037"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-88"></span><span>            </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129037"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129034"><span class="hs-identifier hs-var">maxSize</span></a></span><span>
+</span><span id="line-89"></span><span>                </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Request -&gt; IO Request
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Request -&gt; IO Request) -&gt; Request -&gt; IO Request
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IO ByteString -&gt; Request -&gt; Request
+</span><span class="hs-identifier hs-var">setRequestBodyChunks</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">RequestSizeException -&gt; IO ByteString
+forall e a. Exception e =&gt; e -&gt; IO a
+</span><span class="hs-identifier hs-var">throwIO</span></span><span> </span><span class="annot"><span class="annottext">(RequestSizeException -&gt; IO ByteString)
+-&gt; RequestSizeException -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; RequestSizeException
+</span><a href="Network.Wai.Request.html#RequestSizeException"><span class="hs-identifier hs-var">RequestSizeException</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129034"><span class="hs-identifier hs-var">maxSize</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679129035"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-90"></span><span>                </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">Request -&gt; IO Request
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679129035"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-91"></span><span>        </span><span class="annot"><span class="annottext">RequestBodyLength
+</span><span class="hs-identifier hs-var">ChunkedBody</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-92"></span><span>            </span><span id="local-6989586621679129041"><span class="annot"><span class="annottext">IORef Word64
+</span><a href="#local-6989586621679129041"><span class="hs-identifier hs-var">currentSize</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; IO (IORef Word64)
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-93"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679129047"><span class="annot"><span class="annottext">rbody :: IO ByteString
+</span><a href="#local-6989586621679129047"><span class="hs-identifier hs-var hs-var">rbody</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-94"></span><span>                    </span><span id="local-6989586621679129048"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679129048"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Request -&gt; IO ByteString
+</span><span class="hs-identifier hs-var">getRequestBodyChunk</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679129035"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-95"></span><span>                    </span><span id="local-6989586621679129050"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129050"><span class="hs-identifier hs-var">total</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-96"></span><span>                        </span><span class="annot"><span class="annottext">IORef Word64 -&gt; (Word64 -&gt; (Word64, Word64)) -&gt; IO Word64
+forall a b. IORef a -&gt; (a -&gt; (a, b)) -&gt; IO b
+</span><span class="hs-identifier hs-var">atomicModifyIORef'</span></span><span> </span><span class="annot"><span class="annottext">IORef Word64
+</span><a href="#local-6989586621679129041"><span class="hs-identifier hs-var">currentSize</span></a></span><span> </span><span class="annot"><span class="annottext">((Word64 -&gt; (Word64, Word64)) -&gt; IO Word64)
+-&gt; (Word64 -&gt; (Word64, Word64)) -&gt; IO Word64
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679129051"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129051"><span class="hs-identifier hs-var">sz</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-97"></span><span>                            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679129056"><span class="annot"><span class="annottext">nextSize :: Word64
+</span><a href="#local-6989586621679129056"><span class="hs-identifier hs-var hs-var">nextSize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129051"><span class="hs-identifier hs-var">sz</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">S.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679129048"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span>                             </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129056"><span class="hs-identifier hs-var">nextSize</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129056"><span class="hs-identifier hs-var">nextSize</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-99"></span><span>                    </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129050"><span class="hs-identifier hs-var">total</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129034"><span class="hs-identifier hs-var">maxSize</span></a></span><span>
+</span><span id="line-100"></span><span>                        </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">RequestSizeException -&gt; IO ByteString
+forall e a. Exception e =&gt; e -&gt; IO a
+</span><span class="hs-identifier hs-var">throwIO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64 -&gt; RequestSizeException
+</span><a href="Network.Wai.Request.html#RequestSizeException"><span class="hs-identifier hs-var">RequestSizeException</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679129034"><span class="hs-identifier hs-var">maxSize</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-101"></span><span>                        </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679129048"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-102"></span><span>            </span><span class="annot"><span class="annottext">Request -&gt; IO Request
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Request -&gt; IO Request) -&gt; Request -&gt; IO Request
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IO ByteString -&gt; Request -&gt; Request
+</span><span class="hs-identifier hs-var">setRequestBodyChunks</span></span><span> </span><span class="annot"><span class="annottext">IO ByteString
+</span><a href="#local-6989586621679129047"><span class="hs-identifier hs-var">rbody</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679129035"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-103"></span></pre></body></html>

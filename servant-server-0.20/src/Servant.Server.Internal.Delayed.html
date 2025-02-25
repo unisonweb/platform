@@ -1,0 +1,1311 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP                   #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE FlexibleInstances     #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE GADTs                 #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE MultiParamTypeClasses #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE RecordWildCards       #-}</span><span>
+</span><span id="line-6"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies          #-}</span><span>
+</span><span id="line-7"></span><span class="hs-pragma">{-# LANGUAGE TypeOperators         #-}</span><span>
+</span><span id="line-8"></span><span class="hs-pragma">{-# LANGUAGE UndecidableInstances  #-}</span><span>
+</span><span id="line-9"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Servant.Server.Internal.Delayed</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-10"></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad.IO.Class</span></span><span>
+</span><span id="line-12"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">MonadIO</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad.Reader</span></span><span>
+</span><span id="line-14"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ask</span></span><span class="hs-special">)</span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad.Trans.Resource</span></span><span>
+</span><span id="line-16"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ResourceT</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">runResourceT</span></span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Network.Wai</span></span><span>
+</span><span id="line-18"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Request</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">Response</span></span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html"><span class="hs-identifier">Servant.Server.Internal.DelayedIO</span></a></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Servant.Server.Internal.Handler.html"><span class="hs-identifier">Servant.Server.Internal.Handler</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Servant.Server.Internal.RouteResult.html"><span class="hs-identifier">Servant.Server.Internal.RouteResult</span></a></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Servant.Server.Internal.ServerError.html"><span class="hs-identifier">Servant.Server.Internal.ServerError</span></a></span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- | A 'Delayed' is a representation of a handler with scheduled</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- delayed checks that can trigger errors.</span><span>
+</span><span id="line-27"></span><span class="hs-comment">--</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- Why would we want to delay checks?</span><span>
+</span><span id="line-29"></span><span class="hs-comment">--</span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- There are two reasons:</span><span>
+</span><span id="line-31"></span><span class="hs-comment">--</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- 1. In a straight-forward implementation, the order in which we</span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- perform checks will determine the error we generate. This is</span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- because once an error occurs, we would abort and not perform</span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- any subsequent checks, but rather return the current error.</span><span>
+</span><span id="line-36"></span><span class="hs-comment">--</span><span>
+</span><span id="line-37"></span><span class="hs-comment">-- This is not a necessity: we could continue doing other checks,</span><span>
+</span><span id="line-38"></span><span class="hs-comment">-- and choose the preferred error. However, that would in general</span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- mean more checking, which leads us to the other reason.</span><span>
+</span><span id="line-40"></span><span class="hs-comment">--</span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- 2. We really want to avoid doing certain checks too early. For</span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- example, captures involve parsing, and are much more costly</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- than static route matches. In particular, if several paths</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- contain the &quot;same&quot; capture, we'd like as much as possible to</span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- avoid trying the same parse many times. Also tricky is the</span><span>
+</span><span id="line-46"></span><span class="hs-comment">-- request body. Again, this involves parsing, but also, WAI makes</span><span>
+</span><span id="line-47"></span><span class="hs-comment">-- obtaining the request body a side-effecting operation. We</span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- could/can work around this by manually caching the request body,</span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- but we'd rather keep the number of times we actually try to</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- decode the request body to an absolute minimum.</span><span>
+</span><span id="line-51"></span><span class="hs-comment">--</span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- We prefer to have the following relative priorities of error</span><span>
+</span><span id="line-53"></span><span class="hs-comment">-- codes:</span><span>
+</span><span id="line-54"></span><span class="hs-comment">--</span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-56"></span><span class="hs-comment">-- 404</span><span>
+</span><span id="line-57"></span><span class="hs-comment">-- 405 (bad method)</span><span>
+</span><span id="line-58"></span><span class="hs-comment">-- 401 (unauthorized)</span><span>
+</span><span id="line-59"></span><span class="hs-comment">-- 415 (unsupported media type)</span><span>
+</span><span id="line-60"></span><span class="hs-comment">-- 406 (not acceptable)</span><span>
+</span><span id="line-61"></span><span class="hs-comment">-- 400 (bad request)</span><span>
+</span><span id="line-62"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-63"></span><span class="hs-comment">--</span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- Therefore, while routing, we delay most checks so that they</span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- will ultimately occur in the right order.</span><span>
+</span><span id="line-66"></span><span class="hs-comment">--</span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- A 'Delayed' contains many delayed blocks of tests, and</span><span>
+</span><span id="line-68"></span><span class="hs-comment">-- the actual handler:</span><span>
+</span><span id="line-69"></span><span class="hs-comment">--</span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- 1. Delayed captures. These can actually cause 404, and</span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- while they're costly, they should be done first among the</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- delayed checks (at least as long as we do not decouple the</span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- check order from the error reporting, see above). Delayed</span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- captures can provide inputs to the actual handler.</span><span>
+</span><span id="line-75"></span><span class="hs-comment">--</span><span>
+</span><span id="line-76"></span><span class="hs-comment">-- 2. Method check(s). This can cause a 405. On success,</span><span>
+</span><span id="line-77"></span><span class="hs-comment">-- it does not provide an input for the handler. Method checks</span><span>
+</span><span id="line-78"></span><span class="hs-comment">-- are comparatively cheap.</span><span>
+</span><span id="line-79"></span><span class="hs-comment">--</span><span>
+</span><span id="line-80"></span><span class="hs-comment">-- 3. Authentication checks. This can cause 401.</span><span>
+</span><span id="line-81"></span><span class="hs-comment">--</span><span>
+</span><span id="line-82"></span><span class="hs-comment">-- 4. Accept and content type header checks. These checks</span><span>
+</span><span id="line-83"></span><span class="hs-comment">-- can cause 415 and 406 errors.</span><span>
+</span><span id="line-84"></span><span class="hs-comment">--</span><span>
+</span><span id="line-85"></span><span class="hs-comment">-- 5. Query parameter checks. They require parsing and can cause 400 if the</span><span>
+</span><span id="line-86"></span><span class="hs-comment">-- parsing fails. Query parameter checks provide inputs to the handler</span><span>
+</span><span id="line-87"></span><span class="hs-comment">--</span><span>
+</span><span id="line-88"></span><span class="hs-comment">-- 6. Header Checks. They also require parsing and can cause 400 if parsing fails.</span><span>
+</span><span id="line-89"></span><span class="hs-comment">--</span><span>
+</span><span id="line-90"></span><span class="hs-comment">-- 7. Body check. The request body check can cause 400.</span><span>
+</span><span id="line-91"></span><span class="hs-comment">--</span><span>
+</span><span id="line-92"></span><span class="hs-keyword">data</span><span> </span><span id="Delayed"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-var">Delayed</span></a></span></span><span> </span><span id="local-6989586621679137517"><span class="annot"><a href="#local-6989586621679137517"><span class="hs-identifier hs-type">env</span></a></span></span><span> </span><span id="local-6989586621679137518"><span class="annot"><a href="#local-6989586621679137518"><span class="hs-identifier hs-type">c</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-93"></span><span>  </span><span id="local-6989586621679137332"><span id="local-6989586621679137333"><span id="local-6989586621679137519"><span id="local-6989586621679137520"><span id="local-6989586621679137521"><span id="local-6989586621679137522"><span id="local-6989586621679137523"><span id="local-6989586621679137524"><span id="Delayed"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-var">Delayed</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">{</span><span> </span><span id="capturesD"><span class="annot"><span class="annottext">()
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-identifier hs-var hs-var">capturesD</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679137332"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137519"><span class="hs-identifier hs-type">captures</span></a></span><span>
+</span><span id="line-94"></span><span>             </span><span class="hs-special">,</span><span> </span><span id="methodD"><span class="annot"><span class="annottext">forall env c. Delayed env c -&gt; DelayedIO ()
+</span><a href="Servant.Server.Internal.Delayed.html#methodD"><span class="hs-identifier hs-var hs-var">methodD</span></a></span></span><span>   </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-95"></span><span>             </span><span class="hs-special">,</span><span> </span><span id="authD"><span class="annot"><span class="annottext">()
+</span><a href="Servant.Server.Internal.Delayed.html#authD"><span class="hs-identifier hs-var hs-var">authD</span></a></span></span><span>     </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137520"><span class="hs-identifier hs-type">auth</span></a></span><span>
+</span><span id="line-96"></span><span>             </span><span class="hs-special">,</span><span> </span><span id="acceptD"><span class="annot"><span class="annottext">forall env c. Delayed env c -&gt; DelayedIO ()
+</span><a href="Servant.Server.Internal.Delayed.html#acceptD"><span class="hs-identifier hs-var hs-var">acceptD</span></a></span></span><span>   </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>             </span><span class="hs-special">,</span><span> </span><span id="contentD"><span class="annot"><span class="annottext">()
+</span><a href="Servant.Server.Internal.Delayed.html#contentD"><span class="hs-identifier hs-var hs-var">contentD</span></a></span></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137521"><span class="hs-identifier hs-type">contentType</span></a></span><span>
+</span><span id="line-98"></span><span>             </span><span class="hs-special">,</span><span> </span><span id="paramsD"><span class="annot"><span class="annottext">()
+</span><a href="Servant.Server.Internal.Delayed.html#paramsD"><span class="hs-identifier hs-var hs-var">paramsD</span></a></span></span><span>   </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137522"><span class="hs-identifier hs-type">params</span></a></span><span>
+</span><span id="line-99"></span><span>             </span><span class="hs-special">,</span><span> </span><span id="headersD"><span class="annot"><span class="annottext">()
+</span><a href="Servant.Server.Internal.Delayed.html#headersD"><span class="hs-identifier hs-var hs-var">headersD</span></a></span></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137523"><span class="hs-identifier hs-type">headers</span></a></span><span>
+</span><span id="line-100"></span><span>             </span><span class="hs-special">,</span><span> </span><span id="bodyD"><span class="annot"><span class="annottext">()
+</span><a href="Servant.Server.Internal.Delayed.html#bodyD"><span class="hs-identifier hs-var hs-var">bodyD</span></a></span></span><span>     </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679137521"><span class="hs-identifier hs-type">contentType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137524"><span class="hs-identifier hs-type">body</span></a></span><span>
+</span><span id="line-101"></span><span>             </span><span class="hs-special">,</span><span> </span><span id="serverD"><span class="annot"><span class="annottext">()
+</span><a href="Servant.Server.Internal.Delayed.html#serverD"><span class="hs-identifier hs-var hs-var">serverD</span></a></span></span><span>   </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679137519"><span class="hs-identifier hs-type">captures</span></a></span><span>
+</span><span id="line-102"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137522"><span class="hs-identifier hs-type">params</span></a></span><span>
+</span><span id="line-103"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137523"><span class="hs-identifier hs-type">headers</span></a></span><span>
+</span><span id="line-104"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137520"><span class="hs-identifier hs-type">auth</span></a></span><span>
+</span><span id="line-105"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137524"><span class="hs-identifier hs-type">body</span></a></span><span>
+</span><span id="line-106"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span>
+</span><span id="line-107"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.RouteResult.html#RouteResult"><span class="hs-identifier hs-type">RouteResult</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137333"><span class="hs-identifier hs-type">c</span></a></span><span>
+</span><span id="line-108"></span><span>             </span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137332"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137333"><span class="hs-identifier hs-type">c</span></a></span></span></span></span></span></span></span></span></span><span>
+</span><span id="line-109"></span><span>
+</span><span id="line-110"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679137346"><span id="local-6989586621679137536"><span class="annot"><span class="hs-identifier hs-type">Functor</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137346"><span class="hs-identifier hs-type">env</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-111"></span><span>  </span><span id="local-6989586621679137540"><span class="annot"><span class="annottext">fmap :: forall a b. (a -&gt; b) -&gt; Delayed env a -&gt; Delayed env b
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">fmap</span></span></span><span> </span><span id="local-6989586621679137541"><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621679137541"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span class="hs-special">{</span><span id="local-6989586621679137544"><span id="local-6989586621679137545"><span id="local-6989586621679137546"><span id="local-6989586621679137547"><span id="local-6989586621679137548"><span id="local-6989586621679137549"><span id="local-6989586621679137550"><span id="local-6989586621679137551"><span id="local-6989586621679137552"><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+contentType -&gt; DelayedIO body
+capturesD :: ()
+methodD :: forall env c. Delayed env c -&gt; DelayedIO ()
+authD :: ()
+acceptD :: forall env c. Delayed env c -&gt; DelayedIO ()
+contentD :: ()
+paramsD :: ()
+headersD :: ()
+bodyD :: ()
+serverD :: ()
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-112"></span><span>    </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span>
+</span><span id="line-113"></span><span>      </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">serverD :: captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult b
+</span><a href="Servant.Server.Internal.Delayed.html#serverD"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span> </span><span id="local-6989586621679137553"><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137553"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621679137554"><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137554"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span id="local-6989586621679137555"><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137555"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679137556"><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137556"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621679137557"><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137557"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621679137558"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137558"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621679137541"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(a -&gt; b) -&gt; RouteResult a -&gt; RouteResult b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+</span><a href="#local-6989586621679137552"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137553"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137554"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137555"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137556"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137557"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137558"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-114"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+contentType -&gt; DelayedIO body
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span><span>
+</span><span id="line-115"></span><span>      </span><span class="hs-special">}</span><span> </span><span class="hs-comment">-- Note [Existential Record Update]</span><span>
+</span><span id="line-116"></span><span>
+</span><span id="line-117"></span><span class="annot"><span class="hs-comment">-- | A 'Delayed' without any stored checks.</span></span><span>
+</span><span id="line-118"></span><span id="local-6989586621679137360"><span id="local-6989586621679137361"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#emptyDelayed"><span class="hs-identifier hs-type">emptyDelayed</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.RouteResult.html#RouteResult"><span class="hs-identifier hs-type">RouteResult</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137360"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137361"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137360"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-119"></span><span id="emptyDelayed"><span class="annot"><span class="annottext">emptyDelayed :: forall a env. RouteResult a -&gt; Delayed env a
+</span><a href="Servant.Server.Internal.Delayed.html#emptyDelayed"><span class="hs-identifier hs-var hs-var">emptyDelayed</span></a></span></span><span> </span><span id="local-6989586621679137561"><span class="annot"><span class="annottext">RouteResult a
+</span><a href="#local-6989586621679137561"><span class="hs-identifier hs-var">result</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-120"></span><span>  </span><span class="annot"><span class="annottext">(env -&gt; DelayedIO ())
+-&gt; DelayedIO ()
+-&gt; DelayedIO ()
+-&gt; DelayedIO ()
+-&gt; DelayedIO ()
+-&gt; DelayedIO ()
+-&gt; DelayedIO ()
+-&gt; (() -&gt; DelayedIO ())
+-&gt; (() -&gt; () -&gt; () -&gt; () -&gt; () -&gt; Request -&gt; RouteResult a)
+-&gt; Delayed env a
+forall env captures auth contentType params headers body c.
+(env -&gt; DelayedIO captures)
+-&gt; DelayedIO ()
+-&gt; DelayedIO auth
+-&gt; DelayedIO ()
+-&gt; DelayedIO contentType
+-&gt; DelayedIO params
+-&gt; DelayedIO headers
+-&gt; (contentType -&gt; DelayedIO body)
+-&gt; (captures
+    -&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult c)
+-&gt; Delayed env c
+</span><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-var">Delayed</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">DelayedIO () -&gt; env -&gt; DelayedIO ()
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137563"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137563"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137563"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137563"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137563"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137563"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137563"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">DelayedIO () -&gt; () -&gt; DelayedIO ()
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137563"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span> </span><span class="annot"><span class="annottext">()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">()
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">RouteResult a
+</span><a href="#local-6989586621679137561"><span class="hs-identifier hs-var">result</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-121"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-122"></span><span>    </span><span id="local-6989586621679137563"><span class="annot"><span class="annottext">r :: DelayedIO ()
+</span><a href="#local-6989586621679137563"><span class="hs-identifier hs-var hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; DelayedIO ()
+forall a. a -&gt; DelayedIO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>
+</span><span id="line-124"></span><span class="annot"><span class="hs-comment">-- | Add a capture to the end of the capture block.</span></span><span>
+</span><span id="line-125"></span><span id="local-6989586621679137374"><span id="local-6989586621679137375"><span id="local-6989586621679137376"><span id="local-6989586621679137377"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#addCapture"><span class="hs-identifier hs-type">addCapture</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137374"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679137375"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137376"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-126"></span><span>           </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679137377"><span class="hs-identifier hs-type">captured</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137375"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-127"></span><span>           </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679137377"><span class="hs-identifier hs-type">captured</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621679137374"><span class="hs-identifier hs-type">env</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679137376"><span class="hs-identifier hs-type">b</span></a></span></span></span></span></span><span>
+</span><span id="line-128"></span><span id="addCapture"><span class="annot"><span class="annottext">addCapture :: forall env a b captured.
+Delayed env (a -&gt; b)
+-&gt; (captured -&gt; DelayedIO a) -&gt; Delayed (captured, env) b
+</span><a href="Servant.Server.Internal.Delayed.html#addCapture"><span class="hs-identifier hs-var hs-var">addCapture</span></a></span></span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span class="hs-special">{</span><span id="local-6989586621679137574"><span id="local-6989586621679137575"><span id="local-6989586621679137576"><span id="local-6989586621679137577"><span id="local-6989586621679137578"><span id="local-6989586621679137579"><span id="local-6989586621679137580"><span id="local-6989586621679137581"><span id="local-6989586621679137582"><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+contentType -&gt; DelayedIO body
+capturesD :: ()
+methodD :: forall env c. Delayed env c -&gt; DelayedIO ()
+authD :: ()
+acceptD :: forall env c. Delayed env c -&gt; DelayedIO ()
+contentD :: ()
+paramsD :: ()
+headersD :: ()
+bodyD :: ()
+serverD :: ()
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679137583"><span class="annot"><span class="annottext">captured -&gt; DelayedIO a
+</span><a href="#local-6989586621679137583"><span class="hs-identifier hs-var">new</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-129"></span><span>  </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span>
+</span><span id="line-130"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">capturesD :: (captured, env) -&gt; DelayedIO (captures, a)
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-identifier hs-var">capturesD</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679137584"><span class="annot"><span class="annottext">captured
+</span><a href="#local-6989586621679137584"><span class="hs-identifier hs-var">txt</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679137585"><span class="annot"><span class="annottext">env
+</span><a href="#local-6989586621679137585"><span class="hs-identifier hs-var">env</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-special">,</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(captures -&gt; a -&gt; (captures, a))
+-&gt; DelayedIO captures -&gt; DelayedIO (a -&gt; (captures, a))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">env -&gt; DelayedIO captures
+</span><a href="#local-6989586621679137574"><span class="hs-identifier hs-var">capturesD</span></a></span><span> </span><span class="annot"><span class="annottext">env
+</span><a href="#local-6989586621679137585"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO (a -&gt; (captures, a))
+-&gt; DelayedIO a -&gt; DelayedIO (captures, a)
+forall a b. DelayedIO (a -&gt; b) -&gt; DelayedIO a -&gt; DelayedIO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">captured -&gt; DelayedIO a
+</span><a href="#local-6989586621679137583"><span class="hs-identifier hs-var">new</span></a></span><span> </span><span class="annot"><span class="annottext">captured
+</span><a href="#local-6989586621679137584"><span class="hs-identifier hs-var">txt</span></a></span><span>
+</span><span id="line-131"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">serverD :: (captures, a)
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult b
+</span><a href="Servant.Server.Internal.Delayed.html#serverD"><span class="hs-identifier hs-var">serverD</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679137586"><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137586"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679137587"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679137587"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679137588"><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137588"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span id="local-6989586621679137589"><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137589"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679137590"><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137590"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621679137591"><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137591"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621679137592"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137592"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; b) -&gt; a -&gt; b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679137587"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">((a -&gt; b) -&gt; b) -&gt; RouteResult (a -&gt; b) -&gt; RouteResult b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+</span><a href="#local-6989586621679137582"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137586"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137588"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137589"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137590"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137591"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137592"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-132"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+contentType -&gt; DelayedIO body
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+</span><a href="Servant.Server.Internal.Delayed.html#methodD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span><span>
+</span><span id="line-133"></span><span>    </span><span class="hs-special">}</span><span> </span><span class="hs-comment">-- Note [Existential Record Update]</span><span>
+</span><span id="line-134"></span><span>
+</span><span id="line-135"></span><span class="annot"><span class="hs-comment">-- | Add a parameter check to the end of the params block</span></span><span>
+</span><span id="line-136"></span><span id="local-6989586621679137396"><span id="local-6989586621679137397"><span id="local-6989586621679137398"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#addParameterCheck"><span class="hs-identifier hs-type">addParameterCheck</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137396"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679137397"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137398"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-137"></span><span>                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137397"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-138"></span><span>                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137396"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137398"><span class="hs-identifier hs-type">b</span></a></span></span></span></span><span>
+</span><span id="line-139"></span><span id="addParameterCheck"><span class="annot"><span class="annottext">addParameterCheck :: forall env a b.
+Delayed env (a -&gt; b) -&gt; DelayedIO a -&gt; Delayed env b
+</span><a href="Servant.Server.Internal.Delayed.html#addParameterCheck"><span class="hs-identifier hs-var hs-var">addParameterCheck</span></a></span></span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="hs-special">{</span><span id="local-6989586621679137597"><span id="local-6989586621679137598"><span id="local-6989586621679137599"><span id="local-6989586621679137600"><span id="local-6989586621679137601"><span id="local-6989586621679137602"><span id="local-6989586621679137603"><span id="local-6989586621679137604"><span id="local-6989586621679137605"><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+contentType -&gt; DelayedIO body
+capturesD :: ()
+methodD :: forall env c. Delayed env c -&gt; DelayedIO ()
+authD :: ()
+acceptD :: forall env c. Delayed env c -&gt; DelayedIO ()
+contentD :: ()
+paramsD :: ()
+headersD :: ()
+bodyD :: ()
+serverD :: ()
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679137606"><span class="annot"><span class="annottext">DelayedIO a
+</span><a href="#local-6989586621679137606"><span class="hs-identifier hs-var">new</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-140"></span><span>  </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span>
+</span><span id="line-141"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">paramsD :: DelayedIO (params, a)
+</span><a href="Servant.Server.Internal.Delayed.html#paramsD"><span class="hs-identifier hs-var">paramsD</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="hs-special">,</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(params -&gt; a -&gt; (params, a))
+-&gt; DelayedIO params -&gt; DelayedIO (a -&gt; (params, a))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">DelayedIO params
+</span><a href="#local-6989586621679137602"><span class="hs-identifier hs-var">paramsD</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO (a -&gt; (params, a))
+-&gt; DelayedIO a -&gt; DelayedIO (params, a)
+forall a b. DelayedIO (a -&gt; b) -&gt; DelayedIO a -&gt; DelayedIO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">DelayedIO a
+</span><a href="#local-6989586621679137606"><span class="hs-identifier hs-var">new</span></a></span><span>
+</span><span id="line-142"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">serverD :: captures
+-&gt; (params, a)
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult b
+</span><a href="Servant.Server.Internal.Delayed.html#serverD"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679137607"><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137607"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679137608"><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137608"><span class="hs-identifier hs-var">p</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679137609"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679137609"><span class="hs-identifier hs-var">pNew</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679137610"><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137610"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679137611"><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137611"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621679137612"><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137612"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621679137613"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137613"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; b) -&gt; a -&gt; b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679137609"><span class="hs-identifier hs-var">pNew</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">((a -&gt; b) -&gt; b) -&gt; RouteResult (a -&gt; b) -&gt; RouteResult b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+</span><a href="#local-6989586621679137605"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137607"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137608"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137610"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137611"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137612"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137613"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-143"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+contentType -&gt; DelayedIO body
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span><span>
+</span><span id="line-144"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-145"></span><span>
+</span><span id="line-146"></span><span class="annot"><span class="hs-comment">-- | Add a parameter check to the end of the params block</span></span><span>
+</span><span id="line-147"></span><span id="local-6989586621679137614"><span id="local-6989586621679137615"><span id="local-6989586621679137616"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#addHeaderCheck"><span class="hs-identifier hs-type">addHeaderCheck</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137614"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679137615"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137616"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-148"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137615"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-149"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137614"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137616"><span class="hs-identifier hs-type">b</span></a></span></span></span></span><span>
+</span><span id="line-150"></span><span id="addHeaderCheck"><span class="annot"><span class="annottext">addHeaderCheck :: forall env a b.
+Delayed env (a -&gt; b) -&gt; DelayedIO a -&gt; Delayed env b
+</span><a href="Servant.Server.Internal.Delayed.html#addHeaderCheck"><span class="hs-identifier hs-var hs-var">addHeaderCheck</span></a></span></span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="hs-special">{</span><span id="local-6989586621679137621"><span id="local-6989586621679137622"><span id="local-6989586621679137623"><span id="local-6989586621679137624"><span id="local-6989586621679137625"><span id="local-6989586621679137626"><span id="local-6989586621679137627"><span id="local-6989586621679137628"><span id="local-6989586621679137629"><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+contentType -&gt; DelayedIO body
+capturesD :: ()
+methodD :: forall env c. Delayed env c -&gt; DelayedIO ()
+authD :: ()
+acceptD :: forall env c. Delayed env c -&gt; DelayedIO ()
+contentD :: ()
+paramsD :: ()
+headersD :: ()
+bodyD :: ()
+serverD :: ()
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679137630"><span class="annot"><span class="annottext">DelayedIO a
+</span><a href="#local-6989586621679137630"><span class="hs-identifier hs-var">new</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-151"></span><span>  </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span>
+</span><span id="line-152"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">headersD :: DelayedIO (headers, a)
+</span><a href="Servant.Server.Internal.Delayed.html#headersD"><span class="hs-identifier hs-var">headersD</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="hs-special">,</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(headers -&gt; a -&gt; (headers, a))
+-&gt; DelayedIO headers -&gt; DelayedIO (a -&gt; (headers, a))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">DelayedIO headers
+</span><a href="#local-6989586621679137627"><span class="hs-identifier hs-var">headersD</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO (a -&gt; (headers, a))
+-&gt; DelayedIO a -&gt; DelayedIO (headers, a)
+forall a b. DelayedIO (a -&gt; b) -&gt; DelayedIO a -&gt; DelayedIO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">DelayedIO a
+</span><a href="#local-6989586621679137630"><span class="hs-identifier hs-var">new</span></a></span><span>
+</span><span id="line-153"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">serverD :: captures
+-&gt; params
+-&gt; (headers, a)
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult b
+</span><a href="Servant.Server.Internal.Delayed.html#serverD"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679137631"><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137631"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621679137632"><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137632"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679137633"><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137633"><span class="hs-identifier hs-var">h</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679137634"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679137634"><span class="hs-identifier hs-var">hNew</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679137635"><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137635"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621679137636"><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137636"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621679137637"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137637"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; b) -&gt; a -&gt; b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679137634"><span class="hs-identifier hs-var">hNew</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">((a -&gt; b) -&gt; b) -&gt; RouteResult (a -&gt; b) -&gt; RouteResult b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+</span><a href="#local-6989586621679137629"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137631"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137632"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137633"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137635"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137636"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137637"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-154"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO ()
+env -&gt; DelayedIO captures
+contentType -&gt; DelayedIO body
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+bodyD :: contentType -&gt; DelayedIO body
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+bodyD :: contentType -&gt; DelayedIO body
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span><span>
+</span><span id="line-155"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-156"></span><span>
+</span><span id="line-157"></span><span class="annot"><span class="hs-comment">-- | Add a method check to the end of the method block.</span></span><span>
+</span><span id="line-158"></span><span id="local-6989586621679137417"><span id="local-6989586621679137418"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#addMethodCheck"><span class="hs-identifier hs-type">addMethodCheck</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137417"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137418"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-159"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-160"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137417"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137418"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-161"></span><span id="addMethodCheck"><span class="annot"><span class="annottext">addMethodCheck :: forall env a. Delayed env a -&gt; DelayedIO () -&gt; Delayed env a
+</span><a href="Servant.Server.Internal.Delayed.html#addMethodCheck"><span class="hs-identifier hs-var hs-var">addMethodCheck</span></a></span></span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span class="hs-special">{</span><span id="local-6989586621679137640"><span id="local-6989586621679137641"><span id="local-6989586621679137642"><span id="local-6989586621679137643"><span id="local-6989586621679137644"><span id="local-6989586621679137645"><span id="local-6989586621679137646"><span id="local-6989586621679137647"><span id="local-6989586621679137648"><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+contentType -&gt; DelayedIO body
+capturesD :: ()
+methodD :: forall env c. Delayed env c -&gt; DelayedIO ()
+authD :: ()
+acceptD :: forall env c. Delayed env c -&gt; DelayedIO ()
+contentD :: ()
+paramsD :: ()
+headersD :: ()
+bodyD :: ()
+serverD :: ()
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679137649"><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137649"><span class="hs-identifier hs-var">new</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-162"></span><span>  </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span>
+</span><span id="line-163"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">methodD :: DelayedIO ()
+</span><a href="Servant.Server.Internal.Delayed.html#methodD"><span class="hs-identifier hs-var">methodD</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137641"><span class="hs-identifier hs-var">methodD</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO () -&gt; DelayedIO () -&gt; DelayedIO ()
+forall a b. DelayedIO a -&gt; DelayedIO b -&gt; DelayedIO a
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f a -&gt; f b -&gt; f a
+</span><span class="hs-operator hs-var">&lt;*</span></span><span> </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137649"><span class="hs-identifier hs-var">new</span></a></span><span>
+</span><span id="line-164"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+contentType -&gt; DelayedIO body
+capturesD :: env -&gt; DelayedIO captures
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+capturesD :: env -&gt; DelayedIO captures
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span><span>
+</span><span id="line-165"></span><span>    </span><span class="hs-special">}</span><span> </span><span class="hs-comment">-- Note [Existential Record Update]</span><span>
+</span><span id="line-166"></span><span>
+</span><span id="line-167"></span><span class="annot"><span class="hs-comment">-- | Add an auth check to the end of the auth block.</span></span><span>
+</span><span id="line-168"></span><span id="local-6989586621679137651"><span id="local-6989586621679137652"><span id="local-6989586621679137653"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#addAuthCheck"><span class="hs-identifier hs-type">addAuthCheck</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137651"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679137652"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137653"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-169"></span><span>             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137652"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-170"></span><span>             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137651"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137653"><span class="hs-identifier hs-type">b</span></a></span></span></span></span><span>
+</span><span id="line-171"></span><span id="addAuthCheck"><span class="annot"><span class="annottext">addAuthCheck :: forall env a b.
+Delayed env (a -&gt; b) -&gt; DelayedIO a -&gt; Delayed env b
+</span><a href="Servant.Server.Internal.Delayed.html#addAuthCheck"><span class="hs-identifier hs-var hs-var">addAuthCheck</span></a></span></span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span class="hs-special">{</span><span id="local-6989586621679137658"><span id="local-6989586621679137659"><span id="local-6989586621679137660"><span id="local-6989586621679137661"><span id="local-6989586621679137662"><span id="local-6989586621679137663"><span id="local-6989586621679137664"><span id="local-6989586621679137665"><span id="local-6989586621679137666"><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+contentType -&gt; DelayedIO body
+capturesD :: ()
+methodD :: forall env c. Delayed env c -&gt; DelayedIO ()
+authD :: ()
+acceptD :: forall env c. Delayed env c -&gt; DelayedIO ()
+contentD :: ()
+paramsD :: ()
+headersD :: ()
+bodyD :: ()
+serverD :: ()
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679137667"><span class="annot"><span class="annottext">DelayedIO a
+</span><a href="#local-6989586621679137667"><span class="hs-identifier hs-var">new</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-172"></span><span>  </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span>
+</span><span id="line-173"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">authD :: DelayedIO (auth, a)
+</span><a href="Servant.Server.Internal.Delayed.html#authD"><span class="hs-identifier hs-var">authD</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="hs-special">,</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(auth -&gt; a -&gt; (auth, a))
+-&gt; DelayedIO auth -&gt; DelayedIO (a -&gt; (auth, a))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">DelayedIO auth
+</span><a href="#local-6989586621679137660"><span class="hs-identifier hs-var">authD</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO (a -&gt; (auth, a)) -&gt; DelayedIO a -&gt; DelayedIO (auth, a)
+forall a b. DelayedIO (a -&gt; b) -&gt; DelayedIO a -&gt; DelayedIO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">DelayedIO a
+</span><a href="#local-6989586621679137667"><span class="hs-identifier hs-var">new</span></a></span><span>
+</span><span id="line-174"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">serverD :: captures
+-&gt; params
+-&gt; headers
+-&gt; (auth, a)
+-&gt; body
+-&gt; Request
+-&gt; RouteResult b
+</span><a href="Servant.Server.Internal.Delayed.html#serverD"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span> </span><span id="local-6989586621679137668"><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137668"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621679137669"><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137669"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span id="local-6989586621679137670"><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137670"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679137671"><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137671"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679137672"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679137672"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679137673"><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137673"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621679137674"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137674"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; b) -&gt; a -&gt; b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679137672"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">((a -&gt; b) -&gt; b) -&gt; RouteResult (a -&gt; b) -&gt; RouteResult b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+</span><a href="#local-6989586621679137666"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137668"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137669"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137670"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137671"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137673"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137674"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-175"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+contentType -&gt; DelayedIO body
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span><span>
+</span><span id="line-176"></span><span>    </span><span class="hs-special">}</span><span> </span><span class="hs-comment">-- Note [Existential Record Update]</span><span>
+</span><span id="line-177"></span><span>
+</span><span id="line-178"></span><span class="hs-comment">-- | Add a content type and body checks around parameter checks.</span><span>
+</span><span id="line-179"></span><span class="hs-comment">--</span><span>
+</span><span id="line-180"></span><span class="hs-comment">-- We'll report failed content type check (415), before trying to parse</span><span>
+</span><span id="line-181"></span><span class="hs-comment">-- query parameters (400). Which, in turn, happens before request body parsing.</span><span>
+</span><span id="line-182"></span><span id="local-6989586621679137438"><span id="local-6989586621679137439"><span id="local-6989586621679137440"><span id="local-6989586621679137441"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#addBodyCheck"><span class="hs-identifier hs-type">addBodyCheck</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137438"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679137439"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137440"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-183"></span><span>             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137441"><span class="hs-identifier hs-type">c</span></a></span><span>         </span><span class="annot"><span class="hs-comment">-- ^ content type check</span></span><span>
+</span><span id="line-184"></span><span>             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679137441"><span class="hs-identifier hs-type">c</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137439"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>  </span><span class="annot"><span class="hs-comment">-- ^ body check</span></span><span>
+</span><span id="line-185"></span><span>             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137438"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137440"><span class="hs-identifier hs-type">b</span></a></span></span></span></span></span><span>
+</span><span id="line-186"></span><span id="addBodyCheck"><span class="annot"><span class="annottext">addBodyCheck :: forall env a b c.
+Delayed env (a -&gt; b)
+-&gt; DelayedIO c -&gt; (c -&gt; DelayedIO a) -&gt; Delayed env b
+</span><a href="Servant.Server.Internal.Delayed.html#addBodyCheck"><span class="hs-identifier hs-var hs-var">addBodyCheck</span></a></span></span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span class="hs-special">{</span><span id="local-6989586621679137681"><span id="local-6989586621679137682"><span id="local-6989586621679137683"><span id="local-6989586621679137684"><span id="local-6989586621679137685"><span id="local-6989586621679137686"><span id="local-6989586621679137687"><span id="local-6989586621679137688"><span id="local-6989586621679137689"><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+contentType -&gt; DelayedIO body
+capturesD :: ()
+methodD :: forall env c. Delayed env c -&gt; DelayedIO ()
+authD :: ()
+acceptD :: forall env c. Delayed env c -&gt; DelayedIO ()
+contentD :: ()
+paramsD :: ()
+headersD :: ()
+bodyD :: ()
+serverD :: ()
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679137690"><span class="annot"><span class="annottext">DelayedIO c
+</span><a href="#local-6989586621679137690"><span class="hs-identifier hs-var">newContentD</span></a></span></span><span> </span><span id="local-6989586621679137691"><span class="annot"><span class="annottext">c -&gt; DelayedIO a
+</span><a href="#local-6989586621679137691"><span class="hs-identifier hs-var">newBodyD</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-187"></span><span>  </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span>
+</span><span id="line-188"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">contentD :: DelayedIO (contentType, c)
+</span><a href="Servant.Server.Internal.Delayed.html#contentD"><span class="hs-identifier hs-var">contentD</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="hs-special">,</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(contentType -&gt; c -&gt; (contentType, c))
+-&gt; DelayedIO contentType -&gt; DelayedIO (c -&gt; (contentType, c))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">DelayedIO contentType
+</span><a href="#local-6989586621679137685"><span class="hs-identifier hs-var">contentD</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO (c -&gt; (contentType, c))
+-&gt; DelayedIO c -&gt; DelayedIO (contentType, c)
+forall a b. DelayedIO (a -&gt; b) -&gt; DelayedIO a -&gt; DelayedIO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">DelayedIO c
+</span><a href="#local-6989586621679137690"><span class="hs-identifier hs-var">newContentD</span></a></span><span>
+</span><span id="line-189"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">bodyD :: (contentType, c) -&gt; DelayedIO (body, a)
+</span><a href="Servant.Server.Internal.Delayed.html#bodyD"><span class="hs-identifier hs-var">bodyD</span></a></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621679137692"><span class="annot"><span class="annottext">contentType
+</span><a href="#local-6989586621679137692"><span class="hs-identifier hs-var">content</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679137693"><span class="annot"><span class="annottext">c
+</span><a href="#local-6989586621679137693"><span class="hs-identifier hs-var">c</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-special">,</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(body -&gt; a -&gt; (body, a))
+-&gt; DelayedIO body -&gt; DelayedIO (a -&gt; (body, a))
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">contentType -&gt; DelayedIO body
+</span><a href="#local-6989586621679137688"><span class="hs-identifier hs-var">bodyD</span></a></span><span> </span><span class="annot"><span class="annottext">contentType
+</span><a href="#local-6989586621679137692"><span class="hs-identifier hs-var">content</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO (a -&gt; (body, a)) -&gt; DelayedIO a -&gt; DelayedIO (body, a)
+forall a b. DelayedIO (a -&gt; b) -&gt; DelayedIO a -&gt; DelayedIO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">c -&gt; DelayedIO a
+</span><a href="#local-6989586621679137691"><span class="hs-identifier hs-var">newBodyD</span></a></span><span> </span><span class="annot"><span class="annottext">c
+</span><a href="#local-6989586621679137693"><span class="hs-identifier hs-var">c</span></a></span><span>
+</span><span id="line-190"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">serverD :: captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; (body, a)
+-&gt; Request
+-&gt; RouteResult b
+</span><a href="Servant.Server.Internal.Delayed.html#serverD"><span class="hs-identifier hs-var">serverD</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span> </span><span id="local-6989586621679137694"><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137694"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621679137695"><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137695"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span id="local-6989586621679137696"><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137696"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679137697"><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137697"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679137698"><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137698"><span class="hs-identifier hs-var">z</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679137699"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679137699"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679137700"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137700"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; b) -&gt; a -&gt; b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679137699"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">((a -&gt; b) -&gt; b) -&gt; RouteResult (a -&gt; b) -&gt; RouteResult b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+</span><a href="#local-6989586621679137689"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137694"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137695"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137696"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137697"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137698"><span class="hs-identifier hs-var">z</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137700"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-191"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span><span>
+</span><span id="line-192"></span><span>    </span><span class="hs-special">}</span><span> </span><span class="hs-comment">-- Note [Existential Record Update]</span><span>
+</span><span id="line-193"></span><span>
+</span><span id="line-194"></span><span>
+</span><span id="line-195"></span><span class="hs-comment">-- | Add an accept header check before handling parameters.</span><span>
+</span><span id="line-196"></span><span class="hs-comment">-- In principle, we'd like</span><span>
+</span><span id="line-197"></span><span class="hs-comment">-- to take a bad body (400) response take precedence over a</span><span>
+</span><span id="line-198"></span><span class="hs-comment">-- failed accept check (406). BUT to allow streaming the body,</span><span>
+</span><span id="line-199"></span><span class="hs-comment">-- we cannot run the body check and then still backtrack.</span><span>
+</span><span id="line-200"></span><span class="hs-comment">-- We therefore do the accept check before the body check,</span><span>
+</span><span id="line-201"></span><span class="hs-comment">-- when we can still backtrack. There are other solutions to</span><span>
+</span><span id="line-202"></span><span class="hs-comment">-- this, but they'd be more complicated (such as delaying the</span><span>
+</span><span id="line-203"></span><span class="hs-comment">-- body check further so that it can still be run in a situation</span><span>
+</span><span id="line-204"></span><span class="hs-comment">-- where we'd otherwise report 406).</span><span>
+</span><span id="line-205"></span><span id="local-6989586621679137701"><span id="local-6989586621679137702"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#addAcceptCheck"><span class="hs-identifier hs-type">addAcceptCheck</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137701"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137702"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-206"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.DelayedIO.html#DelayedIO"><span class="hs-identifier hs-type">DelayedIO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-207"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137701"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137702"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-208"></span><span id="addAcceptCheck"><span class="annot"><span class="annottext">addAcceptCheck :: forall env a. Delayed env a -&gt; DelayedIO () -&gt; Delayed env a
+</span><a href="Servant.Server.Internal.Delayed.html#addAcceptCheck"><span class="hs-identifier hs-var hs-var">addAcceptCheck</span></a></span></span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span class="hs-special">{</span><span id="local-6989586621679137705"><span id="local-6989586621679137706"><span id="local-6989586621679137707"><span id="local-6989586621679137708"><span id="local-6989586621679137709"><span id="local-6989586621679137710"><span id="local-6989586621679137711"><span id="local-6989586621679137712"><span id="local-6989586621679137713"><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+contentType -&gt; DelayedIO body
+capturesD :: ()
+methodD :: forall env c. Delayed env c -&gt; DelayedIO ()
+authD :: ()
+acceptD :: forall env c. Delayed env c -&gt; DelayedIO ()
+contentD :: ()
+paramsD :: ()
+headersD :: ()
+bodyD :: ()
+serverD :: ()
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679137714"><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137714"><span class="hs-identifier hs-var">new</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-209"></span><span>  </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span>
+</span><span id="line-210"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">acceptD :: DelayedIO ()
+</span><a href="Servant.Server.Internal.Delayed.html#acceptD"><span class="hs-identifier hs-var">acceptD</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137708"><span class="hs-identifier hs-var">acceptD</span></a></span><span> </span><span class="annot"><span class="annottext">DelayedIO () -&gt; DelayedIO () -&gt; DelayedIO ()
+forall a b. DelayedIO a -&gt; DelayedIO b -&gt; DelayedIO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f a -&gt; f b -&gt; f b
+</span><span class="hs-operator hs-var">*&gt;</span></span><span> </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137714"><span class="hs-identifier hs-var">new</span></a></span><span>
+</span><span id="line-211"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+contentType -&gt; DelayedIO body
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span><span>
+</span><span id="line-212"></span><span>    </span><span class="hs-special">}</span><span> </span><span class="hs-comment">-- Note [Existential Record Update]</span><span>
+</span><span id="line-213"></span><span>
+</span><span id="line-214"></span><span class="hs-comment">-- | Many combinators extract information that is passed to</span><span>
+</span><span id="line-215"></span><span class="hs-comment">-- the handler without the possibility of failure. In such a</span><span>
+</span><span id="line-216"></span><span class="hs-comment">-- case, 'passToServer' can be used.</span><span>
+</span><span id="line-217"></span><span id="local-6989586621679137462"><span id="local-6989586621679137463"><span id="local-6989586621679137464"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#passToServer"><span class="hs-identifier hs-type">passToServer</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137462"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679137463"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137464"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137463"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137462"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137464"><span class="hs-identifier hs-type">b</span></a></span></span></span></span><span>
+</span><span id="line-218"></span><span id="passToServer"><span class="annot"><span class="annottext">passToServer :: forall env a b.
+Delayed env (a -&gt; b) -&gt; (Request -&gt; a) -&gt; Delayed env b
+</span><a href="Servant.Server.Internal.Delayed.html#passToServer"><span class="hs-identifier hs-var hs-var">passToServer</span></a></span></span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span class="hs-special">{</span><span id="local-6989586621679137717"><span id="local-6989586621679137718"><span id="local-6989586621679137719"><span id="local-6989586621679137720"><span id="local-6989586621679137721"><span id="local-6989586621679137722"><span id="local-6989586621679137723"><span id="local-6989586621679137724"><span id="local-6989586621679137725"><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+contentType -&gt; DelayedIO body
+capturesD :: ()
+methodD :: forall env c. Delayed env c -&gt; DelayedIO ()
+authD :: ()
+acceptD :: forall env c. Delayed env c -&gt; DelayedIO ()
+contentD :: ()
+paramsD :: ()
+headersD :: ()
+bodyD :: ()
+serverD :: ()
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679137726"><span class="annot"><span class="annottext">Request -&gt; a
+</span><a href="#local-6989586621679137726"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-219"></span><span>  </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span>
+</span><span id="line-220"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">serverD :: captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult b
+</span><a href="Servant.Server.Internal.Delayed.html#serverD"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span> </span><span id="local-6989586621679137727"><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137727"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621679137728"><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137728"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span id="local-6989586621679137729"><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137729"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span id="local-6989586621679137730"><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137730"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621679137731"><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137731"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621679137732"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137732"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; b) -&gt; a -&gt; b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Request -&gt; a
+</span><a href="#local-6989586621679137726"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137732"><span class="hs-identifier hs-var">req</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">((a -&gt; b) -&gt; b) -&gt; RouteResult (a -&gt; b) -&gt; RouteResult b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">captures
+-&gt; params
+-&gt; headers
+-&gt; auth
+-&gt; body
+-&gt; Request
+-&gt; RouteResult (a -&gt; b)
+</span><a href="#local-6989586621679137725"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137727"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137728"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137729"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137730"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137731"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137732"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-221"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+contentType -&gt; DelayedIO body
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span><span>
+</span><span id="line-222"></span><span>    </span><span class="hs-special">}</span><span> </span><span class="hs-comment">-- Note [Existential Record Update]</span><span>
+</span><span id="line-223"></span><span>
+</span><span id="line-224"></span><span class="hs-comment">-- | Run a delayed server. Performs all scheduled operations</span><span>
+</span><span id="line-225"></span><span class="hs-comment">-- in order, and passes the results from the capture and body</span><span>
+</span><span id="line-226"></span><span class="hs-comment">-- blocks on to the actual handler.</span><span>
+</span><span id="line-227"></span><span class="hs-comment">--</span><span>
+</span><span id="line-228"></span><span class="hs-comment">-- This should only be called once per request; otherwise the guarantees about</span><span>
+</span><span id="line-229"></span><span class="hs-comment">-- effect and HTTP error ordering break down.</span><span>
+</span><span id="line-230"></span><span id="local-6989586621679137474"><span id="local-6989586621679137475"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#runDelayed"><span class="hs-identifier hs-type">runDelayed</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137474"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137475"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-231"></span><span>           </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137474"><span class="hs-identifier hs-type">env</span></a></span><span>
+</span><span id="line-232"></span><span>           </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span>
+</span><span id="line-233"></span><span>           </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ResourceT</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Servant.Server.Internal.RouteResult.html#RouteResult"><span class="hs-identifier hs-type">RouteResult</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137475"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-234"></span><span id="runDelayed"><span class="annot"><span class="annottext">runDelayed :: forall env a.
+Delayed env a -&gt; env -&gt; Request -&gt; ResourceT IO (RouteResult a)
+</span><a href="Servant.Server.Internal.Delayed.html#runDelayed"><span class="hs-identifier hs-var hs-var">runDelayed</span></a></span></span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span class="hs-special">{</span><span id="local-6989586621679137745"><span id="local-6989586621679137746"><span id="local-6989586621679137747"><span id="local-6989586621679137748"><span id="local-6989586621679137749"><span id="local-6989586621679137750"><span id="local-6989586621679137751"><span id="local-6989586621679137752"><span id="local-6989586621679137753"><span class="annot"><span class="annottext">DelayedIO auth
+DelayedIO contentType
+DelayedIO params
+DelayedIO headers
+DelayedIO ()
+env -&gt; DelayedIO captures
+captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+contentType -&gt; DelayedIO body
+capturesD :: ()
+methodD :: forall env c. Delayed env c -&gt; DelayedIO ()
+authD :: ()
+acceptD :: forall env c. Delayed env c -&gt; DelayedIO ()
+contentD :: ()
+paramsD :: ()
+headersD :: ()
+bodyD :: ()
+serverD :: ()
+capturesD :: env -&gt; DelayedIO captures
+methodD :: DelayedIO ()
+authD :: DelayedIO auth
+acceptD :: DelayedIO ()
+contentD :: DelayedIO contentType
+paramsD :: DelayedIO params
+headersD :: DelayedIO headers
+bodyD :: contentType -&gt; DelayedIO body
+serverD :: captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+</span><a href="Servant.Server.Internal.Delayed.html#capturesD"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679137754"><span class="annot"><span class="annottext">env
+</span><a href="#local-6989586621679137754"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DelayedIO a -&gt; Request -&gt; ResourceT IO (RouteResult a)
+forall a. DelayedIO a -&gt; Request -&gt; ResourceT IO (RouteResult a)
+</span><a href="Servant.Server.Internal.DelayedIO.html#runDelayedIO"><span class="hs-identifier hs-var">runDelayedIO</span></a></span><span> </span><span class="annot"><span class="annottext">(DelayedIO a -&gt; Request -&gt; ResourceT IO (RouteResult a))
+-&gt; DelayedIO a -&gt; Request -&gt; ResourceT IO (RouteResult a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-235"></span><span>    </span><span id="local-6989586621679137756"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137756"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">DelayedIO Request
+forall r (m :: * -&gt; *). MonadReader r m =&gt; m r
+</span><span class="hs-identifier hs-var">ask</span></span><span>
+</span><span id="line-236"></span><span>    </span><span id="local-6989586621679137757"><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137757"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">env -&gt; DelayedIO captures
+</span><a href="#local-6989586621679137745"><span class="hs-identifier hs-var">capturesD</span></a></span><span> </span><span class="annot"><span class="annottext">env
+</span><a href="#local-6989586621679137754"><span class="hs-identifier hs-var">env</span></a></span><span>
+</span><span id="line-237"></span><span>    </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137746"><span class="hs-identifier hs-var">methodD</span></a></span><span>
+</span><span id="line-238"></span><span>    </span><span id="local-6989586621679137758"><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137758"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">DelayedIO auth
+</span><a href="#local-6989586621679137747"><span class="hs-identifier hs-var">authD</span></a></span><span>
+</span><span id="line-239"></span><span>    </span><span class="annot"><span class="annottext">DelayedIO ()
+</span><a href="#local-6989586621679137748"><span class="hs-identifier hs-var">acceptD</span></a></span><span>
+</span><span id="line-240"></span><span>    </span><span id="local-6989586621679137759"><span class="annot"><span class="annottext">contentType
+</span><a href="#local-6989586621679137759"><span class="hs-identifier hs-var">content</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">DelayedIO contentType
+</span><a href="#local-6989586621679137749"><span class="hs-identifier hs-var">contentD</span></a></span><span>
+</span><span id="line-241"></span><span>    </span><span id="local-6989586621679137760"><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137760"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">DelayedIO params
+</span><a href="#local-6989586621679137750"><span class="hs-identifier hs-var">paramsD</span></a></span><span>       </span><span class="hs-comment">-- Has to be before body parsing, but after content-type checks</span><span>
+</span><span id="line-242"></span><span>    </span><span id="local-6989586621679137761"><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137761"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">DelayedIO headers
+</span><a href="#local-6989586621679137751"><span class="hs-identifier hs-var">headersD</span></a></span><span>
+</span><span id="line-243"></span><span>    </span><span id="local-6989586621679137762"><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137762"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">contentType -&gt; DelayedIO body
+</span><a href="#local-6989586621679137752"><span class="hs-identifier hs-var">bodyD</span></a></span><span> </span><span class="annot"><span class="annottext">contentType
+</span><a href="#local-6989586621679137759"><span class="hs-identifier hs-var">content</span></a></span><span>
+</span><span id="line-244"></span><span>    </span><span class="annot"><span class="annottext">RouteResult a -&gt; DelayedIO a
+forall a. RouteResult a -&gt; DelayedIO a
+</span><a href="Servant.Server.Internal.DelayedIO.html#liftRouteResult"><span class="hs-identifier hs-var">liftRouteResult</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">captures
+-&gt; params -&gt; headers -&gt; auth -&gt; body -&gt; Request -&gt; RouteResult a
+</span><a href="#local-6989586621679137753"><span class="hs-identifier hs-var">serverD</span></a></span><span> </span><span class="annot"><span class="annottext">captures
+</span><a href="#local-6989586621679137757"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">params
+</span><a href="#local-6989586621679137760"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">headers
+</span><a href="#local-6989586621679137761"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">auth
+</span><a href="#local-6989586621679137758"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">body
+</span><a href="#local-6989586621679137762"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137756"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-245"></span><span>
+</span><span id="line-246"></span><span class="hs-comment">-- | Runs a delayed server and the resulting action.</span><span>
+</span><span id="line-247"></span><span class="hs-comment">-- Takes a continuation that lets us send a response.</span><span>
+</span><span id="line-248"></span><span class="hs-comment">-- Also takes a continuation for how to turn the</span><span>
+</span><span id="line-249"></span><span class="hs-comment">-- result of the delayed server into a response.</span><span>
+</span><span id="line-250"></span><span id="local-6989586621679137490"><span id="local-6989586621679137491"><span id="local-6989586621679137494"><span class="annot"><a href="Servant.Server.Internal.Delayed.html#runAction"><span class="hs-identifier hs-type">runAction</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Servant.Server.Internal.Delayed.html#Delayed"><span class="hs-identifier hs-type">Delayed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137490"><span class="hs-identifier hs-type">env</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Servant.Server.Internal.Handler.html#Handler"><span class="hs-identifier hs-type">Handler</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679137491"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-251"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679137490"><span class="hs-identifier hs-type">env</span></a></span><span>
+</span><span id="line-252"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Request</span></span><span>
+</span><span id="line-253"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Servant.Server.Internal.RouteResult.html#RouteResult"><span class="hs-identifier hs-type">RouteResult</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Response</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679137494"><span class="hs-identifier hs-type">r</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-254"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679137491"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Servant.Server.Internal.RouteResult.html#RouteResult"><span class="hs-identifier hs-type">RouteResult</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Response</span></span><span class="hs-special">)</span><span>
+</span><span id="line-255"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679137494"><span class="hs-identifier hs-type">r</span></a></span></span></span></span><span>
+</span><span id="line-256"></span><span id="runAction"><span class="annot"><span class="annottext">runAction :: forall env a r.
+Delayed env (Handler a)
+-&gt; env
+-&gt; Request
+-&gt; (RouteResult Response -&gt; IO r)
+-&gt; (a -&gt; RouteResult Response)
+-&gt; IO r
+</span><a href="Servant.Server.Internal.Delayed.html#runAction"><span class="hs-identifier hs-var hs-var">runAction</span></a></span></span><span> </span><span id="local-6989586621679137782"><span class="annot"><span class="annottext">Delayed env (Handler a)
+</span><a href="#local-6989586621679137782"><span class="hs-identifier hs-var">action</span></a></span></span><span> </span><span id="local-6989586621679137783"><span class="annot"><span class="annottext">env
+</span><a href="#local-6989586621679137783"><span class="hs-identifier hs-var">env</span></a></span></span><span> </span><span id="local-6989586621679137784"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137784"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span id="local-6989586621679137785"><span class="annot"><span class="annottext">RouteResult Response -&gt; IO r
+</span><a href="#local-6989586621679137785"><span class="hs-identifier hs-var">respond</span></a></span></span><span> </span><span id="local-6989586621679137786"><span class="annot"><span class="annottext">a -&gt; RouteResult Response
+</span><a href="#local-6989586621679137786"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ResourceT IO r -&gt; IO r
+forall (m :: * -&gt; *) a. MonadUnliftIO m =&gt; ResourceT m a -&gt; m a
+</span><span class="hs-identifier hs-var">runResourceT</span></span><span> </span><span class="annot"><span class="annottext">(ResourceT IO r -&gt; IO r) -&gt; ResourceT IO r -&gt; IO r
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-257"></span><span>    </span><span class="annot"><span class="annottext">Delayed env (Handler a)
+-&gt; env -&gt; Request -&gt; ResourceT IO (RouteResult (Handler a))
+forall env a.
+Delayed env a -&gt; env -&gt; Request -&gt; ResourceT IO (RouteResult a)
+</span><a href="Servant.Server.Internal.Delayed.html#runDelayed"><span class="hs-identifier hs-var">runDelayed</span></a></span><span> </span><span class="annot"><span class="annottext">Delayed env (Handler a)
+</span><a href="#local-6989586621679137782"><span class="hs-identifier hs-var">action</span></a></span><span> </span><span class="annot"><span class="annottext">env
+</span><a href="#local-6989586621679137783"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679137784"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">ResourceT IO (RouteResult (Handler a))
+-&gt; (RouteResult (Handler a) -&gt; ResourceT IO (RouteResult Response))
+-&gt; ResourceT IO (RouteResult Response)
+forall a b.
+ResourceT IO a -&gt; (a -&gt; ResourceT IO b) -&gt; ResourceT IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">RouteResult (Handler a) -&gt; ResourceT IO (RouteResult Response)
+</span><a href="#local-6989586621679137787"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">ResourceT IO (RouteResult Response)
+-&gt; (RouteResult Response -&gt; ResourceT IO r) -&gt; ResourceT IO r
+forall a b.
+ResourceT IO a -&gt; (a -&gt; ResourceT IO b) -&gt; ResourceT IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">IO r -&gt; ResourceT IO r
+forall a. IO a -&gt; ResourceT IO a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO r -&gt; ResourceT IO r)
+-&gt; (RouteResult Response -&gt; IO r)
+-&gt; RouteResult Response
+-&gt; ResourceT IO r
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">RouteResult Response -&gt; IO r
+</span><a href="#local-6989586621679137785"><span class="hs-identifier hs-var">respond</span></a></span><span>
+</span><span id="line-258"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-259"></span><span>    </span><span id="local-6989586621679137787"><span class="annot"><span class="annottext">go :: RouteResult (Handler a) -&gt; ResourceT IO (RouteResult Response)
+</span><a href="#local-6989586621679137787"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Servant.Server.Internal.RouteResult.html#Fail"><span class="hs-identifier hs-type">Fail</span></a></span><span> </span><span id="local-6989586621679137791"><span class="annot"><span class="annottext">ServerError
+</span><a href="#local-6989586621679137791"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RouteResult Response -&gt; ResourceT IO (RouteResult Response)
+forall a. a -&gt; ResourceT IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(RouteResult Response -&gt; ResourceT IO (RouteResult Response))
+-&gt; RouteResult Response -&gt; ResourceT IO (RouteResult Response)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ServerError -&gt; RouteResult Response
+forall a. ServerError -&gt; RouteResult a
+</span><a href="Servant.Server.Internal.RouteResult.html#Fail"><span class="hs-identifier hs-var">Fail</span></a></span><span> </span><span class="annot"><span class="annottext">ServerError
+</span><a href="#local-6989586621679137791"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-260"></span><span>    </span><span class="annot"><a href="#local-6989586621679137787"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Servant.Server.Internal.RouteResult.html#FailFatal"><span class="hs-identifier hs-type">FailFatal</span></a></span><span> </span><span id="local-6989586621679137793"><span class="annot"><span class="annottext">ServerError
+</span><a href="#local-6989586621679137793"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RouteResult Response -&gt; ResourceT IO (RouteResult Response)
+forall a. a -&gt; ResourceT IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(RouteResult Response -&gt; ResourceT IO (RouteResult Response))
+-&gt; RouteResult Response -&gt; ResourceT IO (RouteResult Response)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ServerError -&gt; RouteResult Response
+forall a. ServerError -&gt; RouteResult a
+</span><a href="Servant.Server.Internal.RouteResult.html#FailFatal"><span class="hs-identifier hs-var">FailFatal</span></a></span><span> </span><span class="annot"><span class="annottext">ServerError
+</span><a href="#local-6989586621679137793"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-261"></span><span>    </span><span class="annot"><a href="#local-6989586621679137787"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Servant.Server.Internal.RouteResult.html#Route"><span class="hs-identifier hs-type">Route</span></a></span><span> </span><span id="local-6989586621679137795"><span class="annot"><span class="annottext">Handler a
+</span><a href="#local-6989586621679137795"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (RouteResult Response) -&gt; ResourceT IO (RouteResult Response)
+forall a. IO a -&gt; ResourceT IO a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">(IO (RouteResult Response) -&gt; ResourceT IO (RouteResult Response))
+-&gt; IO (RouteResult Response) -&gt; ResourceT IO (RouteResult Response)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-262"></span><span>      </span><span id="local-6989586621679137796"><span class="annot"><span class="annottext">Either ServerError a
+</span><a href="#local-6989586621679137796"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Handler a -&gt; IO (Either ServerError a)
+forall a. Handler a -&gt; IO (Either ServerError a)
+</span><a href="Servant.Server.Internal.Handler.html#runHandler"><span class="hs-identifier hs-var">runHandler</span></a></span><span> </span><span class="annot"><span class="annottext">Handler a
+</span><a href="#local-6989586621679137795"><span class="hs-identifier hs-var">a</span></a></span><span>
+</span><span id="line-263"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either ServerError a
+</span><a href="#local-6989586621679137796"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-264"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621679137798"><span class="annot"><span class="annottext">ServerError
+</span><a href="#local-6989586621679137798"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">RouteResult Response -&gt; IO (RouteResult Response)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(RouteResult Response -&gt; IO (RouteResult Response))
+-&gt; (Response -&gt; RouteResult Response)
+-&gt; Response
+-&gt; IO (RouteResult Response)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Response -&gt; RouteResult Response
+forall a. a -&gt; RouteResult a
+</span><a href="Servant.Server.Internal.RouteResult.html#Route"><span class="hs-identifier hs-var">Route</span></a></span><span> </span><span class="annot"><span class="annottext">(Response -&gt; IO (RouteResult Response))
+-&gt; Response -&gt; IO (RouteResult Response)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ServerError -&gt; Response
+</span><a href="Servant.Server.Internal.ServerError.html#responseServerError"><span class="hs-identifier hs-var">responseServerError</span></a></span><span> </span><span class="annot"><span class="annottext">ServerError
+</span><a href="#local-6989586621679137798"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-265"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621679137800"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679137800"><span class="hs-identifier hs-var">x</span></a></span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">RouteResult Response -&gt; IO (RouteResult Response)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(RouteResult Response -&gt; IO (RouteResult Response))
+-&gt; RouteResult Response -&gt; IO (RouteResult Response)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; RouteResult Response
+</span><a href="#local-6989586621679137786"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679137800"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-266"></span><span>
+</span><span id="line-267"></span><span class="hs-comment">{- Note [Existential Record Update]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Due to GHC issue &lt;https://ghc.haskell.org/trac/ghc/ticket/2595 2595&gt;, we cannot
+do the more succinct thing - just update the records we actually change.
+-}</span><span>
+</span><span id="line-273"></span></pre></body></html>

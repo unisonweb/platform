@@ -1,0 +1,605 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE MagicHash #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE NoImplicitPrelude #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE Trustworthy #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE UnliftedFFITypes #-}</span><span>
+</span><span id="line-6"></span><span>
+</span><span id="line-7"></span><span class="hs-pragma">{-# OPTIONS_HADDOCK not-home #-}</span><span>
+</span><span id="line-8"></span><span>
+</span><span id="line-9"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- Module      :  GHC.TopHandler</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- Copyright   :  (c) The University of Glasgow, 2001-2002</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- License     :  see libraries/base/LICENSE</span><span>
+</span><span id="line-14"></span><span class="hs-comment">--</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- Maintainer  :  cvs-ghc@haskell.org</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- Stability   :  internal</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- Portability :  non-portable (GHC Extensions)</span><span>
+</span><span id="line-18"></span><span class="hs-comment">--</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- Support for catching exceptions raised during top-level computations</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- (e.g. @Main.main@, 'Control.Concurrent.forkIO', and foreign exports)</span><span>
+</span><span id="line-21"></span><span class="hs-comment">--</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.TopHandler</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-25"></span><span>        </span><span class="annot"><a href="GHC.TopHandler.html#runMainIO"><span class="hs-identifier">runMainIO</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.TopHandler.html#runIO"><span class="hs-identifier">runIO</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.TopHandler.html#runIOFastExit"><span class="hs-identifier">runIOFastExit</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.TopHandler.html#runNonIO"><span class="hs-identifier">runNonIO</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-26"></span><span>        </span><span class="annot"><a href="GHC.TopHandler.html#topHandler"><span class="hs-identifier">topHandler</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.TopHandler.html#topHandlerFastExit"><span class="hs-identifier">topHandlerFastExit</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-27"></span><span>        </span><span class="annot"><a href="GHC.Conc.Sync.html#reportStackOverflow"><span class="hs-identifier">reportStackOverflow</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Conc.Sync.html#reportError"><span class="hs-identifier">reportError</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-28"></span><span>        </span><span class="annot"><a href="GHC.TopHandler.html#flushStdHandles"><span class="hs-identifier">flushStdHandles</span></a></span><span>
+</span><span id="line-29"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span class="hs-cpp">
+
+#include &lt;ghcplatform.h&gt;
+</span><span class="hs-cpp">#include &quot;HsBaseConfig.h&quot;
+</span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.Exception.html"><span class="hs-identifier">Control.Exception</span></a></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Maybe.html"><span class="hs-identifier">Data.Maybe</span></a></span><span>
+</span><span id="line-36"></span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Foreign.html"><span class="hs-identifier">Foreign</span></a></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Foreign.C.html"><span class="hs-identifier">Foreign.C</span></a></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Base.html"><span class="hs-identifier">GHC.Base</span></a></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Conc.html"><span class="hs-identifier">GHC.Conc</span></a></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Conc.Sync.html#throwTo"><span class="hs-identifier">throwTo</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Real.html"><span class="hs-identifier">GHC.Real</span></a></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.IO.html"><span class="hs-identifier">GHC.IO</span></a></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.IO.Handle.html"><span class="hs-identifier">GHC.IO.Handle</span></a></span><span>
+</span><span id="line-44"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.IO.StdHandles.html"><span class="hs-identifier">GHC.IO.StdHandles</span></a></span><span>
+</span><span id="line-45"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.IO.Exception.html"><span class="hs-identifier">GHC.IO.Exception</span></a></span><span>
+</span><span id="line-46"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Weak.html"><span class="hs-identifier">GHC.Weak</span></a></span><span class="hs-cpp">
+
+#if defined(mingw32_HOST_OS)
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-identifier">GHC.ConsoleHandler</span><span class="hs-cpp">
+#elif defined(javascript_HOST_ARCH)
+</span><span class="hs-cpp">#else
+</span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Dynamic.html"><span class="hs-identifier">Data.Dynamic</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Dynamic.html#toDyn"><span class="hs-identifier">toDyn</span></a></span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- Note [rts_setMainThread must be called unsafely]</span><span>
+</span><span id="line-56"></span><span class="hs-comment">-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</span><span>
+</span><span id="line-57"></span><span class="hs-comment">-- rts_setMainThread must be called as unsafe, because it</span><span>
+</span><span id="line-58"></span><span class="hs-comment">-- dereferences the Weak# and manipulates the raw Haskell value</span><span>
+</span><span id="line-59"></span><span class="hs-comment">-- behind it.  Therefore, it must not race with a garbage collection.</span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span>
+</span><span id="line-62"></span><span class="hs-comment">-- Note [rts_setMainThread has an unsound type]</span><span>
+</span><span id="line-63"></span><span class="hs-comment">-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- 'rts_setMainThread' is imported with type Weak# ThreadId -&gt; IO (),</span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- but this is an unsound type for it: it grabs the /key/ of the</span><span>
+</span><span id="line-66"></span><span class="hs-comment">-- 'Weak#' object, which isn't tracked by the type at all.</span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- That this works at all is a consequence of the fact that</span><span>
+</span><span id="line-68"></span><span class="hs-comment">-- 'mkWeakThreadId' produces a 'Weak#' with a 'ThreadId#' as the key</span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- This is fairly robust, in that 'mkWeakThreadId' wouldn't work</span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- otherwise, but it still is sufficiently non-trivial to justify an</span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- ASSERT in rts/TopHandler.c.</span><span>
+</span><span id="line-72"></span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- see Note [rts_setMainThread must be called unsafely] and</span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- Note [rts_setMainThread has an unsound type]</span><span>
+</span><span id="line-75"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;rts_setMainThread&quot;</span></span><span>
+</span><span id="line-76"></span><span>  </span><span id="setMainThread"><span class="annot"><a href="GHC.TopHandler.html#setMainThread"><span class="hs-identifier hs-var">setMainThread</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#Weak%23/GHC.Prim.html#Weak%23"><span class="hs-identifier hs-type">Weak#</span></a></span><span> </span><span class="annot"><a href="GHC.Conc.Sync.html#ThreadId"><span class="hs-identifier hs-type">ThreadId</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span class="hs-comment">-- | 'runMainIO' is wrapped around 'Main.main' (or whatever main is</span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- called in the program).  It catches otherwise uncaught exceptions,</span><span>
+</span><span id="line-80"></span><span class="hs-comment">-- and also flushes stdout\/stderr before exiting.</span><span>
+</span><span id="line-81"></span><span id="local-6989586621679687707"><span class="annot"><a href="GHC.TopHandler.html#runMainIO"><span class="hs-identifier hs-type">runMainIO</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687707"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687707"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-82"></span><span id="runMainIO"><span class="annot"><span class="annottext">runMainIO :: forall a. IO a -&gt; IO a
+</span><a href="GHC.TopHandler.html#runMainIO"><span class="hs-identifier hs-var hs-var">runMainIO</span></a></span></span><span> </span><span id="local-6989586621679687801"><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679687801"><span class="hs-identifier hs-var">main</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-83"></span><span>    </span><span class="hs-keyword">do</span><span>
+</span><span id="line-84"></span><span>      </span><span id="local-6989586621679687802"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679687802"><span class="hs-identifier hs-var">main_thread_id</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO ThreadId
+</span><a href="GHC.Conc.Sync.html#myThreadId"><span class="hs-identifier hs-var">myThreadId</span></a></span><span>
+</span><span id="line-85"></span><span>      </span><span id="local-6989586621679687804"><span class="annot"><span class="annottext">Weak ThreadId
+</span><a href="#local-6989586621679687804"><span class="hs-identifier hs-var">weak_tid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; IO (Weak ThreadId)
+</span><a href="GHC.Conc.Sync.html#mkWeakThreadId"><span class="hs-identifier hs-var">mkWeakThreadId</span></a></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679687802"><span class="hs-identifier hs-var">main_thread_id</span></a></span><span>
+</span><span id="line-86"></span><span>
+</span><span id="line-87"></span><span>    </span><span class="hs-comment">--setFinalizerExceptionHandler printToStderrFinalizerExceptionHandler</span><span>
+</span><span id="line-88"></span><span>      </span><span class="hs-comment">-- For the time being, we don't install any exception handler for</span><span>
+</span><span id="line-89"></span><span>      </span><span class="hs-comment">-- Handle finalization. Instead, the user should set one manually.</span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Weak ThreadId
+</span><a href="#local-6989586621679687804"><span class="hs-identifier hs-var">weak_tid</span></a></span><span> </span><span class="hs-keyword">of</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Weak.html#Weak"><span class="hs-identifier hs-type">Weak</span></a></span><span> </span><span id="local-6989586621679687807"><span class="annot"><span class="annottext">Weak# ThreadId
+</span><a href="#local-6989586621679687807"><span class="hs-identifier hs-var">w</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Weak# ThreadId -&gt; IO ()
+</span><a href="GHC.TopHandler.html#setMainThread"><span class="hs-identifier hs-var">setMainThread</span></a></span><span> </span><span class="annot"><span class="annottext">Weak# ThreadId
+</span><a href="#local-6989586621679687807"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-92"></span><span>      </span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+</span><a href="GHC.TopHandler.html#install_interrupt_handler"><span class="hs-identifier hs-var">install_interrupt_handler</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-93"></span><span>           </span><span id="local-6989586621679687809"><span class="annot"><span class="annottext">Maybe ThreadId
+</span><a href="#local-6989586621679687809"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Weak ThreadId -&gt; IO (Maybe ThreadId)
+forall v. Weak v -&gt; IO (Maybe v)
+</span><a href="GHC.Weak.html#deRefWeak"><span class="hs-identifier hs-var">deRefWeak</span></a></span><span> </span><span class="annot"><span class="annottext">Weak ThreadId
+</span><a href="#local-6989586621679687804"><span class="hs-identifier hs-var">weak_tid</span></a></span><span>
+</span><span id="line-94"></span><span>           </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe ThreadId
+</span><a href="#local-6989586621679687809"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-95"></span><span>               </span><span class="annot"><span class="annottext">Maybe ThreadId
+</span><a href="GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-96"></span><span>               </span><span class="annot"><a href="GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621679687811"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679687811"><span class="hs-identifier hs-var">tid</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; SomeException -&gt; IO ()
+forall e. Exception e =&gt; ThreadId -&gt; e -&gt; IO ()
+</span><a href="GHC.Conc.Sync.html#throwTo"><span class="hs-identifier hs-var">throwTo</span></a></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679687811"><span class="hs-identifier hs-var">tid</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AsyncException -&gt; SomeException
+forall e. Exception e =&gt; e -&gt; SomeException
+</span><a href="GHC.Exception.Type.html#toException"><span class="hs-identifier hs-var">toException</span></a></span><span> </span><span class="annot"><span class="annottext">AsyncException
+</span><a href="GHC.IO.Exception.html#UserInterrupt"><span class="hs-identifier hs-var">UserInterrupt</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>      </span><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679687801"><span class="hs-identifier hs-var">main</span></a></span><span> </span><span class="hs-comment">-- hs_exit() will flush</span><span>
+</span><span id="line-98"></span><span>    </span><span class="annot"><span class="annottext">IO a -&gt; (SomeException -&gt; IO a) -&gt; IO a
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="GHC.IO.html#catch"><span class="hs-operator hs-var">`catch`</span></a></span><span>
+</span><span id="line-99"></span><span>      </span><span class="annot"><span class="annottext">SomeException -&gt; IO a
+forall a. SomeException -&gt; IO a
+</span><a href="GHC.TopHandler.html#topHandler"><span class="hs-identifier hs-var">topHandler</span></a></span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span class="annot"><a href="GHC.TopHandler.html#install_interrupt_handler"><span class="hs-identifier hs-type">install_interrupt_handler</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-cpp">
+#if defined(javascript_HOST_ARCH)
+</span><span class="hs-identifier">install_interrupt_handler</span><span> </span><span class="hs-identifier">_</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">return</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-cpp">
+#elif defined(mingw32_HOST_OS)
+</span><span class="hs-identifier">install_interrupt_handler</span><span> </span><span class="hs-identifier">handler</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-106"></span><span>  </span><span class="hs-identifier">_</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">GHC.ConsoleHandler.installHandler</span><span> </span><span class="hs-operator">$</span><span>
+</span><span id="line-107"></span><span>     </span><span class="hs-identifier">Catch</span><span> </span><span class="hs-operator">$</span><span> </span><span class="hs-glyph">\</span><span class="hs-identifier">event</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-108"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="hs-identifier">event</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-109"></span><span>           </span><span class="hs-identifier">ControlC</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">handler</span><span>
+</span><span id="line-110"></span><span>           </span><span class="hs-identifier">Break</span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">handler</span><span>
+</span><span id="line-111"></span><span>           </span><span class="hs-identifier">Close</span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">handler</span><span>
+</span><span id="line-112"></span><span>           </span><span class="hs-identifier">_</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">return</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-113"></span><span>  </span><span class="hs-identifier">return</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-cpp">
+#elif !defined(HAVE_SIGNAL_H)
+</span><span class="hs-identifier">install_interrupt_handler</span><span> </span><span class="hs-identifier">_</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-cpp">
+#else
+</span><span class="hs-cpp">#include &quot;rts/Signals.h&quot;
+</span><span class="hs-comment">-- specialised version of System.Posix.Signals.installHandler, which</span><span>
+</span><span id="line-119"></span><span class="hs-comment">-- isn't available here.</span><span>
+</span><span id="line-120"></span><span id="install_interrupt_handler"><span class="annot"><span class="annottext">install_interrupt_handler :: IO () -&gt; IO ()
+</span><a href="GHC.TopHandler.html#install_interrupt_handler"><span class="hs-identifier hs-var hs-var">install_interrupt_handler</span></a></span></span><span> </span><span id="local-6989586621679687815"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679687815"><span class="hs-identifier hs-var">handler</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-121"></span><span>   </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679687817"><span class="annot"><span class="annottext">sig :: CInt
+</span><a href="#local-6989586621679687817"><span class="hs-identifier hs-var hs-var">sig</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">CONST_SIGINT</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">CInt</span><span>
+</span><span id="line-122"></span><span>   </span><span class="annot"><span class="annottext">Maybe (HandlerFun, Dynamic)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CInt
+-&gt; Maybe (HandlerFun, Dynamic) -&gt; IO (Maybe (HandlerFun, Dynamic))
+</span><a href="GHC.Conc.Signal.html#setHandler"><span class="hs-identifier hs-var">setHandler</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679687817"><span class="hs-identifier hs-var">sig</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(HandlerFun, Dynamic) -&gt; Maybe (HandlerFun, Dynamic)
+forall a. a -&gt; Maybe a
+</span><a href="GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IO () -&gt; HandlerFun
+forall a b. a -&gt; b -&gt; a
+</span><a href="GHC.Base.html#const"><span class="hs-identifier hs-var">const</span></a></span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679687815"><span class="hs-identifier hs-var">handler</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; Dynamic
+forall a. Typeable a =&gt; a -&gt; Dynamic
+</span><a href="Data.Dynamic.html#toDyn"><span class="hs-identifier hs-var">toDyn</span></a></span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679687815"><span class="hs-identifier hs-var">handler</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>   </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; CInt -&gt; Ptr () -&gt; IO CInt
+</span><a href="GHC.TopHandler.html#stg_sig_install"><span class="hs-identifier hs-var">stg_sig_install</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679687817"><span class="hs-identifier hs-var">sig</span></a></span><span> </span><span class="hs-identifier">STG_SIG_RST</span><span> </span><span class="hs-identifier">nullPtr</span><span>
+</span><span id="line-124"></span><span>     </span><span class="hs-comment">-- STG_SIG_RST: the second ^C kills us for real, just in case the</span><span>
+</span><span id="line-125"></span><span>     </span><span class="hs-comment">-- RTS or program is unresponsive.</span><span>
+</span><span id="line-126"></span><span>   </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-127"></span><span>
+</span><span id="line-128"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span>
+</span><span id="line-129"></span><span>  </span><span id="stg_sig_install"><span class="annot"><a href="GHC.TopHandler.html#stg_sig_install"><span class="hs-identifier hs-var">stg_sig_install</span></a></span></span><span>
+</span><span id="line-130"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span>                         </span><span class="hs-comment">-- sig no.</span><span>
+</span><span id="line-131"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span>                         </span><span class="hs-comment">-- action code (STG_SIG_HAN etc.)</span><span>
+</span><span id="line-132"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Ptr.html#Ptr"><span class="hs-identifier hs-type">Ptr</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>                       </span><span class="hs-comment">-- (in, out) blocked</span><span>
+</span><span id="line-133"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span>                      </span><span class="hs-comment">-- (ret) old action code</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-136"></span><span class="hs-comment">-- | 'runIO' is wrapped around every @foreign export@ and @foreign</span><span>
+</span><span id="line-137"></span><span class="hs-comment">-- import \&quot;wrapper\&quot;@ to mop up any uncaught exceptions.  Thus, the</span><span>
+</span><span id="line-138"></span><span class="hs-comment">-- result of running 'System.Exit.exitWith' in a foreign-exported</span><span>
+</span><span id="line-139"></span><span class="hs-comment">-- function is the same as in the main thread: it terminates the</span><span>
+</span><span id="line-140"></span><span class="hs-comment">-- program.</span><span>
+</span><span id="line-141"></span><span class="hs-comment">--</span><span>
+</span><span id="line-142"></span><span id="local-6989586621679687822"><span class="annot"><a href="GHC.TopHandler.html#runIO"><span class="hs-identifier hs-type">runIO</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687822"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687822"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-143"></span><span id="runIO"><span class="annot"><span class="annottext">runIO :: forall a. IO a -&gt; IO a
+</span><a href="GHC.TopHandler.html#runIO"><span class="hs-identifier hs-var hs-var">runIO</span></a></span></span><span> </span><span id="local-6989586621679687824"><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679687824"><span class="hs-identifier hs-var">main</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO a -&gt; (SomeException -&gt; IO a) -&gt; IO a
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="GHC.IO.html#catch"><span class="hs-identifier hs-var">catch</span></a></span><span> </span><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679687824"><span class="hs-identifier hs-var">main</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; IO a
+forall a. SomeException -&gt; IO a
+</span><a href="GHC.TopHandler.html#topHandler"><span class="hs-identifier hs-var">topHandler</span></a></span><span>
+</span><span id="line-144"></span><span>
+</span><span id="line-145"></span><span class="hs-comment">-- | Like 'runIO', but in the event of an exception that causes an exit,</span><span>
+</span><span id="line-146"></span><span class="hs-comment">-- we don't shut down the system cleanly, we just exit.  This is</span><span>
+</span><span id="line-147"></span><span class="hs-comment">-- useful in some cases, because the safe exit version will give other</span><span>
+</span><span id="line-148"></span><span class="hs-comment">-- threads a chance to clean up first, which might shut down the</span><span>
+</span><span id="line-149"></span><span class="hs-comment">-- system in a different way.  For example, try</span><span>
+</span><span id="line-150"></span><span class="hs-comment">--</span><span>
+</span><span id="line-151"></span><span class="hs-comment">--   main = forkIO (runIO (exitWith (ExitFailure 1))) &gt;&gt; threadDelay 10000</span><span>
+</span><span id="line-152"></span><span class="hs-comment">--</span><span>
+</span><span id="line-153"></span><span class="hs-comment">-- This will sometimes exit with &quot;interrupted&quot; and code 0, because the</span><span>
+</span><span id="line-154"></span><span class="hs-comment">-- main thread is given a chance to shut down when the child thread calls</span><span>
+</span><span id="line-155"></span><span class="hs-comment">-- safeExit.  There is a race to shut down between the main and child threads.</span><span>
+</span><span id="line-156"></span><span class="hs-comment">--</span><span>
+</span><span id="line-157"></span><span id="local-6989586621679687825"><span class="annot"><a href="GHC.TopHandler.html#runIOFastExit"><span class="hs-identifier hs-type">runIOFastExit</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687825"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687825"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-158"></span><span id="runIOFastExit"><span class="annot"><span class="annottext">runIOFastExit :: forall a. IO a -&gt; IO a
+</span><a href="GHC.TopHandler.html#runIOFastExit"><span class="hs-identifier hs-var hs-var">runIOFastExit</span></a></span></span><span> </span><span id="local-6989586621679687827"><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679687827"><span class="hs-identifier hs-var">main</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO a -&gt; (SomeException -&gt; IO a) -&gt; IO a
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="GHC.IO.html#catch"><span class="hs-identifier hs-var">catch</span></a></span><span> </span><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679687827"><span class="hs-identifier hs-var">main</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; IO a
+forall a. SomeException -&gt; IO a
+</span><a href="GHC.TopHandler.html#topHandlerFastExit"><span class="hs-identifier hs-var">topHandlerFastExit</span></a></span><span>
+</span><span id="line-159"></span><span>        </span><span class="hs-comment">-- NB. this is used by the testsuite driver</span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span class="hs-comment">-- | The same as 'runIO', but for non-IO computations.  Used for</span><span>
+</span><span id="line-162"></span><span class="hs-comment">-- wrapping @foreign export@ and @foreign import \&quot;wrapper\&quot;@ when these</span><span>
+</span><span id="line-163"></span><span class="hs-comment">-- are used to export Haskell functions with non-IO types.</span><span>
+</span><span id="line-164"></span><span class="hs-comment">--</span><span>
+</span><span id="line-165"></span><span id="local-6989586621679687828"><span class="annot"><a href="GHC.TopHandler.html#runNonIO"><span class="hs-identifier hs-type">runNonIO</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679687828"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687828"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-166"></span><span id="runNonIO"><span class="annot"><span class="annottext">runNonIO :: forall a. a -&gt; IO a
+</span><a href="GHC.TopHandler.html#runNonIO"><span class="hs-identifier hs-var hs-var">runNonIO</span></a></span></span><span> </span><span id="local-6989586621679687831"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679687831"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO a -&gt; (SomeException -&gt; IO a) -&gt; IO a
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="GHC.IO.html#catch"><span class="hs-identifier hs-var">catch</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679687831"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; IO a -&gt; IO a
+forall a b. a -&gt; b -&gt; b
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Prim.html#seq/GHC.Prim.html#seq"><span class="hs-operator hs-var">`seq`</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; IO a
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679687831"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; IO a
+forall a. SomeException -&gt; IO a
+</span><a href="GHC.TopHandler.html#topHandler"><span class="hs-identifier hs-var">topHandler</span></a></span><span>
+</span><span id="line-167"></span><span>
+</span><span id="line-168"></span><span id="local-6989586621679687722"><span class="annot"><a href="GHC.TopHandler.html#topHandler"><span class="hs-identifier hs-type">topHandler</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Exception.Type.html#SomeException"><span class="hs-identifier hs-type">SomeException</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687722"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-169"></span><span id="topHandler"><span class="annot"><span class="annottext">topHandler :: forall a. SomeException -&gt; IO a
+</span><a href="GHC.TopHandler.html#topHandler"><span class="hs-identifier hs-var hs-var">topHandler</span></a></span></span><span> </span><span id="local-6989586621679687833"><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679687833"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO a -&gt; (SomeException -&gt; IO a) -&gt; IO a
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="GHC.IO.html#catch"><span class="hs-identifier hs-var">catch</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Int -&gt; IO a) -&gt; SomeException -&gt; IO a
+forall a. (Int -&gt; IO a) -&gt; SomeException -&gt; IO a
+</span><a href="GHC.TopHandler.html#real_handler"><span class="hs-identifier hs-var">real_handler</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO a
+forall a. Int -&gt; IO a
+</span><a href="GHC.TopHandler.html#safeExit"><span class="hs-identifier hs-var">safeExit</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679687833"><span class="hs-identifier hs-var">err</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; IO a
+forall a. SomeException -&gt; IO a
+</span><a href="GHC.TopHandler.html#topHandler"><span class="hs-identifier hs-var">topHandler</span></a></span><span>
+</span><span id="line-170"></span><span>
+</span><span id="line-171"></span><span id="local-6989586621679687836"><span class="annot"><a href="GHC.TopHandler.html#topHandlerFastExit"><span class="hs-identifier hs-type">topHandlerFastExit</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Exception.Type.html#SomeException"><span class="hs-identifier hs-type">SomeException</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687836"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-172"></span><span id="topHandlerFastExit"><span class="annot"><span class="annottext">topHandlerFastExit :: forall a. SomeException -&gt; IO a
+</span><a href="GHC.TopHandler.html#topHandlerFastExit"><span class="hs-identifier hs-var hs-var">topHandlerFastExit</span></a></span></span><span> </span><span id="local-6989586621679687838"><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679687838"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-173"></span><span>  </span><span class="annot"><span class="annottext">IO a -&gt; (SomeException -&gt; IO a) -&gt; IO a
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="GHC.IO.html#catchException"><span class="hs-identifier hs-var">catchException</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Int -&gt; IO a) -&gt; SomeException -&gt; IO a
+forall a. (Int -&gt; IO a) -&gt; SomeException -&gt; IO a
+</span><a href="GHC.TopHandler.html#real_handler"><span class="hs-identifier hs-var">real_handler</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO a
+forall a. Int -&gt; IO a
+</span><a href="GHC.TopHandler.html#fastExit"><span class="hs-identifier hs-var">fastExit</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679687838"><span class="hs-identifier hs-var">err</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; IO a
+forall a. SomeException -&gt; IO a
+</span><a href="GHC.TopHandler.html#topHandlerFastExit"><span class="hs-identifier hs-var">topHandlerFastExit</span></a></span><span>
+</span><span id="line-174"></span><span>
+</span><span id="line-175"></span><span class="hs-comment">-- Make sure we handle errors while reporting the error!</span><span>
+</span><span id="line-176"></span><span class="hs-comment">-- (e.g. evaluating the string passed to 'error' might generate</span><span>
+</span><span id="line-177"></span><span class="hs-comment">--  another error, etc.)</span><span>
+</span><span id="line-178"></span><span class="hs-comment">--</span><span>
+</span><span id="line-179"></span><span id="local-6989586621679687736"><span class="annot"><a href="GHC.TopHandler.html#real_handler"><span class="hs-identifier hs-type">real_handler</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687736"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Exception.Type.html#SomeException"><span class="hs-identifier hs-type">SomeException</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687736"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-180"></span><span id="real_handler"><span class="annot"><span class="annottext">real_handler :: forall a. (Int -&gt; IO a) -&gt; SomeException -&gt; IO a
+</span><a href="GHC.TopHandler.html#real_handler"><span class="hs-identifier hs-var hs-var">real_handler</span></a></span></span><span> </span><span id="local-6989586621679687855"><span class="annot"><span class="annottext">Int -&gt; IO a
+</span><a href="#local-6989586621679687855"><span class="hs-identifier hs-var">exit</span></a></span></span><span> </span><span id="local-6989586621679687856"><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679687856"><span class="hs-identifier hs-var">se</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-181"></span><span>  </span><span class="annot"><span class="annottext">IO ()
+</span><a href="GHC.TopHandler.html#flushStdHandles"><span class="hs-identifier hs-var">flushStdHandles</span></a></span><span> </span><span class="hs-comment">-- before any error output</span><span>
+</span><span id="line-182"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; Maybe AsyncException
+forall e. Exception e =&gt; SomeException -&gt; Maybe e
+</span><a href="GHC.Exception.Type.html#fromException"><span class="hs-identifier hs-var">fromException</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679687856"><span class="hs-identifier hs-var">se</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-183"></span><span>      </span><span class="annot"><a href="GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span class="annot"><span class="annottext">AsyncException
+</span><a href="GHC.IO.Exception.html#StackOverflow"><span class="hs-identifier hs-var">StackOverflow</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-184"></span><span>           </span><span class="annot"><span class="annottext">IO ()
+</span><a href="GHC.Conc.Sync.html#reportStackOverflow"><span class="hs-identifier hs-var">reportStackOverflow</span></a></span><span>
+</span><span id="line-185"></span><span>           </span><span class="annot"><span class="annottext">Int -&gt; IO a
+</span><a href="#local-6989586621679687855"><span class="hs-identifier hs-var">exit</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-186"></span><span>
+</span><span id="line-187"></span><span>      </span><span class="annot"><a href="GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span class="annot"><span class="annottext">AsyncException
+</span><a href="GHC.IO.Exception.html#UserInterrupt"><span class="hs-identifier hs-var">UserInterrupt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO a
+forall a. IO a
+</span><a href="GHC.TopHandler.html#exitInterrupted"><span class="hs-identifier hs-var">exitInterrupted</span></a></span><span>
+</span><span id="line-188"></span><span>
+</span><span id="line-189"></span><span>      </span><span class="annot"><a href="GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span class="annot"><span class="annottext">AsyncException
+</span><a href="GHC.IO.Exception.html#HeapOverflow"><span class="hs-identifier hs-var">HeapOverflow</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-190"></span><span>           </span><span class="annot"><span class="annottext">IO ()
+</span><a href="GHC.Conc.Sync.html#reportHeapOverflow"><span class="hs-identifier hs-var">reportHeapOverflow</span></a></span><span>
+</span><span id="line-191"></span><span>           </span><span class="annot"><span class="annottext">Int -&gt; IO a
+</span><a href="#local-6989586621679687855"><span class="hs-identifier hs-var">exit</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">251</span></span><span>
+</span><span id="line-192"></span><span>
+</span><span id="line-193"></span><span>      </span><span class="annot"><span class="annottext">Maybe AsyncException
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; Maybe ExitCode
+forall e. Exception e =&gt; SomeException -&gt; Maybe e
+</span><a href="GHC.Exception.Type.html#fromException"><span class="hs-identifier hs-var">fromException</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679687856"><span class="hs-identifier hs-var">se</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-194"></span><span>           </span><span class="hs-comment">-- only the main thread gets ExitException exceptions</span><span>
+</span><span id="line-195"></span><span>           </span><span class="annot"><a href="GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span class="annot"><span class="annottext">ExitCode
+</span><a href="GHC.IO.Exception.html#ExitSuccess"><span class="hs-identifier hs-var">ExitSuccess</span></a></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO a
+</span><a href="#local-6989586621679687855"><span class="hs-identifier hs-var">exit</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-196"></span><span>           </span><span class="annot"><a href="GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.IO.Exception.html#ExitFailure"><span class="hs-identifier hs-type">ExitFailure</span></a></span><span> </span><span id="local-6989586621679687864"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679687864"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO a
+</span><a href="#local-6989586621679687855"><span class="hs-identifier hs-var">exit</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679687864"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-197"></span><span>
+</span><span id="line-198"></span><span>           </span><span class="hs-comment">-- EPIPE errors received for stdout are ignored (#2699)</span><span>
+</span><span id="line-199"></span><span>           </span><span class="annot"><span class="annottext">Maybe ExitCode
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO a -&gt; (IOError -&gt; IO a) -&gt; IO a
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="GHC.IO.html#catch"><span class="hs-identifier hs-var">catch</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; Maybe IOError
+forall e. Exception e =&gt; SomeException -&gt; Maybe e
+</span><a href="GHC.Exception.Type.html#fromException"><span class="hs-identifier hs-var">fromException</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679687856"><span class="hs-identifier hs-var">se</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-200"></span><span>                </span><span class="annot"><a href="GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span class="annot"><a href="GHC.IO.Exception.html#IOError"><span class="hs-identifier hs-type">IOError</span></a></span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">ioe_type :: IOError -&gt; IOErrorType
+</span><a href="GHC.IO.Exception.html#ioe_type"><span class="hs-identifier hs-var">ioe_type</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IOErrorType
+</span><a href="GHC.IO.Exception.html#ResourceVanished"><span class="hs-identifier hs-var">ResourceVanished</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-201"></span><span>                              </span><span class="annot"><span class="annottext">ioe_errno :: IOError -&gt; Maybe CInt
+</span><a href="GHC.IO.Exception.html#ioe_errno"><span class="hs-identifier hs-var">ioe_errno</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621679687869"><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679687869"><span class="hs-identifier hs-var">ioe</span></a></span></span><span class="hs-special">,</span><span>
+</span><span id="line-202"></span><span>                              </span><span class="annot"><span class="annottext">ioe_handle :: IOError -&gt; Maybe Handle
+</span><a href="GHC.IO.Exception.html#ioe_handle"><span class="hs-identifier hs-var">ioe_handle</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621679687871"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679687871"><span class="hs-identifier hs-var">hdl</span></a></span></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-203"></span><span>                   </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; Errno
+</span><a href="Foreign.C.Error.html#Errno"><span class="hs-identifier hs-var">Errno</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679687869"><span class="hs-identifier hs-var">ioe</span></a></span><span> </span><span class="annot"><span class="annottext">Errno -&gt; Errno -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Errno
+</span><a href="Foreign.C.Error.html#ePIPE"><span class="hs-identifier hs-var">ePIPE</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679687871"><span class="hs-identifier hs-var">hdl</span></a></span><span> </span><span class="annot"><span class="annottext">Handle -&gt; Handle -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="GHC.IO.StdHandles.html#stdout"><span class="hs-identifier hs-var">stdout</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO a
+</span><a href="#local-6989586621679687855"><span class="hs-identifier hs-var">exit</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-204"></span><span>                </span><span class="annot"><span class="annottext">Maybe IOError
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; IO ()
+</span><a href="GHC.Conc.Sync.html#reportError"><span class="hs-identifier hs-var">reportError</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679687856"><span class="hs-identifier hs-var">se</span></a></span><span>
+</span><span id="line-205"></span><span>                        </span><span class="annot"><span class="annottext">Int -&gt; IO a
+</span><a href="#local-6989586621679687855"><span class="hs-identifier hs-var">exit</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-206"></span><span>                </span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Int -&gt; IO a) -&gt; IOError -&gt; IO a
+forall a. (Int -&gt; IO a) -&gt; IOError -&gt; IO a
+</span><a href="GHC.TopHandler.html#disasterHandler"><span class="hs-identifier hs-var">disasterHandler</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO a
+</span><a href="#local-6989586621679687855"><span class="hs-identifier hs-var">exit</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-comment">-- See Note [Disaster with iconv]</span><span>
+</span><span id="line-207"></span><span>
+</span><span id="line-208"></span><span class="hs-comment">-- don't use errorBelch() directly, because we cannot call varargs functions</span><span>
+</span><span id="line-209"></span><span class="hs-comment">-- using the FFI.</span><span>
+</span><span id="line-210"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;HsBase.h errorBelch2&quot;</span></span><span>
+</span><span id="line-211"></span><span>   </span><span id="errorBelch"><span class="annot"><a href="GHC.TopHandler.html#errorBelch"><span class="hs-identifier hs-var">errorBelch</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Foreign.html#CString"><span class="hs-identifier hs-type">CString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Foreign.html#CString"><span class="hs-identifier hs-type">CString</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-212"></span><span>
+</span><span id="line-213"></span><span id="local-6989586621679687747"><span class="annot"><a href="GHC.TopHandler.html#disasterHandler"><span class="hs-identifier hs-type">disasterHandler</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687747"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.IO.Exception.html#IOError"><span class="hs-identifier hs-type">IOError</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687747"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-214"></span><span id="disasterHandler"><span class="annot"><span class="annottext">disasterHandler :: forall a. (Int -&gt; IO a) -&gt; IOError -&gt; IO a
+</span><a href="GHC.TopHandler.html#disasterHandler"><span class="hs-identifier hs-var hs-var">disasterHandler</span></a></span></span><span> </span><span id="local-6989586621679687878"><span class="annot"><span class="annottext">Int -&gt; IO a
+</span><a href="#local-6989586621679687878"><span class="hs-identifier hs-var">exit</span></a></span></span><span> </span><span class="annot"><span class="annottext">IOError
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-215"></span><span>  </span><span class="annot"><span class="annottext">String -&gt; (CString -&gt; IO a) -&gt; IO a
+forall a. String -&gt; (CString -&gt; IO a) -&gt; IO a
+</span><a href="Foreign.C.String.html#withCAString"><span class="hs-identifier hs-var">withCAString</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;%s&quot;</span></span><span> </span><span class="annot"><span class="annottext">((CString -&gt; IO a) -&gt; IO a) -&gt; (CString -&gt; IO a) -&gt; IO a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679687880"><span class="annot"><span class="annottext">CString
+</span><a href="#local-6989586621679687880"><span class="hs-identifier hs-var">fmt</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-216"></span><span>    </span><span class="annot"><span class="annottext">String -&gt; (CString -&gt; IO a) -&gt; IO a
+forall a. String -&gt; (CString -&gt; IO a) -&gt; IO a
+</span><a href="Foreign.C.String.html#withCAString"><span class="hs-identifier hs-var">withCAString</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679687881"><span class="hs-identifier hs-var">msgStr</span></a></span><span> </span><span class="annot"><span class="annottext">((CString -&gt; IO a) -&gt; IO a) -&gt; (CString -&gt; IO a) -&gt; IO a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679687882"><span class="annot"><span class="annottext">CString
+</span><a href="#local-6989586621679687882"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-217"></span><span>      </span><span class="annot"><span class="annottext">CString -&gt; CString -&gt; IO ()
+</span><a href="GHC.TopHandler.html#errorBelch"><span class="hs-identifier hs-var">errorBelch</span></a></span><span> </span><span class="annot"><span class="annottext">CString
+</span><a href="#local-6989586621679687880"><span class="hs-identifier hs-var">fmt</span></a></span><span> </span><span class="annot"><span class="annottext">CString
+</span><a href="#local-6989586621679687882"><span class="hs-identifier hs-var">msg</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO a -&gt; IO a
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><a href="GHC.Base.html#%3E%3E"><span class="hs-operator hs-var">&gt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO a
+</span><a href="#local-6989586621679687878"><span class="hs-identifier hs-var">exit</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-218"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-219"></span><span>    </span><span id="local-6989586621679687881"><span class="annot"><span class="annottext">msgStr :: String
+</span><a href="#local-6989586621679687881"><span class="hs-identifier hs-var hs-var">msgStr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-220"></span><span>        </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;encountered an exception while trying to report an exception.\n&quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span>
+</span><span id="line-221"></span><span>        </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;One possible reason for this is that we failed while trying to &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span>
+</span><span id="line-222"></span><span>        </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;encode an error message. Check that your locale is configured &quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span>
+</span><span id="line-223"></span><span>        </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;properly.&quot;</span></span><span>
+</span><span id="line-224"></span><span>
+</span><span id="line-225"></span><span class="hs-comment">{-
+Note [Disaster with iconv]
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+When using iconv, it's possible for things like iconv_open to fail in
+restricted environments (like an initram or restricted container), but
+when this happens the error raised inevitably calls `peekCString`,
+which depends on the users locale, which depends on using
+`iconv_open`... which causes an infinite loop.
+
+This occurrence is also known as tickets #10298 and #7695. So to work
+around it we just set _another_ error handler and bail directly by
+calling the RTS, without iconv at all.
+-}</span><span>
+</span><span id="line-238"></span><span>
+</span><span id="line-239"></span><span>
+</span><span id="line-240"></span><span class="hs-comment">-- try to flush stdout/stderr.</span><span>
+</span><span id="line-241"></span><span class="annot"><a href="GHC.TopHandler.html#flushStdHandles"><span class="hs-identifier hs-type">flushStdHandles</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-242"></span><span id="flushStdHandles"><span class="annot"><span class="annottext">flushStdHandles :: IO ()
+</span><a href="GHC.TopHandler.html#flushStdHandles"><span class="hs-identifier hs-var hs-var">flushStdHandles</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-243"></span><span>  </span><span class="annot"><span class="annottext">Handle -&gt; IO ()
+</span><a href="GHC.IO.Handle.html#hFlush"><span class="hs-identifier hs-var">hFlush</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="GHC.IO.StdHandles.html#stdout"><span class="hs-identifier hs-var">stdout</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; (SomeException -&gt; IO ()) -&gt; IO ()
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="GHC.IO.html#catchException"><span class="hs-operator hs-var">`catchException`</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; IO ()
+</span><a href="#local-6989586621679687884"><span class="hs-identifier hs-var">handleExc</span></a></span><span>
+</span><span id="line-244"></span><span>  </span><span class="hs-comment">-- In the event that we fail to flush stderr the default finalizer exception</span><span>
+</span><span id="line-245"></span><span>  </span><span class="hs-comment">-- handler (which prints to stderr) will also likely fail. However, we call it</span><span>
+</span><span id="line-246"></span><span>  </span><span class="hs-comment">-- anyways since the user may have set their own handler.</span><span>
+</span><span id="line-247"></span><span>  </span><span class="annot"><span class="annottext">Handle -&gt; IO ()
+</span><a href="GHC.IO.Handle.html#hFlush"><span class="hs-identifier hs-var">hFlush</span></a></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="GHC.IO.StdHandles.html#stderr"><span class="hs-identifier hs-var">stderr</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; (SomeException -&gt; IO ()) -&gt; IO ()
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="GHC.IO.html#catchException"><span class="hs-operator hs-var">`catchException`</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; IO ()
+</span><a href="#local-6989586621679687884"><span class="hs-identifier hs-var">handleExc</span></a></span><span>
+</span><span id="line-248"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-249"></span><span>    </span><span class="hs-comment">-- We dispatch exceptions thrown by hFlush to the same action used to</span><span>
+</span><span id="line-250"></span><span>    </span><span class="hs-comment">-- handle Weak finalizers since this is where &quot;normal&quot; Handles (e.g. not</span><span>
+</span><span id="line-251"></span><span>    </span><span class="hs-comment">-- stderr/stdout) would be flushed.</span><span>
+</span><span id="line-252"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-253"></span><span>    </span><span class="hs-comment">-- See Note [Handling exceptions during Handle finalization] in</span><span>
+</span><span id="line-254"></span><span>    </span><span class="hs-comment">-- GHC.IO.Handle.Internals</span><span>
+</span><span id="line-255"></span><span>    </span><span id="local-6989586621679687884"><span class="annot"><span class="annottext">handleExc :: SomeException -&gt; IO ()
+</span><a href="#local-6989586621679687884"><span class="hs-identifier hs-var hs-var">handleExc</span></a></span></span><span> </span><span id="local-6989586621679687888"><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679687888"><span class="hs-identifier hs-var">se</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-256"></span><span>      </span><span id="local-6989586621679687889"><span class="annot"><span class="annottext">SomeException -&gt; IO ()
+</span><a href="#local-6989586621679687889"><span class="hs-identifier hs-var">handleFinalizerExc</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO (SomeException -&gt; IO ())
+</span><a href="GHC.Weak.Finalize.html#getFinalizerExceptionHandler"><span class="hs-identifier hs-var">getFinalizerExceptionHandler</span></a></span><span>
+</span><span id="line-257"></span><span>      </span><span class="hs-comment">-- Swallow any exceptions thrown by the finalizer exception handler</span><span>
+</span><span id="line-258"></span><span>      </span><span class="annot"><span class="annottext">SomeException -&gt; IO ()
+</span><a href="#local-6989586621679687889"><span class="hs-identifier hs-var">handleFinalizerExc</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679687888"><span class="hs-identifier hs-var">se</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; (SomeException -&gt; IO ()) -&gt; IO ()
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="GHC.IO.html#catchException"><span class="hs-operator hs-var">`catchException`</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Exception.Type.html#SomeException"><span class="hs-identifier hs-type">SomeException</span></a></span><span> </span><span class="annot"><span class="annottext">e
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-259"></span><span>
+</span><span id="line-260"></span><span>
+</span><span id="line-261"></span><span id="local-6989586621679687737"><span class="annot"><a href="GHC.TopHandler.html#safeExit"><span class="hs-identifier hs-type">safeExit</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.TopHandler.html#fastExit"><span class="hs-identifier hs-type">fastExit</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687737"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-262"></span><span id="safeExit"><span class="annot"><span class="annottext">safeExit :: forall a. Int -&gt; IO a
+</span><a href="GHC.TopHandler.html#safeExit"><span class="hs-identifier hs-var hs-var">safeExit</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; Int -&gt; IO a
+forall a. CInt -&gt; Int -&gt; IO a
+</span><a href="GHC.TopHandler.html#exitHelper"><span class="hs-identifier hs-var">exitHelper</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="GHC.TopHandler.html#useSafeExit"><span class="hs-identifier hs-var">useSafeExit</span></a></span><span>
+</span><span id="line-263"></span><span id="fastExit"><span class="annot"><span class="annottext">fastExit :: forall a. Int -&gt; IO a
+</span><a href="GHC.TopHandler.html#fastExit"><span class="hs-identifier hs-var hs-var">fastExit</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; Int -&gt; IO a
+forall a. CInt -&gt; Int -&gt; IO a
+</span><a href="GHC.TopHandler.html#exitHelper"><span class="hs-identifier hs-var">exitHelper</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="GHC.TopHandler.html#useFastExit"><span class="hs-identifier hs-var">useFastExit</span></a></span><span>
+</span><span id="line-264"></span><span>
+</span><span id="line-265"></span><span id="local-6989586621679687897"><span class="annot"><a href="GHC.TopHandler.html#unreachable"><span class="hs-identifier hs-type">unreachable</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687897"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-266"></span><span id="unreachable"><span class="annot"><span class="annottext">unreachable :: forall a. IO a
+</span><a href="GHC.TopHandler.html#unreachable"><span class="hs-identifier hs-var hs-var">unreachable</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO a
+forall a. String -&gt; IO a
+</span><a href="GHC.Base.html#failIO"><span class="hs-identifier hs-var">failIO</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;If you can read this, shutdownHaskellAndExit did not exit.&quot;</span></span><span>
+</span><span id="line-267"></span><span>
+</span><span id="line-268"></span><span id="local-6989586621679687756"><span class="annot"><a href="GHC.TopHandler.html#exitHelper"><span class="hs-identifier hs-type">exitHelper</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687756"><span class="hs-identifier hs-type">a</span></a></span></span><span class="hs-cpp">
+#if defined(mingw32_HOST_OS) || defined(javascript_HOST_ARCH)
+</span><span class="hs-identifier">exitHelper</span><span> </span><span class="hs-identifier">exitKind</span><span> </span><span class="hs-identifier">r</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-271"></span><span>  </span><span class="hs-identifier">shutdownHaskellAndExit</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">fromIntegral</span><span> </span><span class="hs-identifier">r</span><span class="hs-special">)</span><span> </span><span class="hs-identifier">exitKind</span><span> </span><span class="hs-operator">&gt;&gt;</span><span> </span><span class="hs-identifier">unreachable</span><span class="hs-cpp">
+#else
+</span><span class="hs-comment">-- On Unix we use an encoding for the ExitCode:</span><span>
+</span><span id="line-274"></span><span class="hs-comment">--      0 -- 255  normal exit code</span><span>
+</span><span id="line-275"></span><span class="hs-comment">--   -127 -- -1   exit by signal</span><span>
+</span><span id="line-276"></span><span class="hs-comment">-- For any invalid encoding we just use a replacement (0xff).</span><span>
+</span><span id="line-277"></span><span id="exitHelper"><span class="annot"><span class="annottext">exitHelper :: forall a. CInt -&gt; Int -&gt; IO a
+</span><a href="GHC.TopHandler.html#exitHelper"><span class="hs-identifier hs-var hs-var">exitHelper</span></a></span></span><span> </span><span id="local-6989586621679687922"><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679687922"><span class="hs-identifier hs-var">exitKind</span></a></span></span><span> </span><span id="local-6989586621679687923"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679687923"><span class="hs-identifier hs-var">r</span></a></span></span><span>
+</span><span id="line-278"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679687923"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3E%3D/GHC.Classes.html#%3E%3D"><span class="hs-operator hs-var">&gt;=</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%26%26/GHC.Classes.html#%26%26"><span class="hs-operator hs-var">&amp;&amp;</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679687923"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3C%3D/GHC.Classes.html#%3C%3D"><span class="hs-operator hs-var">&lt;=</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">255</span></span><span>
+</span><span id="line-279"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; CInt -&gt; IO ()
+</span><a href="GHC.TopHandler.html#shutdownHaskellAndExit"><span class="hs-identifier hs-var">shutdownHaskellAndExit</span></a></span><span>   </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; CInt
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span>   </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679687923"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span>  </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679687922"><span class="hs-identifier hs-var">exitKind</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO a -&gt; IO a
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><a href="GHC.Base.html#%3E%3E"><span class="hs-operator hs-var">&gt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">IO a
+forall a. IO a
+</span><a href="GHC.TopHandler.html#unreachable"><span class="hs-identifier hs-var">unreachable</span></a></span><span>
+</span><span id="line-280"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679687923"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3E%3D/GHC.Classes.html#%3E%3D"><span class="hs-operator hs-var">&gt;=</span></a></span><span> </span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">127</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%26%26/GHC.Classes.html#%26%26"><span class="hs-operator hs-var">&amp;&amp;</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679687923"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3C%3D/GHC.Classes.html#%3C%3D"><span class="hs-operator hs-var">&lt;=</span></a></span><span> </span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-281"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; CInt -&gt; IO ()
+</span><a href="GHC.TopHandler.html#shutdownHaskellAndSignal"><span class="hs-identifier hs-var">shutdownHaskellAndSignal</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; CInt
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679687923"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679687922"><span class="hs-identifier hs-var">exitKind</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO a -&gt; IO a
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><a href="GHC.Base.html#%3E%3E"><span class="hs-operator hs-var">&gt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">IO a
+forall a. IO a
+</span><a href="GHC.TopHandler.html#unreachable"><span class="hs-identifier hs-var">unreachable</span></a></span><span>
+</span><span id="line-282"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>
+</span><span id="line-283"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; CInt -&gt; IO ()
+</span><a href="GHC.TopHandler.html#shutdownHaskellAndExit"><span class="hs-identifier hs-var">shutdownHaskellAndExit</span></a></span><span>   </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-number">0xff</span></span><span>                </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679687922"><span class="hs-identifier hs-var">exitKind</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO a -&gt; IO a
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><a href="GHC.Base.html#%3E%3E"><span class="hs-operator hs-var">&gt;&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">IO a
+forall a. IO a
+</span><a href="GHC.TopHandler.html#unreachable"><span class="hs-identifier hs-var">unreachable</span></a></span><span>
+</span><span id="line-284"></span><span>
+</span><span id="line-285"></span><span class="hs-comment">-- See Note [Lack of signals on wasm32-wasi].</span><span class="hs-cpp">
+#if !defined(HAVE_SIGNAL_H)
+</span><span class="hs-identifier">shutdownHaskellAndSignal</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">CInt</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">CInt</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">IO</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-288"></span><span class="hs-identifier">shutdownHaskellAndSignal</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">shutdownHaskellAndExit</span><span class="hs-cpp">
+#else
+</span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-string">&quot;shutdownHaskellAndSignal&quot;</span></span><span>
+</span><span id="line-291"></span><span>  </span><span id="shutdownHaskellAndSignal"><span class="annot"><a href="GHC.TopHandler.html#shutdownHaskellAndSignal"><span class="hs-identifier hs-var">shutdownHaskellAndSignal</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span class="hs-cpp">#endif
+</span><span>
+</span><span id="line-295"></span><span id="local-6989586621679687744"><span class="annot"><a href="GHC.TopHandler.html#exitInterrupted"><span class="hs-identifier hs-type">exitInterrupted</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679687744"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-296"></span><span id="exitInterrupted"><span class="annot"><span class="annottext">exitInterrupted :: forall a. IO a
+</span><a href="GHC.TopHandler.html#exitInterrupted"><span class="hs-identifier hs-var hs-var">exitInterrupted</span></a></span></span><span> </span><span class="hs-glyph">=</span><span class="hs-cpp">
+#if defined(mingw32_HOST_OS) || defined(javascript_HOST_ARCH)
+</span><span>  </span><span class="hs-identifier">safeExit</span><span> </span><span class="hs-number">252</span><span class="hs-cpp">
+#elif !defined(HAVE_SIGNAL_H)
+</span><span>  </span><span class="hs-identifier">safeExit</span><span> </span><span class="hs-number">1</span><span class="hs-cpp">
+#else
+</span><span>  </span><span class="hs-comment">-- we must exit via the default action for SIGINT, so that the</span><span>
+</span><span id="line-303"></span><span>  </span><span class="hs-comment">-- parent of this process can take appropriate action (see #2301)</span><span>
+</span><span id="line-304"></span><span>  </span><span class="annot"><span class="annottext">Int -&gt; IO a
+forall a. Int -&gt; IO a
+</span><a href="GHC.TopHandler.html#safeExit"><span class="hs-identifier hs-var">safeExit</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">-</span><span class="hs-identifier">CONST_SIGINT</span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-307"></span><span class="hs-comment">-- NOTE: shutdownHaskellAndExit must be called &quot;safe&quot;, because it *can*</span><span>
+</span><span id="line-308"></span><span class="hs-comment">-- re-enter Haskell land through finalizers.</span><span>
+</span><span id="line-309"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-string">&quot;Rts.h shutdownHaskellAndExit&quot;</span></span><span>
+</span><span id="line-310"></span><span>  </span><span id="shutdownHaskellAndExit"><span class="annot"><a href="GHC.TopHandler.html#shutdownHaskellAndExit"><span class="hs-identifier hs-var">shutdownHaskellAndExit</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-311"></span><span>
+</span><span id="line-312"></span><span class="annot"><a href="GHC.TopHandler.html#useFastExit"><span class="hs-identifier hs-type">useFastExit</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.TopHandler.html#useSafeExit"><span class="hs-identifier hs-type">useSafeExit</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span>
+</span><span id="line-313"></span><span id="useFastExit"><span class="annot"><span class="annottext">useFastExit :: CInt
+</span><a href="GHC.TopHandler.html#useFastExit"><span class="hs-identifier hs-var hs-var">useFastExit</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-314"></span><span id="useSafeExit"><span class="annot"><span class="annottext">useSafeExit :: CInt
+</span><a href="GHC.TopHandler.html#useSafeExit"><span class="hs-identifier hs-var hs-var">useSafeExit</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-315"></span></pre></body></html>

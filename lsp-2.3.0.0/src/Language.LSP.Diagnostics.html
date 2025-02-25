@@ -1,0 +1,270 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE DuplicateRecordFields #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE RankNTypes #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE ScopedTypeVariables #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-comment">{-
+
+Manage the &quot;textDocument/publishDiagnostics&quot; notifications to keep a local copy of the
+diagnostics for a particular file and version, partitioned by source.
+-}</span><span>
+</span><span id="line-10"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Language.LSP.Diagnostics</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-11"></span><span>  </span><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticStore"><span class="hs-identifier">DiagnosticStore</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-12"></span><span>  </span><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticsBySource"><span class="hs-identifier">DiagnosticsBySource</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-13"></span><span>  </span><span class="annot"><a href="Language.LSP.Diagnostics.html#StoreItem"><span class="hs-identifier">StoreItem</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-14"></span><span>  </span><span class="annot"><a href="Language.LSP.Diagnostics.html#partitionBySource"><span class="hs-identifier">partitionBySource</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-15"></span><span>  </span><span class="annot"><a href="Language.LSP.Diagnostics.html#flushBySource"><span class="hs-identifier">flushBySource</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-16"></span><span>  </span><span class="annot"><a href="Language.LSP.Diagnostics.html#updateDiagnostics"><span class="hs-identifier">updateDiagnostics</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-17"></span><span>  </span><span class="annot"><a href="Language.LSP.Diagnostics.html#getDiagnosticParamsFor"><span class="hs-identifier">getDiagnosticParamsFor</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span>  </span><span class="annot"><span class="hs-comment">-- * for tests</span></span><span>
+</span><span id="line-20"></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-21"></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.HashMap.Strict</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">HM</span></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Map</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.SortedList</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">SL</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Text</span></span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Language.LSP.Protocol.Types</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">J</span></span><span>
+</span><span id="line-27"></span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- ---------------------------------------------------------------------</span><span>
+</span><span id="line-29"></span><span class="hs-pragma">{-# ANN</span><span> </span><span class="hs-pragma">module</span><span> </span><span class="hs-pragma">(</span><span class="annot"><span class="hs-pragma">&quot;hlint: ignore Eta reduce&quot;</span></span><span> </span><span class="hs-pragma">::</span><span> </span><span class="annot"><span class="hs-pragma hs-type">String</span></span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-30"></span><span class="hs-pragma">{-# ANN</span><span> </span><span class="hs-pragma">module</span><span> </span><span class="hs-pragma">(</span><span class="annot"><span class="hs-pragma">&quot;hlint: ignore Redundant do&quot;</span></span><span> </span><span class="hs-pragma">::</span><span> </span><span class="annot"><span class="hs-pragma hs-type">String</span></span><span class="hs-pragma">)</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-31"></span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- ---------------------------------------------------------------------</span><span>
+</span><span id="line-33"></span><span>
+</span><span id="line-34"></span><span class="hs-comment">{-
+We need a three level store
+
+  Uri : Maybe Int32 : Maybe DiagnosticSource : [Diagnostics]
+
+For a given Uri, as soon as we see a new (Maybe Int32) we flush
+all prior entries for the Uri.
+
+-}</span><span>
+</span><span id="line-43"></span><span>
+</span><span id="line-44"></span><span class="hs-keyword">type</span><span> </span><span id="DiagnosticStore"><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticStore"><span class="hs-identifier hs-var">DiagnosticStore</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">HM.HashMap</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">J.NormalizedUri</span></span><span> </span><span class="annot"><a href="Language.LSP.Diagnostics.html#StoreItem"><span class="hs-identifier hs-type">StoreItem</span></a></span><span>
+</span><span id="line-45"></span><span>
+</span><span id="line-46"></span><span class="hs-keyword">data</span><span> </span><span id="StoreItem"><span class="annot"><a href="Language.LSP.Diagnostics.html#StoreItem"><span class="hs-identifier hs-var">StoreItem</span></a></span></span><span>
+</span><span id="line-47"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="StoreItem"><span class="annot"><a href="Language.LSP.Diagnostics.html#StoreItem"><span class="hs-identifier hs-var">StoreItem</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">J.Int32</span></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticsBySource"><span class="hs-identifier hs-type">DiagnosticsBySource</span></a></span><span>
+</span><span id="line-48"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679185932"><span id="local-6989586621679185943"><span id="local-6989586621679185947"><span class="annot"><span class="annottext">Int -&gt; StoreItem -&gt; ShowS
+[StoreItem] -&gt; ShowS
+StoreItem -&gt; String
+(Int -&gt; StoreItem -&gt; ShowS)
+-&gt; (StoreItem -&gt; String)
+-&gt; ([StoreItem] -&gt; ShowS)
+-&gt; Show StoreItem
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; StoreItem -&gt; ShowS
+showsPrec :: Int -&gt; StoreItem -&gt; ShowS
+$cshow :: StoreItem -&gt; String
+show :: StoreItem -&gt; String
+$cshowList :: [StoreItem] -&gt; ShowS
+showList :: [StoreItem] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679185957"><span id="local-6989586621679185966"><span class="annot"><span class="annottext">StoreItem -&gt; StoreItem -&gt; Bool
+(StoreItem -&gt; StoreItem -&gt; Bool)
+-&gt; (StoreItem -&gt; StoreItem -&gt; Bool) -&gt; Eq StoreItem
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: StoreItem -&gt; StoreItem -&gt; Bool
+== :: StoreItem -&gt; StoreItem -&gt; Bool
+$c/= :: StoreItem -&gt; StoreItem -&gt; Bool
+/= :: StoreItem -&gt; StoreItem -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span class="hs-keyword">type</span><span> </span><span id="DiagnosticsBySource"><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticsBySource"><span class="hs-identifier hs-var">DiagnosticsBySource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Map.Map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">SL.SortedList</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">J.Diagnostic</span></span><span class="hs-special">)</span><span>
+</span><span id="line-51"></span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- ---------------------------------------------------------------------</span><span>
+</span><span id="line-53"></span><span>
+</span><span id="line-54"></span><span class="annot"><a href="Language.LSP.Diagnostics.html#partitionBySource"><span class="hs-identifier hs-type">partitionBySource</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">J.Diagnostic</span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticsBySource"><span class="hs-identifier hs-type">DiagnosticsBySource</span></a></span><span>
+</span><span id="line-55"></span><span id="partitionBySource"><span class="annot"><span class="annottext">partitionBySource :: [Diagnostic] -&gt; DiagnosticsBySource
+</span><a href="Language.LSP.Diagnostics.html#partitionBySource"><span class="hs-identifier hs-var hs-var">partitionBySource</span></a></span></span><span> </span><span id="local-6989586621679185976"><span class="annot"><span class="annottext">[Diagnostic]
+</span><a href="#local-6989586621679185976"><span class="hs-identifier hs-var">diags</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SortedList Diagnostic
+ -&gt; SortedList Diagnostic -&gt; SortedList Diagnostic)
+-&gt; [(Maybe Text, SortedList Diagnostic)] -&gt; DiagnosticsBySource
+forall k a. Ord k =&gt; (a -&gt; a -&gt; a) -&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">Map.fromListWith</span></span><span> </span><span class="annot"><span class="annottext">SortedList Diagnostic
+-&gt; SortedList Diagnostic -&gt; SortedList Diagnostic
+forall a. Monoid a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">mappend</span></span><span> </span><span class="annot"><span class="annottext">([(Maybe Text, SortedList Diagnostic)] -&gt; DiagnosticsBySource)
+-&gt; [(Maybe Text, SortedList Diagnostic)] -&gt; DiagnosticsBySource
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Diagnostic -&gt; (Maybe Text, SortedList Diagnostic))
+-&gt; [Diagnostic] -&gt; [(Maybe Text, SortedList Diagnostic)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679185978"><span class="annot"><span class="annottext">Diagnostic
+</span><a href="#local-6989586621679185978"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Diagnostic -&gt; Maybe Text
+</span><span class="hs-identifier hs-var">J._source</span></span><span> </span><span class="annot"><span class="annottext">Diagnostic
+</span><a href="#local-6989586621679185978"><span class="hs-identifier hs-var">d</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Diagnostic -&gt; SortedList Diagnostic
+forall a. a -&gt; SortedList a
+</span><span class="hs-identifier hs-var">SL.singleton</span></span><span> </span><span class="annot"><span class="annottext">Diagnostic
+</span><a href="#local-6989586621679185978"><span class="hs-identifier hs-var">d</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Diagnostic]
+</span><a href="#local-6989586621679185976"><span class="hs-identifier hs-var">diags</span></a></span><span>
+</span><span id="line-56"></span><span>
+</span><span id="line-57"></span><span class="hs-comment">-- ---------------------------------------------------------------------</span><span>
+</span><span id="line-58"></span><span>
+</span><span id="line-59"></span><span class="annot"><a href="Language.LSP.Diagnostics.html#flushBySource"><span class="hs-identifier hs-type">flushBySource</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticStore"><span class="hs-identifier hs-type">DiagnosticStore</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticStore"><span class="hs-identifier hs-type">DiagnosticStore</span></a></span><span>
+</span><span id="line-60"></span><span id="flushBySource"><span class="annot"><span class="annottext">flushBySource :: DiagnosticStore -&gt; Maybe Text -&gt; DiagnosticStore
+</span><a href="Language.LSP.Diagnostics.html#flushBySource"><span class="hs-identifier hs-var hs-var">flushBySource</span></a></span></span><span> </span><span id="local-6989586621679185981"><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679185981"><span class="hs-identifier hs-var">store</span></a></span></span><span> </span><span class="annot"><span class="annottext">Maybe Text
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679185981"><span class="hs-identifier hs-var">store</span></a></span><span>
+</span><span id="line-61"></span><span class="annot"><a href="Language.LSP.Diagnostics.html#flushBySource"><span class="hs-identifier hs-var">flushBySource</span></a></span><span> </span><span id="local-6989586621679185982"><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679185982"><span class="hs-identifier hs-var">store</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679185983"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679185983"><span class="hs-identifier hs-var">source</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(StoreItem -&gt; StoreItem) -&gt; DiagnosticStore -&gt; DiagnosticStore
+forall v1 v2 k. (v1 -&gt; v2) -&gt; HashMap k v1 -&gt; HashMap k v2
+</span><span class="hs-identifier hs-var">HM.map</span></span><span> </span><span class="annot"><span class="annottext">StoreItem -&gt; StoreItem
+</span><a href="#local-6989586621679185985"><span class="hs-identifier hs-var">remove</span></a></span><span> </span><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679185982"><span class="hs-identifier hs-var">store</span></a></span><span>
+</span><span id="line-62"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-63"></span><span>  </span><span id="local-6989586621679185985"><span class="annot"><span class="annottext">remove :: StoreItem -&gt; StoreItem
+</span><a href="#local-6989586621679185985"><span class="hs-identifier hs-var hs-var">remove</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.LSP.Diagnostics.html#StoreItem"><span class="hs-identifier hs-type">StoreItem</span></a></span><span> </span><span id="local-6989586621679185988"><span class="annot"><span class="annottext">Maybe Int32
+</span><a href="#local-6989586621679185988"><span class="hs-identifier hs-var">mv</span></a></span></span><span> </span><span id="local-6989586621679185989"><span class="annot"><span class="annottext">DiagnosticsBySource
+</span><a href="#local-6989586621679185989"><span class="hs-identifier hs-var">diags</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Int32 -&gt; DiagnosticsBySource -&gt; StoreItem
+</span><a href="Language.LSP.Diagnostics.html#StoreItem"><span class="hs-identifier hs-var">StoreItem</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Int32
+</span><a href="#local-6989586621679185988"><span class="hs-identifier hs-var">mv</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe Text -&gt; DiagnosticsBySource -&gt; DiagnosticsBySource
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">Map.delete</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text -&gt; Maybe Text
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679185983"><span class="hs-identifier hs-var">source</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">DiagnosticsBySource
+</span><a href="#local-6989586621679185989"><span class="hs-identifier hs-var">diags</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- ---------------------------------------------------------------------</span><span>
+</span><span id="line-66"></span><span>
+</span><span id="line-67"></span><span class="annot"><a href="Language.LSP.Diagnostics.html#updateDiagnostics"><span class="hs-identifier hs-type">updateDiagnostics</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-68"></span><span>  </span><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticStore"><span class="hs-identifier hs-type">DiagnosticStore</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-69"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">J.NormalizedUri</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-70"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">J.Int32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-71"></span><span>  </span><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticsBySource"><span class="hs-identifier hs-type">DiagnosticsBySource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-72"></span><span>  </span><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticStore"><span class="hs-identifier hs-type">DiagnosticStore</span></a></span><span>
+</span><span id="line-73"></span><span id="updateDiagnostics"><span class="annot"><span class="annottext">updateDiagnostics :: DiagnosticStore
+-&gt; NormalizedUri
+-&gt; Maybe Int32
+-&gt; DiagnosticsBySource
+-&gt; DiagnosticStore
+</span><a href="Language.LSP.Diagnostics.html#updateDiagnostics"><span class="hs-identifier hs-var hs-var">updateDiagnostics</span></a></span></span><span> </span><span id="local-6989586621679185991"><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679185991"><span class="hs-identifier hs-var">store</span></a></span></span><span> </span><span id="local-6989586621679185992"><span class="annot"><span class="annottext">NormalizedUri
+</span><a href="#local-6989586621679185992"><span class="hs-identifier hs-var">uri</span></a></span></span><span> </span><span id="local-6989586621679185993"><span class="annot"><span class="annottext">Maybe Int32
+</span><a href="#local-6989586621679185993"><span class="hs-identifier hs-var">mv</span></a></span></span><span> </span><span id="local-6989586621679185994"><span class="annot"><span class="annottext">DiagnosticsBySource
+</span><a href="#local-6989586621679185994"><span class="hs-identifier hs-var">newDiagsBySource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679185995"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-74"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-75"></span><span>  </span><span class="annot"><a href="#local-6989586621679185996"><span class="hs-identifier hs-type">newStore</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticStore"><span class="hs-identifier hs-type">DiagnosticStore</span></a></span><span>
+</span><span id="line-76"></span><span>  </span><span id="local-6989586621679185996"><span class="annot"><span class="annottext">newStore :: DiagnosticStore
+</span><a href="#local-6989586621679185996"><span class="hs-identifier hs-var hs-var">newStore</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">NormalizedUri -&gt; StoreItem -&gt; DiagnosticStore -&gt; DiagnosticStore
+forall k v.
+(Eq k, Hashable k) =&gt;
+k -&gt; v -&gt; HashMap k v -&gt; HashMap k v
+</span><span class="hs-identifier hs-var">HM.insert</span></span><span> </span><span class="annot"><span class="annottext">NormalizedUri
+</span><a href="#local-6989586621679185992"><span class="hs-identifier hs-var">uri</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe Int32 -&gt; DiagnosticsBySource -&gt; StoreItem
+</span><a href="Language.LSP.Diagnostics.html#StoreItem"><span class="hs-identifier hs-var">StoreItem</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Int32
+</span><a href="#local-6989586621679185993"><span class="hs-identifier hs-var">mv</span></a></span><span> </span><span class="annot"><span class="annottext">DiagnosticsBySource
+</span><a href="#local-6989586621679185994"><span class="hs-identifier hs-var">newDiagsBySource</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679185991"><span class="hs-identifier hs-var">store</span></a></span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span>  </span><span id="local-6989586621679186000"><span class="annot"><span class="annottext">updateDbs :: DiagnosticsBySource -&gt; DiagnosticStore
+</span><a href="#local-6989586621679186000"><span class="hs-identifier hs-var hs-var">updateDbs</span></a></span></span><span> </span><span id="local-6989586621679186001"><span class="annot"><span class="annottext">DiagnosticsBySource
+</span><a href="#local-6989586621679186001"><span class="hs-identifier hs-var">dbs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">NormalizedUri -&gt; StoreItem -&gt; DiagnosticStore -&gt; DiagnosticStore
+forall k v.
+(Eq k, Hashable k) =&gt;
+k -&gt; v -&gt; HashMap k v -&gt; HashMap k v
+</span><span class="hs-identifier hs-var">HM.insert</span></span><span> </span><span class="annot"><span class="annottext">NormalizedUri
+</span><a href="#local-6989586621679185992"><span class="hs-identifier hs-var">uri</span></a></span><span> </span><span class="annot"><span class="annottext">StoreItem
+</span><a href="#local-6989586621679186002"><span class="hs-identifier hs-var">new</span></a></span><span> </span><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679185991"><span class="hs-identifier hs-var">store</span></a></span><span>
+</span><span id="line-79"></span><span>   </span><span class="hs-keyword">where</span><span>
+</span><span id="line-80"></span><span>    </span><span id="local-6989586621679186002"><span class="annot"><span class="annottext">new :: StoreItem
+</span><a href="#local-6989586621679186002"><span class="hs-identifier hs-var hs-var">new</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe Int32 -&gt; DiagnosticsBySource -&gt; StoreItem
+</span><a href="Language.LSP.Diagnostics.html#StoreItem"><span class="hs-identifier hs-var">StoreItem</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Int32
+</span><a href="#local-6989586621679185993"><span class="hs-identifier hs-var">mv</span></a></span><span> </span><span class="annot"><span class="annottext">DiagnosticsBySource
+</span><a href="#local-6989586621679186003"><span class="hs-identifier hs-var">newDbs</span></a></span><span>
+</span><span id="line-81"></span><span>    </span><span class="hs-comment">-- note: Map.union is left-biased, so for identical keys the first</span><span>
+</span><span id="line-82"></span><span>    </span><span class="hs-comment">-- argument is used</span><span>
+</span><span id="line-83"></span><span>    </span><span id="local-6989586621679186003"><span class="annot"><span class="annottext">newDbs :: DiagnosticsBySource
+</span><a href="#local-6989586621679186003"><span class="hs-identifier hs-var hs-var">newDbs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DiagnosticsBySource -&gt; DiagnosticsBySource -&gt; DiagnosticsBySource
+forall k a. Ord k =&gt; Map k a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">Map.union</span></span><span> </span><span class="annot"><span class="annottext">DiagnosticsBySource
+</span><a href="#local-6989586621679185994"><span class="hs-identifier hs-var">newDiagsBySource</span></a></span><span> </span><span class="annot"><span class="annottext">DiagnosticsBySource
+</span><a href="#local-6989586621679186001"><span class="hs-identifier hs-var">dbs</span></a></span><span>
+</span><span id="line-84"></span><span>
+</span><span id="line-85"></span><span>  </span><span id="local-6989586621679185995"><span class="annot"><span class="annottext">r :: DiagnosticStore
+</span><a href="#local-6989586621679185995"><span class="hs-identifier hs-var hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">NormalizedUri -&gt; DiagnosticStore -&gt; Maybe StoreItem
+forall k v. (Eq k, Hashable k) =&gt; k -&gt; HashMap k v -&gt; Maybe v
+</span><span class="hs-identifier hs-var">HM.lookup</span></span><span> </span><span class="annot"><span class="annottext">NormalizedUri
+</span><a href="#local-6989586621679185992"><span class="hs-identifier hs-var">uri</span></a></span><span> </span><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679185991"><span class="hs-identifier hs-var">store</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-86"></span><span>    </span><span class="annot"><span class="annottext">Maybe StoreItem
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679185996"><span class="hs-identifier hs-var">newStore</span></a></span><span>
+</span><span id="line-87"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.LSP.Diagnostics.html#StoreItem"><span class="hs-identifier hs-type">StoreItem</span></a></span><span> </span><span id="local-6989586621679186012"><span class="annot"><span class="annottext">Maybe Int32
+</span><a href="#local-6989586621679186012"><span class="hs-identifier hs-var">mvs</span></a></span></span><span> </span><span id="local-6989586621679186013"><span class="annot"><span class="annottext">DiagnosticsBySource
+</span><a href="#local-6989586621679186013"><span class="hs-identifier hs-var">dbs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-88"></span><span>      </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Maybe Int32
+</span><a href="#local-6989586621679186012"><span class="hs-identifier hs-var">mvs</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Int32 -&gt; Maybe Int32 -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Maybe Int32
+</span><a href="#local-6989586621679185993"><span class="hs-identifier hs-var">mv</span></a></span><span>
+</span><span id="line-89"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679185996"><span class="hs-identifier hs-var">newStore</span></a></span><span>
+</span><span id="line-90"></span><span>        </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">DiagnosticsBySource -&gt; DiagnosticStore
+</span><a href="#local-6989586621679186000"><span class="hs-identifier hs-var">updateDbs</span></a></span><span> </span><span class="annot"><span class="annottext">DiagnosticsBySource
+</span><a href="#local-6989586621679186013"><span class="hs-identifier hs-var">dbs</span></a></span><span>
+</span><span id="line-91"></span><span>
+</span><span id="line-92"></span><span class="hs-comment">-- ---------------------------------------------------------------------</span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span class="annot"><a href="Language.LSP.Diagnostics.html#getDiagnosticParamsFor"><span class="hs-identifier hs-type">getDiagnosticParamsFor</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Language.LSP.Diagnostics.html#DiagnosticStore"><span class="hs-identifier hs-type">DiagnosticStore</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">J.NormalizedUri</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">J.PublishDiagnosticsParams</span></span><span>
+</span><span id="line-95"></span><span id="getDiagnosticParamsFor"><span class="annot"><span class="annottext">getDiagnosticParamsFor :: Int
+-&gt; DiagnosticStore
+-&gt; NormalizedUri
+-&gt; Maybe PublishDiagnosticsParams
+</span><a href="Language.LSP.Diagnostics.html#getDiagnosticParamsFor"><span class="hs-identifier hs-var hs-var">getDiagnosticParamsFor</span></a></span></span><span> </span><span id="local-6989586621679186015"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679186015"><span class="hs-identifier hs-var">maxDiagnostics</span></a></span></span><span> </span><span id="local-6989586621679186016"><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679186016"><span class="hs-identifier hs-var">ds</span></a></span></span><span> </span><span id="local-6989586621679186017"><span class="annot"><span class="annottext">NormalizedUri
+</span><a href="#local-6989586621679186017"><span class="hs-identifier hs-var">uri</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-96"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">NormalizedUri -&gt; DiagnosticStore -&gt; Maybe StoreItem
+forall k v. (Eq k, Hashable k) =&gt; k -&gt; HashMap k v -&gt; Maybe v
+</span><span class="hs-identifier hs-var">HM.lookup</span></span><span> </span><span class="annot"><span class="annottext">NormalizedUri
+</span><a href="#local-6989586621679186017"><span class="hs-identifier hs-var">uri</span></a></span><span> </span><span class="annot"><span class="annottext">DiagnosticStore
+</span><a href="#local-6989586621679186016"><span class="hs-identifier hs-var">ds</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-97"></span><span>    </span><span class="annot"><span class="annottext">Maybe StoreItem
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe PublishDiagnosticsParams
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-98"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Language.LSP.Diagnostics.html#StoreItem"><span class="hs-identifier hs-type">StoreItem</span></a></span><span> </span><span id="local-6989586621679186018"><span class="annot"><span class="annottext">Maybe Int32
+</span><a href="#local-6989586621679186018"><span class="hs-identifier hs-var">mv</span></a></span></span><span> </span><span id="local-6989586621679186019"><span class="annot"><span class="annottext">DiagnosticsBySource
+</span><a href="#local-6989586621679186019"><span class="hs-identifier hs-var">diags</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-99"></span><span>      </span><span class="annot"><span class="annottext">PublishDiagnosticsParams -&gt; Maybe PublishDiagnosticsParams
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(PublishDiagnosticsParams -&gt; Maybe PublishDiagnosticsParams)
+-&gt; PublishDiagnosticsParams -&gt; Maybe PublishDiagnosticsParams
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Uri -&gt; Maybe Int32 -&gt; [Diagnostic] -&gt; PublishDiagnosticsParams
+</span><span class="hs-identifier hs-var">J.PublishDiagnosticsParams</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">NormalizedUri -&gt; Uri
+</span><span class="hs-identifier hs-var">J.fromNormalizedUri</span></span><span> </span><span class="annot"><span class="annottext">NormalizedUri
+</span><a href="#local-6989586621679186017"><span class="hs-identifier hs-var">uri</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Int32 -&gt; Int32) -&gt; Maybe Int32 -&gt; Maybe Int32
+forall a b. (a -&gt; b) -&gt; Maybe a -&gt; Maybe b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Maybe Int32
+</span><a href="#local-6989586621679186018"><span class="hs-identifier hs-var">mv</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; [Diagnostic] -&gt; [Diagnostic]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">take</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679186015"><span class="hs-identifier hs-var">maxDiagnostics</span></a></span><span> </span><span class="annot"><span class="annottext">([Diagnostic] -&gt; [Diagnostic]) -&gt; [Diagnostic] -&gt; [Diagnostic]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">SortedList Diagnostic -&gt; [Diagnostic]
+forall a. SortedList a -&gt; [a]
+</span><span class="hs-identifier hs-var">SL.fromSortedList</span></span><span> </span><span class="annot"><span class="annottext">(SortedList Diagnostic -&gt; [Diagnostic])
+-&gt; SortedList Diagnostic -&gt; [Diagnostic]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[SortedList Diagnostic] -&gt; SortedList Diagnostic
+forall a. Monoid a =&gt; [a] -&gt; a
+</span><span class="hs-identifier hs-var">mconcat</span></span><span> </span><span class="annot"><span class="annottext">([SortedList Diagnostic] -&gt; SortedList Diagnostic)
+-&gt; [SortedList Diagnostic] -&gt; SortedList Diagnostic
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">DiagnosticsBySource -&gt; [SortedList Diagnostic]
+forall k a. Map k a -&gt; [a]
+</span><span class="hs-identifier hs-var">Map.elems</span></span><span> </span><span class="annot"><span class="annottext">DiagnosticsBySource
+</span><a href="#local-6989586621679186019"><span class="hs-identifier hs-var">diags</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span class="hs-comment">-- ---------------------------------------------------------------------</span><span>
+</span><span id="line-102"></span></pre></body></html>

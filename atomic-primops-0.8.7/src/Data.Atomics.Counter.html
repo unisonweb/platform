@@ -1,0 +1,317 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns, MagicHash, UnboxedTuples, CPP #-}</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- | Integer counters providing thread-safe, lock-free mutation functions.</span><span>
+</span><span id="line-3"></span><span class="hs-comment">--</span><span>
+</span><span id="line-4"></span><span class="hs-comment">--   Atomic counters are represented by a single memory location, such that</span><span>
+</span><span id="line-5"></span><span class="hs-comment">--   built-in processor instructions are sufficient to perform fetch-and-add or</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--   compare-and-swap.</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- </span><span>
+</span><span id="line-8"></span><span class="hs-comment">--   Remember, contention on such counters should still be minimized!</span><span>
+</span><span id="line-9"></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Data.Atomics.Counter</span><span>
+</span><span id="line-11"></span><span>       </span><span class="hs-comment">-- Reexport to get all the docs.</span><span>
+</span><span id="line-12"></span><span>       </span><span class="hs-special">(</span><span>
+</span><span id="line-13"></span><span>         </span><span class="annot"><span class="hs-comment">-- * Type of counters of counters and tickets</span></span><span>
+</span><span id="line-14"></span><span>         </span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier">AtomicCounter</span></a></span><span class="hs-special">,</span><span> </span><span>
+</span><span id="line-15"></span><span>         </span><span>
+</span><span id="line-16"></span><span>         </span><span class="annot"><span class="hs-comment">-- * Creating counters</span></span><span>
+</span><span id="line-17"></span><span>         </span><span class="annot"><a href="Data.Atomics.Counter.html#newCounter"><span class="hs-identifier">newCounter</span></a></span><span class="hs-special">,</span><span> </span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span>         </span><span class="annot"><span class="hs-comment">-- * Tickets, used for compare-and-swap         </span></span><span>
+</span><span id="line-20"></span><span>         </span><span class="hs-comment">-- | See the documentation for &quot;Data.Atomics&quot; for more explanation of the</span><span>
+</span><span id="line-21"></span><span>         </span><span class="hs-comment">-- ticket abstraction.  The same ideas apply here for counters as for</span><span>
+</span><span id="line-22"></span><span>         </span><span class="hs-comment">-- general mutable locations (IORefs).</span><span>
+</span><span id="line-23"></span><span>         </span><span class="annot"><a href="Data.Atomics.Counter.html#CTicket"><span class="hs-identifier">CTicket</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#peekCTicket"><span class="hs-identifier">peekCTicket</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span>         </span><span class="annot"><span class="hs-comment">-- * Atomic memory operations</span></span><span>
+</span><span id="line-26"></span><span>         </span><span class="annot"><a href="Data.Atomics.Counter.html#casCounter"><span class="hs-identifier">casCounter</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#incrCounter"><span class="hs-identifier">incrCounter</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#incrCounter_"><span class="hs-identifier">incrCounter_</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-27"></span><span>                                  </span><span>
+</span><span id="line-28"></span><span>         </span><span class="annot"><span class="hs-comment">-- * Non-atomic operations</span></span><span>
+</span><span id="line-29"></span><span>         </span><span class="annot"><a href="Data.Atomics.Counter.html#readCounter"><span class="hs-identifier">readCounter</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#readCounterForCAS"><span class="hs-identifier">readCounterForCAS</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-30"></span><span>         </span><span class="annot"><a href="Data.Atomics.Counter.html#writeCounter"><span class="hs-identifier">writeCounter</span></a></span><span>
+</span><span id="line-31"></span><span>         </span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-33"></span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Atomics.Internal.html"><span class="hs-identifier">Data.Atomics.Internal</span></a></span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">GHC.Base</span></span><span>  </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-operator">(==#)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">GHC.PrimopWrappers</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">GPW</span></span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- GHC 7.8 changed some primops</span><span>
+</span><span id="line-41"></span><span class="annot"><a href="Data.Atomics.Counter.html#%3D%3D%23"><span class="hs-operator hs-type">(==#)</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int#</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int#</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-42"></span><span id="%3D%3D%23"><span class="annot"><span class="annottext">==# :: Int# -&gt; Int# -&gt; Bool
+</span><a href="Data.Atomics.Counter.html#%3D%3D%23"><span class="hs-operator hs-var hs-var">(==#)</span></a></span></span><span> </span><span id="local-6989586621679039213"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039213"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039214"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039214"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039213"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><span class="hs-operator hs-var">GPW.==#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039214"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="hs-keyword">of</span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span> </span><span class="hs-special">}</span><span class="hs-cpp">
+
+
+
+#ifndef __GLASGOW_HASKELL__
+</span><span class="hs-cpp">#error &quot;Counter: this library is not portable to other Haskell's&quot;
+</span><span class="hs-cpp">#endif
+</span><span class="hs-cpp">
+#include &quot;MachDeps.h&quot;
+</span><span class="hs-cpp">#ifndef SIZEOF_HSINT
+</span><span class="hs-cpp">#define SIZEOF_HSINT  INT_SIZE_IN_BYTES
+</span><span class="hs-cpp">#endif
+</span><span>
+</span><span id="line-55"></span><span class="annot"><span class="hs-comment">-- | The type of mutable atomic counters.</span></span><span>
+</span><span id="line-56"></span><span class="hs-keyword">data</span><span> </span><span id="AtomicCounter"><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-var">AtomicCounter</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="AtomicCounter"><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-var">AtomicCounter</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">MutableByteArray#</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">RealWorld</span></span><span class="hs-special">)</span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span class="hs-comment">-- | You should not depend on this type.  It varies between different implementations</span><span>
+</span><span id="line-59"></span><span class="hs-comment">-- of atomic counters.</span><span>
+</span><span id="line-60"></span><span class="hs-keyword">type</span><span> </span><span id="CTicket"><span class="annot"><a href="Data.Atomics.Counter.html#CTicket"><span class="hs-identifier hs-var">CTicket</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-61"></span><span class="hs-comment">-- TODO: Could newtype this.</span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span class="annot"><span class="hs-comment">-- | Create a new counter initialized to the given value.</span></span><span>
+</span><span id="line-64"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#newCounter"><span class="hs-pragma hs-type">newCounter</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-65"></span><span class="annot"><a href="Data.Atomics.Counter.html#newCounter"><span class="hs-identifier hs-type">newCounter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span>
+</span><span id="line-66"></span><span id="newCounter"><span class="annot"><span class="annottext">newCounter :: Int -&gt; IO AtomicCounter
+</span><a href="Data.Atomics.Counter.html#newCounter"><span class="hs-identifier hs-var hs-var">newCounter</span></a></span></span><span> </span><span id="local-6989586621679039216"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039216"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-67"></span><span>  </span><span id="local-6989586621679039217"><span class="annot"><span class="annottext">AtomicCounter
+</span><a href="#local-6989586621679039217"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO AtomicCounter
+</span><a href="Data.Atomics.Counter.html#newRawCounter"><span class="hs-identifier hs-var">newRawCounter</span></a></span><span>
+</span><span id="line-68"></span><span>  </span><span class="annot"><span class="annottext">AtomicCounter -&gt; Int -&gt; IO ()
+</span><a href="Data.Atomics.Counter.html#writeCounter"><span class="hs-identifier hs-var">writeCounter</span></a></span><span> </span><span class="annot"><span class="annottext">AtomicCounter
+</span><a href="#local-6989586621679039217"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039216"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="hs-comment">-- Non-atomic is ok; it hasn't been released into the wild.</span><span>
+</span><span id="line-69"></span><span>  </span><span class="annot"><span class="annottext">AtomicCounter -&gt; IO AtomicCounter
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">AtomicCounter
+</span><a href="#local-6989586621679039217"><span class="hs-identifier hs-var">c</span></a></span><span>
+</span><span id="line-70"></span><span>
+</span><span id="line-71"></span><span class="annot"><span class="hs-comment">-- | Create a new, uninitialized counter.</span></span><span>
+</span><span id="line-72"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#newRawCounter"><span class="hs-pragma hs-type">newRawCounter</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-73"></span><span class="annot"><a href="Data.Atomics.Counter.html#newRawCounter"><span class="hs-identifier hs-type">newRawCounter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span>  </span><span>
+</span><span id="line-74"></span><span id="newRawCounter"><span class="annot"><span class="annottext">newRawCounter :: IO AtomicCounter
+</span><a href="Data.Atomics.Counter.html#newRawCounter"><span class="hs-identifier hs-var hs-var">newRawCounter</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, AtomicCounter #))
+-&gt; IO AtomicCounter
+forall a. (State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+</span><span class="hs-identifier hs-var">IO</span></span><span> </span><span class="annot"><span class="annottext">((State# RealWorld -&gt; (# State# RealWorld, AtomicCounter #))
+ -&gt; IO AtomicCounter)
+-&gt; (State# RealWorld -&gt; (# State# RealWorld, AtomicCounter #))
+-&gt; IO AtomicCounter
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679039219"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039219"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-75"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Int#
+-&gt; State# RealWorld
+-&gt; (# State# RealWorld, MutableByteArray# RealWorld #)
+forall d. Int# -&gt; State# d -&gt; (# State# d, MutableByteArray# d #)
+</span><span class="hs-identifier hs-var">newByteArray#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039220"><span class="hs-identifier hs-var">size</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039219"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-keyword">of</span><span> </span><span class="hs-special">{</span><span> </span><span class="hs-special">(#</span><span> </span><span id="local-6989586621679039221"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039221"><span class="hs-identifier hs-var">s'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679039222"><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+</span><a href="#local-6989586621679039222"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-76"></span><span>  </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039221"><span class="hs-identifier hs-var">s'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">MutableByteArray# RealWorld -&gt; AtomicCounter
+</span><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-var">AtomicCounter</span></a></span><span> </span><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+</span><a href="#local-6989586621679039222"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-77"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">I#</span></span><span> </span><span id="local-6989586621679039220"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039220"><span class="hs-identifier hs-var">size</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">SIZEOF_HSINT</span><span>
+</span><span id="line-78"></span><span>
+</span><span id="line-79"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#readCounter"><span class="hs-pragma hs-type">readCounter</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-80"></span><span class="annot"><span class="hs-comment">-- | Equivalent to `readCounterForCAS` followed by `peekCTicket`.        </span></span><span>
+</span><span id="line-81"></span><span class="annot"><a href="Data.Atomics.Counter.html#readCounter"><span class="hs-identifier hs-type">readCounter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-82"></span><span id="readCounter"><span class="annot"><span class="annottext">readCounter :: AtomicCounter -&gt; IO Int
+</span><a href="Data.Atomics.Counter.html#readCounter"><span class="hs-identifier hs-var hs-var">readCounter</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span> </span><span id="local-6989586621679039225"><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+</span><a href="#local-6989586621679039225"><span class="hs-identifier hs-var">arr</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, Int #)) -&gt; IO Int
+forall a. (State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+</span><span class="hs-identifier hs-var">IO</span></span><span> </span><span class="annot"><span class="annottext">((State# RealWorld -&gt; (# State# RealWorld, Int #)) -&gt; IO Int)
+-&gt; (State# RealWorld -&gt; (# State# RealWorld, Int #)) -&gt; IO Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679039226"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039226"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-83"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+-&gt; Int# -&gt; State# RealWorld -&gt; (# State# RealWorld, Int# #)
+forall d.
+MutableByteArray# d -&gt; Int# -&gt; State# d -&gt; (# State# d, Int# #)
+</span><span class="hs-identifier hs-var">readIntArray#</span></span><span> </span><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+</span><a href="#local-6989586621679039225"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039226"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-keyword">of</span><span> </span><span class="hs-special">{</span><span> </span><span class="hs-special">(#</span><span> </span><span id="local-6989586621679039227"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039227"><span class="hs-identifier hs-var">s'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679039228"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039228"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039227"><span class="hs-identifier hs-var">s'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int
+</span><span class="hs-identifier hs-var">I#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039228"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-85"></span><span>
+</span><span id="line-86"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#writeCounter"><span class="hs-pragma hs-type">writeCounter</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-87"></span><span class="annot"><span class="hs-comment">-- | Make a non-atomic write to the counter.  No memory-barrier.</span></span><span>
+</span><span id="line-88"></span><span class="annot"><a href="Data.Atomics.Counter.html#writeCounter"><span class="hs-identifier hs-type">writeCounter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-89"></span><span id="writeCounter"><span class="annot"><span class="annottext">writeCounter :: AtomicCounter -&gt; Int -&gt; IO ()
+</span><a href="Data.Atomics.Counter.html#writeCounter"><span class="hs-identifier hs-var hs-var">writeCounter</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span> </span><span id="local-6989586621679039229"><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+</span><a href="#local-6989586621679039229"><span class="hs-identifier hs-var">arr</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">I#</span></span><span> </span><span id="local-6989586621679039230"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039230"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ()
+forall a. (State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+</span><span class="hs-identifier hs-var">IO</span></span><span> </span><span class="annot"><span class="annottext">((State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ())
+-&gt; (State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679039231"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039231"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-90"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+-&gt; Int# -&gt; Int# -&gt; State# RealWorld -&gt; State# RealWorld
+forall d.
+MutableByteArray# d -&gt; Int# -&gt; Int# -&gt; State# d -&gt; State# d
+</span><span class="hs-identifier hs-var">writeIntArray#</span></span><span> </span><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+</span><a href="#local-6989586621679039229"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039230"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039231"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-keyword">of</span><span> </span><span class="hs-special">{</span><span> </span><span id="local-6989586621679039232"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039232"><span class="hs-identifier hs-var">s'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-91"></span><span>  </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039232"><span class="hs-identifier hs-var">s'</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-92"></span><span>
+</span><span id="line-93"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#readCounterForCAS"><span class="hs-pragma hs-type">readCounterForCAS</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-94"></span><span class="hs-comment">-- | Just like the &quot;Data.Atomics&quot; CAS interface, this routine returns an opaque</span><span>
+</span><span id="line-95"></span><span class="hs-comment">-- ticket that can be used in CAS operations.  Except for the difference in return</span><span>
+</span><span id="line-96"></span><span class="hs-comment">-- type, the semantics of this are the same as `readCounter`.</span><span>
+</span><span id="line-97"></span><span class="annot"><a href="Data.Atomics.Counter.html#readCounterForCAS"><span class="hs-identifier hs-type">readCounterForCAS</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#CTicket"><span class="hs-identifier hs-type">CTicket</span></a></span><span>
+</span><span id="line-98"></span><span id="readCounterForCAS"><span class="annot"><span class="annottext">readCounterForCAS :: AtomicCounter -&gt; IO Int
+</span><a href="Data.Atomics.Counter.html#readCounterForCAS"><span class="hs-identifier hs-var hs-var">readCounterForCAS</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AtomicCounter -&gt; IO Int
+</span><a href="Data.Atomics.Counter.html#readCounter"><span class="hs-identifier hs-var">readCounter</span></a></span><span>
+</span><span id="line-99"></span><span>
+</span><span id="line-100"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#peekCTicket"><span class="hs-pragma hs-type">peekCTicket</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-101"></span><span class="annot"><span class="hs-comment">-- | Opaque tickets cannot be constructed, but they can be destructed into values.</span></span><span>
+</span><span id="line-102"></span><span class="annot"><a href="Data.Atomics.Counter.html#peekCTicket"><span class="hs-identifier hs-type">peekCTicket</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#CTicket"><span class="hs-identifier hs-type">CTicket</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-103"></span><span id="peekCTicket"><span class="annot"><span class="annottext">peekCTicket :: Int -&gt; Int
+</span><a href="Data.Atomics.Counter.html#peekCTicket"><span class="hs-identifier hs-var hs-var">peekCTicket</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679039233"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039233"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039233"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#casCounter"><span class="hs-pragma hs-type">casCounter</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-106"></span><span class="hs-comment">-- | Compare and swap for the counter ADT.  Similar behavior to</span><span>
+</span><span id="line-107"></span><span class="hs-comment">-- `Data.Atomics.casIORef`, in particular, in both success and failure cases it</span><span>
+</span><span id="line-108"></span><span class="hs-comment">-- returns a ticket that you should use for the next attempt.  (That is, in the</span><span>
+</span><span id="line-109"></span><span class="hs-comment">-- success case, it actually returns the new value that you provided as input, but in</span><span>
+</span><span id="line-110"></span><span class="hs-comment">-- ticket form.)</span><span>
+</span><span id="line-111"></span><span class="annot"><a href="Data.Atomics.Counter.html#casCounter"><span class="hs-identifier hs-type">casCounter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#CTicket"><span class="hs-identifier hs-type">CTicket</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#CTicket"><span class="hs-identifier hs-type">CTicket</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-112"></span><span class="hs-comment">-- casCounter (AtomicCounter barr) !old !new =</span><span>
+</span><span id="line-113"></span><span id="casCounter"><span class="annot"><span class="annottext">casCounter :: AtomicCounter -&gt; Int -&gt; Int -&gt; IO (Bool, Int)
+</span><a href="Data.Atomics.Counter.html#casCounter"><span class="hs-identifier hs-var hs-var">casCounter</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span> </span><span id="local-6989586621679039234"><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+</span><a href="#local-6989586621679039234"><span class="hs-identifier hs-var">mba#</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">I#</span></span><span> </span><span id="local-6989586621679039235"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039235"><span class="hs-identifier hs-var">old#</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679039236"><span class="annot"><span class="annottext">newBox :: Int
+</span><a href="#local-6989586621679039236"><span class="hs-identifier hs-var">newBox</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">I#</span></span><span> </span><span id="local-6989586621679039237"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039237"><span class="hs-identifier hs-var">new#</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, (Bool, Int) #))
+-&gt; IO (Bool, Int)
+forall a. (State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+</span><span class="hs-identifier hs-var">IO</span></span><span class="annot"><span class="annottext">((State# RealWorld -&gt; (# State# RealWorld, (Bool, Int) #))
+ -&gt; IO (Bool, Int))
+-&gt; (State# RealWorld -&gt; (# State# RealWorld, (Bool, Int) #))
+-&gt; IO (Bool, Int)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679039238"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039238"><span class="hs-identifier hs-var">s1#</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-114"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(#</span><span> </span><span id="local-6989586621679039239"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039239"><span class="hs-identifier hs-var">s2#</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679039240"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039240"><span class="hs-identifier hs-var">res#</span></a></span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+-&gt; Int#
+-&gt; Int#
+-&gt; Int#
+-&gt; State# RealWorld
+-&gt; (# State# RealWorld, Int# #)
+forall d.
+MutableByteArray# d
+-&gt; Int# -&gt; Int# -&gt; Int# -&gt; State# d -&gt; (# State# d, Int# #)
+</span><span class="hs-identifier hs-var">casIntArray#</span></span><span> </span><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+</span><a href="#local-6989586621679039234"><span class="hs-identifier hs-var">mba#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039235"><span class="hs-identifier hs-var">old#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039237"><span class="hs-identifier hs-var">new#</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039238"><span class="hs-identifier hs-var">s1#</span></a></span><span> </span><span class="hs-keyword">in</span><span>
+</span><span id="line-115"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039240"><span class="hs-identifier hs-var">res#</span></a></span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Bool
+</span><a href="Data.Atomics.Counter.html#%3D%3D%23"><span class="hs-operator hs-var">==#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039235"><span class="hs-identifier hs-var">old#</span></a></span><span> </span><span class="hs-keyword">of</span><span> </span><span>
+</span><span id="line-116"></span><span>    </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039239"><span class="hs-identifier hs-var">s2#</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int
+</span><span class="hs-identifier hs-var">I#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039240"><span class="hs-identifier hs-var">res#</span></a></span><span> </span><span class="hs-special">)</span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-comment">-- Failure</span><span>
+</span><span id="line-117"></span><span>    </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039239"><span class="hs-identifier hs-var">s2#</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span> </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039236"><span class="hs-identifier hs-var">newBox</span></a></span><span> </span><span class="hs-special">)</span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-comment">-- Success</span><span>
+</span><span id="line-118"></span><span>
+</span><span id="line-119"></span><span class="hs-comment">-- {-# INLINE sameCTicket #-}</span><span>
+</span><span id="line-120"></span><span class="hs-comment">-- sameCTicket :: CTicket -&gt; CTicket -&gt; Bool</span><span>
+</span><span id="line-121"></span><span class="hs-comment">-- sameCTicket = (==)</span><span>
+</span><span id="line-122"></span><span>
+</span><span id="line-123"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#incrCounter"><span class="hs-pragma hs-type">incrCounter</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-124"></span><span class="hs-comment">-- | Increment the counter by a given amount.  Returns the value AFTER the increment</span><span>
+</span><span id="line-125"></span><span class="hs-comment">--   (in contrast with the behavior of the underlying instruction on architectures</span><span>
+</span><span id="line-126"></span><span class="hs-comment">--   like x86.)</span><span>
+</span><span id="line-127"></span><span class="hs-comment">--                 </span><span>
+</span><span id="line-128"></span><span class="hs-comment">--   Note that UNLIKE with boxed implementations of counters, where increment is</span><span>
+</span><span id="line-129"></span><span class="hs-comment">--   based on CAS, this increment is /O(1)/.  Fetch-and-add does not require a retry</span><span>
+</span><span id="line-130"></span><span class="hs-comment">--   loop like CAS.</span><span>
+</span><span id="line-131"></span><span class="annot"><a href="Data.Atomics.Counter.html#incrCounter"><span class="hs-identifier hs-type">incrCounter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-132"></span><span id="incrCounter"><span class="annot"><span class="annottext">incrCounter :: Int -&gt; AtomicCounter -&gt; IO Int
+</span><a href="Data.Atomics.Counter.html#incrCounter"><span class="hs-identifier hs-var hs-var">incrCounter</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">I#</span></span><span> </span><span id="local-6989586621679039241"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039241"><span class="hs-identifier hs-var">incr#</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span> </span><span id="local-6989586621679039242"><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+</span><a href="#local-6989586621679039242"><span class="hs-identifier hs-var">mba#</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, Int #)) -&gt; IO Int
+forall a. (State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+</span><span class="hs-identifier hs-var">IO</span></span><span> </span><span class="annot"><span class="annottext">((State# RealWorld -&gt; (# State# RealWorld, Int #)) -&gt; IO Int)
+-&gt; (State# RealWorld -&gt; (# State# RealWorld, Int #)) -&gt; IO Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span> </span><span id="local-6989586621679039243"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039243"><span class="hs-identifier hs-var">s1#</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span>
+</span><span id="line-133"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(#</span><span> </span><span id="local-6989586621679039244"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039244"><span class="hs-identifier hs-var">s2#</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679039245"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039245"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+-&gt; Int# -&gt; Int# -&gt; State# RealWorld -&gt; (# State# RealWorld, Int# #)
+forall d.
+MutableByteArray# d
+-&gt; Int# -&gt; Int# -&gt; State# d -&gt; (# State# d, Int# #)
+</span><span class="hs-identifier hs-var">fetchAddIntArray#</span></span><span> </span><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+</span><a href="#local-6989586621679039242"><span class="hs-identifier hs-var">mba#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039241"><span class="hs-identifier hs-var">incr#</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039243"><span class="hs-identifier hs-var">s1#</span></a></span><span> </span><span class="hs-keyword">in</span><span>
+</span><span id="line-134"></span><span>  </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039244"><span class="hs-identifier hs-var">s2#</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int# -&gt; Int
+</span><span class="hs-identifier hs-var">I#</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039245"><span class="hs-identifier hs-var">res</span></a></span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><span class="hs-operator hs-var">+#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039241"><span class="hs-identifier hs-var">incr#</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">#)</span><span>
+</span><span id="line-135"></span><span>
+</span><span id="line-136"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#incrCounter_"><span class="hs-pragma hs-type">incrCounter_</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-137"></span><span class="annot"><span class="hs-comment">-- | An alternate version for when you don't care about the old value.</span></span><span>
+</span><span id="line-138"></span><span class="annot"><a href="Data.Atomics.Counter.html#incrCounter_"><span class="hs-identifier hs-type">incrCounter_</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span id="incrCounter_"><span class="annot"><span class="annottext">incrCounter_ :: Int -&gt; AtomicCounter -&gt; IO ()
+</span><a href="Data.Atomics.Counter.html#incrCounter_"><span class="hs-identifier hs-var hs-var">incrCounter_</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">I#</span></span><span> </span><span id="local-6989586621679039246"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039246"><span class="hs-identifier hs-var">incr#</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Atomics.Counter.html#AtomicCounter"><span class="hs-identifier hs-type">AtomicCounter</span></a></span><span> </span><span id="local-6989586621679039247"><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+</span><a href="#local-6989586621679039247"><span class="hs-identifier hs-var">mba#</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ()
+forall a. (State# RealWorld -&gt; (# State# RealWorld, a #)) -&gt; IO a
+</span><span class="hs-identifier hs-var">IO</span></span><span> </span><span class="annot"><span class="annottext">((State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ())
+-&gt; (State# RealWorld -&gt; (# State# RealWorld, () #)) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span> </span><span id="local-6989586621679039248"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039248"><span class="hs-identifier hs-var">s1#</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span>
+</span><span id="line-140"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(#</span><span> </span><span id="local-6989586621679039249"><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039249"><span class="hs-identifier hs-var">s2#</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+-&gt; Int# -&gt; Int# -&gt; State# RealWorld -&gt; (# State# RealWorld, Int# #)
+forall d.
+MutableByteArray# d
+-&gt; Int# -&gt; Int# -&gt; State# d -&gt; (# State# d, Int# #)
+</span><span class="hs-identifier hs-var">fetchAddIntArray#</span></span><span> </span><span class="annot"><span class="annottext">MutableByteArray# RealWorld
+</span><a href="#local-6989586621679039247"><span class="hs-identifier hs-var">mba#</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">0#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039246"><span class="hs-identifier hs-var">incr#</span></a></span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039248"><span class="hs-identifier hs-var">s1#</span></a></span><span> </span><span class="hs-keyword">in</span><span>
+</span><span id="line-141"></span><span>  </span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">State# RealWorld
+</span><a href="#local-6989586621679039249"><span class="hs-identifier hs-var">s2#</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-special">#)</span><span>
+</span><span id="line-142"></span></pre></body></html>

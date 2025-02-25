@@ -1,0 +1,120 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="annot"><span class="hs-comment">-- | Utilities for dealing with constructors/destructors.</span></span><span>
+</span><span id="line-2"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.Cmm.InitFini</span><span>
+</span><span id="line-3"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Cmm.InitFini.html#InitOrFini"><span class="hs-identifier">InitOrFini</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-4"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Cmm.InitFini.html#isInitOrFiniArray"><span class="hs-identifier">isInitOrFiniArray</span></a></span><span>
+</span><span id="line-5"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-6"></span><span>
+</span><span id="line-7"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-8"></span><span>
+</span><span id="line-9"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.CLabel.html"><span class="hs-identifier">GHC.Cmm.CLabel</span></a></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.html"><span class="hs-identifier">GHC.Cmm</span></a></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Panic.html"><span class="hs-identifier">GHC.Utils.Panic</span></a></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html"><span class="hs-identifier">GHC.Utils.Outputable</span></a></span><span>
+</span><span id="line-13"></span><span>
+</span><span id="line-14"></span><span class="hs-comment">{-
+Note [Initializers and finalizers in Cmm]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Most platforms support some mechanism for marking a procedure to be run when a
+program is loaded (in which case the procedure is known as an &quot;initializer&quot;,
+&quot;constructor&quot;, or &quot;ctor&quot;) or unloaded (a &quot;finalizer&quot;, &quot;deconstructor&quot;, or
+&quot;dtor&quot;).
+
+For instance, on ELF platforms pointers to initializer and finalizer functions
+are listed in .init_array and .fini_array sections, which are traversed by libc
+during program startup and shutdown.
+
+In GHC-generated code, initializers are used for a few things:
+
+ * registration of cost-centres and cost-centre stacks for profiling
+ * registration of info-table provenance entries
+ * registration of ticky tickers
+ * registration of HPC ticks
+
+All of these initializers are implemented as C functions, emitted by the
+compiler as ForeignStubs. Consequently the GHC.Types.ForeignStubs.CStub type
+carries with it lists of functions which should be marked as initializers or
+finalizers.
+
+These initializer and finalizer lists are then turned into CmmData declarations
+which are fed to the backend. These declarations are distinguished by their
+Section (e.g. InitArray or FiniArray) and consist of an array of words, where each
+word is a pointer to an initializer/finalizer function. Since this is the same
+form that most platforms expect initializer or finalizer lists to appear in
+assembler, the NCG backends naturally emit the appropriate assembler.
+
+However, for non-NCG backends (e.g. the C and LLVM backends) these
+initializer/finalizer list declarations need to be detected and dealt with
+appropriately. We provide isInitOrFiniArray to distinguish such declarations
+and turn them back into a list of CLabels.
+
+On Windows initializers/finalizers are a bit tricky due to the inability to
+merge objects (due to the lld linker's lack of `-r` support on Windows; see
+Note [Object merging] in GHC.Driver.Pipeline.Execute) since we instead must
+package foreign stubs into static archives.  However, the linker is free to not
+include any constituent objects of a static library in the final object code if
+nothing depends upon them. Consequently, we must ensure that the initializer
+list for a module is defined in the module's object code, not its foreign
+stubs. This happens naturally with the plan laid out above.
+
+Note that we maintain the invariant that at most one initializer and one
+finalizer CmmDecl will be emitted per module.
+-}</span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span class="hs-keyword">data</span><span> </span><span id="InitOrFini"><span class="annot"><a href="GHC.Cmm.InitFini.html#InitOrFini"><span class="hs-identifier hs-var">InitOrFini</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="IsInitArray"><span class="annot"><a href="GHC.Cmm.InitFini.html#IsInitArray"><span class="hs-identifier hs-var">IsInitArray</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="IsFiniArray"><span class="annot"><a href="GHC.Cmm.InitFini.html#IsFiniArray"><span class="hs-identifier hs-var">IsFiniArray</span></a></span></span><span>
+</span><span id="line-64"></span><span>
+</span><span id="line-65"></span><span class="annot"><a href="GHC.Cmm.InitFini.html#isInitOrFiniArray"><span class="hs-identifier hs-type">isInitOrFiniArray</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.html#RawCmmDecl"><span class="hs-identifier hs-type">RawCmmDecl</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.InitFini.html#InitOrFini"><span class="hs-identifier hs-type">InitOrFini</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Cmm.CLabel.html#CLabel"><span class="hs-identifier hs-type">CLabel</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-66"></span><span id="isInitOrFiniArray"><span class="annot"><span class="annottext">isInitOrFiniArray :: RawCmmDecl -&gt; Maybe (InitOrFini, [CLabel])
+</span><a href="GHC.Cmm.InitFini.html#isInitOrFiniArray"><span class="hs-identifier hs-var hs-var">isInitOrFiniArray</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.html#CmmData"><span class="hs-identifier hs-type">CmmData</span></a></span><span> </span><span id="local-6989586621681825572"><span class="annot"><span class="annottext">Section
+</span><a href="#local-6989586621681825572"><span class="hs-identifier hs-var">sect</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.html#CmmStaticsRaw"><span class="hs-identifier hs-type">CmmStaticsRaw</span></a></span><span> </span><span class="annot"><span class="annottext">CLabel
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681825574"><span class="annot"><span class="annottext">[CmmStatic]
+</span><a href="#local-6989586621681825574"><span class="hs-identifier hs-var">lits</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-67"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681825575"><span class="annot"><span class="annottext">InitOrFini
+</span><a href="#local-6989586621681825575"><span class="hs-identifier hs-var">initOrFini</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Section -&gt; Maybe InitOrFini
+</span><a href="GHC.Cmm.InitFini.html#isInitOrFiniSection"><span class="hs-identifier hs-var">isInitOrFiniSection</span></a></span><span> </span><span class="annot"><span class="annottext">Section
+</span><a href="#local-6989586621681825572"><span class="hs-identifier hs-var">sect</span></a></span><span>
+</span><span id="line-68"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(InitOrFini, [CLabel]) -&gt; Maybe (InitOrFini, [CLabel])
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InitOrFini
+</span><a href="#local-6989586621681825575"><span class="hs-identifier hs-var">initOrFini</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">(CmmStatic -&gt; CLabel) -&gt; [CmmStatic] -&gt; [CLabel]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">CmmStatic -&gt; CLabel
+</span><a href="#local-6989586621681825577"><span class="hs-identifier hs-var">get_label</span></a></span><span> </span><span class="annot"><span class="annottext">[CmmStatic]
+</span><a href="#local-6989586621681825574"><span class="hs-identifier hs-var">lits</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-69"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-70"></span><span>    </span><span class="annot"><a href="#local-6989586621681825577"><span class="hs-identifier hs-type">get_label</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.html#CmmStatic"><span class="hs-identifier hs-type">CmmStatic</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.CLabel.html#CLabel"><span class="hs-identifier hs-type">CLabel</span></a></span><span>
+</span><span id="line-71"></span><span>    </span><span id="local-6989586621681825577"><span class="annot"><span class="annottext">get_label :: CmmStatic -&gt; CLabel
+</span><a href="#local-6989586621681825577"><span class="hs-identifier hs-var hs-var">get_label</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.html#CmmStaticLit"><span class="hs-identifier hs-type">CmmStaticLit</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#CmmLabel"><span class="hs-identifier hs-type">CmmLabel</span></a></span><span> </span><span id="local-6989586621681825580"><span class="annot"><span class="annottext">CLabel
+</span><a href="#local-6989586621681825580"><span class="hs-identifier hs-var">lbl</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CLabel
+</span><a href="#local-6989586621681825580"><span class="hs-identifier hs-var">lbl</span></a></span><span>
+</span><span id="line-72"></span><span>    </span><span class="annot"><a href="#local-6989586621681825577"><span class="hs-identifier hs-var">get_label</span></a></span><span> </span><span id="local-6989586621681825581"><span class="annot"><span class="annottext">CmmStatic
+</span><a href="#local-6989586621681825581"><span class="hs-identifier hs-var">static</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; SDoc -&gt; CLabel
+forall a. HasCallStack =&gt; String -&gt; SDoc -&gt; a
+</span><a href="GHC.Utils.Panic.html#pprPanic"><span class="hs-identifier hs-var">pprPanic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;isInitOrFiniArray: invalid entry&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CmmStatic -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">CmmStatic
+</span><a href="#local-6989586621681825581"><span class="hs-identifier hs-var">static</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-73"></span><span class="annot"><a href="GHC.Cmm.InitFini.html#isInitOrFiniArray"><span class="hs-identifier hs-var">isInitOrFiniArray</span></a></span><span> </span><span class="annot"><span class="annottext">RawCmmDecl
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (InitOrFini, [CLabel])
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span class="annot"><a href="GHC.Cmm.InitFini.html#isInitOrFiniSection"><span class="hs-identifier hs-type">isInitOrFiniSection</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Cmm.html#Section"><span class="hs-identifier hs-type">Section</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="GHC.Cmm.InitFini.html#InitOrFini"><span class="hs-identifier hs-type">InitOrFini</span></a></span><span>
+</span><span id="line-76"></span><span id="isInitOrFiniSection"><span class="annot"><span class="annottext">isInitOrFiniSection :: Section -&gt; Maybe InitOrFini
+</span><a href="GHC.Cmm.InitFini.html#isInitOrFiniSection"><span class="hs-identifier hs-var hs-var">isInitOrFiniSection</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.html#Section"><span class="hs-identifier hs-type">Section</span></a></span><span> </span><span class="annot"><span class="annottext">SectionType
+</span><a href="GHC.Cmm.html#InitArray"><span class="hs-identifier hs-var">InitArray</span></a></span><span> </span><span class="annot"><span class="annottext">CLabel
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InitOrFini -&gt; Maybe InitOrFini
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="annot"><span class="annottext">InitOrFini
+</span><a href="GHC.Cmm.InitFini.html#IsInitArray"><span class="hs-identifier hs-var">IsInitArray</span></a></span><span>
+</span><span id="line-77"></span><span class="annot"><a href="GHC.Cmm.InitFini.html#isInitOrFiniSection"><span class="hs-identifier hs-var">isInitOrFiniSection</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.html#Section"><span class="hs-identifier hs-type">Section</span></a></span><span> </span><span class="annot"><span class="annottext">SectionType
+</span><a href="GHC.Cmm.html#FiniArray"><span class="hs-identifier hs-var">FiniArray</span></a></span><span> </span><span class="annot"><span class="annottext">CLabel
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InitOrFini -&gt; Maybe InitOrFini
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="annot"><span class="annottext">InitOrFini
+</span><a href="GHC.Cmm.InitFini.html#IsFiniArray"><span class="hs-identifier hs-var">IsFiniArray</span></a></span><span>
+</span><span id="line-78"></span><span class="annot"><a href="GHC.Cmm.InitFini.html#isInitOrFiniSection"><span class="hs-identifier hs-var">isInitOrFiniSection</span></a></span><span> </span><span class="annot"><span class="annottext">Section
+</span><span class="hs-identifier">_</span></span><span>                     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe InitOrFini
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-79"></span></pre></body></html>

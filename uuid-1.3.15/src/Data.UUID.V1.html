@@ -1,0 +1,499 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# OPTIONS_GHC -fno-cse #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="annot"><span class="hs-comment">{- |
+Module      : Data.UUID.V1
+Copyright   : (c) 2008 Jason Dusek
+              (c) 2009 Mark Lentczner
+              (c) 2009-2010,2012 Antoine Latter
+
+License     : BSD-style
+
+Maintainer  : aslatter@gmail.com
+Stability   : experimental
+Portability : portable
+
+RFC 4122 Version 1 UUID state machine.
+
+The generated UUID is based on the hardware MAC
+address and the system clock.
+
+If we cannot lookup the MAC address we seed the
+generator with a psuedo-random number.
+-}</span></span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Data.UUID.V1</span><span class="hs-special">(</span><span class="annot"><a href="Data.UUID.V1.html#nextUUID"><span class="hs-identifier">nextUUID</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-27"></span><span>
+</span><span id="line-28"></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bits</span></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Time</span></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span>
+</span><span id="line-33"></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Applicative</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-operator">(&lt;$&gt;)</span></span><span class="hs-special">,</span><span class="annot"><span class="hs-operator">(&lt;*&gt;)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Concurrent.MVar</span></span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.IO.Unsafe</span></span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">System.Random</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">R</span></span><span>
+</span><span id="line-39"></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.Info</span></span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.UUID.Types.Internal.Builder</span></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.UUID.Types.Internal</span></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- | Returns a new UUID derived from the local hardware MAC</span><span>
+</span><span id="line-46"></span><span class="hs-comment">-- address and the current system time.</span><span>
+</span><span id="line-47"></span><span class="hs-comment">-- Is generated according to the Version 1 UUID specified in</span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- RFC 4122.</span><span>
+</span><span id="line-49"></span><span class="hs-comment">--</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- Returns 'Nothing' if you request UUIDs too quickly.</span><span>
+</span><span id="line-51"></span><span class="annot"><a href="Data.UUID.V1.html#nextUUID"><span class="hs-identifier hs-type">nextUUID</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">UUID</span></span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span id="nextUUID"><span class="annot"><span class="annottext">nextUUID :: IO (Maybe UUID)
+</span><a href="Data.UUID.V1.html#nextUUID"><span class="hs-identifier hs-var hs-var">nextUUID</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-53"></span><span>  </span><span id="local-6989586621679062190"><span class="annot"><span class="annottext">Maybe (MAC, Word16, Word64)
+</span><a href="#local-6989586621679062190"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO (Maybe (MAC, Word16, Word64))
+</span><a href="Data.UUID.V1.html#stepTime"><span class="hs-identifier hs-var">stepTime</span></a></span><span>
+</span><span id="line-54"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe (MAC, Word16, Word64)
+</span><a href="#local-6989586621679062190"><span class="hs-identifier hs-var">res</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-55"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679062192"><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062192"><span class="hs-identifier hs-var">mac'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679062193"><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062193"><span class="hs-identifier hs-var">c</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679062194"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062194"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe UUID -&gt; IO (Maybe UUID)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Maybe UUID -&gt; IO (Maybe UUID)) -&gt; Maybe UUID -&gt; IO (Maybe UUID)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">UUID -&gt; Maybe UUID
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(UUID -&gt; Maybe UUID) -&gt; UUID -&gt; Maybe UUID
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word16 -&gt; MAC -&gt; UUID
+</span><a href="Data.UUID.V1.html#makeUUID"><span class="hs-identifier hs-var">makeUUID</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062194"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062193"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062192"><span class="hs-identifier hs-var">mac'</span></a></span><span>
+</span><span id="line-56"></span><span>    </span><span class="annot"><span class="annottext">Maybe (MAC, Word16, Word64)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe UUID -&gt; IO (Maybe UUID)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Maybe UUID
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span>
+</span><span id="line-59"></span><span class="annot"><a href="Data.UUID.V1.html#makeUUID"><span class="hs-identifier hs-type">makeUUID</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word16</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MAC</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UUID</span></span><span>
+</span><span id="line-60"></span><span id="makeUUID"><span class="annot"><span class="annottext">makeUUID :: Word64 -&gt; Word16 -&gt; MAC -&gt; UUID
+</span><a href="Data.UUID.V1.html#makeUUID"><span class="hs-identifier hs-var hs-var">makeUUID</span></a></span></span><span> </span><span id="local-6989586621679062196"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062196"><span class="hs-identifier hs-var">time</span></a></span></span><span> </span><span id="local-6989586621679062197"><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062197"><span class="hs-identifier hs-var">clock</span></a></span></span><span> </span><span id="local-6989586621679062198"><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062198"><span class="hs-identifier hs-var">mac'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-61"></span><span>    </span><span class="annot"><span class="annottext">Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Takes3Bytes UUID
+</span><span class="hs-identifier hs-var">buildFromBytes</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">ByteSink
+  Word32
+  (Word8
+   -&gt; Word8
+   -&gt; Word8
+   -&gt; Word8
+   -&gt; Word8
+   -&gt; Word8
+   -&gt; Word8
+   -&gt; Word8
+   -&gt; Word8
+   -&gt; Takes3Bytes UUID)
+-&gt; Word32
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Takes3Bytes UUID
+forall w g. ByteSource w =&gt; ByteSink w g -&gt; w -&gt; g
+forall g. ByteSink Word32 g -&gt; Word32 -&gt; g
+</span><span class="hs-operator hs-var">/-/</span></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679062201"><span class="hs-identifier hs-var">tLow</span></a></span><span> </span><span class="annot"><span class="annottext">ByteSink
+  Word16
+  (Word8
+   -&gt; Word8
+   -&gt; Word8
+   -&gt; Word8
+   -&gt; Word8
+   -&gt; Word8
+   -&gt; Word8
+   -&gt; Takes3Bytes UUID)
+-&gt; Word16
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Takes3Bytes UUID
+forall w g. ByteSource w =&gt; ByteSink w g -&gt; w -&gt; g
+forall g. ByteSink Word16 g -&gt; Word16 -&gt; g
+</span><span class="hs-operator hs-var">/-/</span></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062202"><span class="hs-identifier hs-var">tMid</span></a></span><span> </span><span class="annot"><span class="annottext">ByteSink
+  Word16
+  (Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; Takes3Bytes UUID)
+-&gt; Word16
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Word8
+-&gt; Takes3Bytes UUID
+forall w g. ByteSource w =&gt; ByteSink w g -&gt; w -&gt; g
+forall g. ByteSink Word16 g -&gt; Word16 -&gt; g
+</span><span class="hs-operator hs-var">/-/</span></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062203"><span class="hs-identifier hs-var">tHigh</span></a></span><span> </span><span class="annot"><span class="annottext">ByteSink Word16 (Word8 -&gt; Word8 -&gt; Word8 -&gt; Takes3Bytes UUID)
+-&gt; Word16 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; Takes3Bytes UUID
+forall w g. ByteSource w =&gt; ByteSink w g -&gt; w -&gt; g
+forall g. ByteSink Word16 g -&gt; Word16 -&gt; g
+</span><span class="hs-operator hs-var">/-/</span></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062197"><span class="hs-identifier hs-var">clock</span></a></span><span> </span><span class="annot"><span class="annottext">ByteSink MACSource UUID -&gt; MACSource -&gt; UUID
+forall w g. ByteSource w =&gt; ByteSink w g -&gt; w -&gt; g
+forall g. ByteSink MACSource g -&gt; MACSource -&gt; g
+</span><span class="hs-operator hs-var">/-/</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MAC -&gt; MACSource
+</span><a href="Data.UUID.V1.html#MACSource"><span class="hs-identifier hs-var">MACSource</span></a></span><span> </span><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062198"><span class="hs-identifier hs-var">mac'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>    </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679062201"><span class="annot"><span class="annottext">tLow :: Word32
+</span><a href="#local-6989586621679062201"><span class="hs-identifier hs-var hs-var">tLow</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64 -&gt; Word32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062196"><span class="hs-identifier hs-var">time</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word32</span></span><span>
+</span><span id="line-63"></span><span>          </span><span id="local-6989586621679062202"><span class="annot"><span class="annottext">tMid :: Word16
+</span><a href="#local-6989586621679062202"><span class="hs-identifier hs-var hs-var">tMid</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64 -&gt; Word16
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062196"><span class="hs-identifier hs-var">time</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int -&gt; Word64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word16</span></span><span>
+</span><span id="line-64"></span><span>          </span><span id="local-6989586621679062203"><span class="annot"><span class="annottext">tHigh :: Word16
+</span><a href="#local-6989586621679062203"><span class="hs-identifier hs-var hs-var">tHigh</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64 -&gt; Word16
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062196"><span class="hs-identifier hs-var">time</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int -&gt; Word64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">48</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word16</span></span><span>
+</span><span id="line-65"></span><span>
+</span><span id="line-66"></span><span class="hs-keyword">newtype</span><span> </span><span id="MACSource"><span class="annot"><a href="Data.UUID.V1.html#MACSource"><span class="hs-identifier hs-var">MACSource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="MACSource"><span class="annot"><a href="Data.UUID.V1.html#MACSource"><span class="hs-identifier hs-var">MACSource</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">MAC</span></span><span>
+</span><span id="line-67"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteSource</span></span><span> </span><span class="annot"><a href="Data.UUID.V1.html#MACSource"><span class="hs-identifier hs-type">MACSource</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-68"></span><span>    </span><span id="local-6989586621679062208"><span class="annot"><span class="annottext">ByteSink MACSource g
+</span><a href="#local-6989586621679062208"><span class="hs-identifier hs-var">z</span></a></span></span><span> </span><span id="local-6989586621679062209"><span class="annot"><span class="annottext">/-/ :: forall g. ByteSink MACSource g -&gt; MACSource -&gt; g
+</span><span class="hs-operator hs-var hs-var hs-var hs-var">/-/</span></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.UUID.V1.html#MACSource"><span class="hs-identifier hs-type">MACSource</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">MAC</span></span><span> </span><span id="local-6989586621679062211"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679062211"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621679062212"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679062212"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621679062213"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679062213"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span id="local-6989586621679062214"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679062214"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span id="local-6989586621679062215"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679062215"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621679062216"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679062216"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteSink MACSource g
+Takes3Bytes (Takes3Bytes g)
+</span><a href="#local-6989586621679062208"><span class="hs-identifier hs-var">z</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679062211"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679062212"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679062213"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679062214"><span class="hs-identifier hs-var">d</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679062215"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679062216"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-69"></span><span class="hs-keyword">type</span><span> </span><span class="hs-keyword">instance</span><span> </span><span id="ByteSink"><span class="annot"><span class="hs-identifier hs-var">ByteSink</span></span></span><span> </span><span id="local-6989586621679062217"><span class="annot"><a href="Data.UUID.V1.html#MACSource"><span class="hs-identifier hs-type">MACSource</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679062217"><span class="hs-identifier hs-type">g</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Takes3Bytes</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Takes3Bytes</span></span><span> </span><span class="annot"><a href="#local-6989586621679062217"><span class="hs-identifier hs-type">g</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-70"></span><span>
+</span><span id="line-71"></span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- |Approximates the clock algorithm in RFC 4122, section 4.2</span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- Isn't system wide or thread safe, nor does it properly randomize</span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- the clock value on initialization.</span><span>
+</span><span id="line-75"></span><span class="annot"><a href="Data.UUID.V1.html#stepTime"><span class="hs-identifier hs-type">stepTime</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">MAC</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word16</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-76"></span><span id="stepTime"><span class="annot"><span class="annottext">stepTime :: IO (Maybe (MAC, Word16, Word64))
+</span><a href="Data.UUID.V1.html#stepTime"><span class="hs-identifier hs-var hs-var">stepTime</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-77"></span><span>  </span><span id="local-6989586621679062218"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062218"><span class="hs-identifier hs-var">h1</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(UTCTime -&gt; Word64) -&gt; IO UTCTime -&gt; IO Word64
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">UTCTime -&gt; Word64
+</span><a href="Data.UUID.V1.html#hundredsOfNanosSinceGregorianReform"><span class="hs-identifier hs-var">hundredsOfNanosSinceGregorianReform</span></a></span><span> </span><span class="annot"><span class="annottext">IO UTCTime
+</span><span class="hs-identifier hs-var">getCurrentTime</span></span><span>
+</span><span id="line-78"></span><span>  </span><span class="annot"><span class="annottext">MVar State
+-&gt; (State -&gt; IO (State, Maybe (MAC, Word16, Word64)))
+-&gt; IO (Maybe (MAC, Word16, Word64))
+forall a b. MVar a -&gt; (a -&gt; IO (a, b)) -&gt; IO b
+</span><span class="hs-identifier hs-var">modifyMVar</span></span><span> </span><span class="annot"><span class="annottext">MVar State
+</span><a href="Data.UUID.V1.html#state"><span class="hs-identifier hs-var">state</span></a></span><span> </span><span class="annot"><span class="annottext">((State -&gt; IO (State, Maybe (MAC, Word16, Word64)))
+ -&gt; IO (Maybe (MAC, Word16, Word64)))
+-&gt; (State -&gt; IO (State, Maybe (MAC, Word16, Word64)))
+-&gt; IO (Maybe (MAC, Word16, Word64))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679062223"><span class="annot"><span class="annottext">s :: State
+</span><a href="#local-6989586621679062223"><span class="hs-identifier hs-var">s</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Data.UUID.V1.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span id="local-6989586621679062225"><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062225"><span class="hs-identifier hs-var">mac'</span></a></span></span><span> </span><span id="local-6989586621679062226"><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062226"><span class="hs-identifier hs-var">c0</span></a></span></span><span> </span><span id="local-6989586621679062227"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062227"><span class="hs-identifier hs-var">h0</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-79"></span><span>   </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062218"><span class="hs-identifier hs-var">h1</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062227"><span class="hs-identifier hs-var">h0</span></a></span><span>
+</span><span id="line-80"></span><span>    </span><span class="hs-keyword">then</span><span>
+</span><span id="line-81"></span><span>      </span><span class="annot"><span class="annottext">(State, Maybe (MAC, Word16, Word64))
+-&gt; IO (State, Maybe (MAC, Word16, Word64))
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MAC -&gt; Word16 -&gt; Word64 -&gt; State
+</span><a href="Data.UUID.V1.html#State"><span class="hs-identifier hs-var">State</span></a></span><span> </span><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062225"><span class="hs-identifier hs-var">mac'</span></a></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062226"><span class="hs-identifier hs-var">c0</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062218"><span class="hs-identifier hs-var">h1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">(MAC, Word16, Word64) -&gt; Maybe (MAC, Word16, Word64)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062225"><span class="hs-identifier hs-var">mac'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062226"><span class="hs-identifier hs-var">c0</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062218"><span class="hs-identifier hs-var">h1</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-82"></span><span>    </span><span class="hs-keyword">else</span><span>
+</span><span id="line-83"></span><span>      </span><span class="hs-keyword">let</span><span>
+</span><span id="line-84"></span><span>        </span><span id="local-6989586621679062229"><span class="annot"><span class="annottext">c1 :: Word16
+</span><a href="#local-6989586621679062229"><span class="hs-identifier hs-var hs-var">c1</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word16 -&gt; Word16
+forall a. Enum a =&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">succ</span></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062226"><span class="hs-identifier hs-var">c0</span></a></span><span>
+</span><span id="line-85"></span><span>      </span><span class="hs-keyword">in</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062229"><span class="hs-identifier hs-var">c1</span></a></span><span> </span><span class="annot"><span class="annottext">Word16 -&gt; Word16 -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><span class="hs-number">0x3fff</span></span><span> </span><span class="hs-comment">-- when clock is initially randomized,</span><span>
+</span><span id="line-86"></span><span>                      </span><span class="hs-comment">-- then this test will need to change</span><span>
+</span><span id="line-87"></span><span>         </span><span class="hs-keyword">then</span><span>
+</span><span id="line-88"></span><span>          </span><span class="annot"><span class="annottext">(State, Maybe (MAC, Word16, Word64))
+-&gt; IO (State, Maybe (MAC, Word16, Word64))
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MAC -&gt; Word16 -&gt; Word64 -&gt; State
+</span><a href="Data.UUID.V1.html#State"><span class="hs-identifier hs-var">State</span></a></span><span> </span><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062225"><span class="hs-identifier hs-var">mac'</span></a></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062229"><span class="hs-identifier hs-var">c1</span></a></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062218"><span class="hs-identifier hs-var">h1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">(MAC, Word16, Word64) -&gt; Maybe (MAC, Word16, Word64)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062225"><span class="hs-identifier hs-var">mac'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679062229"><span class="hs-identifier hs-var">c1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062218"><span class="hs-identifier hs-var">h1</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-89"></span><span>        </span><span class="hs-keyword">else</span><span>
+</span><span id="line-90"></span><span>          </span><span class="annot"><span class="annottext">(State, Maybe (MAC, Word16, Word64))
+-&gt; IO (State, Maybe (MAC, Word16, Word64))
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679062223"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Maybe (MAC, Word16, Word64)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">)</span><span>
+</span><span id="line-91"></span><span>
+</span><span id="line-92"></span><span>
+</span><span id="line-93"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="Data.UUID.V1.html#state"><span class="hs-pragma hs-type">state</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-94"></span><span class="annot"><a href="Data.UUID.V1.html#state"><span class="hs-identifier hs-type">state</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MVar</span></span><span> </span><span class="annot"><a href="Data.UUID.V1.html#State"><span class="hs-identifier hs-type">State</span></a></span><span>
+</span><span id="line-95"></span><span id="state"><span class="annot"><span class="annottext">state :: MVar State
+</span><a href="Data.UUID.V1.html#state"><span class="hs-identifier hs-var hs-var">state</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (MVar State) -&gt; MVar State
+forall a. IO a -&gt; a
+</span><span class="hs-identifier hs-var">unsafePerformIO</span></span><span> </span><span class="annot"><span class="annottext">(IO (MVar State) -&gt; MVar State) -&gt; IO (MVar State) -&gt; MVar State
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-96"></span><span>  </span><span id="local-6989586621679062233"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062233"><span class="hs-identifier hs-var">h0</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(UTCTime -&gt; Word64) -&gt; IO UTCTime -&gt; IO Word64
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">UTCTime -&gt; Word64
+</span><a href="Data.UUID.V1.html#hundredsOfNanosSinceGregorianReform"><span class="hs-identifier hs-var">hundredsOfNanosSinceGregorianReform</span></a></span><span> </span><span class="annot"><span class="annottext">IO UTCTime
+</span><span class="hs-identifier hs-var">getCurrentTime</span></span><span>
+</span><span id="line-97"></span><span>  </span><span id="local-6989586621679062234"><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062234"><span class="hs-identifier hs-var">mac'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO MAC
+</span><a href="Data.UUID.V1.html#getMac"><span class="hs-identifier hs-var">getMac</span></a></span><span>
+</span><span id="line-98"></span><span>  </span><span class="annot"><span class="annottext">State -&gt; IO (MVar State)
+forall a. a -&gt; IO (MVar a)
+</span><span class="hs-identifier hs-var">newMVar</span></span><span> </span><span class="annot"><span class="annottext">(State -&gt; IO (MVar State)) -&gt; State -&gt; IO (MVar State)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">MAC -&gt; Word16 -&gt; Word64 -&gt; State
+</span><a href="Data.UUID.V1.html#State"><span class="hs-identifier hs-var">State</span></a></span><span> </span><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062234"><span class="hs-identifier hs-var">mac'</span></a></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679062233"><span class="hs-identifier hs-var">h0</span></a></span><span> </span><span class="hs-comment">-- the 0 should be a random number</span><span>
+</span><span id="line-99"></span><span>
+</span><span id="line-100"></span><span class="hs-comment">-- SysMAC.mac can fail on some machines.</span><span>
+</span><span id="line-101"></span><span class="hs-comment">-- In those cases we fake it with a random</span><span>
+</span><span id="line-102"></span><span class="hs-comment">-- 6 bytes seed.</span><span>
+</span><span id="line-103"></span><span class="annot"><a href="Data.UUID.V1.html#getMac"><span class="hs-identifier hs-type">getMac</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">MAC</span></span><span>
+</span><span id="line-104"></span><span id="getMac"><span class="annot"><span class="annottext">getMac :: IO MAC
+</span><a href="Data.UUID.V1.html#getMac"><span class="hs-identifier hs-var hs-var">getMac</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-105"></span><span>    </span><span class="annot"><span class="annottext">IO [NetworkInterface]
+</span><span class="hs-identifier hs-var">getNetworkInterfaces</span></span><span> </span><span class="annot"><span class="annottext">IO [NetworkInterface]
+-&gt; ([NetworkInterface] -&gt; IO (Maybe MAC)) -&gt; IO (Maybe MAC)
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span>
+</span><span id="line-106"></span><span>    </span><span class="annot"><span class="annottext">Maybe MAC -&gt; IO (Maybe MAC)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Maybe MAC -&gt; IO (Maybe MAC))
+-&gt; ([NetworkInterface] -&gt; Maybe MAC)
+-&gt; [NetworkInterface]
+-&gt; IO (Maybe MAC)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[MAC] -&gt; Maybe MAC
+forall a. [a] -&gt; Maybe a
+</span><span class="hs-identifier hs-var">listToMaybe</span></span><span> </span><span class="annot"><span class="annottext">([MAC] -&gt; Maybe MAC)
+-&gt; ([NetworkInterface] -&gt; [MAC]) -&gt; [NetworkInterface] -&gt; Maybe MAC
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(MAC -&gt; Bool) -&gt; [MAC] -&gt; [MAC]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><span class="hs-identifier hs-var">filter</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MAC
+forall a. Bounded a =&gt; a
+</span><span class="hs-identifier hs-var">minBound</span></span><span> </span><span class="annot"><span class="annottext">MAC -&gt; MAC -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([MAC] -&gt; [MAC])
+-&gt; ([NetworkInterface] -&gt; [MAC]) -&gt; [NetworkInterface] -&gt; [MAC]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(NetworkInterface -&gt; MAC) -&gt; [NetworkInterface] -&gt; [MAC]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">NetworkInterface -&gt; MAC
+</span><span class="hs-identifier hs-var">mac</span></span><span> </span><span class="annot"><span class="annottext">IO (Maybe MAC) -&gt; (Maybe MAC -&gt; IO MAC) -&gt; IO MAC
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span>
+</span><span id="line-107"></span><span>    </span><span class="hs-glyph">\</span><span id="local-6989586621679062243"><span class="annot"><span class="annottext">Maybe MAC
+</span><a href="#local-6989586621679062243"><span class="hs-identifier hs-var">macM</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe MAC
+</span><a href="#local-6989586621679062243"><span class="hs-identifier hs-var">macM</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-108"></span><span>      </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679062244"><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062244"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">MAC -&gt; IO MAC
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">MAC
+</span><a href="#local-6989586621679062244"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-109"></span><span>      </span><span class="annot"><span class="annottext">Maybe MAC
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO MAC
+</span><a href="Data.UUID.V1.html#randomMac"><span class="hs-identifier hs-var">randomMac</span></a></span><span>
+</span><span id="line-110"></span><span>
+</span><span id="line-111"></span><span class="annot"><a href="Data.UUID.V1.html#randomMac"><span class="hs-identifier hs-type">randomMac</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">MAC</span></span><span>
+</span><span id="line-112"></span><span id="randomMac"><span class="annot"><span class="annottext">randomMac :: IO MAC
+</span><a href="Data.UUID.V1.html#randomMac"><span class="hs-identifier hs-var hs-var">randomMac</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-113"></span><span>    </span><span class="hs-comment">-- I'm too lazy to thread through</span><span>
+</span><span id="line-114"></span><span>    </span><span class="hs-comment">-- the random state ...</span><span>
+</span><span id="line-115"></span><span>    </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; MAC
+</span><span class="hs-identifier hs-var">MAC</span></span><span>
+</span><span id="line-116"></span><span>     </span><span class="annot"><span class="annottext">(Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; MAC)
+-&gt; IO Word8
+-&gt; IO (Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; MAC)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IO Word8
+forall a (m :: * -&gt; *). (Random a, MonadIO m) =&gt; m a
+</span><span class="hs-identifier hs-var">R.randomIO</span></span><span> </span><span class="annot"><span class="annottext">IO Word8 -&gt; (Word8 -&gt; IO Word8) -&gt; IO Word8
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; IO Word8
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(Word8 -&gt; IO Word8) -&gt; (Word8 -&gt; Word8) -&gt; Word8 -&gt; IO Word8
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Word8
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.|.</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-comment">-- We must set the multicast bit to True. See section 4.5 of the RFC.</span><span>
+</span><span id="line-117"></span><span>     </span><span class="annot"><span class="annottext">IO (Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; MAC)
+-&gt; IO Word8 -&gt; IO (Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; MAC)
+forall a b. IO (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">IO Word8
+forall a (m :: * -&gt; *). (Random a, MonadIO m) =&gt; m a
+</span><span class="hs-identifier hs-var">R.randomIO</span></span><span>
+</span><span id="line-118"></span><span>     </span><span class="annot"><span class="annottext">IO (Word8 -&gt; Word8 -&gt; Word8 -&gt; Word8 -&gt; MAC)
+-&gt; IO Word8 -&gt; IO (Word8 -&gt; Word8 -&gt; Word8 -&gt; MAC)
+forall a b. IO (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">IO Word8
+forall a (m :: * -&gt; *). (Random a, MonadIO m) =&gt; m a
+</span><span class="hs-identifier hs-var">R.randomIO</span></span><span>
+</span><span id="line-119"></span><span>     </span><span class="annot"><span class="annottext">IO (Word8 -&gt; Word8 -&gt; Word8 -&gt; MAC)
+-&gt; IO Word8 -&gt; IO (Word8 -&gt; Word8 -&gt; MAC)
+forall a b. IO (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">IO Word8
+forall a (m :: * -&gt; *). (Random a, MonadIO m) =&gt; m a
+</span><span class="hs-identifier hs-var">R.randomIO</span></span><span>
+</span><span id="line-120"></span><span>     </span><span class="annot"><span class="annottext">IO (Word8 -&gt; Word8 -&gt; MAC) -&gt; IO Word8 -&gt; IO (Word8 -&gt; MAC)
+forall a b. IO (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">IO Word8
+forall a (m :: * -&gt; *). (Random a, MonadIO m) =&gt; m a
+</span><span class="hs-identifier hs-var">R.randomIO</span></span><span>
+</span><span id="line-121"></span><span>     </span><span class="annot"><span class="annottext">IO (Word8 -&gt; MAC) -&gt; IO Word8 -&gt; IO MAC
+forall a b. IO (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">IO Word8
+forall a (m :: * -&gt; *). (Random a, MonadIO m) =&gt; m a
+</span><span class="hs-identifier hs-var">R.randomIO</span></span><span>
+</span><span id="line-122"></span><span>
+</span><span id="line-123"></span><span class="hs-keyword">data</span><span> </span><span id="State"><span class="annot"><a href="Data.UUID.V1.html#State"><span class="hs-identifier hs-var">State</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="State"><span class="annot"><a href="Data.UUID.V1.html#State"><span class="hs-identifier hs-var">State</span></a></span></span><span>
+</span><span id="line-124"></span><span>    </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">MAC</span></span><span>
+</span><span id="line-125"></span><span>    </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Word16</span></span><span>
+</span><span id="line-126"></span><span>    </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span>
+</span><span id="line-127"></span><span> </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679062249"><span id="local-6989586621679062259"><span id="local-6989586621679062263"><span class="annot"><span class="annottext">Int -&gt; State -&gt; ShowS
+[State] -&gt; ShowS
+State -&gt; String
+(Int -&gt; State -&gt; ShowS)
+-&gt; (State -&gt; String) -&gt; ([State] -&gt; ShowS) -&gt; Show State
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; State -&gt; ShowS
+showsPrec :: Int -&gt; State -&gt; ShowS
+$cshow :: State -&gt; String
+show :: State -&gt; String
+$cshowList :: [State] -&gt; ShowS
+showList :: [State] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-128"></span><span>
+</span><span id="line-129"></span><span>
+</span><span id="line-130"></span><span>
+</span><span id="line-131"></span><span class="annot"><a href="Data.UUID.V1.html#hundredsOfNanosSinceGregorianReform"><span class="hs-identifier hs-type">hundredsOfNanosSinceGregorianReform</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UTCTime</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span>
+</span><span id="line-132"></span><span id="hundredsOfNanosSinceGregorianReform"><span class="annot"><span class="annottext">hundredsOfNanosSinceGregorianReform :: UTCTime -&gt; Word64
+</span><a href="Data.UUID.V1.html#hundredsOfNanosSinceGregorianReform"><span class="hs-identifier hs-var hs-var">hundredsOfNanosSinceGregorianReform</span></a></span></span><span> </span><span id="local-6989586621679062266"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679062266"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">NominalDiffTime -&gt; Word64
+forall b. Integral b =&gt; NominalDiffTime -&gt; b
+forall a b. (RealFrac a, Integral b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">floor</span></span><span> </span><span class="annot"><span class="annottext">(NominalDiffTime -&gt; Word64) -&gt; NominalDiffTime -&gt; Word64
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">NominalDiffTime
+</span><span class="hs-number">10000000</span></span><span> </span><span class="annot"><span class="annottext">NominalDiffTime -&gt; NominalDiffTime -&gt; NominalDiffTime
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">NominalDiffTime
+</span><a href="#local-6989586621679062269"><span class="hs-identifier hs-var">dt</span></a></span><span>
+</span><span id="line-133"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-134"></span><span>  </span><span id="local-6989586621679062272"><span class="annot"><span class="annottext">gregorianReform :: UTCTime
+</span><a href="#local-6989586621679062272"><span class="hs-identifier hs-var hs-var">gregorianReform</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Day -&gt; DiffTime -&gt; UTCTime
+</span><span class="hs-identifier hs-var">UTCTime</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Year -&gt; Int -&gt; Int -&gt; Day
+</span><span class="hs-identifier hs-var">fromGregorian</span></span><span> </span><span class="annot"><span class="annottext">Year
+</span><span class="hs-number">1582</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">10</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">15</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">DiffTime
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-135"></span><span>  </span><span id="local-6989586621679062269"><span class="annot"><span class="annottext">dt :: NominalDiffTime
+</span><a href="#local-6989586621679062269"><span class="hs-identifier hs-var hs-var">dt</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679062266"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">UTCTime -&gt; UTCTime -&gt; NominalDiffTime
+</span><span class="hs-operator hs-var">`diffUTCTime`</span></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679062272"><span class="hs-identifier hs-var">gregorianReform</span></a></span><span>
+</span><span id="line-136"></span></pre></body></html>

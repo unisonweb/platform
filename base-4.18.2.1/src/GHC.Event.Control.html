@@ -1,0 +1,626 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE Unsafe #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE CPP
+           , NoImplicitPrelude
+           , ScopedTypeVariables
+           , BangPatterns
+  #-}</span><span>
+</span><span id="line-7"></span><span>
+</span><span id="line-8"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.Event.Control</span><span>
+</span><span id="line-9"></span><span>    </span><span class="hs-special">(</span><span>
+</span><span id="line-10"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Managing the IO manager</span></span><span>
+</span><span id="line-11"></span><span>      </span><span class="annot"><a href="GHC.Conc.Signal.html#Signal"><span class="hs-identifier">Signal</span></a></span><span>
+</span><span id="line-12"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#ControlMessage"><span class="hs-identifier">ControlMessage</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#Control"><span class="hs-identifier">Control</span></a></span><span>
+</span><span id="line-14"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#newControl"><span class="hs-identifier">newControl</span></a></span><span>
+</span><span id="line-15"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#closeControl"><span class="hs-identifier">closeControl</span></a></span><span>
+</span><span id="line-16"></span><span>    </span><span class="annot"><span class="hs-comment">-- ** Control message reception</span></span><span>
+</span><span id="line-17"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#readControlMessage"><span class="hs-identifier">readControlMessage</span></a></span><span>
+</span><span id="line-18"></span><span>    </span><span class="annot"><span class="hs-comment">-- *** File descriptors</span></span><span>
+</span><span id="line-19"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#controlReadFd"><span class="hs-identifier">controlReadFd</span></a></span><span>
+</span><span id="line-20"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#controlWriteFd"><span class="hs-identifier">controlWriteFd</span></a></span><span>
+</span><span id="line-21"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#wakeupReadFd"><span class="hs-identifier">wakeupReadFd</span></a></span><span>
+</span><span id="line-22"></span><span>    </span><span class="annot"><span class="hs-comment">-- ** Control message sending</span></span><span>
+</span><span id="line-23"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#sendWakeup"><span class="hs-identifier">sendWakeup</span></a></span><span>
+</span><span id="line-24"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#sendDie"><span class="hs-identifier">sendDie</span></a></span><span>
+</span><span id="line-25"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Utilities</span></span><span>
+</span><span id="line-26"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="System.Posix.Internals.html#setNonBlockingFD"><span class="hs-identifier">setNonBlockingFD</span></a></span><span>
+</span><span id="line-27"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span class="hs-cpp">
+
+#include &lt;ghcplatform.h&gt;
+</span><span class="hs-cpp">#include &quot;EventConfig.h&quot;
+</span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Base.html"><span class="hs-identifier">GHC.Base</span></a></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.IORef.html"><span class="hs-identifier">GHC.IORef</span></a></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Conc.Signal.html"><span class="hs-identifier">GHC.Conc.Signal</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Conc.Signal.html#Signal"><span class="hs-identifier">Signal</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Real.html"><span class="hs-identifier">GHC.Real</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier">fromIntegral</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Show.html"><span class="hs-identifier">GHC.Show</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Show.html#Show"><span class="hs-identifier">Show</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Word.html"><span class="hs-identifier">GHC.Word</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Word.html#Word8"><span class="hs-identifier">Word8</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Foreign.C.Error.html"><span class="hs-identifier">Foreign.C.Error</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Foreign.C.Error.html#throwErrnoIfMinus1_"><span class="hs-identifier">throwErrnoIfMinus1_</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Foreign.C.Error.html#throwErrno"><span class="hs-identifier">throwErrno</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Foreign.C.Error.html#getErrno"><span class="hs-identifier">getErrno</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Foreign.C.Types.html"><span class="hs-identifier">Foreign.C.Types</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier">CInt</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CSize"><span class="hs-identifier">CSize</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Foreign.ForeignPtr.html"><span class="hs-identifier">Foreign.ForeignPtr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.ForeignPtr.html#ForeignPtr"><span class="hs-identifier">ForeignPtr</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.ForeignPtr.html#mallocForeignPtrBytes"><span class="hs-identifier">mallocForeignPtrBytes</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.ForeignPtr.html#withForeignPtr"><span class="hs-identifier">withForeignPtr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Foreign.Marshal.html"><span class="hs-identifier">Foreign.Marshal</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Foreign.Marshal.Alloc.html#alloca"><span class="hs-identifier">alloca</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Foreign.Marshal.Alloc.html#allocaBytes"><span class="hs-identifier">allocaBytes</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Foreign.Marshal.Array.html"><span class="hs-identifier">Foreign.Marshal.Array</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Foreign.Marshal.Array.html#allocaArray"><span class="hs-identifier">allocaArray</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Foreign.Ptr.html"><span class="hs-identifier">Foreign.Ptr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Ptr.html#castPtr"><span class="hs-identifier">castPtr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Foreign.Storable.html"><span class="hs-identifier">Foreign.Storable</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Foreign.Storable.html#peek"><span class="hs-identifier">peek</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Foreign.Storable.html#peekElemOff"><span class="hs-identifier">peekElemOff</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Foreign.Storable.html#poke"><span class="hs-identifier">poke</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="System.Posix.Internals.html"><span class="hs-identifier">System.Posix.Internals</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="System.Posix.Internals.html#c_close"><span class="hs-identifier">c_close</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="System.Posix.Internals.html#c_pipe"><span class="hs-identifier">c_pipe</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="System.Posix.Internals.html#c_read"><span class="hs-identifier">c_read</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="System.Posix.Internals.html#c_write"><span class="hs-identifier">c_write</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-46"></span><span>                               </span><span class="annot"><a href="System.Posix.Internals.html#setCloseOnExec"><span class="hs-identifier">setCloseOnExec</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="System.Posix.Internals.html#setNonBlockingFD"><span class="hs-identifier">setNonBlockingFD</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="System.Posix.Types.html"><span class="hs-identifier">System.Posix.Types</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="System.Posix.Types.html#Fd"><span class="hs-identifier">Fd</span></a></span><span class="hs-special">)</span><span class="hs-cpp">
+
+#if defined(HAVE_EVENTFD)
+</span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Foreign.C.Error.html"><span class="hs-identifier">Foreign.C.Error</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Foreign.C.Error.html#throwErrnoIfMinus1"><span class="hs-identifier">throwErrnoIfMinus1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Foreign.C.Error.html#eBADF"><span class="hs-identifier">eBADF</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-51"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Foreign.C.Types.html"><span class="hs-identifier">Foreign.C.Types</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Foreign.C.Types.html#CULLong"><span class="hs-identifier">CULLong</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-cpp">
+#else
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-identifier">Foreign.C.Error</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">eAGAIN</span><span class="hs-special">,</span><span> </span><span class="hs-identifier">eWOULDBLOCK</span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-56"></span><span class="hs-keyword">data</span><span> </span><span id="ControlMessage"><span class="annot"><a href="GHC.Event.Control.html#ControlMessage"><span class="hs-identifier hs-var">ControlMessage</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="CMsgWakeup"><span class="annot"><a href="GHC.Event.Control.html#CMsgWakeup"><span class="hs-identifier hs-var">CMsgWakeup</span></a></span></span><span>
+</span><span id="line-57"></span><span>                    </span><span class="hs-glyph">|</span><span> </span><span id="CMsgDie"><span class="annot"><a href="GHC.Event.Control.html#CMsgDie"><span class="hs-identifier hs-var">CMsgDie</span></a></span></span><span>
+</span><span id="line-58"></span><span>                    </span><span class="hs-glyph">|</span><span> </span><span id="CMsgSignal"><span class="annot"><a href="GHC.Event.Control.html#CMsgSignal"><span class="hs-identifier hs-var">CMsgSignal</span></a></span></span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><a href="GHC.ForeignPtr.html#ForeignPtr"><span class="hs-identifier hs-type">ForeignPtr</span></a></span><span> </span><span class="annot"><a href="GHC.Word.html#Word8"><span class="hs-identifier hs-type">Word8</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-59"></span><span>                                 </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="GHC.Conc.Signal.html#Signal"><span class="hs-identifier hs-type">Signal</span></a></span><span>
+</span><span id="line-60"></span><span>    </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span> </span><span id="local-6989586621679670888"><span id="local-6989586621679670893"><span class="annot"><span class="annottext">ControlMessage -&gt; ControlMessage -&gt; Bool
+(ControlMessage -&gt; ControlMessage -&gt; Bool)
+-&gt; (ControlMessage -&gt; ControlMessage -&gt; Bool) -&gt; Eq ControlMessage
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: ControlMessage -&gt; ControlMessage -&gt; Bool
+== :: ControlMessage -&gt; ControlMessage -&gt; Bool
+$c/= :: ControlMessage -&gt; ControlMessage -&gt; Bool
+/= :: ControlMessage -&gt; ControlMessage -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#Eq/GHC.Classes.html#Eq"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></a></span></span></span><span>   </span><span class="annot"><span class="hs-comment">-- ^ @since 4.4.0.0</span></span><span>
+</span><span id="line-61"></span><span>             </span><span class="hs-special">,</span><span> </span><span id="local-6989586621679670898"><span id="local-6989586621679670906"><span id="local-6989586621679670910"><span class="annot"><span class="annottext">Int -&gt; ControlMessage -&gt; ShowS
+[ControlMessage] -&gt; ShowS
+ControlMessage -&gt; String
+(Int -&gt; ControlMessage -&gt; ShowS)
+-&gt; (ControlMessage -&gt; String)
+-&gt; ([ControlMessage] -&gt; ShowS)
+-&gt; Show ControlMessage
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; ControlMessage -&gt; ShowS
+showsPrec :: Int -&gt; ControlMessage -&gt; ShowS
+$cshow :: ControlMessage -&gt; String
+show :: ControlMessage -&gt; String
+$cshowList :: [ControlMessage] -&gt; ShowS
+showList :: [ControlMessage] -&gt; ShowS
+</span><a href="GHC.Show.html#Show"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></a></span></span></span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ @since 4.4.0.0</span></span><span>
+</span><span id="line-62"></span><span>             </span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span class="annot"><span class="hs-comment">-- | The structure used to tell the IO manager thread what to do.</span></span><span>
+</span><span id="line-65"></span><span class="hs-keyword">data</span><span> </span><span id="Control"><span class="annot"><a href="GHC.Event.Control.html#Control"><span class="hs-identifier hs-var">Control</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="W"><span class="annot"><a href="GHC.Event.Control.html#W"><span class="hs-identifier hs-var">W</span></a></span></span><span> </span><span class="hs-special">{</span><span>
+</span><span id="line-66"></span><span>      </span><span id="controlReadFd"><span class="annot"><span class="annottext">Control -&gt; Fd
+</span><a href="GHC.Event.Control.html#controlReadFd"><span class="hs-identifier hs-var hs-var">controlReadFd</span></a></span></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="System.Posix.Types.html#Fd"><span class="hs-identifier hs-type">Fd</span></a></span><span>
+</span><span id="line-67"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="controlWriteFd"><span class="annot"><span class="annottext">Control -&gt; Fd
+</span><a href="GHC.Event.Control.html#controlWriteFd"><span class="hs-identifier hs-var hs-var">controlWriteFd</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="System.Posix.Types.html#Fd"><span class="hs-identifier hs-type">Fd</span></a></span><span class="hs-cpp">
+#if defined(HAVE_EVENTFD)
+</span><span>    </span><span class="hs-special">,</span><span> </span><span id="controlEventFd"><span class="annot"><span class="annottext">Control -&gt; Fd
+</span><a href="GHC.Event.Control.html#controlEventFd"><span class="hs-identifier hs-var hs-var">controlEventFd</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="System.Posix.Types.html#Fd"><span class="hs-identifier hs-type">Fd</span></a></span><span class="hs-cpp">
+#else
+</span><span>    </span><span class="hs-special">,</span><span> </span><span class="hs-identifier">wakeupReadFd</span><span>   </span><span class="hs-glyph">::</span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="hs-identifier">Fd</span><span>
+</span><span id="line-72"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="hs-identifier">wakeupWriteFd</span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="hs-identifier">Fd</span><span class="hs-cpp">
+#endif
+</span><span>    </span><span class="hs-special">,</span><span> </span><span id="didRegisterWakeupFd"><span class="annot"><span class="annottext">Control -&gt; Bool
+</span><a href="GHC.Event.Control.html#didRegisterWakeupFd"><span class="hs-identifier hs-var hs-var">didRegisterWakeupFd</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Bool/GHC.Types.html#Bool"><span class="hs-identifier hs-type">Bool</span></a></span><span>
+</span><span id="line-75"></span><span>      </span><span class="annot"><span class="hs-comment">-- | Have this Control's fds been cleaned up?</span></span><span>
+</span><span id="line-76"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="controlIsDead"><span class="annot"><span class="annottext">Control -&gt; IORef Bool
+</span><a href="GHC.Event.Control.html#controlIsDead"><span class="hs-identifier hs-var hs-var">controlIsDead</span></a></span></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><a href="GHC.IORef.html#IORef"><span class="hs-identifier hs-type">IORef</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Bool/GHC.Types.html#Bool"><span class="hs-identifier hs-type">Bool</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-77"></span><span>    </span><span class="hs-special">}</span><span class="hs-cpp">
+
+#if defined(HAVE_EVENTFD)
+</span><span class="annot"><a href="GHC.Event.Control.html#wakeupReadFd"><span class="hs-identifier hs-type">wakeupReadFd</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#Control"><span class="hs-identifier hs-type">Control</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="System.Posix.Types.html#Fd"><span class="hs-identifier hs-type">Fd</span></a></span><span>
+</span><span id="line-81"></span><span id="wakeupReadFd"><span class="annot"><span class="annottext">wakeupReadFd :: Control -&gt; Fd
+</span><a href="GHC.Event.Control.html#wakeupReadFd"><span class="hs-identifier hs-var hs-var">wakeupReadFd</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Control -&gt; Fd
+</span><a href="GHC.Event.Control.html#controlEventFd"><span class="hs-identifier hs-var">controlEventFd</span></a></span><span>
+</span><span id="line-82"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#wakeupReadFd"><span class="hs-pragma hs-type">wakeupReadFd</span></a></span><span> </span><span class="hs-pragma">#-}</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-85"></span><span class="hs-comment">-- | Create the structure (usually a pipe) used for waking up the IO</span><span>
+</span><span id="line-86"></span><span class="hs-comment">-- manager thread from another thread.</span><span>
+</span><span id="line-87"></span><span class="annot"><a href="GHC.Event.Control.html#newControl"><span class="hs-identifier hs-type">newControl</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Bool/GHC.Types.html#Bool"><span class="hs-identifier hs-type">Bool</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="GHC.Event.Control.html#Control"><span class="hs-identifier hs-type">Control</span></a></span><span>
+</span><span id="line-88"></span><span id="newControl"><span class="annot"><span class="annottext">newControl :: Bool -&gt; IO Control
+</span><a href="GHC.Event.Control.html#newControl"><span class="hs-identifier hs-var hs-var">newControl</span></a></span></span><span> </span><span id="local-6989586621679670917"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679670917"><span class="hs-identifier hs-var">shouldRegister</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr CInt -&gt; IO Control) -&gt; IO Control
+forall a b. Storable a =&gt; Int -&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><a href="Foreign.Marshal.Array.html#allocaArray"><span class="hs-identifier hs-var">allocaArray</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="annot"><span class="annottext">((Ptr CInt -&gt; IO Control) -&gt; IO Control)
+-&gt; (Ptr CInt -&gt; IO Control) -&gt; IO Control
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679670918"><span class="annot"><span class="annottext">Ptr CInt
+</span><a href="#local-6989586621679670918"><span class="hs-identifier hs-var">fds</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-89"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679670930"><span class="annot"><span class="annottext">createPipe :: IO (CInt, CInt)
+</span><a href="#local-6989586621679670930"><span class="hs-identifier hs-var hs-var">createPipe</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-90"></span><span>        </span><span class="annot"><span class="annottext">String -&gt; IO CInt -&gt; IO ()
+forall a. (Eq a, Num a) =&gt; String -&gt; IO a -&gt; IO ()
+</span><a href="Foreign.C.Error.html#throwErrnoIfMinus1_"><span class="hs-identifier hs-var">throwErrnoIfMinus1_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;pipe&quot;</span></span><span> </span><span class="annot"><span class="annottext">(IO CInt -&gt; IO ()) -&gt; IO CInt -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CInt -&gt; IO CInt
+</span><a href="System.Posix.Internals.html#c_pipe"><span class="hs-identifier hs-var">c_pipe</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CInt
+</span><a href="#local-6989586621679670918"><span class="hs-identifier hs-var">fds</span></a></span><span>
+</span><span id="line-91"></span><span>        </span><span id="local-6989586621679670931"><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670931"><span class="hs-identifier hs-var">rd</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Ptr CInt -&gt; Int -&gt; IO CInt
+forall a. Storable a =&gt; Ptr a -&gt; Int -&gt; IO a
+</span><a href="Foreign.Storable.html#peekElemOff"><span class="hs-identifier hs-var">peekElemOff</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CInt
+</span><a href="#local-6989586621679670918"><span class="hs-identifier hs-var">fds</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-92"></span><span>        </span><span id="local-6989586621679670932"><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670932"><span class="hs-identifier hs-var">wr</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Ptr CInt -&gt; Int -&gt; IO CInt
+forall a. Storable a =&gt; Ptr a -&gt; Int -&gt; IO a
+</span><a href="Foreign.Storable.html#peekElemOff"><span class="hs-identifier hs-var">peekElemOff</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CInt
+</span><a href="#local-6989586621679670918"><span class="hs-identifier hs-var">fds</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-93"></span><span>        </span><span class="hs-comment">-- The write end must be non-blocking, since we may need to</span><span>
+</span><span id="line-94"></span><span>        </span><span class="hs-comment">-- poke the event manager from a signal handler.</span><span>
+</span><span id="line-95"></span><span>        </span><span class="annot"><span class="annottext">CInt -&gt; Bool -&gt; IO ()
+</span><a href="System.Posix.Internals.html#setNonBlockingFD"><span class="hs-identifier hs-var">setNonBlockingFD</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670932"><span class="hs-identifier hs-var">wr</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#True/GHC.Types.html#True"><span class="hs-identifier hs-var">True</span></a></span><span>
+</span><span id="line-96"></span><span>        </span><span class="annot"><span class="annottext">CInt -&gt; IO ()
+</span><a href="System.Posix.Internals.html#setCloseOnExec"><span class="hs-identifier hs-var">setCloseOnExec</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670931"><span class="hs-identifier hs-var">rd</span></a></span><span>
+</span><span id="line-97"></span><span>        </span><span class="annot"><span class="annottext">CInt -&gt; IO ()
+</span><a href="System.Posix.Internals.html#setCloseOnExec"><span class="hs-identifier hs-var">setCloseOnExec</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670932"><span class="hs-identifier hs-var">wr</span></a></span><span>
+</span><span id="line-98"></span><span>        </span><span class="annot"><span class="annottext">(CInt, CInt) -&gt; IO (CInt, CInt)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670931"><span class="hs-identifier hs-var">rd</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670932"><span class="hs-identifier hs-var">wr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-99"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621679670933"><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670933"><span class="hs-identifier hs-var">ctrl_rd</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679670934"><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670934"><span class="hs-identifier hs-var">ctrl_wr</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO (CInt, CInt)
+</span><a href="#local-6989586621679670930"><span class="hs-identifier hs-var">createPipe</span></a></span><span class="hs-cpp">
+#if defined(HAVE_EVENTFD)
+</span><span>  </span><span id="local-6989586621679670935"><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670935"><span class="hs-identifier hs-var">ev</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO CInt -&gt; IO CInt
+forall a. (Eq a, Num a) =&gt; String -&gt; IO a -&gt; IO a
+</span><a href="Foreign.C.Error.html#throwErrnoIfMinus1"><span class="hs-identifier hs-var">throwErrnoIfMinus1</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;eventfd&quot;</span></span><span> </span><span class="annot"><span class="annottext">(IO CInt -&gt; IO CInt) -&gt; IO CInt -&gt; IO CInt
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">CInt -&gt; CInt -&gt; IO CInt
+</span><a href="GHC.Event.Control.html#c_eventfd"><span class="hs-identifier hs-var">c_eventfd</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-102"></span><span>  </span><span class="annot"><span class="annottext">CInt -&gt; Bool -&gt; IO ()
+</span><a href="System.Posix.Internals.html#setNonBlockingFD"><span class="hs-identifier hs-var">setNonBlockingFD</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670935"><span class="hs-identifier hs-var">ev</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#True/GHC.Types.html#True"><span class="hs-identifier hs-var">True</span></a></span><span>
+</span><span id="line-103"></span><span>  </span><span class="annot"><span class="annottext">CInt -&gt; IO ()
+</span><a href="System.Posix.Internals.html#setCloseOnExec"><span class="hs-identifier hs-var">setCloseOnExec</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670935"><span class="hs-identifier hs-var">ev</span></a></span><span>
+</span><span id="line-104"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="GHC.Base.html#when"><span class="hs-identifier hs-var">when</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679670917"><span class="hs-identifier hs-var">shouldRegister</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">CInt -&gt; IO ()
+</span><a href="GHC.Event.Control.html#c_setIOManagerWakeupFd"><span class="hs-identifier hs-var">c_setIOManagerWakeupFd</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670935"><span class="hs-identifier hs-var">ev</span></a></span><span class="hs-cpp">
+#else
+</span><span>  </span><span class="hs-special">(</span><span class="hs-identifier">wake_rd</span><span class="hs-special">,</span><span> </span><span class="hs-identifier">wake_wr</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">createPipe</span><span>
+</span><span id="line-107"></span><span>  </span><span class="hs-identifier">when</span><span> </span><span class="hs-identifier">shouldRegister</span><span> </span><span class="hs-operator">$</span><span> </span><span class="hs-identifier">c_setIOManagerWakeupFd</span><span> </span><span class="hs-identifier">wake_wr</span><span class="hs-cpp">
+#endif
+</span><span>  </span><span id="local-6989586621679670939"><span class="annot"><span class="annottext">IORef Bool
+</span><a href="#local-6989586621679670939"><span class="hs-identifier hs-var">isDead</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; IO (IORef Bool)
+forall a. a -&gt; IO (IORef a)
+</span><a href="GHC.IORef.html#newIORef"><span class="hs-identifier hs-var">newIORef</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#False/GHC.Types.html#False"><span class="hs-identifier hs-var">False</span></a></span><span>
+</span><span id="line-110"></span><span>  </span><span class="annot"><span class="annottext">Control -&gt; IO Control
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><a href="GHC.Event.Control.html#W"><span class="hs-identifier hs-type">W</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">controlReadFd :: Fd
+</span><a href="GHC.Event.Control.html#controlReadFd"><span class="hs-identifier hs-var">controlReadFd</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; Fd
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670933"><span class="hs-identifier hs-var">ctrl_rd</span></a></span><span>
+</span><span id="line-111"></span><span>           </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">controlWriteFd :: Fd
+</span><a href="GHC.Event.Control.html#controlWriteFd"><span class="hs-identifier hs-var">controlWriteFd</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; Fd
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670934"><span class="hs-identifier hs-var">ctrl_wr</span></a></span><span class="hs-cpp">
+#if defined(HAVE_EVENTFD)
+</span><span>           </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">controlEventFd :: Fd
+</span><a href="GHC.Event.Control.html#controlEventFd"><span class="hs-identifier hs-var">controlEventFd</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; Fd
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670935"><span class="hs-identifier hs-var">ev</span></a></span><span class="hs-cpp">
+#else
+</span><span>           </span><span class="hs-special">,</span><span> </span><span class="hs-identifier">wakeupReadFd</span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">fromIntegral</span><span> </span><span class="hs-identifier">wake_rd</span><span>
+</span><span id="line-116"></span><span>           </span><span class="hs-special">,</span><span> </span><span class="hs-identifier">wakeupWriteFd</span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">fromIntegral</span><span> </span><span class="hs-identifier">wake_wr</span><span class="hs-cpp">
+#endif
+</span><span>           </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">didRegisterWakeupFd :: Bool
+</span><a href="GHC.Event.Control.html#didRegisterWakeupFd"><span class="hs-identifier hs-var">didRegisterWakeupFd</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679670917"><span class="hs-identifier hs-var">shouldRegister</span></a></span><span>
+</span><span id="line-119"></span><span>           </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">controlIsDead :: IORef Bool
+</span><a href="GHC.Event.Control.html#controlIsDead"><span class="hs-identifier hs-var">controlIsDead</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef Bool
+</span><a href="#local-6989586621679670939"><span class="hs-identifier hs-var">isDead</span></a></span><span>
+</span><span id="line-120"></span><span>           </span><span class="hs-special">}</span><span>
+</span><span id="line-121"></span><span>
+</span><span id="line-122"></span><span class="hs-comment">-- | Close the control structure used by the IO manager thread.</span><span>
+</span><span id="line-123"></span><span class="hs-comment">-- N.B. If this Control is the Control whose wakeup file was registered with</span><span>
+</span><span id="line-124"></span><span class="hs-comment">-- the RTS, then *BEFORE* the wakeup file is closed, we must call</span><span>
+</span><span id="line-125"></span><span class="hs-comment">-- c_setIOManagerWakeupFd (-1), so that the RTS does not try to use the wakeup</span><span>
+</span><span id="line-126"></span><span class="hs-comment">-- file after it has been closed.</span><span>
+</span><span id="line-127"></span><span class="hs-comment">--</span><span>
+</span><span id="line-128"></span><span class="hs-comment">-- Note, however, that even if we do the above, this function is still racy</span><span>
+</span><span id="line-129"></span><span class="hs-comment">-- since we do not synchronize between here and ioManagerWakeup.</span><span>
+</span><span id="line-130"></span><span class="hs-comment">-- ioManagerWakeup ignores failures that arise from this case.</span><span>
+</span><span id="line-131"></span><span class="annot"><a href="GHC.Event.Control.html#closeControl"><span class="hs-identifier hs-type">closeControl</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#Control"><span class="hs-identifier hs-type">Control</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-132"></span><span id="closeControl"><span class="annot"><span class="annottext">closeControl :: Control -&gt; IO ()
+</span><a href="GHC.Event.Control.html#closeControl"><span class="hs-identifier hs-var hs-var">closeControl</span></a></span></span><span> </span><span id="local-6989586621679670941"><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670941"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-133"></span><span>  </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef Bool -&gt; Bool -&gt; IO Bool
+forall a. IORef a -&gt; a -&gt; IO a
+</span><a href="GHC.IORef.html#atomicSwapIORef"><span class="hs-identifier hs-var">atomicSwapIORef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Control -&gt; IORef Bool
+</span><a href="GHC.Event.Control.html#controlIsDead"><span class="hs-identifier hs-var">controlIsDead</span></a></span><span> </span><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670941"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#True/GHC.Types.html#True"><span class="hs-identifier hs-var">True</span></a></span><span>
+</span><span id="line-134"></span><span>  </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; IO CInt
+</span><a href="System.Posix.Internals.html#c_close"><span class="hs-identifier hs-var">c_close</span></a></span><span> </span><span class="annot"><span class="annottext">(CInt -&gt; IO CInt) -&gt; (Control -&gt; CInt) -&gt; Control -&gt; IO CInt
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Fd -&gt; CInt
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">(Fd -&gt; CInt) -&gt; (Control -&gt; Fd) -&gt; Control -&gt; CInt
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Control -&gt; Fd
+</span><a href="GHC.Event.Control.html#controlReadFd"><span class="hs-identifier hs-var">controlReadFd</span></a></span><span> </span><span class="annot"><span class="annottext">(Control -&gt; IO CInt) -&gt; Control -&gt; IO CInt
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670941"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-135"></span><span>  </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; IO CInt
+</span><a href="System.Posix.Internals.html#c_close"><span class="hs-identifier hs-var">c_close</span></a></span><span> </span><span class="annot"><span class="annottext">(CInt -&gt; IO CInt) -&gt; (Control -&gt; CInt) -&gt; Control -&gt; IO CInt
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Fd -&gt; CInt
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">(Fd -&gt; CInt) -&gt; (Control -&gt; Fd) -&gt; Control -&gt; CInt
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Control -&gt; Fd
+</span><a href="GHC.Event.Control.html#controlWriteFd"><span class="hs-identifier hs-var">controlWriteFd</span></a></span><span> </span><span class="annot"><span class="annottext">(Control -&gt; IO CInt) -&gt; Control -&gt; IO CInt
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670941"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-136"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="GHC.Base.html#when"><span class="hs-identifier hs-var">when</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Control -&gt; Bool
+</span><a href="GHC.Event.Control.html#didRegisterWakeupFd"><span class="hs-identifier hs-var">didRegisterWakeupFd</span></a></span><span> </span><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670941"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">CInt -&gt; IO ()
+</span><a href="GHC.Event.Control.html#c_setIOManagerWakeupFd"><span class="hs-identifier hs-var">c_setIOManagerWakeupFd</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-cpp">
+#if defined(HAVE_EVENTFD)
+</span><span>  </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; IO CInt
+</span><a href="System.Posix.Internals.html#c_close"><span class="hs-identifier hs-var">c_close</span></a></span><span> </span><span class="annot"><span class="annottext">(CInt -&gt; IO CInt) -&gt; (Control -&gt; CInt) -&gt; Control -&gt; IO CInt
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Fd -&gt; CInt
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">(Fd -&gt; CInt) -&gt; (Control -&gt; Fd) -&gt; Control -&gt; CInt
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Control -&gt; Fd
+</span><a href="GHC.Event.Control.html#controlEventFd"><span class="hs-identifier hs-var">controlEventFd</span></a></span><span> </span><span class="annot"><span class="annottext">(Control -&gt; IO CInt) -&gt; Control -&gt; IO CInt
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670941"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-cpp">
+#else
+</span><span>  </span><span class="hs-identifier">_</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">c_close</span><span> </span><span class="hs-operator">.</span><span> </span><span class="hs-identifier">fromIntegral</span><span> </span><span class="hs-operator">.</span><span> </span><span class="hs-identifier">wakeupReadFd</span><span> </span><span class="hs-operator">$</span><span> </span><span class="hs-identifier">w</span><span>
+</span><span id="line-141"></span><span>  </span><span class="hs-identifier">_</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">c_close</span><span> </span><span class="hs-operator">.</span><span> </span><span class="hs-identifier">fromIntegral</span><span> </span><span class="hs-operator">.</span><span> </span><span class="hs-identifier">wakeupWriteFd</span><span> </span><span class="hs-operator">$</span><span> </span><span class="hs-identifier">w</span><span class="hs-cpp">
+#endif
+</span><span>  </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-144"></span><span>
+</span><span id="line-145"></span><span class="annot"><a href="GHC.Event.Control.html#io_MANAGER_WAKEUP"><span class="hs-identifier hs-type">io_MANAGER_WAKEUP</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#io_MANAGER_DIE"><span class="hs-identifier hs-type">io_MANAGER_DIE</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Word.html#Word8"><span class="hs-identifier hs-type">Word8</span></a></span><span>
+</span><span id="line-146"></span><span id="io_MANAGER_WAKEUP"><span class="annot"><span class="annottext">io_MANAGER_WAKEUP :: Word8
+</span><a href="GHC.Event.Control.html#io_MANAGER_WAKEUP"><span class="hs-identifier hs-var hs-var">io_MANAGER_WAKEUP</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0xff</span></span><span>
+</span><span id="line-147"></span><span id="io_MANAGER_DIE"><span class="annot"><span class="annottext">io_MANAGER_DIE :: Word8
+</span><a href="GHC.Event.Control.html#io_MANAGER_DIE"><span class="hs-identifier hs-var hs-var">io_MANAGER_DIE</span></a></span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0xfe</span></span><span class="hs-cpp">
+
+#if !defined(HAVE_SIGNAL_H)
+</span><span class="hs-identifier">readControlMessage</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">Control</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">Fd</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">IO</span><span> </span><span class="hs-identifier">ControlMessage</span><span>
+</span><span id="line-151"></span><span class="hs-identifier">readControlMessage</span><span> </span><span class="hs-identifier">_</span><span> </span><span class="hs-identifier">_</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">errorWithoutStackTrace</span><span> </span><span class="hs-string">&quot;readControlMessage&quot;</span><span class="hs-cpp">
+#else
+</span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-string">&quot;__hscore_sizeof_siginfo_t&quot;</span></span><span>
+</span><span id="line-154"></span><span>    </span><span id="sizeof_siginfo_t"><span class="annot"><a href="GHC.Event.Control.html#sizeof_siginfo_t"><span class="hs-identifier hs-var">sizeof_siginfo_t</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CSize"><span class="hs-identifier hs-type">CSize</span></a></span><span>
+</span><span id="line-155"></span><span>
+</span><span id="line-156"></span><span class="annot"><a href="GHC.Event.Control.html#readControlMessage"><span class="hs-identifier hs-type">readControlMessage</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#Control"><span class="hs-identifier hs-type">Control</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="System.Posix.Types.html#Fd"><span class="hs-identifier hs-type">Fd</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="GHC.Event.Control.html#ControlMessage"><span class="hs-identifier hs-type">ControlMessage</span></a></span><span>
+</span><span id="line-157"></span><span id="readControlMessage"><span class="annot"><span class="annottext">readControlMessage :: Control -&gt; Fd -&gt; IO ControlMessage
+</span><a href="GHC.Event.Control.html#readControlMessage"><span class="hs-identifier hs-var hs-var">readControlMessage</span></a></span></span><span> </span><span id="local-6989586621679670947"><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670947"><span class="hs-identifier hs-var">ctrl</span></a></span></span><span> </span><span id="local-6989586621679670948"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679670948"><span class="hs-identifier hs-var">fd</span></a></span></span><span>
+</span><span id="line-158"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679670948"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="annot"><span class="annottext">Fd -&gt; Fd -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Control -&gt; Fd
+</span><a href="GHC.Event.Control.html#wakeupReadFd"><span class="hs-identifier hs-var">wakeupReadFd</span></a></span><span> </span><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670947"><span class="hs-identifier hs-var">ctrl</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ControlMessage) -&gt; IO ControlMessage
+forall a b. Int -&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><a href="Foreign.Marshal.Alloc.html#allocaBytes"><span class="hs-identifier hs-var">allocaBytes</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679670949"><span class="hs-identifier hs-var">wakeupBufferSize</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ControlMessage) -&gt; IO ControlMessage)
+-&gt; (Ptr Word8 -&gt; IO ControlMessage) -&gt; IO ControlMessage
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679670950"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679670950"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-159"></span><span>                    </span><span class="annot"><span class="annottext">String -&gt; IO CSsize -&gt; IO ()
+forall a. (Eq a, Num a) =&gt; String -&gt; IO a -&gt; IO ()
+</span><a href="Foreign.C.Error.html#throwErrnoIfMinus1_"><span class="hs-identifier hs-var">throwErrnoIfMinus1_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;readWakeupMessage&quot;</span></span><span> </span><span class="annot"><span class="annottext">(IO CSsize -&gt; IO ()) -&gt; IO CSsize -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-160"></span><span>                      </span><span class="annot"><span class="annottext">CInt -&gt; Ptr Word8 -&gt; CSize -&gt; IO CSsize
+</span><a href="System.Posix.Internals.html#c_read"><span class="hs-identifier hs-var">c_read</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Fd -&gt; CInt
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679670948"><span class="hs-identifier hs-var">fd</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679670950"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; CSize
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679670949"><span class="hs-identifier hs-var">wakeupBufferSize</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-161"></span><span>                    </span><span class="annot"><span class="annottext">ControlMessage -&gt; IO ControlMessage
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">ControlMessage
+</span><a href="GHC.Event.Control.html#CMsgWakeup"><span class="hs-identifier hs-var">CMsgWakeup</span></a></span><span>
+</span><span id="line-162"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-163"></span><span>        </span><span class="annot"><span class="annottext">(Ptr Word8 -&gt; IO ControlMessage) -&gt; IO ControlMessage
+forall a b. Storable a =&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><a href="Foreign.Marshal.Alloc.html#alloca"><span class="hs-identifier hs-var">alloca</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ControlMessage) -&gt; IO ControlMessage)
+-&gt; (Ptr Word8 -&gt; IO ControlMessage) -&gt; IO ControlMessage
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679670951"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679670951"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-164"></span><span>            </span><span class="annot"><span class="annottext">String -&gt; IO CSsize -&gt; IO ()
+forall a. (Eq a, Num a) =&gt; String -&gt; IO a -&gt; IO ()
+</span><a href="Foreign.C.Error.html#throwErrnoIfMinus1_"><span class="hs-identifier hs-var">throwErrnoIfMinus1_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;readControlMessage&quot;</span></span><span> </span><span class="annot"><span class="annottext">(IO CSsize -&gt; IO ()) -&gt; IO CSsize -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-165"></span><span>                </span><span class="annot"><span class="annottext">CInt -&gt; Ptr Word8 -&gt; CSize -&gt; IO CSsize
+</span><a href="System.Posix.Internals.html#c_read"><span class="hs-identifier hs-var">c_read</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Fd -&gt; CInt
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679670948"><span class="hs-identifier hs-var">fd</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679670951"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">CSize
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-166"></span><span>            </span><span id="local-6989586621679670952"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679670952"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO Word8
+forall a. Storable a =&gt; Ptr a -&gt; IO a
+</span><a href="Foreign.Storable.html#peek"><span class="hs-identifier hs-var">peek</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679670951"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-167"></span><span>            </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679670952"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-168"></span><span>                </span><span class="hs-comment">-- Wakeup messages shouldn't be sent on the control</span><span>
+</span><span id="line-169"></span><span>                </span><span class="hs-comment">-- file descriptor but we handle them anyway.</span><span>
+</span><span id="line-170"></span><span>                </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679670952"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="GHC.Event.Control.html#io_MANAGER_WAKEUP"><span class="hs-identifier hs-var">io_MANAGER_WAKEUP</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ControlMessage -&gt; IO ControlMessage
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">ControlMessage
+</span><a href="GHC.Event.Control.html#CMsgWakeup"><span class="hs-identifier hs-var">CMsgWakeup</span></a></span><span>
+</span><span id="line-171"></span><span>                </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679670952"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="GHC.Event.Control.html#io_MANAGER_DIE"><span class="hs-identifier hs-var">io_MANAGER_DIE</span></a></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ControlMessage -&gt; IO ControlMessage
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">ControlMessage
+</span><a href="GHC.Event.Control.html#CMsgDie"><span class="hs-identifier hs-var">CMsgDie</span></a></span><span>
+</span><span id="line-172"></span><span>                </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>  </span><span class="hs-comment">-- Signal</span><span>
+</span><span id="line-173"></span><span>                    </span><span id="local-6989586621679670953"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679670953"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO (ForeignPtr Word8)
+forall a. Int -&gt; IO (ForeignPtr a)
+</span><a href="GHC.ForeignPtr.html#mallocForeignPtrBytes"><span class="hs-identifier hs-var">mallocForeignPtrBytes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CSize -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">CSize
+</span><a href="GHC.Event.Control.html#sizeof_siginfo_t"><span class="hs-identifier hs-var">sizeof_siginfo_t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-174"></span><span>                    </span><span class="annot"><span class="annottext">ForeignPtr Word8
+-&gt; (Ptr Word8 -&gt; IO ControlMessage) -&gt; IO ControlMessage
+forall a b. ForeignPtr a -&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><a href="GHC.ForeignPtr.html#withForeignPtr"><span class="hs-identifier hs-var">withForeignPtr</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679670953"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ControlMessage) -&gt; IO ControlMessage)
+-&gt; (Ptr Word8 -&gt; IO ControlMessage) -&gt; IO ControlMessage
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679670954"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679670954"><span class="hs-identifier hs-var">p_siginfo</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-175"></span><span>                        </span><span id="local-6989586621679670955"><span class="annot"><span class="annottext">CSsize
+</span><a href="#local-6989586621679670955"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; Ptr Word8 -&gt; CSize -&gt; IO CSsize
+</span><a href="System.Posix.Internals.html#c_read"><span class="hs-identifier hs-var">c_read</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Fd -&gt; CInt
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679670948"><span class="hs-identifier hs-var">fd</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Ptr b
+</span><a href="GHC.Ptr.html#castPtr"><span class="hs-identifier hs-var">castPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679670954"><span class="hs-identifier hs-var">p_siginfo</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-176"></span><span>                             </span><span class="annot"><span class="annottext">CSize
+</span><a href="GHC.Event.Control.html#sizeof_siginfo_t"><span class="hs-identifier hs-var">sizeof_siginfo_t</span></a></span><span>
+</span><span id="line-177"></span><span>                        </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><a href="GHC.Base.html#when"><span class="hs-identifier hs-var">when</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CSsize
+</span><a href="#local-6989586621679670955"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">CSsize -&gt; CSsize -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%2F%3D/GHC.Classes.html#%2F%3D"><span class="hs-operator hs-var">/=</span></a></span><span> </span><span class="annot"><span class="annottext">CSize -&gt; CSsize
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">CSize
+</span><a href="GHC.Event.Control.html#sizeof_siginfo_t"><span class="hs-identifier hs-var">sizeof_siginfo_t</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-178"></span><span>                            </span><span class="annot"><span class="annottext">String -&gt; IO ()
+forall a. String -&gt; a
+</span><a href="GHC.Err.html#errorWithoutStackTrace"><span class="hs-identifier hs-var">errorWithoutStackTrace</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;failed to read siginfo_t&quot;</span></span><span>
+</span><span id="line-179"></span><span>                        </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679670961"><span class="annot"><span class="annottext">s' :: CInt
+</span><a href="#local-6989586621679670961"><span class="hs-identifier hs-var hs-var">s'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; CInt
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679670952"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-180"></span><span>                        </span><span class="annot"><span class="annottext">ControlMessage -&gt; IO ControlMessage
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(ControlMessage -&gt; IO ControlMessage)
+-&gt; ControlMessage -&gt; IO ControlMessage
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8 -&gt; CInt -&gt; ControlMessage
+</span><a href="GHC.Event.Control.html#CMsgSignal"><span class="hs-identifier hs-var">CMsgSignal</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679670953"><span class="hs-identifier hs-var">fp</span></a></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670961"><span class="hs-identifier hs-var">s'</span></a></span><span>
+</span><span id="line-181"></span><span>
+</span><span id="line-182"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679670949"><span class="annot"><span class="annottext">wakeupBufferSize :: Int
+</span><a href="#local-6989586621679670949"><span class="hs-identifier hs-var hs-var">wakeupBufferSize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span class="hs-cpp">
+#if defined(HAVE_EVENTFD)
+</span><span>            </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span class="hs-cpp">
+#else
+</span><span>            </span><span class="hs-number">4096</span><span class="hs-cpp">
+#endif
+</span><span class="hs-cpp">#endif
+</span><span>
+</span><span id="line-190"></span><span class="annot"><a href="GHC.Event.Control.html#sendWakeup"><span class="hs-identifier hs-type">sendWakeup</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#Control"><span class="hs-identifier hs-type">Control</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-cpp">
+#if defined(HAVE_EVENTFD)
+</span><span id="sendWakeup"><span class="annot"><span class="annottext">sendWakeup :: Control -&gt; IO ()
+</span><a href="GHC.Event.Control.html#sendWakeup"><span class="hs-identifier hs-var hs-var">sendWakeup</span></a></span></span><span> </span><span id="local-6989586621679670963"><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670963"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-193"></span><span>  </span><span id="local-6989586621679670964"><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670964"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CInt -&gt; CULLong -&gt; IO CInt
+</span><a href="GHC.Event.Control.html#c_eventfd_write"><span class="hs-identifier hs-var">c_eventfd_write</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Fd -&gt; CInt
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Control -&gt; Fd
+</span><a href="GHC.Event.Control.html#controlEventFd"><span class="hs-identifier hs-var">controlEventFd</span></a></span><span> </span><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670963"><span class="hs-identifier hs-var">c</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CULLong
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-194"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670964"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-195"></span><span>    </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-number">0</span></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-196"></span><span>    </span><span class="annot"><span class="annottext">CInt
+</span><span class="hs-identifier">_</span></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621679670966"><span class="annot"><span class="annottext">Errno
+</span><a href="#local-6989586621679670966"><span class="hs-identifier hs-var">errno</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO Errno
+</span><a href="Foreign.C.Error.html#getErrno"><span class="hs-identifier hs-var">getErrno</span></a></span><span>
+</span><span id="line-197"></span><span>                </span><span class="hs-comment">-- Check that Control is still alive if we failed, since it's</span><span>
+</span><span id="line-198"></span><span>                </span><span class="hs-comment">-- possible that someone cleaned up the fds behind our backs and</span><span>
+</span><span id="line-199"></span><span>                </span><span class="hs-comment">-- consequently eventfd_write failed with EBADF. If it is dead</span><span>
+</span><span id="line-200"></span><span>                </span><span class="hs-comment">-- then just swallow the error since we are shutting down</span><span>
+</span><span id="line-201"></span><span>                </span><span class="hs-comment">-- anyways. Otherwise we will see failures during shutdown from</span><span>
+</span><span id="line-202"></span><span>                </span><span class="hs-comment">-- setnumcapabilities001 (#12038)</span><span>
+</span><span id="line-203"></span><span>                </span><span id="local-6989586621679670967"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679670967"><span class="hs-identifier hs-var">isDead</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef Bool -&gt; IO Bool
+forall a. IORef a -&gt; IO a
+</span><a href="GHC.IORef.html#readIORef"><span class="hs-identifier hs-var">readIORef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Control -&gt; IORef Bool
+</span><a href="GHC.Event.Control.html#controlIsDead"><span class="hs-identifier hs-var">controlIsDead</span></a></span><span> </span><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670963"><span class="hs-identifier hs-var">c</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-204"></span><span>                </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679670967"><span class="hs-identifier hs-var">isDead</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%26%26/GHC.Classes.html#%26%26"><span class="hs-operator hs-var">&amp;&amp;</span></a></span><span> </span><span class="annot"><span class="annottext">Errno
+</span><a href="#local-6989586621679670966"><span class="hs-identifier hs-var">errno</span></a></span><span> </span><span class="annot"><span class="annottext">Errno -&gt; Errno -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Errno
+</span><a href="Foreign.C.Error.html#eBADF"><span class="hs-identifier hs-var">eBADF</span></a></span><span>
+</span><span id="line-205"></span><span>                  </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-206"></span><span>                  </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO ()
+forall a. String -&gt; IO a
+</span><a href="Foreign.C.Error.html#throwErrno"><span class="hs-identifier hs-var">throwErrno</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;sendWakeup&quot;</span></span><span class="hs-cpp">
+#else
+</span><span class="hs-identifier">sendWakeup</span><span> </span><span class="hs-identifier">c</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-209"></span><span>  </span><span class="hs-identifier">n</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">sendMessage</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">wakeupWriteFd</span><span> </span><span class="hs-identifier">c</span><span class="hs-special">)</span><span> </span><span class="hs-identifier">CMsgWakeup</span><span>
+</span><span id="line-210"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="hs-identifier">n</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-211"></span><span>    </span><span class="hs-identifier">_</span><span> </span><span class="hs-glyph">|</span><span> </span><span class="hs-identifier">n</span><span> </span><span class="hs-operator">/=</span><span> </span><span class="hs-glyph">-</span><span class="hs-number">1</span><span>   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">return</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-212"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="hs-identifier">otherwise</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-213"></span><span>                   </span><span class="hs-identifier">errno</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">getErrno</span><span>
+</span><span id="line-214"></span><span>                   </span><span class="hs-identifier">when</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">errno</span><span> </span><span class="hs-operator">/=</span><span> </span><span class="hs-identifier">eAGAIN</span><span> </span><span class="hs-operator">&amp;&amp;</span><span> </span><span class="hs-identifier">errno</span><span> </span><span class="hs-operator">/=</span><span> </span><span class="hs-identifier">eWOULDBLOCK</span><span class="hs-special">)</span><span> </span><span class="hs-operator">$</span><span>
+</span><span id="line-215"></span><span>                     </span><span class="hs-identifier">throwErrno</span><span> </span><span class="hs-string">&quot;sendWakeup&quot;</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-218"></span><span class="annot"><a href="GHC.Event.Control.html#sendDie"><span class="hs-identifier hs-type">sendDie</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#Control"><span class="hs-identifier hs-type">Control</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-219"></span><span id="sendDie"><span class="annot"><span class="annottext">sendDie :: Control -&gt; IO ()
+</span><a href="GHC.Event.Control.html#sendDie"><span class="hs-identifier hs-var hs-var">sendDie</span></a></span></span><span> </span><span id="local-6989586621679670970"><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670970"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO Int -&gt; IO ()
+forall a. (Eq a, Num a) =&gt; String -&gt; IO a -&gt; IO ()
+</span><a href="Foreign.C.Error.html#throwErrnoIfMinus1_"><span class="hs-identifier hs-var">throwErrnoIfMinus1_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;sendDie&quot;</span></span><span> </span><span class="annot"><span class="annottext">(IO Int -&gt; IO ()) -&gt; IO Int -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-220"></span><span>            </span><span class="annot"><span class="annottext">Fd -&gt; ControlMessage -&gt; IO Int
+</span><a href="GHC.Event.Control.html#sendMessage"><span class="hs-identifier hs-var">sendMessage</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Control -&gt; Fd
+</span><a href="GHC.Event.Control.html#controlWriteFd"><span class="hs-identifier hs-var">controlWriteFd</span></a></span><span> </span><span class="annot"><span class="annottext">Control
+</span><a href="#local-6989586621679670970"><span class="hs-identifier hs-var">c</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ControlMessage
+</span><a href="GHC.Event.Control.html#CMsgDie"><span class="hs-identifier hs-var">CMsgDie</span></a></span><span>
+</span><span id="line-221"></span><span>
+</span><span id="line-222"></span><span class="annot"><a href="GHC.Event.Control.html#sendMessage"><span class="hs-identifier hs-type">sendMessage</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="System.Posix.Types.html#Fd"><span class="hs-identifier hs-type">Fd</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Event.Control.html#ControlMessage"><span class="hs-identifier hs-type">ControlMessage</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span>
+</span><span id="line-223"></span><span id="sendMessage"><span class="annot"><span class="annottext">sendMessage :: Fd -&gt; ControlMessage -&gt; IO Int
+</span><a href="GHC.Event.Control.html#sendMessage"><span class="hs-identifier hs-var hs-var">sendMessage</span></a></span></span><span> </span><span id="local-6989586621679670972"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679670972"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span id="local-6989586621679670973"><span class="annot"><span class="annottext">ControlMessage
+</span><a href="#local-6989586621679670973"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Ptr Word8 -&gt; IO Int) -&gt; IO Int
+forall a b. Storable a =&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><a href="Foreign.Marshal.Alloc.html#alloca"><span class="hs-identifier hs-var">alloca</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO Int) -&gt; IO Int)
+-&gt; (Ptr Word8 -&gt; IO Int) -&gt; IO Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679670974"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679670974"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-224"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">ControlMessage
+</span><a href="#local-6989586621679670973"><span class="hs-identifier hs-var">msg</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-225"></span><span>    </span><span class="annot"><span class="annottext">ControlMessage
+</span><a href="GHC.Event.Control.html#CMsgWakeup"><span class="hs-identifier hs-var">CMsgWakeup</span></a></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><a href="Foreign.Storable.html#poke"><span class="hs-identifier hs-var">poke</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679670974"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="GHC.Event.Control.html#io_MANAGER_WAKEUP"><span class="hs-identifier hs-var">io_MANAGER_WAKEUP</span></a></span><span>
+</span><span id="line-226"></span><span>    </span><span class="annot"><span class="annottext">ControlMessage
+</span><a href="GHC.Event.Control.html#CMsgDie"><span class="hs-identifier hs-var">CMsgDie</span></a></span><span>           </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><a href="Foreign.Storable.html#poke"><span class="hs-identifier hs-var">poke</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679670974"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="GHC.Event.Control.html#io_MANAGER_DIE"><span class="hs-identifier hs-var">io_MANAGER_DIE</span></a></span><span>
+</span><span id="line-227"></span><span>    </span><span class="annot"><a href="GHC.Event.Control.html#CMsgSignal"><span class="hs-identifier hs-type">CMsgSignal</span></a></span><span> </span><span id="local-6989586621679670975"><span class="annot"><span class="annottext">ForeignPtr Word8
+</span><a href="#local-6989586621679670975"><span class="hs-identifier hs-var">_fp</span></a></span></span><span> </span><span id="local-6989586621679670976"><span class="annot"><span class="annottext">CInt
+</span><a href="#local-6989586621679670976"><span class="hs-identifier hs-var">_s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO ()
+forall a. String -&gt; a
+</span><a href="GHC.Err.html#errorWithoutStackTrace"><span class="hs-identifier hs-var">errorWithoutStackTrace</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Signals can only be sent from within the RTS&quot;</span></span><span>
+</span><span id="line-228"></span><span>  </span><span class="annot"><span class="annottext">CSsize -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">(CSsize -&gt; Int) -&gt; IO CSsize -&gt; IO Int
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="GHC.Base.html#fmap"><span class="hs-operator hs-var">`fmap`</span></a></span><span> </span><span class="annot"><span class="annottext">CInt -&gt; Ptr Word8 -&gt; CSize -&gt; IO CSsize
+</span><a href="System.Posix.Internals.html#c_write"><span class="hs-identifier hs-var">c_write</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Fd -&gt; CInt
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><a href="GHC.Real.html#fromIntegral"><span class="hs-identifier hs-var">fromIntegral</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679670972"><span class="hs-identifier hs-var">fd</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679670974"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">CSize
+</span><span class="hs-number">1</span></span><span class="hs-cpp">
+
+#if defined(HAVE_EVENTFD)
+</span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;sys/eventfd.h eventfd&quot;</span></span><span>
+</span><span id="line-232"></span><span>   </span><span id="c_eventfd"><span class="annot"><a href="GHC.Event.Control.html#c_eventfd"><span class="hs-identifier hs-var">c_eventfd</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span>
+</span><span id="line-233"></span><span>
+</span><span id="line-234"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;sys/eventfd.h eventfd_write&quot;</span></span><span>
+</span><span id="line-235"></span><span>   </span><span id="c_eventfd_write"><span class="annot"><a href="GHC.Event.Control.html#c_eventfd_write"><span class="hs-identifier hs-var">c_eventfd_write</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CULLong"><span class="hs-identifier hs-type">CULLong</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span class="hs-cpp">
+#endif
+</span><span class="hs-cpp">
+#if defined(wasm32_HOST_ARCH)
+</span><span class="hs-identifier">c_setIOManagerWakeupFd</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">CInt</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">IO</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-240"></span><span class="hs-identifier">c_setIOManagerWakeupFd</span><span> </span><span class="hs-identifier">_</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-cpp">
+#else
+</span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;setIOManagerWakeupFd&quot;</span></span><span>
+</span><span id="line-243"></span><span>   </span><span id="c_setIOManagerWakeupFd"><span class="annot"><a href="GHC.Event.Control.html#c_setIOManagerWakeupFd"><span class="hs-identifier hs-var">c_setIOManagerWakeupFd</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Foreign.C.Types.html#CInt"><span class="hs-identifier hs-type">CInt</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span></pre></body></html>

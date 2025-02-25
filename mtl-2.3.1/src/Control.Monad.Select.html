@@ -1,0 +1,503 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE DerivingVia #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE FlexibleInstances #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE FunctionalDependencies #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE KindSignatures #-}</span><span>
+</span><span id="line-5"></span><span class="hs-pragma">{-# LANGUAGE StandaloneDeriving #-}</span><span>
+</span><span id="line-6"></span><span class="hs-pragma">{-# LANGUAGE Trustworthy #-}</span><span>
+</span><span id="line-7"></span><span class="hs-pragma">{-# LANGUAGE UndecidableInstances #-}</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Later GHCs infer DerivingVia as not Safe</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- We just downgrade to Trustworthy and go fish</span><span>
+</span><span id="line-10"></span><span class="hs-pragma">{-# OPTIONS_GHC -Wno-trustworthy-safe #-}</span><span>
+</span><span id="line-11"></span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- | Module: Control.Monad.Select</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- Copyright: (C) Koz Ross 2022</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- License: BSD-3-Clause (see the LICENSE file)</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- Maintainer: koz.ross@retro-freedom.nz</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- Stability: Experimental</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- Portability: GHC only</span><span>
+</span><span id="line-18"></span><span class="hs-comment">--</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- [Computation type:] Backtracking search, with @r@ as a \'ranking\' or</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- \'evaluation\' type.</span><span>
+</span><span id="line-21"></span><span class="hs-comment">--</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- [Binding strategy:] Binding a function to a monadic value \'chains together\'</span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- strategies; having seen the result of one search, decide which policy to use</span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- to continue.</span><span>
+</span><span id="line-25"></span><span class="hs-comment">--</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- [Useful for:] Search problems.</span><span>
+</span><span id="line-27"></span><span class="hs-comment">--</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- [Zero and plus:] None.</span><span>
+</span><span id="line-29"></span><span class="hs-comment">--</span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- [Example type:] @'Control.Monad.Trans.Select.Select' r a@</span><span>
+</span><span id="line-31"></span><span class="hs-comment">--</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- = A note on commutativity</span><span>
+</span><span id="line-33"></span><span class="hs-comment">--</span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- Some effects are /commutative/: it doesn't matter which you resolve first, as</span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- all possible orderings of commutative effects are isomorphic. Consider, for</span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- example, the reader and state effects, as exemplified by 'ReaderT' and</span><span>
+</span><span id="line-37"></span><span class="hs-comment">-- 'StrictState.StateT' respectively. If we have</span><span>
+</span><span id="line-38"></span><span class="hs-comment">-- @'ReaderT' r ('StrictState.State' s) a@, this is</span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- effectively @r -&gt; 'StrictState.State' s a ~ r -&gt; s -&gt; (a, s)@; if we instead have</span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- @'StrictState.StateT' s ('Control.Monad.Trans.Reader.Reader' r) a@, this is effectively</span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- @s -&gt; 'Control.Monad.Trans.Reader' r (a, s) ~ s -&gt; r -&gt; (a, s)@. Since we</span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- can always reorder function arguments (for example, using 'flip', as in</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- this case) without changing the result, these are</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- isomorphic, showing that reader and state are /commutative/, or, more</span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- precisely, /commute with each other/.</span><span>
+</span><span id="line-46"></span><span class="hs-comment">--</span><span>
+</span><span id="line-47"></span><span class="hs-comment">-- However, this isn't generally the case. Consider instead the error and state</span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- effects, as exemplified by 'MaybeT' and 'StrictState.StateT' respectively.</span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- If we have @'MaybeT' ('Control.Monad.Trans.State.Strict.State' s) a@, this</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- is effectively @'State' s ('Maybe' a) ~ s -&gt; ('Maybe' a, s)@: put simply,</span><span>
+</span><span id="line-51"></span><span class="hs-comment">-- the error can occur only in the /result/, but</span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- not the state, which always \'survives\'. On the other hand, if we have</span><span>
+</span><span id="line-53"></span><span class="hs-comment">-- @'StrictState.StateT' s 'Maybe' a@, this is instead @s -&gt; 'Maybe' (a, s)@: here,</span><span>
+</span><span id="line-54"></span><span class="hs-comment">-- if we error, we lose /both/ the state and the result! Thus, error and state effects</span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- do /not/ commute with each other.</span><span>
+</span><span id="line-56"></span><span class="hs-comment">--</span><span>
+</span><span id="line-57"></span><span class="hs-comment">-- As the MTL is capability-based, we support any ordering of non-commutative</span><span>
+</span><span id="line-58"></span><span class="hs-comment">-- effects on an equal footing. Indeed, if you wish to use</span><span>
+</span><span id="line-59"></span><span class="hs-comment">-- 'Control.Monad.State.Class.MonadState', for</span><span>
+</span><span id="line-60"></span><span class="hs-comment">-- example, whether your final monadic stack ends up being @'MaybeT'</span><span>
+</span><span id="line-61"></span><span class="hs-comment">-- ('Control.Monad.Trans.State.Strict.State' s)</span><span>
+</span><span id="line-62"></span><span class="hs-comment">-- a@, @'StrictState.StateT' s 'Maybe' a@, or anything else, you will be able to write your</span><span>
+</span><span id="line-63"></span><span class="hs-comment">-- desired code without having to consider such differences. However, the way we</span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- /implement/ these capabilities for any given transformer (or rather, any</span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- given transformed stack) /is/ affected by this ordering unless the effects in</span><span>
+</span><span id="line-66"></span><span class="hs-comment">-- question are commutative.</span><span>
+</span><span id="line-67"></span><span class="hs-comment">--</span><span>
+</span><span id="line-68"></span><span class="hs-comment">-- We note in this module which effects the accumulation effect does and doesn't</span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- commute with; we also note on implementations with non-commutative</span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- transformers what the outcome will be. Note that, depending on how the</span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- \'inner monad\' is structured, this may be more complex than we note: we</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- describe only what impact the \'outer effect\' has, not what else might be in</span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- the stack.</span><span>
+</span><span id="line-74"></span><span class="hs-comment">--</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- = Commutativity of selection</span><span>
+</span><span id="line-76"></span><span class="hs-comment">--</span><span>
+</span><span id="line-77"></span><span class="hs-comment">-- The selection effect commutes with the identity effect ('IdentityT'), but</span><span>
+</span><span id="line-78"></span><span class="hs-comment">-- nothing else.</span><span>
+</span><span id="line-79"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Control.Monad.Select</span><span>
+</span><span id="line-80"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-comment">-- * Type class</span></span><span>
+</span><span id="line-81"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier">MonadSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-82"></span><span>
+</span><span id="line-83"></span><span>    </span><span class="annot"><span class="hs-comment">-- * Lifting helper type</span></span><span>
+</span><span id="line-84"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-85"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-86"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-87"></span><span>
+</span><span id="line-88"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Accum.html#/Control.Monad.Trans.Accum.html"><span class="hs-identifier">Control.Monad.Trans.Accum</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Accum.html#AccumT/Control.Monad.Trans.Accum.html#AccumT"><span class="hs-identifier">AccumT</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-89"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Class.html#/Control.Monad.Trans.Class.html"><span class="hs-identifier">Control.Monad.Trans.Class</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Class.html#MonadTrans/Control.Monad.Trans.Class.html#MonadTrans"><span class="hs-identifier">MonadTrans</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Class.html#lift/Control.Monad.Trans.Class.html#lift"><span class="hs-identifier">lift</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-90"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Cont.html#/Control.Monad.Trans.Cont.html"><span class="hs-identifier">Control.Monad.Trans.Cont</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Cont.html#ContT/Control.Monad.Trans.Cont.html#ContT"><span class="hs-identifier">ContT</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-91"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Except.html#/Control.Monad.Trans.Except.html"><span class="hs-identifier">Control.Monad.Trans.Except</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Except.html#ExceptT/Control.Monad.Trans.Except.html#ExceptT"><span class="hs-identifier">ExceptT</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-92"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Identity.html#/Control.Monad.Trans.Identity.html"><span class="hs-identifier">Control.Monad.Trans.Identity</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Identity.html#IdentityT/Control.Monad.Trans.Identity.html#IdentityT"><span class="hs-identifier">IdentityT</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Maybe.html#/Control.Monad.Trans.Maybe.html"><span class="hs-identifier">Control.Monad.Trans.Maybe</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Maybe.html#MaybeT/Control.Monad.Trans.Maybe.html#MaybeT"><span class="hs-identifier">MaybeT</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-94"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.RWS.CPS.html#/Control.Monad.Trans.RWS.CPS.html"><span class="hs-identifier">Control.Monad.Trans.RWS.CPS</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">CPSRWS</span></span><span>
+</span><span id="line-95"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.RWS.Lazy.html#/Control.Monad.Trans.RWS.Lazy.html"><span class="hs-identifier">Control.Monad.Trans.RWS.Lazy</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">LazyRWS</span></span><span>
+</span><span id="line-96"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.RWS.Strict.html#/Control.Monad.Trans.RWS.Strict.html"><span class="hs-identifier">Control.Monad.Trans.RWS.Strict</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">StrictRWS</span></span><span>
+</span><span id="line-97"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Reader.html#/Control.Monad.Trans.Reader.html"><span class="hs-identifier">Control.Monad.Trans.Reader</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Reader.html#ReaderT/Control.Monad.Trans.Reader.html#ReaderT"><span class="hs-identifier">ReaderT</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Select.html#/Control.Monad.Trans.Select.html"><span class="hs-identifier">Control.Monad.Trans.Select</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Select.html#SelectT/Control.Monad.Trans.Select.html#SelectT"><span class="hs-identifier">SelectT</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-99"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Select.html#/Control.Monad.Trans.Select.html"><span class="hs-identifier">Control.Monad.Trans.Select</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Select</span></span><span>
+</span><span id="line-100"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.State.Lazy.html#/Control.Monad.Trans.State.Lazy.html"><span class="hs-identifier">Control.Monad.Trans.State.Lazy</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">LazyState</span></span><span>
+</span><span id="line-101"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.State.Strict.html#/Control.Monad.Trans.State.Strict.html"><span class="hs-identifier">Control.Monad.Trans.State.Strict</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">StrictState</span></span><span>
+</span><span id="line-102"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.CPS.html#/Control.Monad.Trans.Writer.CPS.html"><span class="hs-identifier">Control.Monad.Trans.Writer.CPS</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">CPSWriter</span></span><span>
+</span><span id="line-103"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.Lazy.html#/Control.Monad.Trans.Writer.Lazy.html"><span class="hs-identifier">Control.Monad.Trans.Writer.Lazy</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">LazyWriter</span></span><span>
+</span><span id="line-104"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.Strict.html#/Control.Monad.Trans.Writer.Strict.html"><span class="hs-identifier">Control.Monad.Trans.Writer.Strict</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">StrictWriter</span></span><span>
+</span><span id="line-105"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Functor.Identity.html#/Data.Functor.Identity.html"><span class="hs-identifier">Data.Functor.Identity</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Functor.Identity.html#Identity/Data.Functor.Identity.html#Identity"><span class="hs-identifier">Identity</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-106"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Kind.html#/Data.Kind.html"><span class="hs-identifier">Data.Kind</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Type</span></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="hs-comment">-- | The capability to search with backtracking. Essentially describes a</span><span>
+</span><span id="line-109"></span><span class="hs-comment">-- \'policy function\': given the state of the search (and a \'ranking\' or</span><span>
+</span><span id="line-110"></span><span class="hs-comment">-- \'evaluation\' of each possible result so far), pick the result that's</span><span>
+</span><span id="line-111"></span><span class="hs-comment">-- currently best.</span><span>
+</span><span id="line-112"></span><span class="hs-comment">--</span><span>
+</span><span id="line-113"></span><span class="hs-comment">-- = Laws</span><span>
+</span><span id="line-114"></span><span class="hs-comment">--</span><span>
+</span><span id="line-115"></span><span class="hs-comment">-- Any instance of 'MonadSelect' must follow these laws:</span><span>
+</span><span id="line-116"></span><span class="hs-comment">--</span><span>
+</span><span id="line-117"></span><span class="hs-comment">-- * @'select' ('const' x)@ @=@ @'pure' x@</span><span>
+</span><span id="line-118"></span><span class="hs-comment">-- * @'select' f '*&gt;' 'select' g@ @=@ @'select' g@</span><span>
+</span><span id="line-119"></span><span class="hs-comment">--</span><span>
+</span><span id="line-120"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-121"></span><span class="hs-keyword">class</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#Monad/GHC.Base.html#Monad"><span class="hs-identifier hs-type">Monad</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052787"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span id="MonadSelect"><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-var">MonadSelect</span></a></span></span><span> </span><span id="local-6989586621679052786"><span class="annot"><a href="#local-6989586621679052786"><span class="hs-identifier hs-type">r</span></a></span></span><span> </span><span id="local-6989586621679052787"><span class="annot"><a href="#local-6989586621679052787"><span class="hs-identifier hs-type">m</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="#local-6989586621679052787"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679052786"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-122"></span><span>  </span><span id="select"><span class="annot"><a href="Control.Monad.Select.html#select"><span class="hs-identifier hs-type">select</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span id="local-6989586621679052792"><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679052792"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679052786"><span class="hs-identifier hs-type">r</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679052792"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679052787"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052792"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-123"></span><span>
+</span><span id="line-124"></span><span class="annot"><span class="hs-comment">-- | @since 2.3</span></span><span>
+</span><span id="line-125"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679052795"><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052795"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Select.html#SelectT/Control.Monad.Trans.Select.html#SelectT"><span class="hs-identifier hs-type">SelectT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052795"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Functor.Identity.html#Identity/Data.Functor.Identity.html#Identity"><span class="hs-identifier hs-type">Identity</span></a></span><span class="hs-special">)</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-126"></span><span>  </span><span id="local-6989586621679053063"><span class="annot"><span class="annottext">select :: forall a. ((a -&gt; r) -&gt; a) -&gt; SelectT r Identity a
+</span><a href="Control.Monad.Select.html#select"><span class="hs-identifier hs-var hs-var hs-var hs-var">select</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((a -&gt; r) -&gt; a) -&gt; Select r a
+forall a r. ((a -&gt; r) -&gt; a) -&gt; Select r a
+</span><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Select.html#select/Control.Monad.Trans.Select.html#select"><span class="hs-identifier hs-var">Select.select</span></a></span><span>
+</span><span id="line-127"></span><span>
+</span><span id="line-128"></span><span class="hs-comment">-- | \'Extends\' the possibilities considered by @m@ to include 'Nothing'; this</span><span>
+</span><span id="line-129"></span><span class="hs-comment">-- means that 'Nothing' gains a \'rank\' (namely, a value of @r@), and the</span><span>
+</span><span id="line-130"></span><span class="hs-comment">-- potential result could also be 'Nothing'.</span><span>
+</span><span id="line-131"></span><span class="hs-comment">--</span><span>
+</span><span id="line-132"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-133"></span><span id="local-6989586621679053071"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052813"><span class="hs-keyword">via</span><span>
+</span><span id="line-134"></span><span>  </span><span id="local-6989586621679052814"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Maybe.html#MaybeT/Control.Monad.Trans.Maybe.html#MaybeT"><span class="hs-identifier hs-type">MaybeT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052814"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-135"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-136"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052813"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052814"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-137"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052813"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Maybe.html#MaybeT/Control.Monad.Trans.Maybe.html#MaybeT"><span class="hs-identifier hs-type">MaybeT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052814"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-138"></span><span>
+</span><span id="line-139"></span><span class="hs-comment">-- | The continuation describes a way of choosing a \'search\' or \'ranking\'</span><span>
+</span><span id="line-140"></span><span class="hs-comment">-- strategy for @r@, based on a \'ranking\' using @r'@, given any @a@. We then</span><span>
+</span><span id="line-141"></span><span class="hs-comment">-- get a \'search\' strategy for @r@.</span><span>
+</span><span id="line-142"></span><span class="hs-comment">--</span><span>
+</span><span id="line-143"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-144"></span><span id="local-6989586621679053084"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052824"><span class="hs-keyword">via</span><span>
+</span><span id="line-145"></span><span>  </span><span id="local-6989586621679052825"><span id="local-6989586621679052826"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Cont.html#ContT/Control.Monad.Trans.Cont.html#ContT"><span class="hs-identifier hs-type">ContT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052826"><span class="hs-identifier hs-type">r</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679052825"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-146"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-147"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052824"><span class="hs-identifier hs-type">r'</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052825"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-148"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052824"><span class="hs-identifier hs-type">r'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Cont.html#ContT/Control.Monad.Trans.Cont.html#ContT"><span class="hs-identifier hs-type">ContT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052826"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052825"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-149"></span><span>
+</span><span id="line-150"></span><span class="hs-comment">-- | \'Extends\' the possibilities considered by @m@ to include every value of</span><span>
+</span><span id="line-151"></span><span class="hs-comment">-- @e@; this means that the potential result could be either a 'Left' (making it</span><span>
+</span><span id="line-152"></span><span class="hs-comment">-- a choice of type @e@) or a 'Right' (making it a choice of type @a@).</span><span>
+</span><span id="line-153"></span><span class="hs-comment">--</span><span>
+</span><span id="line-154"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-155"></span><span id="local-6989586621679053097"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052835"><span class="hs-keyword">via</span><span>
+</span><span id="line-156"></span><span>  </span><span id="local-6989586621679052836"><span id="local-6989586621679052837"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Except.html#ExceptT/Control.Monad.Trans.Except.html#ExceptT"><span class="hs-identifier hs-type">ExceptT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052837"><span class="hs-identifier hs-type">e</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679052836"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-157"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-158"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052835"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052836"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-159"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052835"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Except.html#ExceptT/Control.Monad.Trans.Except.html#ExceptT"><span class="hs-identifier hs-type">ExceptT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052837"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052836"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span class="annot"><span class="hs-comment">-- | @since 2.3</span></span><span>
+</span><span id="line-162"></span><span id="local-6989586621679053110"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052843"><span class="hs-keyword">via</span><span>
+</span><span id="line-163"></span><span>  </span><span id="local-6989586621679052844"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Identity.html#IdentityT/Control.Monad.Trans.Identity.html#IdentityT"><span class="hs-identifier hs-type">IdentityT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052844"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-164"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-165"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052843"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052844"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-166"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052843"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Identity.html#IdentityT/Control.Monad.Trans.Identity.html#IdentityT"><span class="hs-identifier hs-type">IdentityT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052844"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-167"></span><span>
+</span><span id="line-168"></span><span class="hs-comment">-- | Provides a read-only environment of type @r@ to the \'strategy\' function.</span><span>
+</span><span id="line-169"></span><span class="hs-comment">-- However, the \'ranking\' function (or more accurately, representation) has no</span><span>
+</span><span id="line-170"></span><span class="hs-comment">-- access to @r@. Put another way, you can influence what values get chosen by</span><span>
+</span><span id="line-171"></span><span class="hs-comment">-- changing @r@, but not how solutions are ranked.</span><span>
+</span><span id="line-172"></span><span class="hs-comment">--</span><span>
+</span><span id="line-173"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-174"></span><span id="local-6989586621679053123"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052853"><span class="hs-keyword">via</span><span>
+</span><span id="line-175"></span><span>  </span><span id="local-6989586621679052854"><span id="local-6989586621679052855"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Reader.html#ReaderT/Control.Monad.Trans.Reader.html#ReaderT"><span class="hs-identifier hs-type">ReaderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052855"><span class="hs-identifier hs-type">r</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679052854"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-176"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-177"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052853"><span class="hs-identifier hs-type">r'</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052854"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-178"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052853"><span class="hs-identifier hs-type">r'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Reader.html#ReaderT/Control.Monad.Trans.Reader.html#ReaderT"><span class="hs-identifier hs-type">ReaderT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052855"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052854"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-179"></span><span>
+</span><span id="line-180"></span><span class="hs-comment">-- | \'Readerizes\' the state: the \'ranking\' function can /see/ a value of</span><span>
+</span><span id="line-181"></span><span class="hs-comment">-- type @s@, but not modify it. Effectively, can be thought of as \'extending\'</span><span>
+</span><span id="line-182"></span><span class="hs-comment">-- the \'ranking\' by all values in @s@, but /which/ @s@ gets given to any rank</span><span>
+</span><span id="line-183"></span><span class="hs-comment">-- calls is predetermined by the \'outer state\' (and cannot change).</span><span>
+</span><span id="line-184"></span><span class="hs-comment">--</span><span>
+</span><span id="line-185"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-186"></span><span id="local-6989586621679053136"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052864"><span class="hs-keyword">via</span><span>
+</span><span id="line-187"></span><span>  </span><span id="local-6989586621679052865"><span id="local-6989586621679052866"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.State.Lazy.html#StateT/Control.Monad.Trans.State.Lazy.html#StateT"><span class="hs-identifier hs-type">LazyState.StateT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052866"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679052865"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-188"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-189"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052864"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052865"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-190"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052864"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.State.Lazy.html#StateT/Control.Monad.Trans.State.Lazy.html#StateT"><span class="hs-identifier hs-type">LazyState.StateT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052866"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052865"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-191"></span><span>
+</span><span id="line-192"></span><span class="hs-comment">-- | \'Readerizes\' the state: the \'ranking\' function can /see/ a value of</span><span>
+</span><span id="line-193"></span><span class="hs-comment">-- type @s@, but not modify it. Effectively, can be thought of as \'extending\'</span><span>
+</span><span id="line-194"></span><span class="hs-comment">-- the \'ranking\' by all values in @s@, but /which/ @s@ gets given to any rank</span><span>
+</span><span id="line-195"></span><span class="hs-comment">-- calls is predetermined by the \'outer state\' (and cannot change).</span><span>
+</span><span id="line-196"></span><span class="hs-comment">--</span><span>
+</span><span id="line-197"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-198"></span><span id="local-6989586621679053149"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052875"><span class="hs-keyword">via</span><span>
+</span><span id="line-199"></span><span>  </span><span id="local-6989586621679052876"><span id="local-6989586621679052877"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.State.Strict.html#StateT/Control.Monad.Trans.State.Strict.html#StateT"><span class="hs-identifier hs-type">StrictState.StateT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052877"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679052876"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-200"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-201"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052875"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052876"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-202"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052875"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.State.Strict.html#StateT/Control.Monad.Trans.State.Strict.html#StateT"><span class="hs-identifier hs-type">StrictState.StateT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052877"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052876"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-203"></span><span>
+</span><span id="line-204"></span><span class="hs-comment">-- | \'Readerizes\' the writer: the \'ranking\' function can see the value</span><span>
+</span><span id="line-205"></span><span class="hs-comment">-- that's been accumulated (of type @w@), but can't add anything to the log.</span><span>
+</span><span id="line-206"></span><span class="hs-comment">-- Effectively, can be thought of as \'extending\' the \'ranking\' by all values</span><span>
+</span><span id="line-207"></span><span class="hs-comment">-- of @w@, but /which/ @w@ gets given to any rank calls is predetermined by the</span><span>
+</span><span id="line-208"></span><span class="hs-comment">-- \'outer writer\' (and cannot change).</span><span>
+</span><span id="line-209"></span><span class="hs-comment">--</span><span>
+</span><span id="line-210"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-211"></span><span id="local-6989586621679053162"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052886"><span class="hs-keyword">via</span><span>
+</span><span id="line-212"></span><span>  </span><span id="local-6989586621679052887"><span id="local-6989586621679052888"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.CPS.html#WriterT/Control.Monad.Trans.Writer.CPS.html#WriterT"><span class="hs-identifier hs-type">CPSWriter.WriterT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052888"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679052887"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-213"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-214"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052886"><span class="hs-identifier hs-type">w'</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052887"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-215"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052886"><span class="hs-identifier hs-type">w'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.CPS.html#WriterT/Control.Monad.Trans.Writer.CPS.html#WriterT"><span class="hs-identifier hs-type">CPSWriter.WriterT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052888"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052887"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-216"></span><span>
+</span><span id="line-217"></span><span class="hs-comment">-- | \'Readerizes\' the writer: the \'ranking\' function can see the value</span><span>
+</span><span id="line-218"></span><span class="hs-comment">-- that's been accumulated (of type @w@), but can't add anything to the log.</span><span>
+</span><span id="line-219"></span><span class="hs-comment">-- Effectively, can be thought of as \'extending\' the \'ranking\' by all values</span><span>
+</span><span id="line-220"></span><span class="hs-comment">-- of @w@, but /which/ @w@ gets given to any rank calls is predetermined by the</span><span>
+</span><span id="line-221"></span><span class="hs-comment">-- \'outer writer\' (and cannot change).</span><span>
+</span><span id="line-222"></span><span class="hs-comment">--</span><span>
+</span><span id="line-223"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-224"></span><span id="local-6989586621679053176"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052897"><span class="hs-keyword">via</span><span>
+</span><span id="line-225"></span><span>  </span><span id="local-6989586621679052898"><span id="local-6989586621679052899"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.Lazy.html#WriterT/Control.Monad.Trans.Writer.Lazy.html#WriterT"><span class="hs-identifier hs-type">LazyWriter.WriterT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052899"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679052898"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-226"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-227"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052897"><span class="hs-identifier hs-type">w'</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052898"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#Monoid/GHC.Base.html#Monoid"><span class="hs-identifier hs-type">Monoid</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052899"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-228"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052897"><span class="hs-identifier hs-type">w'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.Lazy.html#WriterT/Control.Monad.Trans.Writer.Lazy.html#WriterT"><span class="hs-identifier hs-type">LazyWriter.WriterT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052899"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052898"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-229"></span><span>
+</span><span id="line-230"></span><span class="hs-comment">-- | \'Readerizes\' the writer: the \'ranking\' function can see the value</span><span>
+</span><span id="line-231"></span><span class="hs-comment">-- that's been accumulated (of type @w@), but can't add anything to the log.</span><span>
+</span><span id="line-232"></span><span class="hs-comment">-- Effectively, can be thought of as \'extending\' the \'ranking\' by all values</span><span>
+</span><span id="line-233"></span><span class="hs-comment">-- of @w@, but /which/ @w@ gets given to any rank calls is predetermined by the</span><span>
+</span><span id="line-234"></span><span class="hs-comment">-- \'outer writer\' (and cannot change).</span><span>
+</span><span id="line-235"></span><span class="hs-comment">--</span><span>
+</span><span id="line-236"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-237"></span><span id="local-6989586621679053190"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052908"><span class="hs-keyword">via</span><span>
+</span><span id="line-238"></span><span>  </span><span id="local-6989586621679052909"><span id="local-6989586621679052910"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.Strict.html#WriterT/Control.Monad.Trans.Writer.Strict.html#WriterT"><span class="hs-identifier hs-type">StrictWriter.WriterT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052910"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679052909"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-239"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-240"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052908"><span class="hs-identifier hs-type">w'</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052909"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#Monoid/GHC.Base.html#Monoid"><span class="hs-identifier hs-type">Monoid</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052910"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-241"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052908"><span class="hs-identifier hs-type">w'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Writer.Strict.html#WriterT/Control.Monad.Trans.Writer.Strict.html#WriterT"><span class="hs-identifier hs-type">StrictWriter.WriterT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052910"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052909"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-242"></span><span>
+</span><span id="line-243"></span><span class="hs-comment">-- | A combination of an \'outer\' 'ReaderT', 'WriterT' and 'StateT'. In short,</span><span>
+</span><span id="line-244"></span><span class="hs-comment">-- you get a value of type @r@ which can influence what gets picked, but not how</span><span>
+</span><span id="line-245"></span><span class="hs-comment">-- anything is ranked, and the \'ranking\' function gets access to an @s@ and a</span><span>
+</span><span id="line-246"></span><span class="hs-comment">-- @w@, but can modify neither.</span><span>
+</span><span id="line-247"></span><span class="hs-comment">--</span><span>
+</span><span id="line-248"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-249"></span><span id="local-6989586621679053203"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052925"><span class="hs-keyword">via</span><span>
+</span><span id="line-250"></span><span>  </span><span id="local-6989586621679052926"><span id="local-6989586621679052927"><span id="local-6989586621679052928"><span id="local-6989586621679052929"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.RWS.CPS.html#RWST/Control.Monad.Trans.RWS.CPS.html#RWST"><span class="hs-identifier hs-type">CPSRWS.RWST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052927"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052928"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052929"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679052926"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span></span></span><span>
+</span><span id="line-251"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-252"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052925"><span class="hs-identifier hs-type">w'</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052926"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-253"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052925"><span class="hs-identifier hs-type">w'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.RWS.CPS.html#RWST/Control.Monad.Trans.RWS.CPS.html#RWST"><span class="hs-identifier hs-type">CPSRWS.RWST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052927"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052928"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052929"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052926"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-254"></span><span>
+</span><span id="line-255"></span><span class="hs-comment">-- | A combination of an \'outer\' 'ReaderT', 'WriterT' and 'StateT'. In short,</span><span>
+</span><span id="line-256"></span><span class="hs-comment">-- you get a value of type @r@ which can influence what gets picked, but not how</span><span>
+</span><span id="line-257"></span><span class="hs-comment">-- anything is ranked, and the \'ranking\' function gets access to an @s@ and a</span><span>
+</span><span id="line-258"></span><span class="hs-comment">-- @w@, but can modify neither.</span><span>
+</span><span id="line-259"></span><span class="hs-comment">--</span><span>
+</span><span id="line-260"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-261"></span><span id="local-6989586621679053217"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052944"><span class="hs-keyword">via</span><span>
+</span><span id="line-262"></span><span>  </span><span id="local-6989586621679052945"><span id="local-6989586621679052946"><span id="local-6989586621679052947"><span id="local-6989586621679052948"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.RWS.Lazy.html#RWST/Control.Monad.Trans.RWS.Lazy.html#RWST"><span class="hs-identifier hs-type">LazyRWS.RWST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052947"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052946"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052948"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679052945"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span></span></span><span>
+</span><span id="line-263"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-264"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052944"><span class="hs-identifier hs-type">w'</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052945"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#Monoid/GHC.Base.html#Monoid"><span class="hs-identifier hs-type">Monoid</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052946"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-265"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052944"><span class="hs-identifier hs-type">w'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.RWS.Lazy.html#RWST/Control.Monad.Trans.RWS.Lazy.html#RWST"><span class="hs-identifier hs-type">LazyRWS.RWST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052947"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052946"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052948"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052945"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-266"></span><span>
+</span><span id="line-267"></span><span class="hs-comment">-- | A combination of an \'outer\' 'ReaderT', 'WriterT' and 'StateT'. In short,</span><span>
+</span><span id="line-268"></span><span class="hs-comment">-- you get a value of type @r@ which can influence what gets picked, but not how</span><span>
+</span><span id="line-269"></span><span class="hs-comment">-- anything is ranked, and the \'ranking\' function gets access to an @s@ and a</span><span>
+</span><span id="line-270"></span><span class="hs-comment">-- @w@, but can modify neither.</span><span>
+</span><span id="line-271"></span><span class="hs-comment">--</span><span>
+</span><span id="line-272"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-273"></span><span id="local-6989586621679053231"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052963"><span class="hs-keyword">via</span><span>
+</span><span id="line-274"></span><span>  </span><span id="local-6989586621679052964"><span id="local-6989586621679052965"><span id="local-6989586621679052966"><span id="local-6989586621679052967"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.RWS.Strict.html#RWST/Control.Monad.Trans.RWS.Strict.html#RWST"><span class="hs-identifier hs-type">StrictRWS.RWST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052966"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052965"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052967"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679052964"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span></span></span><span>
+</span><span id="line-275"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-276"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052963"><span class="hs-identifier hs-type">w'</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052964"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#Monoid/GHC.Base.html#Monoid"><span class="hs-identifier hs-type">Monoid</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052965"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-277"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052963"><span class="hs-identifier hs-type">w'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.RWS.Strict.html#RWST/Control.Monad.Trans.RWS.Strict.html#RWST"><span class="hs-identifier hs-type">StrictRWS.RWST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052966"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052965"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052967"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052964"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-278"></span><span>
+</span><span id="line-279"></span><span class="hs-comment">-- | \'Readerizes\' the accumulator: the \'ranking\' function can see the value</span><span>
+</span><span id="line-280"></span><span class="hs-comment">-- that has been accumulated (of type @w@), but can't add anything to it.</span><span>
+</span><span id="line-281"></span><span class="hs-comment">-- Effectively, can be thought of as \'extending\' the \'ranking\' by all values</span><span>
+</span><span id="line-282"></span><span class="hs-comment">-- of @w@, but /which/ @w@ gets given to any rank calls is predetermined by the</span><span>
+</span><span id="line-283"></span><span class="hs-comment">-- \'outer accumulation\' (and cannot change).</span><span>
+</span><span id="line-284"></span><span class="hs-comment">--</span><span>
+</span><span id="line-285"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-286"></span><span id="local-6989586621679053246"><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679052978"><span class="hs-keyword">via</span><span>
+</span><span id="line-287"></span><span>  </span><span id="local-6989586621679052979"><span id="local-6989586621679052980"><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Accum.html#AccumT/Control.Monad.Trans.Accum.html#AccumT"><span class="hs-identifier hs-type">AccumT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052980"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679052979"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-288"></span><span>  </span><span class="hs-keyword">instance</span><span>
+</span><span id="line-289"></span><span>    </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052978"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052979"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#Monoid/GHC.Base.html#Monoid"><span class="hs-identifier hs-type">Monoid</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052980"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-290"></span><span>    </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052978"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Accum.html#AccumT/Control.Monad.Trans.Accum.html#AccumT"><span class="hs-identifier hs-type">AccumT</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052980"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052979"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-291"></span><span>
+</span><span id="line-292"></span><span class="hs-comment">-- | A helper type to decrease boilerplate when defining new transformer</span><span>
+</span><span id="line-293"></span><span class="hs-comment">-- instances of 'MonadSelect'.</span><span>
+</span><span id="line-294"></span><span class="hs-comment">--</span><span>
+</span><span id="line-295"></span><span class="hs-comment">-- Most of the instances in this module are derived using this method; for</span><span>
+</span><span id="line-296"></span><span class="hs-comment">-- example, our instance of 'ExceptT' is derived as follows:</span><span>
+</span><span id="line-297"></span><span class="hs-comment">--</span><span>
+</span><span id="line-298"></span><span class="hs-comment">-- &gt; deriving via (LiftingSelect (ExceptT e) m) instance (MonadSelect r m) =&gt;</span><span>
+</span><span id="line-299"></span><span class="hs-comment">-- &gt;  MonadSelect r (ExceptT e m)</span><span>
+</span><span id="line-300"></span><span class="hs-comment">--</span><span>
+</span><span id="line-301"></span><span class="hs-comment">-- @since 2.3</span><span>
+</span><span id="line-302"></span><span class="hs-keyword">newtype</span><span> </span><span id="LiftingSelect"><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-var">LiftingSelect</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679053036"><span class="annot"><a href="#local-6989586621679053036"><span class="hs-identifier hs-type">t</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Type</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Type</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Type</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Type</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679053037"><span class="annot"><a href="#local-6989586621679053037"><span class="hs-identifier hs-type">m</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Type</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Type</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679053038"><span class="annot"><a href="#local-6989586621679053038"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Type</span></span><span class="hs-special">)</span><span>
+</span><span id="line-303"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="LiftingSelect"><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-var">LiftingSelect</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679053036"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679053037"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679053038"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-304"></span><span>  </span><span class="hs-keyword">deriving</span><span>
+</span><span id="line-305"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-comment">-- | @since 2.3</span></span><span>
+</span><span id="line-306"></span><span>      </span><span id="local-6989586621679053259"><span id="local-6989586621679053263"><span class="annot"><span class="annottext">(forall a b.
+ (a -&gt; b) -&gt; LiftingSelect t m a -&gt; LiftingSelect t m b)
+-&gt; (forall a b. a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m a)
+-&gt; Functor (LiftingSelect t m)
+forall a b. a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m a
+forall a b. (a -&gt; b) -&gt; LiftingSelect t m a -&gt; LiftingSelect t m b
+forall (f :: * -&gt; *).
+(forall a b. (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b. a -&gt; f b -&gt; f a) -&gt; Functor f
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Functor (t m) =&gt;
+a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Functor (t m) =&gt;
+(a -&gt; b) -&gt; LiftingSelect t m a -&gt; LiftingSelect t m b
+$cfmap :: forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Functor (t m) =&gt;
+(a -&gt; b) -&gt; LiftingSelect t m a -&gt; LiftingSelect t m b
+fmap :: forall a b. (a -&gt; b) -&gt; LiftingSelect t m a -&gt; LiftingSelect t m b
+$c&lt;$ :: forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Functor (t m) =&gt;
+a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m a
+&lt;$ :: forall a b. a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#Functor/GHC.Base.html#Functor"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Functor</span></a></span></span></span><span class="hs-special">,</span><span>
+</span><span id="line-307"></span><span>      </span><span class="annot"><span class="hs-comment">-- | @since 2.3</span></span><span>
+</span><span id="line-308"></span><span>      </span><span id="local-6989586621679053273"><span id="local-6989586621679053277"><span id="local-6989586621679053281"><span id="local-6989586621679053285"><span id="local-6989586621679053289"><span class="annot"><span class="annottext">Functor (LiftingSelect t m)
+Functor (LiftingSelect t m) =&gt;
+(forall a. a -&gt; LiftingSelect t m a)
+-&gt; (forall a b.
+    LiftingSelect t m (a -&gt; b)
+    -&gt; LiftingSelect t m a -&gt; LiftingSelect t m b)
+-&gt; (forall a b c.
+    (a -&gt; b -&gt; c)
+    -&gt; LiftingSelect t m a
+    -&gt; LiftingSelect t m b
+    -&gt; LiftingSelect t m c)
+-&gt; (forall a b.
+    LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m b)
+-&gt; (forall a b.
+    LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m a)
+-&gt; Applicative (LiftingSelect t m)
+forall a. a -&gt; LiftingSelect t m a
+forall a b.
+LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m a
+forall a b.
+LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m b
+forall a b.
+LiftingSelect t m (a -&gt; b)
+-&gt; LiftingSelect t m a -&gt; LiftingSelect t m b
+forall a b c.
+(a -&gt; b -&gt; c)
+-&gt; LiftingSelect t m a
+-&gt; LiftingSelect t m b
+-&gt; LiftingSelect t m c
+forall (f :: * -&gt; *).
+Functor f =&gt;
+(forall a. a -&gt; f a)
+-&gt; (forall a b. f (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b c. (a -&gt; b -&gt; c) -&gt; f a -&gt; f b -&gt; f c)
+-&gt; (forall a b. f a -&gt; f b -&gt; f b)
+-&gt; (forall a b. f a -&gt; f b -&gt; f a)
+-&gt; Applicative f
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *).
+Applicative (t m) =&gt;
+Functor (LiftingSelect t m)
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+Applicative (t m) =&gt;
+a -&gt; LiftingSelect t m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Applicative (t m) =&gt;
+LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Applicative (t m) =&gt;
+LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m b
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Applicative (t m) =&gt;
+LiftingSelect t m (a -&gt; b)
+-&gt; LiftingSelect t m a -&gt; LiftingSelect t m b
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b c.
+Applicative (t m) =&gt;
+(a -&gt; b -&gt; c)
+-&gt; LiftingSelect t m a
+-&gt; LiftingSelect t m b
+-&gt; LiftingSelect t m c
+$cpure :: forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+Applicative (t m) =&gt;
+a -&gt; LiftingSelect t m a
+pure :: forall a. a -&gt; LiftingSelect t m a
+$c&lt;*&gt; :: forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Applicative (t m) =&gt;
+LiftingSelect t m (a -&gt; b)
+-&gt; LiftingSelect t m a -&gt; LiftingSelect t m b
+&lt;*&gt; :: forall a b.
+LiftingSelect t m (a -&gt; b)
+-&gt; LiftingSelect t m a -&gt; LiftingSelect t m b
+$cliftA2 :: forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b c.
+Applicative (t m) =&gt;
+(a -&gt; b -&gt; c)
+-&gt; LiftingSelect t m a
+-&gt; LiftingSelect t m b
+-&gt; LiftingSelect t m c
+liftA2 :: forall a b c.
+(a -&gt; b -&gt; c)
+-&gt; LiftingSelect t m a
+-&gt; LiftingSelect t m b
+-&gt; LiftingSelect t m c
+$c*&gt; :: forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Applicative (t m) =&gt;
+LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m b
+*&gt; :: forall a b.
+LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m b
+$c&lt;* :: forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Applicative (t m) =&gt;
+LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m a
+&lt;* :: forall a b.
+LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#Applicative/GHC.Base.html#Applicative"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Applicative</span></a></span></span></span></span></span></span><span class="hs-special">,</span><span>
+</span><span id="line-309"></span><span>      </span><span class="annot"><span class="hs-comment">-- | @since 2.3</span></span><span>
+</span><span id="line-310"></span><span>      </span><span id="local-6989586621679053299"><span id="local-6989586621679053303"><span id="local-6989586621679053307"><span class="annot"><span class="annottext">Applicative (LiftingSelect t m)
+Applicative (LiftingSelect t m) =&gt;
+(forall a b.
+ LiftingSelect t m a
+ -&gt; (a -&gt; LiftingSelect t m b) -&gt; LiftingSelect t m b)
+-&gt; (forall a b.
+    LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m b)
+-&gt; (forall a. a -&gt; LiftingSelect t m a)
+-&gt; Monad (LiftingSelect t m)
+forall a. a -&gt; LiftingSelect t m a
+forall a b.
+LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m b
+forall a b.
+LiftingSelect t m a
+-&gt; (a -&gt; LiftingSelect t m b) -&gt; LiftingSelect t m b
+forall (m :: * -&gt; *).
+Applicative m =&gt;
+(forall a b. m a -&gt; (a -&gt; m b) -&gt; m b)
+-&gt; (forall a b. m a -&gt; m b -&gt; m b)
+-&gt; (forall a. a -&gt; m a)
+-&gt; Monad m
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *).
+Monad (t m) =&gt;
+Applicative (LiftingSelect t m)
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+Monad (t m) =&gt;
+a -&gt; LiftingSelect t m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Monad (t m) =&gt;
+LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m b
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Monad (t m) =&gt;
+LiftingSelect t m a
+-&gt; (a -&gt; LiftingSelect t m b) -&gt; LiftingSelect t m b
+$c&gt;&gt;= :: forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Monad (t m) =&gt;
+LiftingSelect t m a
+-&gt; (a -&gt; LiftingSelect t m b) -&gt; LiftingSelect t m b
+&gt;&gt;= :: forall a b.
+LiftingSelect t m a
+-&gt; (a -&gt; LiftingSelect t m b) -&gt; LiftingSelect t m b
+$c&gt;&gt; :: forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a b.
+Monad (t m) =&gt;
+LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m b
+&gt;&gt; :: forall a b.
+LiftingSelect t m a -&gt; LiftingSelect t m b -&gt; LiftingSelect t m b
+$creturn :: forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+Monad (t m) =&gt;
+a -&gt; LiftingSelect t m a
+return :: forall a. a -&gt; LiftingSelect t m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#Monad/GHC.Base.html#Monad"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Monad</span></a></span></span></span></span><span>
+</span><span id="line-311"></span><span>    </span><span class="hs-special">)</span><span>
+</span><span id="line-312"></span><span>    </span><span class="hs-keyword">via</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679053036"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679053037"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-313"></span><span>
+</span><span id="line-314"></span><span class="annot"><span class="hs-comment">-- | @since 2.3</span></span><span>
+</span><span id="line-315"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679052810"><span id="local-6989586621679052811"><span id="local-6989586621679052812"><span class="hs-special">(</span><span class="annot"><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Class.html#MonadTrans/Control.Monad.Trans.Class.html#MonadTrans"><span class="hs-identifier hs-type">MonadTrans</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052810"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052811"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052812"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#Monad/GHC.Base.html#Monad"><span class="hs-identifier hs-type">Monad</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679052810"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052812"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Monad.Select.html#MonadSelect"><span class="hs-identifier hs-type">MonadSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052811"><span class="hs-identifier hs-type">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-type">LiftingSelect</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052810"><span class="hs-identifier hs-type">t</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679052812"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-316"></span><span>  </span><span id="local-6989586621679053322"><span class="annot"><span class="annottext">select :: forall a. ((a -&gt; r) -&gt; a) -&gt; LiftingSelect t m a
+</span><a href="Control.Monad.Select.html#select"><span class="hs-identifier hs-var hs-var hs-var hs-var">select</span></a></span></span><span> </span><span id="local-6989586621679053323"><span class="annot"><span class="annottext">(a -&gt; r) -&gt; a
+</span><a href="#local-6989586621679053323"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">t m a -&gt; LiftingSelect t m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+t m a -&gt; LiftingSelect t m a
+</span><a href="Control.Monad.Select.html#LiftingSelect"><span class="hs-identifier hs-var">LiftingSelect</span></a></span><span> </span><span class="annot"><span class="annottext">(t m a -&gt; LiftingSelect t m a)
+-&gt; (m a -&gt; t m a) -&gt; m a -&gt; LiftingSelect t m a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">m a -&gt; t m a
+forall (m :: * -&gt; *) a. Monad m =&gt; m a -&gt; t m a
+forall (t :: (* -&gt; *) -&gt; * -&gt; *) (m :: * -&gt; *) a.
+(MonadTrans t, Monad m) =&gt;
+m a -&gt; t m a
+</span><a href="../../transformers-0.6.1.0/src/Control.Monad.Trans.Class.html#lift/Control.Monad.Trans.Class.html#lift"><span class="hs-identifier hs-var">lift</span></a></span><span> </span><span class="annot"><span class="annottext">(m a -&gt; LiftingSelect t m a) -&gt; m a -&gt; LiftingSelect t m a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">((a -&gt; r) -&gt; a) -&gt; m a
+forall a. ((a -&gt; r) -&gt; a) -&gt; m a
+forall r (m :: * -&gt; *) a. MonadSelect r m =&gt; ((a -&gt; r) -&gt; a) -&gt; m a
+</span><a href="Control.Monad.Select.html#select"><span class="hs-identifier hs-var">select</span></a></span><span> </span><span class="annot"><span class="annottext">(a -&gt; r) -&gt; a
+</span><a href="#local-6989586621679053323"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-317"></span></pre></body></html>

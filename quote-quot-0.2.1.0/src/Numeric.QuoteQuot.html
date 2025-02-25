@@ -1,0 +1,1128 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- |</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- Module:      Numeric.QuoteQuot</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- Copyright:   (c) 2020-2022 Andrew Lelechenko</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Licence:     BSD3</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Maintainer:  Andrew Lelechenko &lt;andrew.lelechenko@gmail.com&gt;</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- Generate routines for integer division, employing arithmetic</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- and bitwise operations only, which are __2.5x-3.5x faster__</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- than 'quot'. Divisors must be known in compile-time and be positive.</span><span>
+</span><span id="line-10"></span><span class="hs-comment">--</span><span>
+</span><span id="line-11"></span><span>
+</span><span id="line-12"></span><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-13"></span><span class="hs-pragma">{-# LANGUAGE CPP #-}</span><span>
+</span><span id="line-14"></span><span class="hs-pragma">{-# LANGUAGE LambdaCase #-}</span><span>
+</span><span id="line-15"></span><span class="hs-pragma">{-# LANGUAGE MagicHash #-}</span><span>
+</span><span id="line-16"></span><span class="hs-pragma">{-# LANGUAGE TemplateHaskell #-}</span><span>
+</span><span id="line-17"></span><span class="hs-pragma">{-# LANGUAGE UnboxedTuples #-}</span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-pragma">{-# OPTIONS_GHC -Wno-missing-signatures #-}</span><span>
+</span><span id="line-20"></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Numeric.QuoteQuot</span><span>
+</span><span id="line-22"></span><span>  </span><span class="hs-special">(</span><span>
+</span><span id="line-23"></span><span>  </span><span class="annot"><span class="hs-comment">-- * Quasiquoters</span></span><span>
+</span><span id="line-24"></span><span>    </span><span class="annot"><a href="Numeric.QuoteQuot.html#quoteQuot"><span class="hs-identifier">quoteQuot</span></a></span><span>
+</span><span id="line-25"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#quoteRem"><span class="hs-identifier">quoteRem</span></a></span><span>
+</span><span id="line-26"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#quoteQuotRem"><span class="hs-identifier">quoteQuotRem</span></a></span><span>
+</span><span id="line-27"></span><span>  </span><span class="annot"><span class="hs-comment">-- * AST</span></span><span>
+</span><span id="line-28"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#astQuot"><span class="hs-identifier">astQuot</span></a></span><span>
+</span><span id="line-29"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier">AST</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#interpretAST"><span class="hs-identifier">interpretAST</span></a></span><span>
+</span><span id="line-31"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier">quoteAST</span></a></span><span>
+</span><span id="line-32"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#assumeNonNegArg"><span class="hs-identifier">assumeNonNegArg</span></a></span><span>
+</span><span id="line-33"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier">MulHi</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span class="hs-cpp">
+
+#include &quot;MachDeps.h&quot;
+</span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bits</span></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Int</span></span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">GHC.Exts</span></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Language.Haskell.TH.Syntax</span></span><span>
+</span><span id="line-44"></span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- | Quote integer division ('quot') by a compile-time known divisor,</span><span>
+</span><span id="line-46"></span><span class="hs-comment">-- which generates source code, employing arithmetic and bitwise operations only.</span><span>
+</span><span id="line-47"></span><span class="hs-comment">-- This is usually __2.5x-3.5x faster__ than using normal 'quot'.</span><span>
+</span><span id="line-48"></span><span class="hs-comment">--</span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- &gt; {-# LANGUAGE TemplateHaskell #-}</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- &gt; {-# OPTIONS_GHC -ddump-splices -ddump-simpl -dsuppress-all #-}</span><span>
+</span><span id="line-51"></span><span class="hs-comment">-- &gt; module Example where</span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- &gt; import Numeric.QuoteQuot</span><span>
+</span><span id="line-53"></span><span class="hs-comment">-- &gt;</span><span>
+</span><span id="line-54"></span><span class="hs-comment">-- &gt; -- Equivalent to (`quot` 10).</span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- &gt; quot10 :: Word -&gt; Word</span><span>
+</span><span id="line-56"></span><span class="hs-comment">-- &gt; quot10 = $$(quoteQuot 10)</span><span>
+</span><span id="line-57"></span><span class="hs-comment">--</span><span>
+</span><span id="line-58"></span><span class="hs-comment">-- &gt;&gt;&gt; quot10 123</span><span>
+</span><span id="line-59"></span><span class="hs-comment">-- 12</span><span>
+</span><span id="line-60"></span><span class="hs-comment">--</span><span>
+</span><span id="line-61"></span><span class="hs-comment">-- Here @-ddump-splices@ demonstrates the chosen implementation</span><span>
+</span><span id="line-62"></span><span class="hs-comment">-- for division by 10:</span><span>
+</span><span id="line-63"></span><span class="hs-comment">--</span><span>
+</span><span id="line-64"></span><span class="hs-comment">-- &gt; Splicing expression quoteQuot 10 ======&gt;</span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- &gt; ((`shiftR` 3) . ((\ (W# w_a9N4) -&gt;</span><span>
+</span><span id="line-66"></span><span class="hs-comment">-- &gt;   let !(# hi_a9N5, _ #) = (timesWord2# w_a9N4) 14757395258967641293##</span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- &gt;   in W# hi_a9N5) . id))</span><span>
+</span><span id="line-68"></span><span class="hs-comment">--</span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- And @-ddump-simpl@ demonstrates generated Core:</span><span>
+</span><span id="line-70"></span><span class="hs-comment">--</span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- &gt; quot10 = \ x_a5t2 -&gt;</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- &gt;   case x_a5t2 of { W# w_acHY -&gt;</span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- &gt;   case timesWord2# w_acHY 14757395258967641293## of</span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- &gt;   { (# hi_acIg, ds_dcIs #) -&gt;</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- &gt;   W# (uncheckedShiftRL# hi_acIg 3#)</span><span>
+</span><span id="line-76"></span><span class="hs-comment">-- &gt;   }</span><span>
+</span><span id="line-77"></span><span class="hs-comment">-- &gt;   }</span><span>
+</span><span id="line-78"></span><span class="hs-comment">--</span><span>
+</span><span id="line-79"></span><span class="hs-comment">-- Benchmarks show that this implementation is __3.5x faster__</span><span>
+</span><span id="line-80"></span><span class="hs-comment">-- than @(`@'quot'@` 10)@.</span><span>
+</span><span id="line-81"></span><span class="hs-comment">--</span><span>
+</span><span id="line-82"></span><span id="local-6989586621679039372"><span id="local-6989586621679039374"><span class="annot"><a href="Numeric.QuoteQuot.html#quoteQuot"><span class="hs-identifier hs-type">quoteQuot</span></a></span><span> </span><span class="hs-glyph">::</span><span class="hs-cpp">
+#if MIN_VERSION_template_haskell(2,17,0)
+</span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039372"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Lift</span></span><span> </span><span class="annot"><a href="#local-6989586621679039372"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Quote</span></span><span> </span><span class="annot"><a href="#local-6989586621679039374"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679039372"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Code</span></span><span> </span><span class="annot"><a href="#local-6989586621679039374"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679039372"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679039372"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span><span class="hs-cpp">
+#else
+</span><span>  </span><span class="hs-special">(</span><span class="hs-identifier">MulHi</span><span> </span><span class="hs-identifier">a</span><span class="hs-special">,</span><span> </span><span class="hs-identifier">Lift</span><span> </span><span class="hs-identifier">a</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-identifier">a</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">Q</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">TExp</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">a</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">a</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span id="quoteQuot"><span class="annot"><span class="annottext">quoteQuot :: forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteQuot"><span class="hs-identifier hs-var hs-var">quoteQuot</span></a></span></span><span> </span><span id="local-6989586621679039497"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039497"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; Code m (a -&gt; a)
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+AST a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-var">quoteAST</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; AST a
+forall a. (Integral a, FiniteBits a) =&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#astQuot"><span class="hs-identifier hs-var">astQuot</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039497"><span class="hs-identifier hs-var">d</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-89"></span><span>
+</span><span id="line-90"></span><span class="annot"><span class="hs-comment">-- | Similar to 'quoteQuot', but for 'rem'.</span></span><span>
+</span><span id="line-91"></span><span id="local-6989586621679039499"><span id="local-6989586621679039500"><span class="annot"><a href="Numeric.QuoteQuot.html#quoteRem"><span class="hs-identifier hs-type">quoteRem</span></a></span><span> </span><span class="hs-glyph">::</span><span class="hs-cpp">
+#if MIN_VERSION_template_haskell(2,17,0)
+</span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039499"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Lift</span></span><span> </span><span class="annot"><a href="#local-6989586621679039499"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Quote</span></span><span> </span><span class="annot"><a href="#local-6989586621679039500"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679039499"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Code</span></span><span> </span><span class="annot"><a href="#local-6989586621679039500"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679039499"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679039499"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span><span class="hs-cpp">
+#else
+</span><span>  </span><span class="hs-special">(</span><span class="hs-identifier">MulHi</span><span> </span><span class="hs-identifier">a</span><span class="hs-special">,</span><span> </span><span class="hs-identifier">Lift</span><span> </span><span class="hs-identifier">a</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-identifier">a</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">Q</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">TExp</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">a</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">a</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span id="quoteRem"><span class="annot"><span class="annottext">quoteRem :: forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteRem"><span class="hs-identifier hs-var hs-var">quoteRem</span></a></span></span><span> </span><span id="local-6989586621679039508"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039508"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[||</span><span> </span><span class="annot"><span class="annottext">(a, b) -&gt; b
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">(b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">$$</span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Code m (a -&gt; (a, a))
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+a -&gt; Code m (a -&gt; (a, a))
+</span><a href="Numeric.QuoteQuot.html#quoteQuotRem"><span class="hs-identifier hs-var">quoteQuotRem</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039508"><span class="hs-identifier hs-var">d</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">||]</span><span>
+</span><span id="line-98"></span><span>
+</span><span id="line-99"></span><span class="annot"><span class="hs-comment">-- | Similar to 'quoteQuot', but for 'quotRem'.</span></span><span>
+</span><span id="line-100"></span><span id="local-6989586621679039395"><span id="local-6989586621679039396"><span class="annot"><a href="Numeric.QuoteQuot.html#quoteQuotRem"><span class="hs-identifier hs-type">quoteQuotRem</span></a></span><span> </span><span class="hs-glyph">::</span><span class="hs-cpp">
+#if MIN_VERSION_template_haskell(2,17,0)
+</span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039395"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Lift</span></span><span> </span><span class="annot"><a href="#local-6989586621679039395"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Quote</span></span><span> </span><span class="annot"><a href="#local-6989586621679039396"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679039395"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Code</span></span><span> </span><span class="annot"><a href="#local-6989586621679039396"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679039395"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679039395"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621679039395"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span></span></span><span class="hs-cpp">
+#else
+</span><span>  </span><span class="hs-special">(</span><span class="hs-identifier">MulHi</span><span> </span><span class="hs-identifier">a</span><span class="hs-special">,</span><span> </span><span class="hs-identifier">Lift</span><span> </span><span class="hs-identifier">a</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-identifier">a</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">Q</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">TExp</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">a</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">a</span><span class="hs-special">,</span><span> </span><span class="hs-identifier">a</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span id="quoteQuotRem"><span class="annot"><span class="annottext">quoteQuotRem :: forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+a -&gt; Code m (a -&gt; (a, a))
+</span><a href="Numeric.QuoteQuot.html#quoteQuotRem"><span class="hs-identifier hs-var hs-var">quoteQuotRem</span></a></span></span><span> </span><span id="local-6989586621679039527"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039527"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[||</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679039528"><span class="annot"><span class="annottext">p
+</span><a href="#local-6989586621679039528"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679039529"><span class="annot"><span class="annottext">q :: a
+</span><a href="#local-6989586621679039529"><span class="hs-identifier hs-var hs-var">q</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">$$</span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Code m (a -&gt; a)
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteQuot"><span class="hs-identifier hs-var">quoteQuot</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039527"><span class="hs-identifier hs-var">d</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">a
+p
+</span><a href="#local-6989586621679039528"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039529"><span class="hs-identifier hs-var">q</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">p
+</span><a href="#local-6989586621679039528"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039527"><span class="hs-identifier hs-var">d</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039529"><span class="hs-identifier hs-var">q</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">||]</span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="annot"><span class="hs-comment">-- | Types allowing to multiply wide and return the high word of result.</span></span><span>
+</span><span id="line-109"></span><span class="hs-keyword">class</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Integral</span></span><span> </span><span class="annot"><a href="#local-6989586621679039378"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FiniteBits</span></span><span> </span><span class="annot"><a href="#local-6989586621679039378"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span id="MulHi"><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-var">MulHi</span></a></span></span><span> </span><span id="local-6989586621679039378"><span class="annot"><a href="#local-6989586621679039378"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-110"></span><span>  </span><span id="mulHi"><span class="annot"><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-identifier hs-type">mulHi</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679039378"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679039378"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679039378"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-111"></span><span>
+</span><span id="line-112"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-113"></span><span>  </span><span id="local-6989586621679039553"><span class="annot"><span class="annottext">mulHi :: Word8 -&gt; Word8 -&gt; Word8
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-identifier hs-var hs-var hs-var hs-var">mulHi</span></a></span></span><span> </span><span id="local-6989586621679039554"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679039554"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039555"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679039555"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word16 -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8 -&gt; Word16
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679039554"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Word16 -&gt; Word16 -&gt; Word16
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word16
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679039555"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word16</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word16 -&gt; Int -&gt; Word16
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>
+</span><span id="line-115"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word16</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-116"></span><span>  </span><span id="local-6989586621679039574"><span class="annot"><span class="annottext">mulHi :: Word16 -&gt; Word16 -&gt; Word16
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-identifier hs-var hs-var hs-var hs-var">mulHi</span></a></span></span><span> </span><span id="local-6989586621679039575"><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679039575"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039576"><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679039576"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Word16
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word16 -&gt; Word32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679039575"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Word32 -&gt; Word32
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Word16 -&gt; Word32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679039576"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word32</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Int -&gt; Word32
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span class="hs-special">)</span><span>
+</span><span id="line-117"></span><span>
+</span><span id="line-118"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word32</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-119"></span><span>  </span><span id="local-6989586621679039595"><span class="annot"><span class="annottext">mulHi :: Word32 -&gt; Word32 -&gt; Word32
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-identifier hs-var hs-var hs-var hs-var">mulHi</span></a></span></span><span> </span><span id="local-6989586621679039596"><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679039596"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039597"><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679039597"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word32 -&gt; Word64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679039596"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Word64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679039597"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int -&gt; Word64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span class="hs-special">)</span><span class="hs-cpp">
+
+#if WORD_SIZE_IN_BITS == 64
+</span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-123"></span><span>  </span><span id="local-6989586621679039615"><span class="annot"><span class="annottext">mulHi :: Word64 -&gt; Word64 -&gt; Word64
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-identifier hs-var hs-var hs-var hs-var">mulHi</span></a></span></span><span> </span><span id="local-6989586621679039616"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679039616"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039617"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679039617"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word -&gt; Word64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64 -&gt; Word
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679039616"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Word -&gt; Word -&gt; Word
+forall a. MulHi a =&gt; a -&gt; a -&gt; a
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-operator hs-var">`mulHi`</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679039617"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word</span></span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-126"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-127"></span><span>  </span><span id="local-6989586621679039624"><span class="annot"><span class="annottext">mulHi :: Word -&gt; Word -&gt; Word
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-identifier hs-var hs-var hs-var hs-var">mulHi</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">W#</span></span><span> </span><span id="local-6989586621679039625"><span class="annot"><span class="annottext">Word#
+</span><a href="#local-6989586621679039625"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">W#</span></span><span> </span><span id="local-6989586621679039626"><span class="annot"><span class="annottext">Word#
+</span><a href="#local-6989586621679039626"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(#</span><span> </span><span id="local-6989586621679039627"><span class="annot"><span class="annottext">Word#
+</span><a href="#local-6989586621679039627"><span class="hs-identifier hs-var">hi</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Word#
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word# -&gt; Word# -&gt; (# Word#, Word# #)
+</span><span class="hs-identifier hs-var">timesWord2#</span></span><span> </span><span class="annot"><span class="annottext">Word#
+</span><a href="#local-6989586621679039625"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Word#
+</span><a href="#local-6989586621679039626"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Word# -&gt; Word
+</span><span class="hs-identifier hs-var">W#</span></span><span> </span><span class="annot"><span class="annottext">Word#
+</span><a href="#local-6989586621679039627"><span class="hs-identifier hs-var">hi</span></a></span><span>
+</span><span id="line-128"></span><span>
+</span><span id="line-129"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int8</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-130"></span><span>  </span><span id="local-6989586621679039648"><span class="annot"><span class="annottext">mulHi :: Int8 -&gt; Int8 -&gt; Int8
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-identifier hs-var hs-var hs-var hs-var">mulHi</span></a></span></span><span> </span><span id="local-6989586621679039649"><span class="annot"><span class="annottext">Int8
+</span><a href="#local-6989586621679039649"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039650"><span class="annot"><span class="annottext">Int8
+</span><a href="#local-6989586621679039650"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int16 -&gt; Int8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int8 -&gt; Int16
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int8
+</span><a href="#local-6989586621679039649"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Int16 -&gt; Int16 -&gt; Int16
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int8 -&gt; Int16
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int8
+</span><a href="#local-6989586621679039650"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int16</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int16 -&gt; Int -&gt; Int16
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-131"></span><span>
+</span><span id="line-132"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int16</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-133"></span><span>  </span><span id="local-6989586621679039669"><span class="annot"><span class="annottext">mulHi :: Int16 -&gt; Int16 -&gt; Int16
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-identifier hs-var hs-var hs-var hs-var">mulHi</span></a></span></span><span> </span><span id="local-6989586621679039670"><span class="annot"><span class="annottext">Int16
+</span><a href="#local-6989586621679039670"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039671"><span class="annot"><span class="annottext">Int16
+</span><a href="#local-6989586621679039671"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int16
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int16 -&gt; Int32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int16
+</span><a href="#local-6989586621679039670"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int32 -&gt; Int32
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int16 -&gt; Int32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int16
+</span><a href="#local-6989586621679039671"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int32</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int -&gt; Int32
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span class="hs-special">)</span><span>
+</span><span id="line-134"></span><span>
+</span><span id="line-135"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int32</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-136"></span><span>  </span><span id="local-6989586621679039690"><span class="annot"><span class="annottext">mulHi :: Int32 -&gt; Int32 -&gt; Int32
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-identifier hs-var hs-var hs-var hs-var">mulHi</span></a></span></span><span> </span><span id="local-6989586621679039691"><span class="annot"><span class="annottext">Int32
+</span><a href="#local-6989586621679039691"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039692"><span class="annot"><span class="annottext">Int32
+</span><a href="#local-6989586621679039692"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int32 -&gt; Int64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int32
+</span><a href="#local-6989586621679039691"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int64 -&gt; Int64
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int32
+</span><a href="#local-6989586621679039692"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int64</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int -&gt; Int64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span class="hs-special">)</span><span class="hs-cpp">
+
+#if MIN_VERSION_base(4,15,0)
+</span><span class="hs-cpp">#if WORD_SIZE_IN_BITS == 64
+</span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int64</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-141"></span><span>  </span><span id="local-6989586621679039710"><span class="annot"><span class="annottext">mulHi :: Int64 -&gt; Int64 -&gt; Int64
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-identifier hs-var hs-var hs-var hs-var">mulHi</span></a></span></span><span> </span><span id="local-6989586621679039711"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679039711"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039712"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679039712"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679039711"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. MulHi a =&gt; a -&gt; a -&gt; a
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-operator hs-var">`mulHi`</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679039712"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-144"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-145"></span><span>  </span><span id="local-6989586621679039719"><span class="annot"><span class="annottext">mulHi :: Int -&gt; Int -&gt; Int
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-identifier hs-var hs-var hs-var hs-var">mulHi</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">I#</span></span><span> </span><span id="local-6989586621679039720"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039720"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">I#</span></span><span> </span><span id="local-6989586621679039721"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039721"><span class="hs-identifier hs-var">y</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(#</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679039722"><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039722"><span class="hs-identifier hs-var">hi</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-special">#)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; (# Int#, Int#, Int# #)
+</span><span class="hs-identifier hs-var">timesInt2#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039720"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039721"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int
+</span><span class="hs-identifier hs-var">I#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679039722"><span class="hs-identifier hs-var">hi</span></a></span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-148"></span><span class="hs-comment">-- | An abstract syntax tree to represent</span><span>
+</span><span id="line-149"></span><span class="hs-comment">-- a function of one argument.</span><span>
+</span><span id="line-150"></span><span class="hs-keyword">data</span><span> </span><span id="AST"><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-var">AST</span></a></span></span><span> </span><span id="local-6989586621679039472"><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-151"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="Arg"><span class="annot"><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span></span><span>
+</span><span id="line-152"></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ Argument of the function</span></span><span>
+</span><span id="line-153"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="MulHi"><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-var">MulHi</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-154"></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ Multiply wide and return the high word of result</span></span><span>
+</span><span id="line-155"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="MulLo"><span class="annot"><a href="Numeric.QuoteQuot.html#MulLo"><span class="hs-identifier hs-var">MulLo</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-156"></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ Multiply</span></span><span>
+</span><span id="line-157"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="Add"><span class="annot"><a href="Numeric.QuoteQuot.html#Add"><span class="hs-identifier hs-var">Add</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-158"></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ Add</span></span><span>
+</span><span id="line-159"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="Sub"><span class="annot"><a href="Numeric.QuoteQuot.html#Sub"><span class="hs-identifier hs-var">Sub</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-160"></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ Subtract</span></span><span>
+</span><span id="line-161"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="Shl"><span class="annot"><a href="Numeric.QuoteQuot.html#Shl"><span class="hs-identifier hs-var">Shl</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-162"></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ Shift left</span></span><span>
+</span><span id="line-163"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="Shr"><span class="annot"><a href="Numeric.QuoteQuot.html#Shr"><span class="hs-identifier hs-var">Shr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-164"></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ Shift right with sign extension</span></span><span>
+</span><span id="line-165"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="CmpGE"><span class="annot"><a href="Numeric.QuoteQuot.html#CmpGE"><span class="hs-identifier hs-var">CmpGE</span></a></span></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-166"></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ 1 if greater than or equal, 0 otherwise</span></span><span>
+</span><span id="line-167"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="CmpLT"><span class="annot"><a href="Numeric.QuoteQuot.html#CmpLT"><span class="hs-identifier hs-var">CmpLT</span></a></span></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679039472"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-168"></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ 1 if less than, 0 otherwise</span></span><span>
+</span><span id="line-169"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679039734"><span id="local-6989586621679039763"><span id="local-6989586621679039766"><span class="annot"><span class="annottext">Int -&gt; AST a -&gt; ShowS
+[AST a] -&gt; ShowS
+AST a -&gt; String
+(Int -&gt; AST a -&gt; ShowS)
+-&gt; (AST a -&gt; String) -&gt; ([AST a] -&gt; ShowS) -&gt; Show (AST a)
+forall a. Show a =&gt; Int -&gt; AST a -&gt; ShowS
+forall a. Show a =&gt; [AST a] -&gt; ShowS
+forall a. Show a =&gt; AST a -&gt; String
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: forall a. Show a =&gt; Int -&gt; AST a -&gt; ShowS
+showsPrec :: Int -&gt; AST a -&gt; ShowS
+$cshow :: forall a. Show a =&gt; AST a -&gt; String
+show :: AST a -&gt; String
+$cshowList :: forall a. Show a =&gt; [AST a] -&gt; ShowS
+showList :: [AST a] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-170"></span><span>
+</span><span id="line-171"></span><span class="annot"><span class="hs-comment">-- | Optimize 'AST', assuming that 'Arg' is non-negative.</span></span><span>
+</span><span id="line-172"></span><span id="local-6989586621679039416"><span class="annot"><a href="Numeric.QuoteQuot.html#assumeNonNegArg"><span class="hs-identifier hs-type">assumeNonNegArg</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ord</span></span><span> </span><span class="annot"><a href="#local-6989586621679039416"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Num</span></span><span> </span><span class="annot"><a href="#local-6989586621679039416"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039416"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039416"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-173"></span><span id="assumeNonNegArg"><span class="annot"><span class="annottext">assumeNonNegArg :: forall a. (Ord a, Num a) =&gt; AST a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#assumeNonNegArg"><span class="hs-identifier hs-var hs-var">assumeNonNegArg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-174"></span><span>  </span><span class="annot"><a href="Numeric.QuoteQuot.html#Add"><span class="hs-identifier hs-type">Add</span></a></span><span> </span><span id="local-6989586621679039777"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039777"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#CmpLT"><span class="hs-identifier hs-type">CmpLT</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span id="local-6989586621679039778"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039778"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-175"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039778"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039777"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-176"></span><span>  </span><span class="annot"><a href="Numeric.QuoteQuot.html#Sub"><span class="hs-identifier hs-type">Sub</span></a></span><span> </span><span id="local-6989586621679039780"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039780"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#CmpLT"><span class="hs-identifier hs-type">CmpLT</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span id="local-6989586621679039781"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039781"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-177"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039781"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039780"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-178"></span><span>  </span><span class="annot"><a href="Numeric.QuoteQuot.html#Add"><span class="hs-identifier hs-type">Add</span></a></span><span> </span><span id="local-6989586621679039782"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039782"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#MulLo"><span class="hs-identifier hs-type">MulLo</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#CmpLT"><span class="hs-identifier hs-type">CmpLT</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span id="local-6989586621679039783"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039783"><span class="hs-identifier hs-var">n</span></a></span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>
+</span><span id="line-179"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039783"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039782"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-180"></span><span>  </span><span id="local-6989586621679039784"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039784"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039784"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-181"></span><span>
+</span><span id="line-182"></span><span class="hs-comment">-- | Reference (but slow) interpreter of 'AST'.</span><span>
+</span><span id="line-183"></span><span class="hs-comment">-- It is not meant to be used in production</span><span>
+</span><span id="line-184"></span><span class="hs-comment">-- and is provided primarily for testing purposes.</span><span>
+</span><span id="line-185"></span><span class="hs-comment">--</span><span>
+</span><span id="line-186"></span><span class="hs-comment">-- &gt;&gt;&gt; interpretAST (astQuot (10 :: Data.Word.Word8)) 123</span><span>
+</span><span id="line-187"></span><span class="hs-comment">-- 12</span><span>
+</span><span id="line-188"></span><span class="hs-comment">--</span><span>
+</span><span id="line-189"></span><span id="local-6989586621679039419"><span class="annot"><a href="Numeric.QuoteQuot.html#interpretAST"><span class="hs-identifier hs-type">interpretAST</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Integral</span></span><span> </span><span class="annot"><a href="#local-6989586621679039419"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FiniteBits</span></span><span> </span><span class="annot"><a href="#local-6989586621679039419"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039419"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679039419"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679039419"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-190"></span><span id="interpretAST"><span class="annot"><span class="annottext">interpretAST :: forall a. (Integral a, FiniteBits a) =&gt; AST a -&gt; a -&gt; a
+</span><a href="Numeric.QuoteQuot.html#interpretAST"><span class="hs-identifier hs-var hs-var">interpretAST</span></a></span></span><span> </span><span id="local-6989586621679039797"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039797"><span class="hs-identifier hs-var">ast</span></a></span></span><span> </span><span id="local-6989586621679039798"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039798"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; a
+</span><a href="#local-6989586621679039799"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039797"><span class="hs-identifier hs-var">ast</span></a></span><span>
+</span><span id="line-191"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-192"></span><span>    </span><span id="local-6989586621679039799"><span class="annot"><span class="annottext">go :: AST a -&gt; a
+</span><a href="#local-6989586621679039799"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-193"></span><span>      </span><span class="annot"><span class="annottext">AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039798"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-194"></span><span>      </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span id="local-6989586621679039828"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039828"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039829"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039829"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; a
+forall a. Num a =&gt; Integer -&gt; a
+</span><span class="hs-identifier hs-var">fromInteger</span></span><span> </span><span class="annot"><span class="annottext">(Integer -&gt; a) -&gt; Integer -&gt; a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Integer
+forall a. Integral a =&gt; a -&gt; Integer
+</span><span class="hs-identifier hs-var">toInteger</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; a
+</span><a href="#local-6989586621679039799"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039828"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Integer
+forall a. Integral a =&gt; a -&gt; Integer
+</span><span class="hs-identifier hs-var">toInteger</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039829"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Int -&gt; Integer
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Int
+forall b. FiniteBits b =&gt; b -&gt; Int
+</span><span class="hs-identifier hs-var">finiteBitSize</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039829"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-195"></span><span>      </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulLo"><span class="hs-identifier hs-type">MulLo</span></a></span><span> </span><span id="local-6989586621679039831"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039831"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039832"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039832"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; a
+</span><a href="#local-6989586621679039799"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039831"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039832"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-196"></span><span>      </span><span class="annot"><a href="Numeric.QuoteQuot.html#Add"><span class="hs-identifier hs-type">Add</span></a></span><span> </span><span id="local-6989586621679039833"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039833"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039834"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039834"><span class="hs-identifier hs-var">y</span></a></span></span><span>   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; a
+</span><a href="#local-6989586621679039799"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039833"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">AST a -&gt; a
+</span><a href="#local-6989586621679039799"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039834"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-197"></span><span>      </span><span class="annot"><a href="Numeric.QuoteQuot.html#Sub"><span class="hs-identifier hs-type">Sub</span></a></span><span> </span><span id="local-6989586621679039836"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039836"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039837"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039837"><span class="hs-identifier hs-var">y</span></a></span></span><span>   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; a
+</span><a href="#local-6989586621679039799"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039836"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">AST a -&gt; a
+</span><a href="#local-6989586621679039799"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039837"><span class="hs-identifier hs-var">y</span></a></span><span>
+</span><span id="line-198"></span><span>      </span><span class="annot"><a href="Numeric.QuoteQuot.html#Shl"><span class="hs-identifier hs-type">Shl</span></a></span><span> </span><span id="local-6989586621679039838"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039838"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039839"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039839"><span class="hs-identifier hs-var">k</span></a></span></span><span>   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; a
+</span><a href="#local-6989586621679039799"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039838"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039839"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-199"></span><span>      </span><span class="annot"><a href="Numeric.QuoteQuot.html#Shr"><span class="hs-identifier hs-type">Shr</span></a></span><span> </span><span id="local-6989586621679039841"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039841"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039842"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039842"><span class="hs-identifier hs-var">k</span></a></span></span><span>   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; a
+</span><a href="#local-6989586621679039799"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039841"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039842"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-200"></span><span>      </span><span class="annot"><a href="Numeric.QuoteQuot.html#CmpGE"><span class="hs-identifier hs-type">CmpGE</span></a></span><span> </span><span id="local-6989586621679039843"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039843"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039844"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039844"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; a
+</span><a href="#local-6989586621679039799"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039843"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039844"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-201"></span><span>      </span><span class="annot"><a href="Numeric.QuoteQuot.html#CmpLT"><span class="hs-identifier hs-type">CmpLT</span></a></span><span> </span><span id="local-6989586621679039845"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039845"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039846"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039846"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; a
+</span><a href="#local-6989586621679039799"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039845"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span>  </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039846"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-202"></span><span>
+</span><span id="line-203"></span><span class="annot"><span class="hs-comment">-- | Embed 'AST' into Haskell expression.</span></span><span>
+</span><span id="line-204"></span><span id="local-6989586621679039380"><span id="local-6989586621679039381"><span class="annot"><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-type">quoteAST</span></a></span><span> </span><span class="hs-glyph">::</span><span class="hs-cpp">
+#if MIN_VERSION_template_haskell(2,17,0)
+</span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039380"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Lift</span></span><span> </span><span class="annot"><a href="#local-6989586621679039380"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Quote</span></span><span> </span><span class="annot"><a href="#local-6989586621679039381"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039380"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Code</span></span><span> </span><span class="annot"><a href="#local-6989586621679039381"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679039380"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679039380"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span><span class="hs-cpp">
+#else
+</span><span>  </span><span class="hs-special">(</span><span class="hs-identifier">MulHi</span><span> </span><span class="hs-identifier">a</span><span class="hs-special">,</span><span> </span><span class="hs-identifier">Lift</span><span> </span><span class="hs-identifier">a</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-identifier">AST</span><span> </span><span class="hs-identifier">a</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">Q</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">TExp</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">a</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">a</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span id="quoteAST"><span class="annot"><span class="annottext">quoteAST :: forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+AST a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-var hs-var">quoteAST</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-211"></span><span>  </span><span class="annot"><span class="annottext">AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[||</span><span> </span><span class="annot"><span class="annottext">a -&gt; a
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="hs-special">||]</span><span>
+</span><span id="line-212"></span><span>  </span><span class="annot"><a href="Numeric.QuoteQuot.html#Shr"><span class="hs-identifier hs-type">Shr</span></a></span><span> </span><span id="local-6989586621679039916"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039916"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039917"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039917"><span class="hs-identifier hs-var">k</span></a></span></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[||</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039917"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">$$</span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Code m (a -&gt; a)
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+AST a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-var">quoteAST</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039916"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">||]</span><span>
+</span><span id="line-213"></span><span>  </span><span class="annot"><a href="Numeric.QuoteQuot.html#Shl"><span class="hs-identifier hs-type">Shl</span></a></span><span> </span><span id="local-6989586621679039918"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039918"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039919"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039919"><span class="hs-identifier hs-var">k</span></a></span></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[||</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039919"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">$$</span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Code m (a -&gt; a)
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+AST a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-var">quoteAST</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039918"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">||]</span><span>
+</span><span id="line-214"></span><span>  </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-type">MulHi</span></a></span><span> </span><span id="local-6989586621679039920"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039920"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039921"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039921"><span class="hs-identifier hs-var">k</span></a></span></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[||</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. MulHi a =&gt; a -&gt; a -&gt; a
+</span><a href="Numeric.QuoteQuot.html#mulHi"><span class="hs-operator hs-var">`mulHi`</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039921"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">$$</span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Code m (a -&gt; a)
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+AST a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-var">quoteAST</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039920"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">||]</span><span>
+</span><span id="line-215"></span><span>  </span><span class="annot"><a href="Numeric.QuoteQuot.html#MulLo"><span class="hs-identifier hs-type">MulLo</span></a></span><span> </span><span id="local-6989586621679039922"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039922"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039923"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039923"><span class="hs-identifier hs-var">k</span></a></span></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[||</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039923"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">$$</span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Code m (a -&gt; a)
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+AST a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-var">quoteAST</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039922"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">||]</span><span>
+</span><span id="line-216"></span><span>  </span><span class="annot"><a href="Numeric.QuoteQuot.html#Add"><span class="hs-identifier hs-type">Add</span></a></span><span> </span><span id="local-6989586621679039924"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039924"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039925"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039925"><span class="hs-identifier hs-var">y</span></a></span></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[||</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679039926"><span class="annot"><span class="annottext">p
+</span><a href="#local-6989586621679039926"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">$$</span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Code m (a -&gt; a)
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+AST a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-var">quoteAST</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039924"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">p
+</span><a href="#local-6989586621679039926"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="hs-special">$$</span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Code m (a -&gt; a)
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+AST a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-var">quoteAST</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039925"><span class="hs-identifier hs-var">y</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">p
+</span><a href="#local-6989586621679039926"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="hs-special">||]</span><span>
+</span><span id="line-217"></span><span>  </span><span class="annot"><a href="Numeric.QuoteQuot.html#Sub"><span class="hs-identifier hs-type">Sub</span></a></span><span> </span><span id="local-6989586621679039927"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039927"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039928"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039928"><span class="hs-identifier hs-var">y</span></a></span></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[||</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679039929"><span class="annot"><span class="annottext">p
+</span><a href="#local-6989586621679039929"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">$$</span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Code m (a -&gt; a)
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+AST a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-var">quoteAST</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039927"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">p
+</span><a href="#local-6989586621679039929"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="hs-special">$$</span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Code m (a -&gt; a)
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+AST a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-var">quoteAST</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039928"><span class="hs-identifier hs-var">y</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">p
+</span><a href="#local-6989586621679039929"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="hs-special">||]</span><span>
+</span><span id="line-218"></span><span>  </span><span class="annot"><a href="Numeric.QuoteQuot.html#CmpGE"><span class="hs-identifier hs-type">CmpGE</span></a></span><span> </span><span id="local-6989586621679039930"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039930"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039931"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039931"><span class="hs-identifier hs-var">k</span></a></span></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[||</span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679039932"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679039932"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a -&gt; b
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int# -&gt; Int
+</span><span class="hs-identifier hs-var">I#</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Int#
+forall a. a -&gt; Int#
+</span><span class="hs-identifier hs-var">dataToTag#</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679039932"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039931"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">$$</span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Code m (a -&gt; a)
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+AST a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-var">quoteAST</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039930"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">||]</span><span>
+</span><span id="line-219"></span><span>  </span><span class="annot"><a href="Numeric.QuoteQuot.html#CmpLT"><span class="hs-identifier hs-type">CmpLT</span></a></span><span> </span><span id="local-6989586621679039933"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039933"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679039934"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039934"><span class="hs-identifier hs-var">k</span></a></span></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[||</span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679039935"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679039935"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">a -&gt; b
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int# -&gt; Int
+</span><span class="hs-identifier hs-var">I#</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Int#
+forall a. a -&gt; Int#
+</span><span class="hs-identifier hs-var">dataToTag#</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679039935"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span>  </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039934"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">$$</span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Code m (a -&gt; a)
+forall a (m :: * -&gt; *).
+(MulHi a, Lift a, Quote m) =&gt;
+AST a -&gt; Code m (a -&gt; a)
+</span><a href="Numeric.QuoteQuot.html#quoteAST"><span class="hs-identifier hs-var">quoteAST</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679039933"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">||]</span><span>
+</span><span id="line-220"></span><span>
+</span><span id="line-221"></span><span class="hs-comment">-- | 'astQuot' @d@ constructs an 'AST' representing</span><span>
+</span><span id="line-222"></span><span class="hs-comment">-- a function, equivalent to 'quot' @a@ for positive @a@,</span><span>
+</span><span id="line-223"></span><span class="hs-comment">-- but avoiding division instructions.</span><span>
+</span><span id="line-224"></span><span class="hs-comment">--</span><span>
+</span><span id="line-225"></span><span class="hs-comment">-- &gt;&gt;&gt; astQuot (10 :: Data.Word.Word8)</span><span>
+</span><span id="line-226"></span><span class="hs-comment">-- Shr (MulHi Arg 205) 3</span><span>
+</span><span id="line-227"></span><span class="hs-comment">--</span><span>
+</span><span id="line-228"></span><span class="hs-comment">-- And indeed to divide 'Data.Word.Word8' by 10</span><span>
+</span><span id="line-229"></span><span class="hs-comment">-- one can multiply it by 205, take the high byte and</span><span>
+</span><span id="line-230"></span><span class="hs-comment">-- shift it right by 3. Somewhat counterintuitively,</span><span>
+</span><span id="line-231"></span><span class="hs-comment">-- this sequence of operations is faster than a single</span><span>
+</span><span id="line-232"></span><span class="hs-comment">-- division on most modern achitectures.</span><span>
+</span><span id="line-233"></span><span class="hs-comment">--</span><span>
+</span><span id="line-234"></span><span class="hs-comment">-- 'astQuot' function is polymorphic and supports both signed</span><span>
+</span><span id="line-235"></span><span class="hs-comment">-- and unsigned operands of arbitrary finite bitness.</span><span>
+</span><span id="line-236"></span><span class="hs-comment">-- Implementation is based on</span><span>
+</span><span id="line-237"></span><span class="hs-comment">-- Ch. 10 of Hacker's Delight by Henry S. Warren, 2012.</span><span>
+</span><span id="line-238"></span><span class="hs-comment">--</span><span>
+</span><span id="line-239"></span><span id="local-6989586621679039382"><span class="annot"><a href="Numeric.QuoteQuot.html#astQuot"><span class="hs-identifier hs-type">astQuot</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Integral</span></span><span> </span><span class="annot"><a href="#local-6989586621679039382"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FiniteBits</span></span><span> </span><span class="annot"><a href="#local-6989586621679039382"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679039382"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039382"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-240"></span><span id="astQuot"><span class="annot"><span class="annottext">astQuot :: forall a. (Integral a, FiniteBits a) =&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#astQuot"><span class="hs-identifier hs-var hs-var">astQuot</span></a></span></span><span> </span><span id="local-6989586621679039944"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039944"><span class="hs-identifier hs-var">k</span></a></span></span><span>
+</span><span id="line-241"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a -&gt; Bool
+forall a. Bits a =&gt; a -&gt; Bool
+</span><span class="hs-identifier hs-var">isSigned</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039944"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; AST a
+forall a. (Integral a, FiniteBits a) =&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#signedQuot"><span class="hs-identifier hs-var">signedQuot</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039944"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-242"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; AST a
+forall a. (Integral a, FiniteBits a) =&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#unsignedQuot"><span class="hs-identifier hs-var">unsignedQuot</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039944"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-243"></span><span>
+</span><span id="line-244"></span><span id="local-6989586621679039948"><span class="annot"><a href="Numeric.QuoteQuot.html#unsignedQuot"><span class="hs-identifier hs-type">unsignedQuot</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Integral</span></span><span> </span><span class="annot"><a href="#local-6989586621679039948"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FiniteBits</span></span><span> </span><span class="annot"><a href="#local-6989586621679039948"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679039948"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039948"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-245"></span><span id="unsignedQuot"><span class="annot"><span class="annottext">unsignedQuot :: forall a. (Integral a, FiniteBits a) =&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#unsignedQuot"><span class="hs-identifier hs-var hs-var">unsignedQuot</span></a></span></span><span> </span><span id="local-6989586621679039980"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039980"><span class="hs-identifier hs-var">k'</span></a></span></span><span>
+</span><span id="line-246"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a -&gt; Bool
+forall a. Bits a =&gt; a -&gt; Bool
+</span><span class="hs-identifier hs-var">isSigned</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039981"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-247"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; AST a
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;unsignedQuot works for unsigned types only&quot;</span></span><span>
+</span><span id="line-248"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039980"><span class="hs-identifier hs-var">k'</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-249"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; AST a
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;divisor must be positive&quot;</span></span><span>
+</span><span id="line-250"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039980"><span class="hs-identifier hs-var">k'</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-251"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span>
+</span><span id="line-252"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039981"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-253"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; Int -&gt; AST a
+forall a. AST a -&gt; Int -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#shr"><span class="hs-identifier hs-var">shr</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039984"><span class="hs-identifier hs-var">kZeros</span></a></span><span>
+</span><span id="line-254"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039980"><span class="hs-identifier hs-var">k'</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039985"><span class="hs-identifier hs-var">fbs</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-255"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; a -&gt; AST a
+forall a. AST a -&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#CmpGE"><span class="hs-identifier hs-var">CmpGE</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039980"><span class="hs-identifier hs-var">k'</span></a></span><span>
+</span><span id="line-256"></span><span>  </span><span class="hs-comment">-- Hacker's Delight, 10-8, Listing 1</span><span>
+</span><span id="line-257"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039981"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039986"><span class="hs-identifier hs-var">shft</span></a></span><span>
+</span><span id="line-258"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; Int -&gt; AST a
+forall a. AST a -&gt; Int -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#shr"><span class="hs-identifier hs-var">shr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; a -&gt; AST a
+forall a. AST a -&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-var">MulHi</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039987"><span class="hs-identifier hs-var">magic</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039986"><span class="hs-identifier hs-var">shft</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039984"><span class="hs-identifier hs-var">kZeros</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-259"></span><span>  </span><span class="hs-comment">-- Hacker's Delight, 10-8, Listing 3</span><span>
+</span><span id="line-260"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>
+</span><span id="line-261"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; Int -&gt; AST a
+forall a. AST a -&gt; Int -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#shr"><span class="hs-identifier hs-var">shr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; AST a -&gt; AST a
+forall a. AST a -&gt; AST a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#Add"><span class="hs-identifier hs-var">Add</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Int -&gt; AST a
+forall a. AST a -&gt; Int -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#shr"><span class="hs-identifier hs-var">shr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; AST a -&gt; AST a
+forall a. AST a -&gt; AST a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#Sub"><span class="hs-identifier hs-var">Sub</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; a -&gt; AST a
+forall a. AST a -&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-var">MulHi</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039987"><span class="hs-identifier hs-var">magic</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; a -&gt; AST a
+forall a. AST a -&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-var">MulHi</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039987"><span class="hs-identifier hs-var">magic</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039986"><span class="hs-identifier hs-var">shft</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039984"><span class="hs-identifier hs-var">kZeros</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-262"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-263"></span><span>    </span><span id="local-6989586621679039985"><span class="annot"><span class="annottext">fbs :: Int
+</span><a href="#local-6989586621679039985"><span class="hs-identifier hs-var hs-var">fbs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Int
+forall b. FiniteBits b =&gt; b -&gt; Int
+</span><span class="hs-identifier hs-var">finiteBitSize</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039980"><span class="hs-identifier hs-var">k'</span></a></span><span>
+</span><span id="line-264"></span><span>    </span><span id="local-6989586621679039984"><span class="annot"><span class="annottext">kZeros :: Int
+</span><a href="#local-6989586621679039984"><span class="hs-identifier hs-var hs-var">kZeros</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Int
+forall b. FiniteBits b =&gt; b -&gt; Int
+</span><span class="hs-identifier hs-var">countTrailingZeros</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039980"><span class="hs-identifier hs-var">k'</span></a></span><span>
+</span><span id="line-265"></span><span>    </span><span id="local-6989586621679039981"><span class="annot"><span class="annottext">k :: a
+</span><a href="#local-6989586621679039981"><span class="hs-identifier hs-var hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039980"><span class="hs-identifier hs-var">k'</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039984"><span class="hs-identifier hs-var">kZeros</span></a></span><span>
+</span><span id="line-266"></span><span>    </span><span id="local-6989586621679040008"><span class="annot"><span class="annottext">r0 :: a
+</span><a href="#local-6989586621679040008"><span class="hs-identifier hs-var hs-var">r0</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; a
+forall a. Num a =&gt; Integer -&gt; a
+</span><span class="hs-identifier hs-var">fromInteger</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Int -&gt; Integer
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039985"><span class="hs-identifier hs-var">fbs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`rem`</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Integer
+forall a. Integral a =&gt; a -&gt; Integer
+</span><span class="hs-identifier hs-var">toInteger</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039981"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-267"></span><span>    </span><span id="local-6989586621679039986"><span class="annot"><span class="annottext">shft :: Int
+</span><a href="#local-6989586621679039986"><span class="hs-identifier hs-var hs-var">shft</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; Int
+</span><a href="#local-6989586621679040009"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040008"><span class="hs-identifier hs-var">r0</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-268"></span><span>    </span><span id="local-6989586621679039987"><span class="annot"><span class="annottext">magic :: a
+</span><a href="#local-6989586621679039987"><span class="hs-identifier hs-var hs-var">magic</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; a
+forall a. Num a =&gt; Integer -&gt; a
+</span><span class="hs-identifier hs-var">fromInteger</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Int -&gt; Integer
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039985"><span class="hs-identifier hs-var">fbs</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679039986"><span class="hs-identifier hs-var">shft</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`quot`</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Integer
+forall a. Integral a =&gt; a -&gt; Integer
+</span><span class="hs-identifier hs-var">toInteger</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039981"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-269"></span><span>
+</span><span id="line-270"></span><span>    </span><span id="local-6989586621679040009"><span class="annot"><span class="annottext">go :: a -&gt; Int -&gt; Int
+</span><a href="#local-6989586621679040009"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679040038"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040038"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621679040039"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040039"><span class="hs-identifier hs-var">s</span></a></span></span><span>
+</span><span id="line-271"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039981"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040038"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040039"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040039"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-272"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; Int
+</span><a href="#local-6989586621679040009"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040038"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`rem`</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679039981"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040039"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-273"></span><span>
+</span><span id="line-274"></span><span id="local-6989586621679040040"><span class="annot"><a href="Numeric.QuoteQuot.html#signedQuot"><span class="hs-identifier hs-type">signedQuot</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Integral</span></span><span> </span><span class="annot"><a href="#local-6989586621679040040"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FiniteBits</span></span><span> </span><span class="annot"><a href="#local-6989586621679040040"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679040040"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679040040"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-275"></span><span id="signedQuot"><span class="annot"><span class="annottext">signedQuot :: forall a. (Integral a, FiniteBits a) =&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#signedQuot"><span class="hs-identifier hs-var hs-var">signedQuot</span></a></span></span><span> </span><span id="local-6989586621679040076"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040076"><span class="hs-identifier hs-var">k'</span></a></span></span><span>
+</span><span id="line-276"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Bool
+forall a. Bits a =&gt; a -&gt; Bool
+</span><span class="hs-identifier hs-var">isSigned</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040078"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-277"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; AST a
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;signedQuot works for signed types only&quot;</span></span><span>
+</span><span id="line-278"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040076"><span class="hs-identifier hs-var">k'</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-279"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; AST a
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;divisor must be positive&quot;</span></span><span>
+</span><span id="line-280"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040076"><span class="hs-identifier hs-var">k'</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-281"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span>
+</span><span id="line-282"></span><span>  </span><span class="hs-comment">-- Hacker's Delight, 10-1, Listing 2</span><span>
+</span><span id="line-283"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040078"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-284"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; Int -&gt; AST a
+forall a. AST a -&gt; Int -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#shr"><span class="hs-identifier hs-var">shr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; AST a -&gt; AST a
+forall a. AST a -&gt; AST a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#Add"><span class="hs-identifier hs-var">Add</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; a -&gt; AST a
+forall a. AST a -&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#MulLo"><span class="hs-identifier hs-var">MulLo</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; a -&gt; AST a
+forall a. AST a -&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#CmpLT"><span class="hs-identifier hs-var">CmpLT</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040076"><span class="hs-identifier hs-var">k'</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040079"><span class="hs-identifier hs-var">kZeros</span></a></span><span>
+</span><span id="line-285"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040076"><span class="hs-identifier hs-var">k'</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040080"><span class="hs-identifier hs-var">fbs</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span class="hs-special">)</span><span>
+</span><span id="line-286"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; AST a -&gt; AST a
+forall a. AST a -&gt; AST a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#Sub"><span class="hs-identifier hs-var">Sub</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; a -&gt; AST a
+forall a. AST a -&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#CmpGE"><span class="hs-identifier hs-var">CmpGE</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040076"><span class="hs-identifier hs-var">k'</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; a -&gt; AST a
+forall a. AST a -&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#CmpLT"><span class="hs-identifier hs-var">CmpLT</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040076"><span class="hs-identifier hs-var">k'</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-287"></span><span>  </span><span class="hs-comment">-- Hacker's Delight, 10-3, Listing 2</span><span>
+</span><span id="line-288"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040081"><span class="hs-identifier hs-var">magic</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-289"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; AST a -&gt; AST a
+forall a. AST a -&gt; AST a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#Add"><span class="hs-identifier hs-var">Add</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Int -&gt; AST a
+forall a. AST a -&gt; Int -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#shr"><span class="hs-identifier hs-var">shr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; a -&gt; AST a
+forall a. AST a -&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-var">MulHi</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040081"><span class="hs-identifier hs-var">magic</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040082"><span class="hs-identifier hs-var">shft</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040079"><span class="hs-identifier hs-var">kZeros</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; a -&gt; AST a
+forall a. AST a -&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#CmpLT"><span class="hs-identifier hs-var">CmpLT</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span>
+</span><span id="line-290"></span><span>  </span><span class="hs-comment">-- Hacker's Delight, 10-3, Listing 3</span><span>
+</span><span id="line-291"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>
+</span><span id="line-292"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; AST a -&gt; AST a
+forall a. AST a -&gt; AST a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#Add"><span class="hs-identifier hs-var">Add</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; Int -&gt; AST a
+forall a. AST a -&gt; Int -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#shr"><span class="hs-identifier hs-var">shr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; AST a -&gt; AST a
+forall a. AST a -&gt; AST a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#Add"><span class="hs-identifier hs-var">Add</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; a -&gt; AST a
+forall a. AST a -&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#MulHi"><span class="hs-identifier hs-var">MulHi</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040081"><span class="hs-identifier hs-var">magic</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040082"><span class="hs-identifier hs-var">shft</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040079"><span class="hs-identifier hs-var">kZeros</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AST a -&gt; a -&gt; AST a
+forall a. AST a -&gt; a -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#CmpLT"><span class="hs-identifier hs-var">CmpLT</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+forall a. AST a
+</span><a href="Numeric.QuoteQuot.html#Arg"><span class="hs-identifier hs-var">Arg</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span>
+</span><span id="line-293"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-294"></span><span>    </span><span id="local-6989586621679040080"><span class="annot"><span class="annottext">fbs :: Int
+</span><a href="#local-6989586621679040080"><span class="hs-identifier hs-var hs-var">fbs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Int
+forall b. FiniteBits b =&gt; b -&gt; Int
+</span><span class="hs-identifier hs-var">finiteBitSize</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040076"><span class="hs-identifier hs-var">k'</span></a></span><span>
+</span><span id="line-295"></span><span>    </span><span id="local-6989586621679040079"><span class="annot"><span class="annottext">kZeros :: Int
+</span><a href="#local-6989586621679040079"><span class="hs-identifier hs-var hs-var">kZeros</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Int
+forall b. FiniteBits b =&gt; b -&gt; Int
+</span><span class="hs-identifier hs-var">countTrailingZeros</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040076"><span class="hs-identifier hs-var">k'</span></a></span><span>
+</span><span id="line-296"></span><span>    </span><span id="local-6989586621679040078"><span class="annot"><span class="annottext">k :: a
+</span><a href="#local-6989586621679040078"><span class="hs-identifier hs-var hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040076"><span class="hs-identifier hs-var">k'</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040079"><span class="hs-identifier hs-var">kZeros</span></a></span><span>
+</span><span id="line-297"></span><span>    </span><span id="local-6989586621679040101"><span class="annot"><span class="annottext">r0 :: a
+</span><a href="#local-6989586621679040101"><span class="hs-identifier hs-var hs-var">r0</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; a
+forall a. Num a =&gt; Integer -&gt; a
+</span><span class="hs-identifier hs-var">fromInteger</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Int -&gt; Integer
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040080"><span class="hs-identifier hs-var">fbs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`rem`</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Integer
+forall a. Integral a =&gt; a -&gt; Integer
+</span><span class="hs-identifier hs-var">toInteger</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040078"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-298"></span><span>    </span><span id="local-6989586621679040082"><span class="annot"><span class="annottext">shft :: Int
+</span><a href="#local-6989586621679040082"><span class="hs-identifier hs-var hs-var">shft</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; Int
+</span><a href="#local-6989586621679040102"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040101"><span class="hs-identifier hs-var">r0</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-299"></span><span>    </span><span id="local-6989586621679040081"><span class="annot"><span class="annottext">magic :: a
+</span><a href="#local-6989586621679040081"><span class="hs-identifier hs-var hs-var">magic</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; a
+forall a. Num a =&gt; Integer -&gt; a
+</span><span class="hs-identifier hs-var">fromInteger</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Int -&gt; Integer
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040080"><span class="hs-identifier hs-var">fbs</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040082"><span class="hs-identifier hs-var">shft</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`quot`</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Integer
+forall a. Integral a =&gt; a -&gt; Integer
+</span><span class="hs-identifier hs-var">toInteger</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040078"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Integer -&gt; Integer -&gt; Integer
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Integer
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-300"></span><span>
+</span><span id="line-301"></span><span>    </span><span id="local-6989586621679040102"><span class="annot"><span class="annottext">go :: a -&gt; Int -&gt; Int
+</span><a href="#local-6989586621679040102"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679040133"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040133"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span id="local-6989586621679040134"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040134"><span class="hs-identifier hs-var">s</span></a></span></span><span>
+</span><span id="line-302"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040078"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040133"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040134"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040134"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-303"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; Int
+</span><a href="#local-6989586621679040102"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040133"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; a
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; a -&gt; a
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`rem`</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679040078"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040134"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-304"></span><span>
+</span><span id="line-305"></span><span id="local-6989586621679039473"><span class="annot"><a href="Numeric.QuoteQuot.html#shr"><span class="hs-identifier hs-type">shr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039473"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Numeric.QuoteQuot.html#AST"><span class="hs-identifier hs-type">AST</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679039473"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-306"></span><span id="shr"><span class="annot"><span class="annottext">shr :: forall a. AST a -&gt; Int -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#shr"><span class="hs-identifier hs-var hs-var">shr</span></a></span></span><span> </span><span id="local-6989586621679040138"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679040138"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679040138"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-307"></span><span class="annot"><a href="Numeric.QuoteQuot.html#shr"><span class="hs-identifier hs-var">shr</span></a></span><span> </span><span id="local-6989586621679040139"><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679040139"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679040140"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040140"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AST a -&gt; Int -&gt; AST a
+forall a. AST a -&gt; Int -&gt; AST a
+</span><a href="Numeric.QuoteQuot.html#Shr"><span class="hs-identifier hs-var">Shr</span></a></span><span> </span><span class="annot"><span class="annottext">AST a
+</span><a href="#local-6989586621679040139"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679040140"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-308"></span></pre></body></html>
