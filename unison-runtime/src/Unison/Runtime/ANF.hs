@@ -37,6 +37,7 @@ module Unison.Runtime.ANF
     Lit (..),
     Cacheability (..),
     Direction (..),
+    InlineInfo,
     SuperNormal (..),
     arity,
     SuperGroup (..),
@@ -53,6 +54,7 @@ module Unison.Runtime.ANF
     addDefaultCases,
     ANormalF (.., AApv, ACom, ACon, AKon, AReq, APrm, AFOp),
     ANormal,
+    AArg (..),
     RTag,
     CTag,
     PackedTag (..),
@@ -114,7 +116,9 @@ import Unison.Pattern (SeqOp (..))
 import Unison.Pattern qualified as P
 import Unison.Prelude
 import Unison.Reference (Id, Reference, Reference' (Builtin, DerivedId))
+import Unison.Reference qualified as Reference
 import Unison.Referent (Referent, pattern Con, pattern Ref)
+import Unison.Referent qualified as Referent
 import Unison.Runtime.Array qualified as PA
 import Unison.Runtime.Foreign.Function.Type (ForeignFunc (..))
 import Unison.Runtime.TypeTags (CTag (..), PackedTag (..), RTag (..), Tag (..), maskTags, packTags, unpackTags)
@@ -658,7 +662,7 @@ saturate dat = ABT.visitPure $ \case
 -- using the `buildInlineMap` function.
 inline ::
   (Var v) =>
-  Map Reference (Int, ANormal v) ->
+  Map Reference (InlineInfo v) ->
   SuperGroup v ->
   SuperGroup v
 inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
@@ -668,22 +672,35 @@ inline inls (Rec bs entry) = Rec (fmap go0 <$> bs) (go0 entry)
     go n | n <= 0 = id
     go n = ABTN.visitPure \case
       TApp (FComb r) args
-        | Just (arity, expr) <- Map.lookup r inls ->
-            go (n - 1) <$> tweak expr args arity
+        | Just (vars, expr) <- Map.lookup r inls ->
+            go (n - 1) <$> tweak expr args vars
       _ -> Nothing
 
-    tweak (ABTN.TAbss vs body) args arity
+    tweak body args vs
       -- exactly saturated
       | length args == arity,
         rn <- Map.fromList (zip vs args) =
-          Just $ ABTN.renames rn body
+          Just $ inlineResult rn body
       -- oversaturated, only makes sense if body is a call
       | length args > arity,
         (pre, post) <- splitAt arity args,
         rn <- Map.fromList (zip vs pre),
-        TApp f pre <- ABTN.renames rn body =
+        TApp f pre <- inlineResult rn body =
           Just $ TApp f (pre ++ post)
       | otherwise = Nothing
+      where arity = length vs
+
+inlineResult :: Var v => Map v (AArg v) -> InlineExpr v -> ANormal v
+inlineResult _ (InlLit l) = TBLit l
+inlineResult m (InlApp f0 as0)
+  | FVar u <- f0, Just (AAVar v) <- Map.lookup u m = TApp (FVar v) as
+  | FCont u <- f0, Just (AAVar v) <- Map.lookup u m = TApp (FCont v) as
+  | otherwise = TApp f0 as
+  where
+    as = bindArg m <$> as0
+inlineResult m (InlVar v)
+  | Just a <- Map.lookup v m = argToNormal a
+  | otherwise = TVar v
 
 addDefaultCases :: (Var v) => (Monoid a) => Text -> Term v a -> Term v a
 addDefaultCases = ABT.visitPure . defaultCaseVisitor
@@ -724,7 +741,7 @@ data Mem = UN | BX deriving (Eq, Ord, Show, Enum)
 -- Context entries with evaluation strategy
 data CTE v s
   = ST (Direction Word16) [v] [Mem] s
-  | LZ v (Either Reference v) [v]
+  | LZ v (Either Reference v) [AArg v]
   deriving (Show)
 
 pattern ST1 :: Direction Word16 -> v -> Mem -> s -> CTE v s
@@ -735,17 +752,30 @@ pattern ST1 d v m s = ST d [v] [m] s
 -- freshening.
 cteVars :: (Ord v) => Cte v -> Set v
 cteVars (ST _ vs _ e) = Set.fromList vs `Set.union` ABTN.freeVars e
-cteVars (LZ v r as) = Set.fromList (either (const id) (:) r $ v : as)
+cteVars (LZ v r as) =
+  either (const id) Set.insert r . Set.insert v $ varsAArgs as
+
+data AArg v = AALit Lit | AAVar v
+  deriving (Show, Eq, Functor, Foldable, Traversable)
+
+bindArg :: Ord v => Map v (AArg v) -> AArg v -> AArg v
+bindArg m (AAVar u)
+  | Just a <- Map.lookup u m = a
+bindArg _ a = a
+
+argToNormal :: Var v => AArg v -> ANormal v
+argToNormal (AAVar v) = TVar v
+argToNormal (AALit l) = TBLit l
 
 data ANormalF v e
   = ALet (Direction Word16) [Mem] e e
-  | AName (Either Reference v) [v] e
+  | AName (Either Reference v) [AArg v] e
   | ALit Lit
   | ABLit Lit -- direct boxed literal
   | AMatch v (Branched e)
   | AShift Reference e
   | AHnd [Reference] v e
-  | AApp (Func v) [v]
+  | AApp (Func v) [AArg v]
   | AFrc v
   | AVar v
   deriving (Show, Eq, Functor, Foldable, Traversable)
@@ -755,24 +785,26 @@ instance Bifunctor ANormalF where
   bimap _ _ (ALit l) = ALit l
   bimap _ _ (ABLit l) = ABLit l
   bimap _ g (ALet d m bn bo) = ALet d m (g bn) (g bo)
-  bimap f g (AName n as bo) = AName (f <$> n) (f <$> as) $ g bo
+  bimap f g (AName n as bo) = AName (f <$> n) (fmap f <$> as) $ g bo
   bimap f g (AMatch v br) = AMatch (f v) $ fmap g br
   bimap f g (AHnd rs v e) = AHnd rs (f v) $ g e
   bimap _ g (AShift i e) = AShift i $ g e
   bimap f _ (AFrc v) = AFrc (f v)
-  bimap f _ (AApp fu args) = AApp (fmap f fu) $ fmap f args
+  bimap f _ (AApp fu args) = AApp (fmap f fu) $ fmap (fmap f) args
 
 instance Bifoldable ANormalF where
   bifoldMap f _ (AVar v) = f v
   bifoldMap _ _ (ALit _) = mempty
   bifoldMap _ _ (ABLit _) = mempty
   bifoldMap _ g (ALet _ _ b e) = g b <> g e
-  bifoldMap f g (AName n as e) = foldMap f n <> foldMap f as <> g e
+  bifoldMap f g (AName n as e) =
+    foldMap f n <> foldMap (foldMap f) as <> g e
   bifoldMap f g (AMatch v br) = f v <> foldMap g br
   bifoldMap f g (AHnd _ h e) = f h <> g e
   bifoldMap _ g (AShift _ e) = g e
   bifoldMap f _ (AFrc v) = f v
-  bifoldMap f _ (AApp func args) = foldMap f func <> foldMap f args
+  bifoldMap f _ (AApp func args) =
+    foldMap f func <> foldMap (foldMap f) args
 
 instance ABTN.Align ANormalF where
   align f _ (AVar u) (AVar v) = Just $ AVar <$> f u v
@@ -785,13 +817,9 @@ instance ABTN.Align ANormalF where
       ccl == ccr =
         Just $ ALet dl ccl <$> g bl br <*> g el er
   align f g (AName hl asl el) (AName hr asr er)
-    | length asl == length asr,
-      Just hs <- alignEither f hl hr =
-        Just $
-          AName
-            <$> hs
-            <*> traverse (uncurry f) (zip asl asr)
-            <*> g el er
+    | Just hs <- alignEither f hl hr,
+      Just asa <- aligns (alignAArg f) asl asr =
+        Just $ AName <$> hs <*> asa <*> g el er
   align f g (AMatch vl bsl) (AMatch vr bsr)
     | Just bss <- alignBranch g bsl bsr =
         Just $ AMatch <$> f vl vr <*> bss
@@ -802,9 +830,26 @@ instance ABTN.Align ANormalF where
   align f _ (AFrc u) (AFrc v) = Just $ AFrc <$> f u v
   align f _ (AApp hl asl) (AApp hr asr)
     | Just hs <- alignFunc f hl hr,
-      length asl == length asr =
-        Just $ AApp <$> hs <*> traverse (uncurry f) (zip asl asr)
+      Just asa <- aligns (alignAArg f) asl asr =
+        Just $ AApp <$> hs <*> asa
   align _ _ _ _ = Nothing
+
+aligns ::
+  (Applicative f) =>
+  (l -> r -> Maybe (f s)) ->
+  [l] -> [r] -> Maybe (f [s])
+aligns _ [] [] = Just (pure [])
+aligns f (l:ls) (r:rs) = liftA2 (:) <$> f l r <*> aligns f ls rs
+aligns _ _ _ = Nothing
+
+alignAArg ::
+  (Applicative f) =>
+  (l -> r -> f s) ->
+  AArg l -> AArg r -> Maybe (f (AArg s))
+alignAArg f (AAVar l) (AAVar r) = Just $ AAVar <$> f l r
+alignAArg _ (AALit l) (AALit r)
+  | l == r = Just . pure $ AALit l
+alignAArg _ _ _ = Nothing
 
 alignEither ::
   (Applicative f) =>
@@ -941,7 +986,7 @@ pattern TName ::
   (ABT.Var v) =>
   v ->
   Either Reference v ->
-  [v] ->
+  [AArg v] ->
   ABTN.Term ANormalF v ->
   ABTN.Term ANormalF v
 pattern TName v f as bo = ABTN.TTm (AName f as (ABTN.TAbs v bo))
@@ -964,79 +1009,79 @@ pattern TBLit l = ABTN.TTm (ABLit l)
 pattern TApp ::
   (ABT.Var v) =>
   Func v ->
-  [v] ->
+  [AArg v] ->
   ABTN.Term ANormalF v
 pattern TApp f args = ABTN.TTm (AApp f args)
 
-pattern AApv :: v -> [v] -> ANormalF v e
+pattern AApv :: v -> [AArg v] -> ANormalF v e
 pattern AApv v args = AApp (FVar v) args
 
 pattern TApv ::
   (ABT.Var v) =>
   v ->
-  [v] ->
+  [AArg v] ->
   ABTN.Term ANormalF v
 pattern TApv v args = TApp (FVar v) args
 
-pattern ACom :: Reference -> [v] -> ANormalF v e
+pattern ACom :: Reference -> [AArg v] -> ANormalF v e
 pattern ACom r args = AApp (FComb r) args
 
 pattern TCom ::
   (ABT.Var v) =>
   Reference ->
-  [v] ->
+  [AArg v] ->
   ABTN.Term ANormalF v
 pattern TCom r args = TApp (FComb r) args
 
-pattern ACon :: Reference -> CTag -> [v] -> ANormalF v e
+pattern ACon :: Reference -> CTag -> [AArg v] -> ANormalF v e
 pattern ACon r t args = AApp (FCon r t) args
 
 pattern TCon ::
   (ABT.Var v) =>
   Reference ->
   CTag ->
-  [v] ->
+  [AArg v] ->
   ABTN.Term ANormalF v
 pattern TCon r t args = TApp (FCon r t) args
 
-pattern AKon :: v -> [v] -> ANormalF v e
+pattern AKon :: v -> [AArg v] -> ANormalF v e
 pattern AKon v args = AApp (FCont v) args
 
 pattern TKon ::
   (ABT.Var v) =>
   v ->
-  [v] ->
+  [AArg v] ->
   ABTN.Term ANormalF v
 pattern TKon v args = TApp (FCont v) args
 
-pattern AReq :: Reference -> CTag -> [v] -> ANormalF v e
+pattern AReq :: Reference -> CTag -> [AArg v] -> ANormalF v e
 pattern AReq r t args = AApp (FReq r t) args
 
 pattern TReq ::
   (ABT.Var v) =>
   Reference ->
   CTag ->
-  [v] ->
+  [AArg v] ->
   ABTN.Term ANormalF v
 pattern TReq r t args = TApp (FReq r t) args
 
-pattern APrm :: POp -> [v] -> ANormalF v e
+pattern APrm :: POp -> [AArg v] -> ANormalF v e
 pattern APrm p args = AApp (FPrim (Left p)) args
 
 pattern TPrm ::
   (ABT.Var v) =>
   POp ->
-  [v] ->
+  [AArg v] ->
   ABTN.Term ANormalF v
 pattern TPrm p args = TApp (FPrim (Left p)) args
 
-pattern AFOp :: ForeignFunc -> [v] -> ANormalF v e
+pattern AFOp :: ForeignFunc -> [AArg v] -> ANormalF v e
 pattern AFOp p args = AApp (FPrim (Right p)) args
 
 pattern TFOp ::
   (ABT.Var v) =>
   ForeignFunc ->
-  [v] ->
+  [AArg v] ->
   ABTN.Term ANormalF v
 pattern TFOp p args = TApp (FPrim (Right p)) args
 
@@ -1500,14 +1545,23 @@ arity (Lambda ccs _) = length ccs
 arities :: SuperGroup v -> [Int]
 arities (Rec bs e) = arity e : fmap (arity . snd) bs
 
+data InlineExpr v
+  = InlApp (Func v) [AArg v]
+  | InlLit Lit
+  | InlVar v
+
+type InlineInfo v = ([v], InlineExpr v)
+
 -- Checks the body of a SuperGroup makes it eligible for inlining.
 -- See below for the discussion.
-isInlinable :: (Var v) => Reference -> ANormal v -> Bool
-isInlinable r (TApp (FComb s) _) = r /= s
-isInlinable _ TApp {} = True
-isInlinable _ TBLit {} = True
-isInlinable _ TVar {} = True
-isInlinable _ _ = False
+inlineExpr :: (Var v) => Reference -> ANormal v -> Maybe (InlineExpr v)
+inlineExpr r (TApp f as) = InlApp f as <$ guard (p f)
+  where
+    p (FComb s) = r /= s
+    p _ = True
+inlineExpr _ (TBLit l) = Just $ InlLit l
+inlineExpr _ (TVar v) = Just $ InlVar v
+inlineExpr _ _ = Nothing
 
 -- Checks a SuperGroup makes it eligible to be inlined.
 -- Unfortunately we need to be quite conservative about this.
@@ -1542,9 +1596,9 @@ isInlinable _ _ = False
 -- direct recursive call to the same function, which would result
 -- in infinite inlining. This isn't the only such scenario, but
 -- it's one we can opportunistically rule out.
-inlineInfo :: (Var v) => Reference -> SuperGroup v -> Maybe (Int, ANormal v)
-inlineInfo r (Rec [] (Lambda ccs body@(ABTN.TAbss _ e)))
-  | isInlinable r e = Just (length ccs, body)
+inlineInfo :: (Var v) => Reference -> SuperGroup v -> Maybe (InlineInfo v)
+inlineInfo r (Rec [] (Lambda _ (ABTN.TAbss vs e)))
+  = (vs,) <$> inlineExpr r e
 inlineInfo _ _ = Nothing
 
 -- Builds inlining information from a collection of SuperGroups.
@@ -1554,7 +1608,7 @@ inlineInfo _ _ = Nothing
 buildInlineMap ::
   (Var v) =>
   Map Reference (SuperGroup v) ->
-  Map Reference (Int, ANormal v)
+  Map Reference (InlineInfo v)
 buildInlineMap =
   runIdentity
     . Map.traverseMaybeWithKey (\r g -> Identity $ inlineInfo r g)
@@ -1687,6 +1741,11 @@ contextualize (d0, tm) = do
   d <- bindDirection d0
   pure ((d0, [ST1 d fv BX tm]), fv)
 
+argumentize :: (Var v) => DNormal v -> ANFM v (Ctx v, AArg v)
+argumentize (_, TLit l) = pure (pure [], AALit l)
+argumentize (_, TBLit l) = pure (pure [], AALit l)
+argumentize dv = fmap AAVar <$> contextualize dv
+
 binder :: ANFM v Word16
 binder = state $ \(fr, bnd, cs) -> (bnd, (fr, bnd + 1, cs))
 
@@ -1791,7 +1850,7 @@ renameCtes v u = rn []
       | w == v = (reverse acc ++ e : es, True)
       | otherwise = rn (e : acc) es
       where
-        e = LZ w (swap <$> f) (swap <$> as)
+        e = LZ w (swap <$> f) (fmap swap <$> as)
 
 -- Simultaneously renames variables in a list of context entries.
 --
@@ -1805,7 +1864,7 @@ renamesCtes rn = map f
       | otherwise = w
 
     f (ST d vs ccs b) = ST d vs ccs (ABTN.renames rn b)
-    f (LZ v r as) = LZ v (second swap r) (map swap as)
+    f (LZ v r as) = LZ v (second swap r) (map (fmap swap) as)
 
 -- Calculates the free variables occurring in a context. This
 -- consists of the free variables in the expressions being bound,
@@ -1819,8 +1878,14 @@ freeVarsCte = foldr m Set.empty
     m (ST _ vs _ bn) rest =
       ABTN.freeVars bn `Set.union` (rest Set.\\ Set.fromList vs)
     m (LZ v r as) rest =
-      Set.fromList (either (const id) (:) r as)
+      either (const id) Set.insert r (varsAArgs as)
         `Set.union` Set.delete v rest
+
+varsAArgs :: (Ord v) => [AArg v] -> Set v
+varsAArgs = foldMap f
+  where
+    f (AAVar v) = Set.singleton v
+    f (AALit _) = Set.empty
 
 -- Conditionally freshens a list of variables. The predicate
 -- argument selects which variables to freshen, and the set is a set
@@ -1892,7 +1957,7 @@ anfBlock (If' c t f) = do
           (Just ct)
   pure (cctx <> cx, (Indirect () <> df <> dt, TMatch v cases))
 anfBlock (And' l r) = do
-  (lctx, vl) <- anfArg l
+  (lctx, vl) <- anfVar l
   (d, tmr) <- anfTerm r
   let tree =
         TMatch vl . MatchDataCover Ty.booleanRef $
@@ -1902,7 +1967,7 @@ anfBlock (And' l r) = do
             ]
   pure (lctx, (Indirect () <> d, tree))
 anfBlock (Or' l r) = do
-  (lctx, vl) <- anfArg l
+  (lctx, vl) <- anfVar l
   (d, tmr) <- anfTerm r
   let tree =
         TMatch vl . MatchDataCover Ty.booleanRef $
@@ -1912,22 +1977,22 @@ anfBlock (Or' l r) = do
             ]
   pure (lctx, (Indirect () <> d, tree))
 anfBlock (Handle' h body) =
-  anfArg h >>= \(hctx, vh) ->
+  anfVar h >>= \(hctx, vh) ->
     anfHandled body >>= \case
       (ctx, (_, TCom f as)) | floatableCtx ctx -> do
         v <- fresh
         pure
           ( hctx <> ctx <> pure [LZ v (Left f) as],
-            (Indirect (), TApp (FVar vh) [v])
+            (Indirect (), TApp (FVar vh) [AAVar v])
           )
       (ctx, (_, TApv f as)) | floatableCtx ctx -> do
         v <- fresh
         pure
           ( hctx <> ctx <> pure [LZ v (Right f) as],
-            (Indirect (), TApp (FVar vh) [v])
+            (Indirect (), TApp (FVar vh) [AAVar v])
           )
       (ctx, (_, TVar v)) | floatableCtx ctx -> do
-        pure (hctx <> ctx, (Indirect (), TApp (FVar vh) [v]))
+        pure (hctx <> ctx, (Indirect (), TApp (FVar vh) [AAVar v]))
       p@(_, _) ->
         internalBug $ "handle body should be a simple call: " ++ show p
 anfBlock (Match' scrut cas) = do
@@ -1966,7 +2031,7 @@ anfBlock (Match' scrut cas) = do
                 internalBug "anfBlock: impossible"
             | otherwise = (Indirect (), TFrc v)
       pure
-        ( sctx <> pure [LZ hv (Right r) vs],
+        ( sctx <> pure [LZ hv (Right r) (AAVar <$> vs)],
           (d, THnd (Map.keys abr) hv msc)
         )
     AccumText df cs ->
@@ -1986,7 +2051,7 @@ anfBlock (Match' scrut cas) = do
       pure
         ( sctx
             <> cx
-            <> (Indirect (), [ST1 (Indirect b) r BX (TCom op [v])]),
+            <> (Indirect (), [ST1 (Indirect b) r BX (TCom op [AAVar v])]),
           pure . TMatch r $
             MatchDataCover
               Ty.seqViewRef
@@ -2003,7 +2068,7 @@ anfBlock (Match' scrut cas) = do
       r <- fresh
       s <- fresh
       b <- binder
-      let split = ST1 (Indirect b) r BX (TCom op [i, v])
+      let split = ST1 (Indirect b) r BX (TCom op $ AAVar <$> [i, v])
       pure
         ( sctx <> cx <> directed [lit i, split],
           pure . TMatch r . MatchDataCover Ty.seqViewRef $
@@ -2020,7 +2085,7 @@ anfBlock (Match' scrut cas) = do
         df n =
           fromMaybe
             ( TLet Direct n BX (TLit (T "pattern match failure")) $
-                TPrm EROR [n, v]
+                TPrm EROR (AAVar <$> [n, v])
             )
             mdf
     AccumEmpty -> pure (sctx <> cx, pure $ TMatch v MatchEmpty)
@@ -2051,7 +2116,7 @@ anfBlock (Apps' (Blank' b) args) = do
   (actx, cas) <- anfArgs args
   pure
     ( actx <> pure [ST1 Direct nm BX (TLit (T msg))],
-      pure $ TPrm EROR (nm : cas)
+      pure $ TPrm EROR (AAVar nm : cas)
     )
   where
     msg = Util.Text.pack . fromMaybe "blank expression" $ nameb b
@@ -2078,7 +2143,7 @@ anfBlock (Blank' b) = do
         [ ST1 Direct nm BX (TLit (T name)),
           ST1 Direct ev BX (TLit (T $ Util.Text.pack msg))
         ],
-      pure $ TPrm EROR [nm, ev]
+      pure . TPrm EROR $ AAVar <$> [nm, ev]
     )
   where
     name = "blank expression"
@@ -2152,7 +2217,7 @@ anfInitCase u (MatchCase p guard (ABT.AbsN' vs bd))
                 . (BX <$ us,)
                 . ABTN.TAbss us
                 . TShift r kf
-                $ TName uk (Left jn) [kf] bd
+                $ TName uk (Left jn) [AAVar kf] bd
   | P.SequenceLiteral _ [] <- p =
       AccumSeqEmpty <$> anfBody bd
   | P.SequenceOp _ l op r <- p,
@@ -2353,13 +2418,27 @@ anfFunc tm = do
   (cx, v) <- contextualize ctm
   pure (fctx <> cx, (Indirect (), FVar v))
 
-anfArg :: (Var v) => Term v a -> ANFM v (Ctx v, v)
-anfArg tm = do
+-- Normalizes the expression to a bound variable, yielding the
+-- binding and the variable. Some places in the ANF only accept
+-- variables, not literals-or-variables as do arguments.
+anfVar :: (Var v) => Term v a -> ANFM v (Ctx v, v)
+anfVar tm = do
   (ctx, ctm) <- anfBlock tm
   (cx, v) <- contextualize ctm
   pure (ctx <> cx, v)
 
-anfArgs :: (Var v) => [Term v a] -> ANFM v (Ctx v, [v])
+-- Normalizes an expression to a form suitable for acting as an
+-- argument to a function. If the final expression is a literal,
+-- then that is what is yielded as the 'argument.' Otherwise,
+-- non-variable expressions are bound in the context, and the
+-- variable is yielded.
+anfArg :: (Var v) => Term v a -> ANFM v (Ctx v, AArg v)
+anfArg tm = do
+  (ctx, ctm) <- anfBlock tm
+  (cx, v) <- argumentize ctm
+  pure (ctx <> cx, v)
+
+anfArgs :: (Var v) => [Term v a] -> ANFM v (Ctx v, [AArg v])
 anfArgs tms = first fold . unzip <$> traverse anfArg tms
 
 indent :: Int -> ShowS
@@ -2385,6 +2464,21 @@ pvar v = showString . Data.Text.unpack $ Var.name v
 prettyVars :: (Var v) => [v] -> ShowS
 prettyVars =
   foldr (\v r -> showString " " . pvar v . r) id
+
+prettyArgs :: (Var v) => [AArg v] -> ShowS
+prettyArgs = foldr f id
+  where
+    f (AAVar v) r = showString " " . pvar v . r
+    f (AALit l) r = showString " " . prettyLit l . r
+
+prettyLit :: Lit -> ShowS
+prettyLit (I i) = shows i
+prettyLit (N w) = shows w
+prettyLit (F d) = shows d
+prettyLit (T t) = shows t
+prettyLit (C c) = showString ['?', c]
+prettyLit (LM r) = prettyRefn r
+prettyLit (LY r) = prettyRef r
 
 prettyLVars :: (Var v) => [Mem] -> [v] -> ShowS
 prettyLVars [] [] = showString " "
@@ -2425,12 +2519,12 @@ prettyANF m ind tm =
       prettyRBind [v]
         . showString " := "
         . prettyLZF f
-        . prettyVars vs
+        . prettyArgs vs
         . prettyANF True ind bo
     TLit l -> shows l
     TFrc v -> showString "!" . pvar v
     TVar v -> pvar v
-    TApp f vs -> prettyFunc f . prettyVars vs
+    TApp f vs -> prettyFunc f . prettyArgs vs
     TMatch v bs ->
       showString "match "
         . pvar v
@@ -2458,6 +2552,12 @@ prettySpace True ind = showString "\n" . indent ind
 prettyLZF :: (Var v) => Either Reference v -> ShowS
 prettyLZF (Left w) = showString "ENV(" . shows w . showString ") "
 prettyLZF (Right v) = pvar v . showString " "
+
+prettyRef :: Reference -> ShowS
+prettyRef = showString . Data.Text.unpack . Reference.toText
+
+prettyRefn :: Referent -> ShowS
+prettyRefn = showString . Data.Text.unpack . Referent.toText
 
 prettyRefs :: [Reference] -> ShowS
 prettyRefs [] = showString "{}"
