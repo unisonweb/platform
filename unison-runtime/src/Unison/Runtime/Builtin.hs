@@ -129,15 +129,16 @@ none :: (Var v) => ANormal v
 none = TCon Ty.optionalRef (fromIntegral Ty.noneId) []
 
 some, left, right :: (Var v) => v -> ANormal v
-some a = TCon Ty.optionalRef (fromIntegral Ty.someId) [a]
-left x = TCon Ty.eitherRef (fromIntegral Ty.eitherLeftId) [x]
-right x = TCon Ty.eitherRef (fromIntegral Ty.eitherRightId) [x]
+some a = TCon Ty.optionalRef (fromIntegral Ty.someId) [AAVar a]
+left x = TCon Ty.eitherRef (fromIntegral Ty.eitherLeftId) [AAVar x]
+right x = TCon Ty.eitherRef (fromIntegral Ty.eitherRightId) [AAVar x]
 
 seqViewEmpty :: (Var v) => ANormal v
 seqViewEmpty = TCon Ty.seqViewRef (fromIntegral Ty.seqViewEmpty) []
 
 seqViewElem :: (Var v) => v -> v -> ANormal v
-seqViewElem l r = TCon Ty.seqViewRef (fromIntegral Ty.seqViewElem) [l, r]
+seqViewElem l r =
+  TCon Ty.seqViewRef (fromIntegral Ty.seqViewElem) [AAVar l, AAVar r]
 
 unop0 :: (Var v) => Int -> ([v] -> ANormal v) -> SuperNormal v
 unop0 n f =
@@ -158,19 +159,19 @@ binop0 n f =
 unop :: (Var v) => POp -> SuperNormal v
 unop pop =
   unop0 0 $ \[x] ->
-    (TPrm pop [x])
+    (TPrm pop [AAVar x])
 
 binop ::
   (Var v) =>
   POp ->
   SuperNormal v
 binop pop =
-  binop0 0 $ \[x, y] -> TPrm pop [x, y]
+  binop0 0 $ \[x, y] -> TPrm pop [AAVar x, AAVar y]
 
 -- | Like `binop`, but swaps the arguments.
 binopSwap :: (Var v) => POp -> SuperNormal v
 binopSwap pop =
-  binop0 0 $ \[x, y] -> TPrm pop [y, x]
+  binop0 0 $ \[x, y] -> TPrm pop [AAVar y, AAVar x]
 
 addi, subi, muli, divi, modi, shli, shri, powi :: (Var v) => SuperNormal v
 addi = binop ADDI
@@ -306,7 +307,7 @@ modular :: (Var v) => POp -> (Bool -> ANormal v) -> SuperNormal v
 modular pop ret =
   unop0 2 $ \[x, m, t] ->
     TLetD t UN (TLit $ I 2)
-      . TLetD m UN (TPrm pop [x, t])
+      . TLetD m UN (TPrm pop [AAVar x, AAVar t])
       . TMatch m
       $ MatchIntegral
         (mapSingleton 1 $ ret True)
@@ -319,14 +320,14 @@ evnn = modular MODN (\b -> if b then fls else tru)
 oddn = modular MODN (\b -> if b then tru else fls)
 
 appendt, taket, dropt, indext, indexb, sizet, unconst, unsnoct :: (Var v) => SuperNormal v
-appendt = binop0 0 $ \[x, y] -> TPrm CATT [x, y]
+appendt = binop0 0 $ \[x, y] -> TPrm CATT [AAVar x, AAVar y]
 taket = binop0 0 $ \[x, y] ->
-  TPrm TAKT [x, y]
+  TPrm TAKT [AAVar x, AAVar y]
 dropt = binop0 0 $ \[x, y] ->
-  TPrm DRPT [x, y]
+  TPrm DRPT [AAVar x, AAVar y]
 
 atb = binop0 2 $ \[n, b, t, r] ->
-  TLetD t UN (TPrm IDXB [n, b])
+  TLetD t UN (TPrm IDXB [AAVar n, AAVar b])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -339,7 +340,7 @@ atb = binop0 2 $ \[n, b, t, r] ->
       ]
 
 indext = binop0 2 $ \[x, y, t, r] ->
-  TLetD t UN (TPrm IXOT [x, y])
+  TLetD t UN (TPrm IXOT [AAVar x, AAVar y])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -352,7 +353,7 @@ indext = binop0 2 $ \[x, y, t, r] ->
       ]
 
 indexb = binop0 2 $ \[x, y, t, r] ->
-  TLetD t UN (TPrm IXOB [x, y])
+  TLetD t UN (TPrm IXOB [AAVar x, AAVar y])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -364,10 +365,10 @@ indexb = binop0 2 $ \[x, y, t, r] ->
         )
       ]
 
-sizet = unop0 0 $ \[x] -> TPrm SIZT [x]
+sizet = unop0 0 $ \[x] -> TPrm SIZT [AAVar x]
 
 unconst = unop0 6 $ \[x, t, c, y, p, u, yp] ->
-  TLetD t UN (TPrm UCNS [x])
+  TLetD t UN (TPrm UCNS [AAVar x])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -376,15 +377,15 @@ unconst = unop0 6 $ \[x, t, c, y, p, u, yp] ->
           ( [UN, BX],
             TAbss [c, y]
               . TLetD u BX (TCon Ty.unitRef 0 [])
-              . TLetD yp BX (TCon Ty.pairRef 0 [y, u])
-              . TLetD p BX (TCon Ty.pairRef 0 [c, yp])
+              . TLetD yp BX (TCon Ty.pairRef 0 [AAVar y, AAVar u])
+              . TLetD p BX (TCon Ty.pairRef 0 [AAVar c, AAVar yp])
               $ some p
           )
         )
       ]
 
 unsnoct = unop0 6 $ \[x, t, c, y, p, u, cp] ->
-  TLetD t UN (TPrm USNC [x])
+  TLetD t UN (TPrm USNC [AAVar x])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -393,24 +394,24 @@ unsnoct = unop0 6 $ \[x, t, c, y, p, u, cp] ->
           ( [BX, UN],
             TAbss [y, c]
               . TLetD u BX (TCon Ty.unitRef 0 [])
-              . TLetD cp BX (TCon Ty.pairRef 0 [c, u])
-              . TLetD p BX (TCon Ty.pairRef 0 [y, cp])
+              . TLetD cp BX (TCon Ty.pairRef 0 [AAVar c, AAVar u])
+              . TLetD p BX (TCon Ty.pairRef 0 [AAVar y, AAVar cp])
               $ some p
           )
         )
       ]
 
 appends, conss, snocs :: (Var v) => SuperNormal v
-appends = binop0 0 $ \[x, y] -> TPrm CATS [x, y]
-conss = binop0 0 $ \[x, y] -> TPrm CONS [x, y]
-snocs = binop0 0 $ \[x, y] -> TPrm SNOC [x, y]
+appends = binop0 0 $ \[x, y] -> TPrm CATS [AAVar x, AAVar y]
+conss = binop0 0 $ \[x, y] -> TPrm CONS [AAVar x, AAVar y]
+snocs = binop0 0 $ \[x, y] -> TPrm SNOC [AAVar x, AAVar y]
 
 takes, drops, sizes, ats, emptys :: (Var v) => SuperNormal v
-takes = binop0 0 $ \[x, y] -> TPrm TAKS [x, y]
-drops = binop0 0 $ \[x, y] -> TPrm DRPS [x, y]
-sizes = unop0 0 $ \[x] -> (TPrm SIZS [x])
+takes = binop0 0 $ \[x, y] -> TPrm TAKS [AAVar x, AAVar y]
+drops = binop0 0 $ \[x, y] -> TPrm DRPS [AAVar x, AAVar y]
+sizes = unop0 0 $ \[x] -> (TPrm SIZS [AAVar x])
 ats = binop0 2 $ \[x, y, t, r] ->
-  TLetD t UN (TPrm IDXS [x, y])
+  TLetD t UN (TPrm IDXS [AAVar x, AAVar y])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -421,7 +422,7 @@ emptys = Lambda [] $ TPrm BLDS []
 
 viewls, viewrs :: (Var v) => SuperNormal v
 viewls = unop0 3 $ \[s, u, h, t] ->
-  TLetD u UN (TPrm VWLS [s])
+  TLetD u UN (TPrm VWLS [AAVar s])
     . TMatch u
     . MatchSum
     $ mapFromList
@@ -429,7 +430,7 @@ viewls = unop0 3 $ \[s, u, h, t] ->
         (1, ([BX, BX], TAbss [h, t] $ seqViewElem h t))
       ]
 viewrs = unop0 3 $ \[s, u, i, l] ->
-  TLetD u UN (TPrm VWRS [s])
+  TLetD u UN (TPrm VWRS [AAVar s])
     . TMatch u
     . MatchSum
     $ mapFromList
@@ -439,7 +440,7 @@ viewrs = unop0 3 $ \[s, u, i, l] ->
 
 splitls, splitrs :: (Var v) => SuperNormal v
 splitls = binop0 3 $ \[n, s, t, l, r] ->
-  TLetD t UN (TPrm SPLL [n, s])
+  TLetD t UN (TPrm SPLL [AAVar n, AAVar s])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -447,7 +448,7 @@ splitls = binop0 3 $ \[n, s, t, l, r] ->
         (1, ([BX, BX], TAbss [l, r] $ seqViewElem l r))
       ]
 splitrs = binop0 3 $ \[n, s, t, l, r] ->
-  TLetD t UN (TPrm SPLR [n, s])
+  TLetD t UN (TPrm SPLR [AAVar n, AAVar s])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -458,46 +459,46 @@ splitrs = binop0 3 $ \[n, s, t, l, r] ->
 eqt, neqt, leqt, geqt, lesst, great :: SuperNormal Symbol
 eqt = binop EQLT
 neqt = binop0 1 $ \[x, y, b] ->
-  TLetD b UN (TPrm EQLT [x, y]) $
-    TPrm NOTB [b]
+  TLetD b UN (TPrm EQLT [AAVar x, AAVar y]) $
+    TPrm NOTB [AAVar b]
 leqt = binop LEQT
 geqt = binopSwap LEQT
 lesst = binop0 1 $ \[x, y, b] ->
-  TLetD b UN (TPrm LEQT [y, x]) $
-    TPrm NOTB [b]
+  TLetD b UN (TPrm LEQT [AAVar y, AAVar x]) $
+    TPrm NOTB [AAVar b]
 great = binop0 1 $ \[x, y, b] ->
-  TLetD b UN (TPrm LEQT [x, y]) $
-    TPrm NOTB [b]
+  TLetD b UN (TPrm LEQT [AAVar x, AAVar y]) $
+    TPrm NOTB [AAVar b]
 
 packt, unpackt :: SuperNormal Symbol
-packt = unop0 0 $ \[s] -> TPrm PAKT [s]
-unpackt = unop0 0 $ \[t] -> TPrm UPKT [t]
+packt = unop0 0 $ \[s] -> TPrm PAKT [AAVar s]
+unpackt = unop0 0 $ \[t] -> TPrm UPKT [AAVar t]
 
 packb, unpackb, emptyb, appendb :: SuperNormal Symbol
-packb = unop0 0 $ \[s] -> TPrm PAKB [s]
-unpackb = unop0 0 $ \[b] -> TPrm UPKB [b]
+packb = unop0 0 $ \[s] -> TPrm PAKB [AAVar s]
+unpackb = unop0 0 $ \[b] -> TPrm UPKB [AAVar b]
 emptyb =
   Lambda []
     . TLetD es BX (TPrm BLDS [])
-    $ TPrm PAKB [es]
+    $ TPrm PAKB [AAVar es]
   where
     es = fresh1
-appendb = binop0 0 $ \[x, y] -> TPrm CATB [x, y]
+appendb = binop0 0 $ \[x, y] -> TPrm CATB [AAVar x, AAVar y]
 
 takeb, dropb, atb, sizeb, flattenb :: SuperNormal Symbol
-takeb = binop0 0 $ \[n, b] -> TPrm TAKB [n, b]
-dropb = binop0 0 $ \[n, b] -> TPrm DRPB [n, b]
-sizeb = unop0 0 $ \[b] -> (TPrm SIZB [b])
-flattenb = unop0 0 $ \[b] -> TPrm FLTB [b]
+takeb = binop0 0 $ \[n, b] -> TPrm TAKB [AAVar n, AAVar b]
+dropb = binop0 0 $ \[n, b] -> TPrm DRPB [AAVar n, AAVar b]
+sizeb = unop0 0 $ \[b] -> (TPrm SIZB [AAVar b])
+flattenb = unop0 0 $ \[b] -> TPrm FLTB [AAVar b]
 
 i2t, n2t, f2t :: SuperNormal Symbol
-i2t = unop0 0 $ \[n] -> TPrm ITOT [n]
-n2t = unop0 0 $ \[n] -> TPrm NTOT [n]
-f2t = unop0 0 $ \[f] -> TPrm FTOT [f]
+i2t = unop0 0 $ \[n] -> TPrm ITOT [AAVar n]
+n2t = unop0 0 $ \[n] -> TPrm NTOT [AAVar n]
+f2t = unop0 0 $ \[f] -> TPrm FTOT [AAVar f]
 
 t2i, t2n, t2f :: SuperNormal Symbol
 t2i = unop0 2 $ \[x, t, n] ->
-  TLetD t UN (TPrm TTOI [x])
+  TLetD t UN (TPrm TTOI [AAVar x])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -509,7 +510,7 @@ t2i = unop0 2 $ \[x, t, n] ->
         )
       ]
 t2n = unop0 2 $ \[x, t, n] ->
-  TLetD t UN (TPrm TTON [x])
+  TLetD t UN (TPrm TTON [AAVar x])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -521,7 +522,7 @@ t2n = unop0 2 $ \[x, t, n] ->
         )
       ]
 t2f = unop0 2 $ \[x, t, f] ->
-  TLetD t UN (TPrm TTOF [x])
+  TLetD t UN (TPrm TTOF [AAVar x])
     . TMatch t
     . MatchSum
     $ mapFromList
@@ -566,7 +567,7 @@ coerceType :: UnboxedTypeTag -> SuperNormal Symbol
 coerceType destType =
   unop0 1 $ \[v, tag] ->
     TLetD tag UN (TLit $ I $ fromIntegral $ unboxedTypeTagToInt destType) $
-      TPrm CAST [v, tag]
+      TPrm CAST [AAVar v, AAVar tag]
 
 -- This version of unsafeCoerce is the identity function. It works
 -- only if the two types being coerced between are actually the same,
@@ -577,21 +578,21 @@ poly'coerce :: SuperNormal Symbol
 poly'coerce = unop0 0 $ \[x] -> TVar x
 
 jumpk :: SuperNormal Symbol
-jumpk = binop0 0 $ \[k, a] -> TKon k [a]
+jumpk = binop0 0 $ \[k, a] -> TKon k [AAVar a]
 
 scope'run :: SuperNormal Symbol
 scope'run =
   unop0 1 $ \[e, un] ->
     TLetD un BX (TCon Ty.unitRef 0 []) $
-      TApp (FVar e) [un]
+      TApp (FVar e) [AAVar un]
 
 fork'comp :: SuperNormal Symbol
 fork'comp =
   Lambda [BX]
     . TAbs act
     . TLetD unit BX (TCon Ty.unitRef 0 [])
-    . TName lz (Right act) [unit]
-    $ TPrm FORK [lz]
+    . TName lz (Right act) [AAVar unit]
+    $ TPrm FORK [AAVar lz]
   where
     (act, unit, lz) = fresh
 
@@ -600,8 +601,8 @@ try'eval =
   Lambda [BX]
     . TAbs act
     . TLetD unit BX (TCon Ty.unitRef 0 [])
-    . TName lz (Right act) [unit]
-    . TLetD ta UN (TPrm TFRC [lz])
+    . TName lz (Right act) [AAVar unit]
+    . TLetD ta UN (TPrm TFRC [AAVar lz])
     . TMatch ta
     . MatchSum
     $ mapFromList
@@ -615,12 +616,12 @@ bug :: Util.Text.Text -> SuperNormal Symbol
 bug name =
   unop0 1 $ \[x, n] ->
     TLetD n BX (TLit $ T name) $
-      TPrm EROR [n, x]
+      TPrm EROR (AAVar <$> [n, x])
 
 watch :: SuperNormal Symbol
 watch =
   binop0 0 $ \[t, v] ->
-    TLets Direct [] [] (TPrm PRNT [t]) $
+    TLets Direct [] [] (TPrm PRNT [AAVar t]) $
       TVar v
 
 raise :: SuperNormal Symbol
@@ -635,19 +636,19 @@ raise =
           TAbs f
             . TShift Ty.exceptionRef k
             . TLetD n BX (TLit $ T "builtin.raise")
-            $ TPrm EROR [n, f]
+            $ TPrm EROR (AAVar <$> [n, f])
         )
 
 gen'trace :: SuperNormal Symbol
 gen'trace =
   binop0 0 $ \[t, v] ->
-    TLets Direct [] [] (TPrm TRCE [t, v]) $
+    TLets Direct [] [] (TPrm TRCE $ AAVar <$> [t, v]) $
       TCon Ty.unitRef 0 []
 
 debug'text :: SuperNormal Symbol
 debug'text =
   unop0 3 $ \[c, r, t, e] ->
-    TLetD r UN (TPrm DBTX [c])
+    TLetD r UN (TPrm DBTX [AAVar c])
       . TMatch r
       . MatchSum
       $ mapFromList
@@ -660,12 +661,12 @@ code'missing :: SuperNormal Symbol
 code'missing = unop MISS
 
 code'cache :: SuperNormal Symbol
-code'cache = unop0 0 $ \[new] -> TPrm CACH [new]
+code'cache = unop0 0 $ \[new] -> TPrm CACH [AAVar new]
 
 code'lookup :: SuperNormal Symbol
 code'lookup =
   unop0 2 $ \[link, t, r] ->
-    TLetD t UN (TPrm LKUP [link])
+    TLetD t UN (TPrm LKUP [AAVar link])
       . TMatch t
       . MatchSum
       $ mapFromList
@@ -676,15 +677,15 @@ code'lookup =
 code'validate :: SuperNormal Symbol
 code'validate =
   unop0 6 $ \[item, t, ref, msg, extra, any, fail] ->
-    TLetD t UN (TPrm CVLD [item])
+    TLetD t UN (TPrm CVLD [AAVar item])
       . TMatch t
       . MatchSum
       $ mapFromList
         [ ( 1,
             ([BX, BX, BX],)
               . TAbss [ref, msg, extra]
-              . TLetD any BX (TCon Ty.anyRef 0 [extra])
-              . TLetD fail BX (TCon Ty.failureRef 0 [ref, msg, any])
+              . TLetD any BX (TCon Ty.anyRef 0 [AAVar extra])
+              . TLetD fail BX (TCon Ty.failureRef 0 $ AAVar <$> [ref, msg, any])
               $ some fail
           ),
           ( 0,
@@ -695,12 +696,12 @@ code'validate =
 
 term'link'to'text :: SuperNormal Symbol
 term'link'to'text =
-  unop0 0 $ \[link] -> TPrm TLTT [link]
+  unop0 0 $ \[link] -> TPrm TLTT [AAVar link]
 
 value'load :: SuperNormal Symbol
 value'load =
   unop0 2 $ \[vlu, t, r] ->
-    TLetD t UN (TPrm LOAD [vlu])
+    TLetD t UN (TPrm LOAD [AAVar vlu])
       . TMatch t
       . MatchSum
       $ mapFromList
@@ -709,13 +710,13 @@ value'load =
         ]
 
 value'create :: SuperNormal Symbol
-value'create = unop0 0 $ \[x] -> TPrm VALU [x]
+value'create = unop0 0 $ \[x] -> TPrm VALU [AAVar x]
 
 check'sandbox :: SuperNormal Symbol
 check'sandbox = binop SDBX
 
 sandbox'links :: SuperNormal Symbol
-sandbox'links = Lambda [BX] . TAbs ln $ TPrm SDBL [ln]
+sandbox'links = Lambda [BX] . TAbs ln $ TPrm SDBL [AAVar ln]
   where
     ln = fresh1
 
@@ -723,7 +724,7 @@ value'sandbox :: SuperNormal Symbol
 value'sandbox =
   Lambda [BX, BX]
     . TAbss [refs, val]
-    $ TPrm SDBV [refs, val]
+    $ TPrm SDBV [AAVar refs, AAVar val]
   where
     (refs, val) = fresh
 
@@ -732,8 +733,8 @@ stm'atomic =
   Lambda [BX]
     . TAbs act
     . TLetD unit BX (TCon Ty.unitRef 0 [])
-    . TName lz (Right act) [unit]
-    $ TPrm ATOM [lz]
+    . TName lz (Right act) [AAVar unit]
+    $ TPrm ATOM [AAVar lz]
   where
     (act, unit, lz) = fresh
 
@@ -742,7 +743,7 @@ type ForeignOp = ForeignFunc -> ([Mem], ANormal Symbol)
 any'construct :: SuperNormal Symbol
 any'construct =
   unop0 0 $ \[v] ->
-    TCon Ty.anyRef 0 [v]
+    TCon Ty.anyRef 0 [AAVar v]
 
 any'extract :: SuperNormal Symbol
 any'extract =
@@ -762,11 +763,11 @@ any'extract =
 -- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
 ref'read :: SuperNormal Symbol
 ref'read =
-  unop0 0 $ \[ref] -> (TPrm REFR [ref])
+  unop0 0 $ \[ref] -> TPrm REFR [AAVar ref]
 
 ref'write :: SuperNormal Symbol
 ref'write =
-  binop0 0 $ \[ref, val] -> (TPrm REFW [ref, val])
+  binop0 0 $ \[ref, val] -> TPrm REFW $ AAVar <$> [ref, val]
 
 -- In GHC, CAS returns both a Boolean and the current value of the
 -- IORef, which can be used to retry a failed CAS.
@@ -785,25 +786,25 @@ ref'cas :: SuperNormal Symbol
 ref'cas =
   Lambda [BX, BX, BX]
     . TAbss [x, y, z]
-    $ TPrm RCAS [x, y, z]
+    $ TPrm RCAS (AAVar <$> [x, y, z])
   where
     (x, y, z) = fresh
 
 ref'ticket'read :: SuperNormal Symbol
-ref'ticket'read = unop0 0 $ TPrm TIKR
+ref'ticket'read = unop0 0 $ TPrm TIKR . fmap AAVar
 
 ref'readForCas :: SuperNormal Symbol
-ref'readForCas = unop0 0 $ TPrm RRFC
+ref'readForCas = unop0 0 $ TPrm RRFC . fmap AAVar
 
 ref'new :: SuperNormal Symbol
-ref'new = unop0 0 $ TPrm REFN
+ref'new = unop0 0 $ TPrm REFN . fmap AAVar
 
 crypto'hash :: ForeignOp
 crypto'hash instr =
   ([BX, BX],)
     . TAbss [alg, x]
-    . TLetD vl BX (TPrm VALU [x])
-    $ TFOp instr [alg, vl]
+    . TLetD vl BX (TPrm VALU [AAVar x])
+    $ TFOp instr (AAVar <$> [alg, vl])
   where
     (alg, x, vl) = fresh
 
@@ -811,8 +812,8 @@ murmur'hash :: ForeignOp
 murmur'hash instr =
   ([BX],)
     . TAbss [x]
-    . TLetD vl BX (TPrm VALU [x])
-    $ TFOp instr [vl]
+    . TLetD vl BX (TPrm VALU [AAVar x])
+    $ TFOp instr [AAVar vl]
   where
     (x, vl) = fresh
 
@@ -820,8 +821,8 @@ crypto'hmac :: ForeignOp
 crypto'hmac instr =
   ([BX, BX, BX],)
     . TAbss [alg, by, x]
-    . TLetD vl BX (TPrm VALU [x])
-    $ TFOp instr [alg, by, vl]
+    . TLetD vl BX (TPrm VALU [AAVar x])
+    $ TFOp instr (AAVar <$> [alg, by, vl])
   where
     (alg, by, x, vl) = fresh
 
@@ -831,9 +832,9 @@ exnCase stack1 stack2 stack3 any fail =
   (0,)
     . ([BX, BX, BX],)
     . TAbss [stack1, stack2, stack3]
-    . TLetD any BX (TCon Ty.anyRef 0 [stack3])
-    . TLetD fail BX (TCon Ty.failureRef 0 [stack1, stack2, any])
-    $ TReq Ty.exceptionRef 0 [fail]
+    . TLetD any BX (TCon Ty.anyRef 0 [AAVar stack3])
+    . TLetD fail BX (TCon Ty.failureRef 0 $ AAVar <$> [stack1, stack2, any])
+    $ TReq Ty.exceptionRef 0 [AAVar fail]
 
 -- Input / Output glue
 --
@@ -851,7 +852,7 @@ argNDirect :: Int -> ForeignOp
 argNDirect n instr =
   (replicate n BX,)
     . TAbss args
-    $ TFOp instr args
+    $ TFOp instr (AAVar <$> args)
   where
     args = freshes n
 
@@ -1495,7 +1496,7 @@ builtinArities =
   Map.fromList $
     [(r, arity s) | (r, (_, s)) <- Map.toList builtinLookup]
 
-builtinInlineInfo :: Map Reference (Int, ANormal Symbol)
+builtinInlineInfo :: Map Reference (InlineInfo Symbol)
 builtinInlineInfo =
   ANF.buildInlineMap $ fmap (Rec [] . snd) builtinLookup
 
