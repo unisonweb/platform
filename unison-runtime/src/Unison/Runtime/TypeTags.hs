@@ -37,6 +37,8 @@ module Unison.Runtime.TypeTags
     stdOutTag,
     stdErrTag,
     pureEffectTag,
+    seqViewEmptyTag,
+    seqViewElemTag,
   )
 where
 
@@ -229,6 +231,15 @@ pairTag
     pt <- toEnum (fromIntegral n) =
       packTags pt 0
   | otherwise = internalBug "internal error: pairTag"
+
+
+seqViewEmptyTag, seqViewElemTag :: PackedTag
+(seqViewEmptyTag, seqViewElemTag)
+  | [emt, elt] <-
+      mkTags "seq view tags" Ty.seqViewRef
+        [ Ty.seqViewEmpty,
+          Ty.seqViewElem ] = (emt, elt)
+  | otherwise = error "internal error: seq view tags"
 
 -- | A tag we use to represent the 'pure' effect case.
 pureEffectTag :: PackedTag
