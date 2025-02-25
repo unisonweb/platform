@@ -23,6 +23,7 @@ module Unison.Runtime.Stack
         UnboxedTypeTag
       ),
     closureTag,
+    unitClosure,
     UnboxedTypeTag (..),
     unboxedTypeTagToInt,
     unboxedTypeTagFromInt,
@@ -60,6 +61,7 @@ module Unison.Runtime.Stack
         DoubleVal,
         IntVal,
         BoolVal,
+        TextVal,
         UnboxedVal,
         BoxedVal
       ),
@@ -67,6 +69,7 @@ module Unison.Runtime.Stack
     falseVal,
     trueVal,
     boxedVal,
+    mlitToVal,
     USeq,
     traceK,
     frameDataSize,
@@ -99,12 +102,14 @@ module Unison.Runtime.Stack
     pokeOffI,
     pokeByte,
     peekBi,
+    peekArgBi,
     peekOffBi,
     pokeBi,
     pokeOffBi,
     peekBool,
     peekOffBool,
     peekOffS,
+    peekArgT,
     pokeS,
     pokeOffS,
     frameView,
@@ -116,6 +121,7 @@ module Unison.Runtime.Stack
     peek,
     upeek,
     bpeek,
+    peekArg,
     peekOff,
     upeekOff,
     bpeekOff,
@@ -159,13 +165,13 @@ import Control.Monad.Primitive
 import Data.Char qualified as Char
 import Data.IORef (IORef)
 import Data.Primitive (sizeOf)
-import Data.Primitive.ByteArray qualified as BA
 import Data.Tagged (Tagged (..))
 import Data.Word
 import GHC.Base
 import GHC.Exts as L (IsList (..))
 import Language.Haskell.TH qualified as TH
 import Test.Inspection qualified as TI
+import Unison.Builtin.Decls qualified as Ty
 import Unison.Prelude
 import Unison.Reference (Reference)
 import Unison.Runtime.ANF (PackedTag)
@@ -173,8 +179,10 @@ import Unison.Runtime.Array
 import Unison.Runtime.Foreign
 import Unison.Runtime.MCode
 import Unison.Runtime.TypeTags qualified as TT
+import Unison.Runtime.Util
 import Unison.Type qualified as Ty
 import Unison.Util.EnumContainers as EC
+import Unison.Util.Text qualified as UText
 import Prelude hiding (words)
 
 {- ORMOLU_DISABLE -}
@@ -249,29 +257,6 @@ newtype Closure = Closure {unClosure :: (GClosure (RComb Val))}
 type USeq = Seq Val
 
 type IxClosure = GClosure CombIx
-
--- Don't re-order these, the ord instance affects Universal.compare
-data UnboxedTypeTag
-  = CharTag
-  | FloatTag
-  | IntTag
-  | NatTag
-  deriving stock (Show, Eq, Ord)
-
-unboxedTypeTagToInt :: UnboxedTypeTag -> Int
-unboxedTypeTagToInt = \case
-  CharTag -> 0
-  FloatTag -> 1
-  IntTag -> 2
-  NatTag -> 3
-
-unboxedTypeTagFromInt :: (HasCallStack) => Int -> UnboxedTypeTag
-unboxedTypeTagFromInt = \case
-  0 -> CharTag
-  1 -> FloatTag
-  2 -> IntTag
-  3 -> NatTag
-  _ -> error "intToUnboxedTypeTag: invalid tag"
 
 {- ORMOLU_DISABLE -}
 data GClosure comb
@@ -478,14 +463,6 @@ trueVal :: Val
 trueVal = BoxedVal (Enum Ty.booleanRef TT.trueTag)
 {-# NOINLINE trueVal #-}
 
-doubleToInt :: Double -> Int
-doubleToInt d = indexByteArray (BA.byteArrayFromList [d]) 0
-{-# INLINE doubleToInt #-}
-
-intToDouble :: Int -> Double
-intToDouble w = indexByteArray (BA.byteArrayFromList [w]) 0
-{-# INLINE intToDouble #-}
-
 type SegList = [Val]
 
 pattern PApV :: CombIx -> RCombInfo Val -> SegList -> Closure
@@ -568,18 +545,27 @@ argOnto (srcUstk, srcBstk) srcSp (dstUstk, dstBstk) dstSp args = do
   cp <- bargOnto srcBstk srcSp dstBstk dstSp args
   pure cp
 
+readUArg :: UA -> Off -> Arg -> IO Int
+readUArg _ _ (MLit l)
+  | MI i <- l = pure i
+  | MN w <- l = pure $ fromIntegral w
+  | MC c <- l = pure $ ord c
+  | MD d <- l = pure $ doubleToInt d
+  | otherwise = pure 0
+readUArg stk sp (Ix i) = readByteArray stk (sp - i)
+
 -- The Caller must ensure that when setting the unboxed stack, the equivalent
 -- boxed stack is zeroed out to BlackHole where necessary.
 uargOnto :: UA -> Off -> UA -> Off -> Args' -> IO Int
 uargOnto stk sp cop cp0 (Arg1 i) = do
-  (x :: Int) <- readByteArray stk (sp - i)
+  (x :: Int) <- readUArg stk sp i
   writeByteArray cop cp x
   pure cp
   where
     cp = cp0 + 1
 uargOnto stk sp cop cp0 (Arg2 i j) = do
-  (x :: Int) <- readByteArray stk (sp - i)
-  (y :: Int) <- readByteArray stk (sp - j)
+  (x :: Int) <- readUArg stk sp i
+  (y :: Int) <- readUArg stk sp j
   writeByteArray cop cp x
   writeByteArray cop (cp - 1) y
   pure cp
@@ -593,7 +579,7 @@ uargOnto stk sp cop cp0 (ArgN v) = do
   let loop i
         | i < 0 = return ()
         | otherwise = do
-            (x :: Int) <- readByteArray stk (sp - indexPrimArray v i)
+            (x :: Int) <- readUArg stk sp $ indexArray v i
             writeByteArray buf (boff - i) x
             loop $ i - 1
   loop $ sz - 1
@@ -602,7 +588,7 @@ uargOnto stk sp cop cp0 (ArgN v) = do
   pure cp
   where
     cp = cp0 + sz
-    sz = sizeofPrimArray v
+    sz = sizeofArray v
     overwrite = sameMutableByteArray stk cop
     boff | overwrite = sz - 1 | otherwise = cp0 + sz
 uargOnto stk sp cop cp0 (ArgR i l) = do
@@ -612,16 +598,27 @@ uargOnto stk sp cop cp0 (ArgR i l) = do
     cbp = bytes $ cp0 + 1
     sbp = bytes $ sp - i - l + 1
 
+readBArg :: BA -> Off -> Arg -> IO Closure
+readBArg _ _ (MLit l)
+  | MI _ <- l = pure intTypeTag
+  | MN _ <- l = pure natTypeTag
+  | MC _ <- l = pure charTypeTag
+  | MD _ <- l = pure floatTypeTag
+  | MT t <- l = pure . Foreign $ Wrap Ty.textRef t
+  | MM r <- l = pure . Foreign $ Wrap Ty.termLinkRef r
+  | MY r <- l = pure . Foreign $ Wrap Ty.typeLinkRef r
+readBArg stk sp (Ix i) = readArray stk (sp - i)
+
 bargOnto :: BA -> Off -> BA -> Off -> Args' -> IO Int
 bargOnto stk sp cop cp0 (Arg1 i) = do
-  x <- readArray stk (sp - i)
+  x <- readBArg stk sp i
   writeArray cop cp x
   pure cp
   where
     cp = cp0 + 1
 bargOnto stk sp cop cp0 (Arg2 i j) = do
-  x <- readArray stk (sp - i)
-  y <- readArray stk (sp - j)
+  x <- readBArg stk sp i
+  y <- readBArg stk sp j
   writeArray cop cp x
   writeArray cop (cp - 1) y
   pure cp
@@ -635,7 +632,7 @@ bargOnto stk sp cop cp0 (ArgN v) = do
   let loop i
         | i < 0 = return ()
         | otherwise = do
-            x <- readArray stk $ sp - indexPrimArray v i
+            x <- readBArg stk sp $ indexArray v i
             writeArray buf (boff - i) x
             loop $ i - 1
   loop $ sz - 1
@@ -645,7 +642,7 @@ bargOnto stk sp cop cp0 (ArgN v) = do
   pure cp
   where
     cp = cp0 + sz
-    sz = sizeofPrimArray v
+    sz = sizeofArray v
     overwrite = stk == cop
     boff | overwrite = sz - 1 | otherwise = cp0 + sz
 bargOnto stk sp cop cp0 (ArgR i l) = do
@@ -727,6 +724,15 @@ data Val = Val {getUnboxedVal :: !UVal, getBoxedVal :: !BVal}
   -- See universalEq.
   deriving (Show)
 
+mlitToVal :: MLit -> Val
+mlitToVal (MI i) = IntVal i
+mlitToVal (MN n) = NatVal n
+mlitToVal (MC c) = CharVal c
+mlitToVal (MD d) = DoubleVal d
+mlitToVal (MT t) = BoxedVal . Foreign $ Wrap Ty.textRef t
+mlitToVal (MM r) = BoxedVal . Foreign $ Wrap Ty.termLinkRef r
+mlitToVal (MY r) = BoxedVal . Foreign $ Wrap Ty.typeLinkRef r
+
 instance BuiltinForeign (IORef Val) where
   foreignName = Tagged "IORef"
   foreignRef = Tagged Ty.refRef
@@ -749,6 +755,15 @@ pattern BoxedVal b <- (valToBoxed -> Just b)
     BoxedVal b = Val (-1) b
 
 {-# COMPLETE UnboxedVal, BoxedVal #-}
+
+valToText :: Val -> Maybe UText.Text
+valToText (Val _ (Foreign f)) = maybeUnwrapForeign Ty.textRef f
+valToText _ = Nothing
+
+pattern TextVal :: UText.Text -> Val
+pattern TextVal t <- (valToText -> Just t)
+  where
+    TextVal t = BoxedVal (Foreign (Wrap Ty.textRef t))
 
 -- | Lift a boxed val into an Val
 boxedVal :: BVal -> Val
@@ -813,6 +828,11 @@ peekOff stk@(Stack _ _ sp ustk _) i = do
   b <- bpeekOff stk i
   pure $ Val u b
 {-# INLINE peekOff #-}
+
+peekArg :: DebugCallStack => Stack -> Arg -> IO Val
+peekArg _ (MLit l) = pure $ mlitToVal l
+peekArg stk (Ix i) = peekOff stk i
+{-# INLINE peekArg #-}
 
 bpeekOff :: DebugCallStack => Stack -> Off -> IO BVal
 bpeekOff (Stack _ _ sp _ bstk) i = readArray bstk (sp - i)
@@ -1043,7 +1063,7 @@ augSeg mode (Stack ap fp sp ustk bstk) (useg, bseg) margs = do
           Nothing -> bytes 0
           Just (Arg1 _) -> bytes 1
           Just (Arg2 _ _) -> bytes 2
-          Just (ArgN v) -> bytes $ sizeofPrimArray v
+          Just (ArgN v) -> bytes $ sizeofArray v
           Just (ArgR _ l) -> bytes l
     boxedSeg = do
       cop <- newArray (ssz + bpsz + asz) BlackHole
@@ -1060,7 +1080,7 @@ augSeg mode (Stack ap fp sp ustk bstk) (useg, bseg) margs = do
           Nothing -> 0
           Just (Arg1 _) -> 1
           Just (Arg2 _ _) -> 2
-          Just (ArgN v) -> sizeofPrimArray v
+          Just (ArgN v) -> sizeofArray v
           Just (ArgR _ l) -> l
 {-# INLINE augSeg #-}
 
@@ -1211,6 +1231,21 @@ peekOffBi :: (BuiltinForeign b) => Stack -> Int -> IO b
 peekOffBi stk i = unwrapForeign . marshalToForeign <$> bpeekOff stk i
 {-# INLINE peekOffBi #-}
 
+peekArgT :: Stack -> Arg -> IO UText.Text
+peekArgT _ (MLit (MT t)) = pure t
+peekArgT _ (MLit l) = error $ "peekArgT: non-text literal: " ++ show l
+peekArgT stk (Ix i) = peekOffBi stk i
+{-# INLINE peekArgT #-}
+
+-- Peek a builtin that does _not_ have any valid literals.
+peekArgBi :: forall b. BuiltinForeign b => Stack -> Arg -> IO b
+peekArgBi _ (MLit _) =
+  error $ "peekArgBi: no valid literals for type: " ++ name
+  where
+    Tagged name = foreignName @b
+peekArgBi stk (Ix i) = peekOffBi stk i
+{-# INLINE peekArgBi #-}
+
 peekBool :: Stack -> IO Bool
 peekBool stk = do
   b <- bpeek stk
@@ -1311,3 +1346,8 @@ contTermRefs _ _ = mempty
 
 hasNoAllocations :: TH.Name -> TI.Obligation
 hasNoAllocations n = TI.mkObligation n TI.NoAllocation
+
+unitClosure :: Closure
+unitClosure = Enum Ty.unitRef TT.unitTag
+{-# NOINLINE unitClosure #-}
+

@@ -3,7 +3,14 @@
 {-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Unison.Runtime.Foreign.Function (foreignCall) where
+module Unison.Runtime.Foreign.Function
+  ( ForeignConvention (..),
+    foreignCall,
+    foreignConventionError,
+    readsAtError,
+    readArg,
+  )
+  where
 
 import Control.Concurrent (ThreadId)
 import Control.Concurrent as SYS
@@ -1335,12 +1342,15 @@ checkedIndex64 name (arr, i) =
 -- terms of the other coding.
 class ForeignConvention a where
   readAtIndex :: Stack -> Int -> IO a
+  readLit :: MLit -> IO a
   readsAt :: Stack -> Args -> IO a
   decodeVal :: Val -> IO a
 
   readAtIndex stk i = peekOff stk i >>= decodeVal
 
-  readsAt stk (VArg1 i) = readAtIndex stk i
+  readLit l = readLitError Nothing l
+
+  readsAt stk (VArg1 i) = readArg stk i
   readsAt _ args = readsAtError "one argument" args
 
   writeBack :: Stack -> a -> IO ()
@@ -1348,10 +1358,27 @@ class ForeignConvention a where
 
   writeBack stk v = poke stk (encodeVal v)
 
+readArg :: ForeignConvention a => Stack -> Arg -> IO a
+readArg _ (MLit l) = readLit l
+readArg stk (Ix i) = readAtIndex stk i
+
 readsAtError :: String -> Args -> IO a
 readsAtError expect args = throwIO $ Panic msg Nothing
   where
     msg = "readsAt: expected " ++ expect ++ ", got: " ++ show args
+
+readLitError :: Maybe String -> MLit -> IO a
+readLitError mt l = throwIO $ Panic msg Nothing
+  where
+    sl = show l
+
+    st = maybe "" (' ':) mt
+
+    msg = concat [ "readLit: reading literal `"
+                 , sl
+                 , "` at unsupported type"
+                 , st
+                 ]
 
 foreignConventionError :: String -> Val -> IO a
 foreignConventionError ty v = throwIO $ Panic msg (Just v)
@@ -1416,6 +1443,9 @@ instance ForeignConvention Int where
   decodeVal v = foreignConventionError "Int" v
   encodeVal = IntVal
 
+  readLit (MI i) = pure i
+  readLit l = readLitError (Just "Int") l
+
   readAtIndex stk i = upeekOff stk i
   writeBack stk v = upokeT stk v intTypeTag
 
@@ -1426,6 +1456,9 @@ instance ForeignConvention Word8 where
   decodeVal v = foreignConventionError "Word8" v
   encodeVal w = NatVal $ fromIntegral w
 
+  readLit (MN n) = pure (fromIntegral n)
+  readLit l = readLitError (Just "Word8") l
+
   readAtIndex stk i = fromIntegral <$> peekOffN stk i
   writeBack stk v = pokeN stk $ fromIntegral v
 
@@ -1433,6 +1466,9 @@ instance ForeignConvention Word16 where
   decodeVal (NatVal v) = pure $ fromIntegral v
   decodeVal v = foreignConventionError "Word16" v
   encodeVal w = NatVal $ fromIntegral w
+
+  readLit (MN n) = pure (fromIntegral n)
+  readLit l = readLitError (Just "Word16") l
 
   readAtIndex stk i = fromIntegral <$> peekOffN stk i
   writeBack stk v = pokeN stk $ fromIntegral v
@@ -1442,6 +1478,9 @@ instance ForeignConvention Word32 where
   decodeVal v = foreignConventionError "Word32" v
   encodeVal w = NatVal $ fromIntegral w
 
+  readLit (MN n) = pure (fromIntegral n)
+  readLit l = readLitError (Just "Word32") l
+
   readAtIndex stk i = fromIntegral <$> upeekOff stk i
   writeBack stk v = pokeN stk $ fromIntegral v
 
@@ -1450,12 +1489,18 @@ instance ForeignConvention Word64 where
   decodeVal v = foreignConventionError "Word64" v
   encodeVal w = NatVal w
 
+  readLit (MN n) = pure n
+  readLit l = readLitError (Just "Word32") l
+
   readAtIndex stk i = peekOffN stk i
   writeBack stk w = pokeN stk w
 
 instance ForeignConvention Char where
   decodeVal (CharVal c) = pure c
   decodeVal v = foreignConventionError "Char" v
+
+  readLit (MC c) = pure c
+  readLit l = readLitError (Just "Char") l
 
   encodeVal c = CharVal c
 
@@ -1508,8 +1553,8 @@ instance
   encodeVal p = BoxedVal $ encodeTup2 p
 
   readsAt stk (VArg2 i j) =
-    (,) <$> readAtIndex stk i
-        <*> readAtIndex stk j
+    (,) <$> readArg stk i
+        <*> readArg stk j
   readsAt _ as = readsAtError "two arguments" as
 
   readAtIndex stk i = bpeekOff stk i >>= decodeTup2
@@ -1536,9 +1581,9 @@ instance
   encodeVal p = BoxedVal $ encodeTup3 p
 
   readsAt stk (VArgN v) =
-    (,,) <$> readAtIndex stk (PA.indexPrimArray v 0)
-         <*> readAtIndex stk (PA.indexPrimArray v 1)
-         <*> readAtIndex stk (PA.indexPrimArray v 2)
+    (,,) <$> readArg stk (PA.indexArray v 0)
+         <*> readArg stk (PA.indexArray v 1)
+         <*> readArg stk (PA.indexArray v 2)
   readsAt _ as = readsAtError "three arguments" as
 
   readAtIndex stk i = bpeekOff stk i >>= decodeTup3
@@ -1568,10 +1613,10 @@ instance
   encodeVal p = BoxedVal $ encodeTup4 p
 
   readsAt stk (VArgN v) =
-    (,,,) <$> readAtIndex stk (PA.indexPrimArray v 0)
-          <*> readAtIndex stk (PA.indexPrimArray v 1)
-          <*> readAtIndex stk (PA.indexPrimArray v 2)
-          <*> readAtIndex stk (PA.indexPrimArray v 3)
+    (,,,) <$> readArg stk (PA.indexArray v 0)
+          <*> readArg stk (PA.indexArray v 1)
+          <*> readArg stk (PA.indexArray v 2)
+          <*> readArg stk (PA.indexArray v 3)
   readsAt _ as = readsAtError "four arguments" as
 
   readAtIndex stk i = bpeekOff stk i >>= decodeTup4
@@ -1603,11 +1648,11 @@ instance
   encodeVal = BoxedVal . encodeTup5
 
   readsAt stk (VArgN v) =
-    (,,,,) <$> readAtIndex stk (PA.indexPrimArray v 0)
-           <*> readAtIndex stk (PA.indexPrimArray v 1)
-           <*> readAtIndex stk (PA.indexPrimArray v 2)
-           <*> readAtIndex stk (PA.indexPrimArray v 3)
-           <*> readAtIndex stk (PA.indexPrimArray v 4)
+    (,,,,) <$> readArg stk (PA.indexArray v 0)
+           <*> readArg stk (PA.indexArray v 1)
+           <*> readArg stk (PA.indexArray v 2)
+           <*> readArg stk (PA.indexArray v 3)
+           <*> readArg stk (PA.indexArray v 4)
   readsAt _ as = readsAtError "five arguments" as
 
   readAtIndex stk i = bpeekOff stk i >>= decodeTup5
@@ -1849,6 +1894,9 @@ instance {-# overlapping #-} ForeignConvention String where
   decodeVal = decodeAsBuiltin unpack
   encodeVal = encodeAsBuiltin pack
 
+  readLit (MT t) = pure (unpack t)
+  readLit l = readLitError (Just "String") l
+
   readAtIndex = readAsBuiltin unpack
   writeBack = writeAsBuiltin pack
 
@@ -1865,6 +1913,9 @@ instance ForeignConvention Double where
   decodeVal (DoubleVal d) = pure d
   decodeVal v = foreignConventionError "Double" v
 
+  readLit (MD d) = pure d
+  readLit l = readLitError (Just "Double") l
+
   encodeVal = DoubleVal
 
   readAtIndex = peekOffD
@@ -1874,6 +1925,8 @@ instance ForeignConvention Val where
   decodeVal = pure
   encodeVal = id
 
+  readLit = pure . mlitToVal
+
   readAtIndex = peekOff
   writeBack = poke
 
@@ -1882,10 +1935,27 @@ instance ForeignConvention Foreign where
   decodeVal v = foreignConventionError "Foreign" v
   encodeVal f = BoxedVal (Foreign f)
 
+  readLit (MT t) = pure (Wrap Ty.textRef t)
+  readLit (MM r) = pure (Wrap Ty.termLinkRef r)
+  readLit (MY r) = pure (Wrap Ty.typeLinkRef r)
+  readLit l = readLitError (Just "Foreign") l
+
   readAtIndex stk i = bpeekOff stk i >>= \case
     Foreign f -> pure f
     c -> foreignConventionError "Foreign" (BoxedVal c)
   writeBack stk f = bpoke stk (Foreign f)
+
+instance ForeignConvention a => ForeignConvention (Seq a) where
+  decodeVal (BoxedVal (Foreign f))
+    | sq <- unwrapForeign f = traverse decodeVal sq
+  decodeVal v = foreignConventionError "Seq" v
+
+  encodeVal sq =
+    BoxedVal . Foreign . Wrap listRef $ encodeVal <$> sq
+
+  readAtIndex stk i = traverse decodeVal =<< peekOffS stk i
+
+  writeBack stk sq = pokeS stk $ encodeVal <$> sq
 
 instance ForeignConvention a => ForeignConvention [a] where
   decodeVal (BoxedVal (Foreign f))
