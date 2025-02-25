@@ -326,44 +326,11 @@ taket = binop0 0 $ \[x, y] ->
 dropt = binop0 0 $ \[x, y] ->
   TPrm DRPT [AAVar x, AAVar y]
 
-atb = binop0 2 $ \[n, b, t, r] ->
-  TLetD t UN (TPrm IDXB [AAVar n, AAVar b])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN],
-            TAbs r $ some r
-          )
-        )
-      ]
+atb = binop IDXB
 
-indext = binop0 2 $ \[x, y, t, r] ->
-  TLetD t UN (TPrm IXOT [AAVar x, AAVar y])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN],
-            TAbs r $ some r
-          )
-        )
-      ]
+indext = binop IXOT
 
-indexb = binop0 2 $ \[x, y, t, r] ->
-  TLetD t UN (TPrm IXOB [AAVar x, AAVar y])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN],
-            TAbs r $ some r
-          )
-        )
-      ]
+indexb = binop IDXB
 
 sizet = unop0 0 $ \[x] -> TPrm SIZT [AAVar x]
 
@@ -410,14 +377,7 @@ takes, drops, sizes, ats, emptys :: (Var v) => SuperNormal v
 takes = binop0 0 $ \[x, y] -> TPrm TAKS [AAVar x, AAVar y]
 drops = binop0 0 $ \[x, y] -> TPrm DRPS [AAVar x, AAVar y]
 sizes = unop0 0 $ \[x] -> (TPrm SIZS [AAVar x])
-ats = binop0 2 $ \[x, y, t, r] ->
-  TLetD t UN (TPrm IDXS [AAVar x, AAVar y])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        (1, ([BX], TAbs r $ some r))
-      ]
+ats = binop IDXS
 emptys = Lambda [] $ TPrm BLDS []
 
 viewls, viewrs :: (Var v) => SuperNormal v
@@ -439,22 +399,8 @@ viewrs = unop0 3 $ \[s, u, i, l] ->
       ]
 
 splitls, splitrs :: (Var v) => SuperNormal v
-splitls = binop0 3 $ \[n, s, t, l, r] ->
-  TLetD t UN (TPrm SPLL [AAVar n, AAVar s])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], seqViewEmpty)),
-        (1, ([BX, BX], TAbss [l, r] $ seqViewElem l r))
-      ]
-splitrs = binop0 3 $ \[n, s, t, l, r] ->
-  TLetD t UN (TPrm SPLR [AAVar n, AAVar s])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], seqViewEmpty)),
-        (1, ([BX, BX], TAbss [l, r] $ seqViewElem l r))
-      ]
+splitls = binop SPLL
+splitrs = binop SPLR
 
 eqt, neqt, leqt, geqt, lesst, great :: SuperNormal Symbol
 eqt = binop EQLT
