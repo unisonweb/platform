@@ -31,6 +31,7 @@ where
 import Control.Concurrent.STM as STM
 import Control.Exception (throwIO)
 import Control.Monad
+import Control.Monad.Reader (runReaderT)
 import Control.Monad.State
 import Data.Binary.Get (runGetOrFail)
 import Data.ByteString qualified as BS
@@ -102,12 +103,15 @@ import Unison.Runtime.ANF.Serialize as ANF
     getVersionedValue,
     putGroup,
     serializeValue,
+    Version (..),
+    codeVersion,
   )
 import Unison.Runtime.Builtin
 import Unison.Runtime.Decompile
 import Unison.Runtime.Exception
 import Unison.Runtime.MCode
   ( Args (..),
+    Arg (..),
     CombIx (..),
     GInstr (..),
     GSection (..),
@@ -1064,7 +1068,7 @@ executeMainComb ::
   CCache ->
   IO (Either (Pretty ColorText) ())
 executeMainComb init cc = do
-  rSection <- resolveSection cc $ Ins (Pack RF.unitRef TT.unitTag ZArgs) $ Call True init init (VArg1 0)
+  rSection <- resolveSection cc $ Ins (Pack RF.unitRef TT.unitTag ZArgs) $ Call True init init (VArg1 (Ix 0))
   result <-
     UnliftIO.try . eval0 cc Nothing $ rSection
   case result of
@@ -1276,7 +1280,7 @@ data StoredCache
   deriving (Show, Eq)
 
 putStoredCache :: (MonadPut m) => StoredCache -> m ()
-putStoredCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
+putStoredCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = flip runReaderT (Transfer codeVersion) do
   putEnumMap putNat (putEnumMap putNat (putComb absurd)) cs
   putEnumMap putNat putReference crs
   putEnumSet putNat cacheableCombs
@@ -1289,7 +1293,7 @@ putStoredCache (SCache cs crs cacheableCombs trs ftm fty int rtm rty sbs) = do
   putMap putReference (putFoldable putReference) sbs
 
 getStoredCache :: (MonadGet m) => m StoredCache
-getStoredCache =
+getStoredCache = flip runReaderT (Transfer codeVersion) $
   SCache
     <$> getEnumMap getNat (getEnumMap getNat getComb)
     <*> getEnumMap getNat getReference
