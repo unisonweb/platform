@@ -133,13 +133,6 @@ some a = TCon Ty.optionalRef (fromIntegral Ty.someId) [AAVar a]
 left x = TCon Ty.eitherRef (fromIntegral Ty.eitherLeftId) [AAVar x]
 right x = TCon Ty.eitherRef (fromIntegral Ty.eitherRightId) [AAVar x]
 
-seqViewEmpty :: (Var v) => ANormal v
-seqViewEmpty = TCon Ty.seqViewRef (fromIntegral Ty.seqViewEmpty) []
-
-seqViewElem :: (Var v) => v -> v -> ANormal v
-seqViewElem l r =
-  TCon Ty.seqViewRef (fromIntegral Ty.seqViewElem) [AAVar l, AAVar r]
-
 unop0 :: (Var v) => Int -> ([v] -> ANormal v) -> SuperNormal v
 unop0 n f =
   Lambda [BX]
@@ -330,43 +323,13 @@ atb = binop IDXB
 
 indext = binop IXOT
 
-indexb = binop IDXB
+indexb = binop IXOB
 
 sizet = unop0 0 $ \[x] -> TPrm SIZT [AAVar x]
 
-unconst = unop0 6 $ \[x, t, c, y, p, u, yp] ->
-  TLetD t UN (TPrm UCNS [AAVar x])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN, BX],
-            TAbss [c, y]
-              . TLetD u BX (TCon Ty.unitRef 0 [])
-              . TLetD yp BX (TCon Ty.pairRef 0 [AAVar y, AAVar u])
-              . TLetD p BX (TCon Ty.pairRef 0 [AAVar c, AAVar yp])
-              $ some p
-          )
-        )
-      ]
+unconst = unop UCNS
 
-unsnoct = unop0 6 $ \[x, t, c, y, p, u, cp] ->
-  TLetD t UN (TPrm USNC [AAVar x])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [BX, UN],
-            TAbss [y, c]
-              . TLetD u BX (TCon Ty.unitRef 0 [])
-              . TLetD cp BX (TCon Ty.pairRef 0 [AAVar c, AAVar u])
-              . TLetD p BX (TCon Ty.pairRef 0 [AAVar y, AAVar cp])
-              $ some p
-          )
-        )
-      ]
+unsnoct = unop USNC
 
 appends, conss, snocs :: (Var v) => SuperNormal v
 appends = binop0 0 $ \[x, y] -> TPrm CATS [AAVar x, AAVar y]
@@ -381,22 +344,8 @@ ats = binop IDXS
 emptys = Lambda [] $ TPrm BLDS []
 
 viewls, viewrs :: (Var v) => SuperNormal v
-viewls = unop0 3 $ \[s, u, h, t] ->
-  TLetD u UN (TPrm VWLS [AAVar s])
-    . TMatch u
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], seqViewEmpty)),
-        (1, ([BX, BX], TAbss [h, t] $ seqViewElem h t))
-      ]
-viewrs = unop0 3 $ \[s, u, i, l] ->
-  TLetD u UN (TPrm VWRS [AAVar s])
-    . TMatch u
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], seqViewEmpty)),
-        (1, ([BX, BX], TAbss [i, l] $ seqViewElem i l))
-      ]
+viewls = unop VWLS
+viewrs = unop VWRS
 
 splitls, splitrs :: (Var v) => SuperNormal v
 splitls = binop SPLL
@@ -443,42 +392,9 @@ n2t = unop0 0 $ \[n] -> TPrm NTOT [AAVar n]
 f2t = unop0 0 $ \[f] -> TPrm FTOT [AAVar f]
 
 t2i, t2n, t2f :: SuperNormal Symbol
-t2i = unop0 2 $ \[x, t, n] ->
-  TLetD t UN (TPrm TTOI [AAVar x])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN],
-            TAbs n $ some n
-          )
-        )
-      ]
-t2n = unop0 2 $ \[x, t, n] ->
-  TLetD t UN (TPrm TTON [AAVar x])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN],
-            TAbs n $ some n
-          )
-        )
-      ]
-t2f = unop0 2 $ \[x, t, f] ->
-  TLetD t UN (TPrm TTOF [AAVar x])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN],
-            TAbs f $ some f
-          )
-        )
-      ]
+t2i = unop TTOI
+t2n = unop TTON
+t2f = unop TTOF
 
 equ :: SuperNormal Symbol
 equ = binop EQLU
