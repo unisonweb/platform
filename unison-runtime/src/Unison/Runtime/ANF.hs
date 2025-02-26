@@ -2328,9 +2328,19 @@ anfFLinks f g (AShift r e) =
   AShift <$> f True r <*> g e
 anfFLinks f g (AHnd rs v e) =
   flip AHnd v <$> traverse (f True) rs <*> g e
-anfFLinks f _ (AApp fu vs) = flip AApp vs <$> funcLinks f fu
+anfFLinks f _ (AApp fu vs) =
+  AApp <$>
+    funcLinks f fu <*>
+    traverse (aargLinks f) vs
 anfFLinks f _ (ALit l) = ALit <$> litLinks f l
 anfFLinks _ _ v = pure v
+
+aargLinks ::
+  (Applicative f) =>
+  (Bool -> Reference -> f Reference) ->
+  AArg v -> f (AArg v)
+aargLinks _ (AAVar v) = pure $ AAVar v
+aargLinks f (AALit l) = AALit <$> litLinks f l
 
 litLinks ::
   (Applicative f) =>
