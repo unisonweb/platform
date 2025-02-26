@@ -113,10 +113,10 @@ prim1 !_env !stk TIKR i = prim1wrap tikr stk i
 
 prim1 !env !stk MISS i = prim1wrap (miss env) stk i
 prim1 !env !stk SDBL i = prim1wrap (sdbl env) stk i
+prim1 !env !stk LKUP i = prim1wrap (lkup env) stk i
 
 -- handled elsewhere
 prim1 !_env !stk CACH _ = pure stk
-prim1 !_env !stk LKUP _ = pure stk
 prim1 !_env !stk CVLD _ = pure stk
 prim1 !_env !stk TLTT _ = pure stk
 prim1 !_env !stk LOAD _ = pure stk
@@ -183,6 +183,7 @@ priml !_env !stk REFN l = prim1wrapl refn stk l
 
 priml !env !stk MISS l = prim1wrapl (miss env) stk l
 priml !env !stk SDBL l = prim1wrapl (sdbl env) stk l
+priml !env !stk LKUP l = prim1wrapl (lkup env) stk l
 
 priml _ _ op _ = throwIO $ Panic msg Nothing
   where
@@ -907,15 +908,14 @@ rrfc env stk ref
 tikr :: Stack -> Atomic.Ticket Val -> IO ()
 tikr stk t = poke stk (Atomic.peekTicket t)
 
-miss :: CCache -> Stack -> Closure -> IO ()
-miss env stk clink
+miss :: CCache -> Stack -> Referent -> IO ()
+miss env stk tl
   | sandboxed env = die "attempted to use sandboxed operation: isMissing"
-  | otherwise = do
-      let link = case unwrapForeign $ marshalToForeign clink of
-            Ref r -> r
-            _ -> error "exec:prim1:MISS: Expected Ref"
-      m <- readTVarIO (intermed env)
-      pokeBool stk (link `M.member` m)
+  | otherwise = case tl of
+      Ref link -> do
+        m <- readTVarIO (intermed env)
+        pokeBool stk (link `M.member` m)
+      _ -> die "exec:prim1:MISS: expected Ref"
 {-# inline miss #-}
 
 sdbl :: CCache -> Stack -> Referent -> IO ()
@@ -927,6 +927,12 @@ sandboxList cc (Ref r) = do
   sands <- readTVarIO $ sandbox cc
   pure . maybe [] S.toList $ M.lookup r sands
 sandboxList _ _ = pure []
+
+lkup :: CCache -> Stack -> Referent -> IO ()
+lkup env stk tl
+  | sandboxed env = die "attempted to use sandboxed operation: lookup"
+  | otherwise = writeBack stk =<< lookupCode env tl
+{-# inline lkup #-}
 
 addi :: Stack -> Int -> Int -> IO ()
 addi stk m n = pokeI stk (m + n)

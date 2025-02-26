@@ -10,7 +10,8 @@ import Data.Map.Strict qualified as M
 import GHC.Stack
 import Unison.Prelude
 import Unison.Reference (Reference)
-import Unison.Runtime.ANF (SuperGroup)
+import Unison.Referent (Referent, pattern Ref)
+import Unison.Runtime.ANF (SuperGroup (..), Cacheability (..), Code (..))
 import Unison.Runtime.Builtin
 import Unison.Runtime.Exception hiding (die)
 import Unison.Runtime.MCode
@@ -135,3 +136,36 @@ die s = do
   error "unreachable"
 {-# INLINE die #-}
 
+lookupCode :: CCache -> Referent -> IO (Maybe Code)
+lookupCode env (Ref link) =
+  resolveCode link <$>
+    readTVarIO (intermed env) <*>
+    readTVarIO (refTm env) <*>
+    readTVarIO (cacheableCombs env)
+lookupCode _ _ = die "lookupCode: Expected Ref"
+
+resolveCode ::
+  Reference ->
+  Map Reference (SuperGroup Symbol) ->
+  Map Reference Word64 ->
+  EnumSet Word64 ->
+  Maybe Code
+resolveCode link m rfn cach
+  | Just sg <- M.lookup link m,
+    ch <- cacheability rfn cach link =
+      Just $ CodeRep sg ch
+  | Just w <- M.lookup link builtinTermNumbering,
+    Just sn <- EC.lookup w numberedTermLookup =
+      Just $ CodeRep (Rec [] sn) Uncacheable
+  | otherwise = Nothing
+
+cacheability ::
+  Map Reference Word64 ->
+  EnumSet Word64 ->
+  Reference ->
+  Cacheability
+cacheability rfn cach link
+  | Just n <- M.lookup link rfn,
+    EC.member n cach =
+      Cacheable
+  | otherwise = Uncacheable

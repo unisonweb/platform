@@ -284,35 +284,6 @@ exec env !denv !_activeThreads !stk !k _ (Prim1 CVLD i)
           stk <- bump stk
           pokeTag stk 1
           pure (False,  denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (Prim1 LKUP i)
-  | sandboxed env = die "attempted to use sandboxed operation: lookup"
-  | otherwise = do
-      clink <- bpeekOff stk i
-      let link = case unwrapForeign $ marshalToForeign clink of
-            Ref r -> r
-            _ -> error "exec:BPrim1:LKUP: Expected Ref"
-      m <- readTVarIO (intermed env)
-      rfn <- readTVarIO (refTm env)
-      cach <- readTVarIO (cacheableCombs env)
-      stk <- bump stk
-      stk <- case M.lookup link m of
-        Nothing
-          | Just w <- M.lookup link builtinTermNumbering,
-            Just sn <- EC.lookup w numberedTermLookup -> do
-              pokeBi stk (CodeRep (ANF.Rec [] sn) Uncacheable)
-              stk <- bump stk
-              stk <$ pokeTag stk 1
-          | otherwise -> stk <$ pokeTag stk 0
-        Just sg -> do
-          let ch
-                | Just n <- M.lookup link rfn,
-                  EC.member n cach =
-                    Cacheable
-                | otherwise = Uncacheable
-          pokeBi stk (CodeRep sg ch)
-          stk <- bump stk
-          stk <$ pokeTag stk 1
-      pure (False, denv, stk, k)
 exec _ !denv !_activeThreads !stk !k _ (Prim1 TLTT i) = do
   clink <- bpeekOff stk i
   let shortHash = case unwrapForeign $ marshalToForeign clink of

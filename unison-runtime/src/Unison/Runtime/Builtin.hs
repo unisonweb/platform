@@ -526,15 +526,7 @@ code'cache :: SuperNormal Symbol
 code'cache = unop0 0 $ \[new] -> TPrm CACH [AAVar new]
 
 code'lookup :: SuperNormal Symbol
-code'lookup =
-  unop0 2 $ \[link, t, r] ->
-    TLetD t UN (TPrm LKUP [AAVar link])
-      . TMatch t
-      . MatchSum
-      $ mapFromList
-        [ (0, ([], none)),
-          (1, ([BX], TAbs r $ some r))
-        ]
+code'lookup = unop LKUP
 
 code'validate :: SuperNormal Symbol
 code'validate =
