@@ -25,7 +25,6 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Conduit.Attoparsec qualified as C
 import Data.Conduit.Combinators qualified as C
 import Data.Conduit.List qualified as CL
-import Data.Conduit.TQueue qualified as TQueue
 import Data.Conduit.Zlib qualified as C
 import Data.Foldable qualified as Foldable
 import Data.Graph qualified as Graph
@@ -71,7 +70,7 @@ import Unison.Util.Servant.CBOR qualified as CBOR
 import Unison.Util.Timing qualified as Timing
 import UnliftIO qualified as IO
 import UnliftIO.Async qualified as Async
-import qualified UnliftIO.STM as STM
+import UnliftIO.STM qualified as STM
 
 type Stream i o = ConduitT i o StreamM ()
 
@@ -256,15 +255,11 @@ syncSortedStream ::
   Stream () SyncV2.EntityChunk ->
   StreamM ()
 syncSortedStream shouldValidate codebase stream = do
+  (downloaderSink, downloaderSource) <- parallelSinkAndSource 10
+  (unpackerSink, unpackerSource) <- parallelSinkAndSource 10
   let handler :: Stream (Vector (Hash32, TempEntity)) o
       handler = C.mapM_C \entityBatch -> do
         validateAndSave shouldValidate codebase entityBatch
-  downloadQ <- liftIO $ STM.newTBMQueueIO 10 -- 10 batches, not 10 entities
-  unpackerQ <- liftIO $ STM.newTBMQueueIO 10
-  let downloaderSink = TQueue.sinkTBMQueue downloadQ
-  let downloaderSource = TQueue.sourceTBMQueue downloadQ
-  let unpackerSink = TQueue.sinkTBMQueue unpackerQ
-  let unpackedSource = TQueue.sourceTBMQueue unpackerQ
   let downloadC =
         stream
           C..| CL.chunksOf batchSize
@@ -274,17 +269,13 @@ syncSortedStream shouldValidate codebase stream = do
           C..| unpackChunks codebase
           C..| unpackerSink
   let handlerC =
-        unpackedSource
+        unpackerSource
           C..| handler
 
   -- Run the three conduits concurrently, and wait for them all to finish, fail if any of them fail.
   ExceptT . Async.runConc $ do
-    a <- Async.conc . runExceptT $ do
-           C.runConduit downloadC
-           STM.atomically $ STM.closeTBMQueue downloadQ
-    b <- Async.conc . runExceptT $ do
-      C.runConduit saverC
-      STM.atomically $ STM.closeTBMQueue unpackerQ
+    a <- Async.conc . runExceptT $ C.runConduit downloadC
+    b <- Async.conc . runExceptT $ C.runConduit saverC
     c <- Async.conc . runExceptT $ C.runConduit handlerC
     pure (a >> b >> c)
 
@@ -669,3 +660,22 @@ withEntityLoadingCallback :: (MonadUnliftIO m) => ((Int -> m ()) -> m a) -> m a
 withEntityLoadingCallback action = do
   let msg n = "\n  📦 Unpacked  " <> tShow n <> " entities...\n\n"
   counterProgress msg action
+
+-- * Conduit helpers
+
+parallelSinkAndSource :: (MonadIO m) => Int -> m (ConduitT i void1 m (), ConduitT void2 i m ())
+parallelSinkAndSource bufferSize = do
+  q <- liftIO $ STM.newTBMQueueIO bufferSize
+  let sink = do
+        C.await >>= \case
+          Nothing -> STM.atomically $ STM.closeTBMQueue q
+          Just chunk -> do
+            STM.atomically $ STM.writeTBMQueue q chunk
+            sink
+  let source = do
+        STM.atomically (STM.readTBMQueue q) >>= \case
+          Nothing -> pure ()
+          Just chunk -> do
+            C.yield chunk
+            source
+  pure (sink, source)
