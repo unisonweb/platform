@@ -2094,26 +2094,26 @@ staticEval2 LEQT (MT t) (MT u) = packBool $ t <= u
 staticEval2 LEST (MT t) (MT u) = packBool $ t < u
 staticEval2 EQLU (MI m) (MI n) = packBool $ m == n
 staticEval2 EQLU (MN m) (MN n) = packBool $ m == n
-staticEval2 EQLU (MD m) (MD n) = packBool $ m == n
+staticEval2 EQLU (MD x) (MD y) = packBool $ compareDouble x y == EQ
 staticEval2 EQLU (MC m) (MC n) = packBool $ m == n
 staticEval2 EQLU (MT m) (MT n) = packBool $ m == n
 staticEval2 EQLU (MM m) (MM n) = packBool $ m == n
 staticEval2 EQLU (MY m) (MY n) = packBool $ m == n
 staticEval2 CMPU (MI m) (MI n) = comparison $ compare m n
 staticEval2 CMPU (MN m) (MN n) = comparison $ compare m n
-staticEval2 CMPU (MD m) (MD n) = comparison $ compare m n
+staticEval2 CMPU (MD x) (MD y) = comparison $ compareDouble x y
 staticEval2 CMPU (MC m) (MC n) = comparison $ compare m n
 staticEval2 CMPU (MT m) (MT n) = comparison $ compare m n
 staticEval2 CMPU (MM m) (MM n) = comparison $ compare m n
 staticEval2 CMPU (MY m) (MY n) = comparison $ compare m n
 staticEval2 LEQU (MN m) (MN n) = packBool $ m <= n
-staticEval2 LEQU (MD m) (MD n) = packBool $ m <= n
+staticEval2 LEQU (MD x) (MD y) = packBool $ compareDouble x y /= GT
 staticEval2 LEQU (MC m) (MC n) = packBool $ m <= n
 staticEval2 LEQU (MT m) (MT n) = packBool $ m <= n
 staticEval2 LEQU (MM m) (MM n) = packBool $ m <= n
 staticEval2 LEQU (MY m) (MY n) = packBool $ m <= n
 staticEval2 LESU (MN m) (MN n) = packBool $ m < n
-staticEval2 LESU (MD m) (MD n) = packBool $ m < n
+staticEval2 LESU (MD x) (MD y) = packBool $ compareDouble x y == LT
 staticEval2 LESU (MC m) (MC n) = packBool $ m < n
 staticEval2 LESU (MT m) (MT n) = packBool $ m < n
 staticEval2 LESU (MM m) (MM n) = packBool $ m < n
@@ -2151,3 +2151,14 @@ castToDouble (MN n) = intToDouble $ fromIntegral n
 castToDouble (MD d) = d
 castToDouble (MC c) = intToDouble $ ord c
 castToDouble l = error $ "could not cast literal `" ++ show l ++ "` to Double"
+
+-- Compares doubles analogously to universal comparison (on their
+-- bits).
+compareDouble :: Double -> Double -> Ordering
+compareDouble x y
+  | x < y = LT
+  | x > y = GT
+  | x == y = if x == 0
+               then compare (isNegativeZero x) (isNegativeZero y)
+               else EQ
+  | otherwise = compare (isNaN x) (isNaN y)
