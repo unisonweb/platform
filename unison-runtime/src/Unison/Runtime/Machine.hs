@@ -413,6 +413,9 @@ exec env !denv !_activeThreads !stk !k _ (PrimXX TRCE i j) = do
 exec _ !denv !_trackThreads !stk !k _ (PrimXX op i j) = do
   stk <- primxx stk op i j
   pure (False, denv, stk, k)
+exec _ !denv !_trackThreads !stk !k _ (PrimLL op l r) = do
+  stk <- primll stk op l r
+  pure (False, denv, stk, k)
 exec _ !denv !_trackThreads !stk !k _ (PrimIX op t n j) = do
   stk <- primix stk op t n j
   pure (False, denv, stk, k)

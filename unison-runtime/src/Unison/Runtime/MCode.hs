@@ -531,12 +531,23 @@ data GInstr comb
   -- 1-argument unboxed primitive operations
   = Prim1
       !Prim1 -- primitive instruction
-      !Int    -- argument
+      !Int   -- argument
+  -- slower case for unary primops that cannot easily be statically
+  -- evaluated
+  | PrimL
+      !Prim1 -- primitive instruction
+      !MLit  -- literal argument
   -- 2-argument unboxed primitive operations
   | PrimXX
       !Prim2 -- primitive instruction
       !Int -- first argument index
       !Int -- second argument index
+  -- slower case for binary primops that cannot easily be
+  -- statically evaluated to two literals
+  | PrimLL
+      !Prim2
+      !MLit
+      !MLit
   | PrimIX
       !Prim2
       !UnboxedTypeTag -- type of literal; only sometimes used
@@ -2013,8 +2024,7 @@ staticEval1 TTOF (MT t) =
   packMaybe $ MD <$> readMaybe (UText.unpack t)
 staticEval1 TLTT (MM r) =
   Lit . MT . UText.fromText . SH.toText $ RN.toShortHash r
-staticEval1 p l =
-  error $ "staticEval1: could not statically evaluate (primop, lit) combination: " ++ show (p, l)
+staticEval1 op l = PrimL op l
 
 packMaybe :: Maybe MLit -> Instr
 packMaybe Nothing = Pack Ty.optionalRef noneTag ZArgs
@@ -2031,6 +2041,7 @@ staticEval2 :: Prim2 -> MLit -> MLit -> Instr
 staticEval2 ADDI (MI m) (MI n) = Lit . MI $ m + n
 staticEval2 SUBI (MI m) (MI n) = Lit . MI $ m - n
 staticEval2 MULI (MI m) (MI n) = Lit . MI $ m * n
+staticEval2 DIVI (MI m) (MI 0) = PrimLL DIVI (MI m) (MI 0)
 staticEval2 DIVI (MI m) (MI n) = Lit . MI $ m `div` n
 staticEval2 MODI (MI m) (MI n) = Lit . MI $ m `mod` n
 staticEval2 EQLI (MI m) (MI n) = packBool $ m == n
@@ -2044,8 +2055,9 @@ staticEval2 SHLI (MI m) (MN n) = Lit . MI $ m `shiftL` fromIntegral n
 staticEval2 SHRI (MI m) (MN n) = Lit . MI $ m `shiftR` fromIntegral n
 staticEval2 POWI (MI m) (MN n) = Lit . MI $ m ^ n
 staticEval2 ADDN (MN m) (MN n) = Lit . MN $ m + n
-staticEval2 SUBN (MN m) (MN n) = Lit . MN $ m - n
+staticEval2 SUBN (MN m) (MN n) = Lit . MI . fromIntegral $ m - n
 staticEval2 MULN (MN m) (MN n) = Lit . MN $ m * n
+staticEval2 DIVN (MN m) (MN 0) = PrimLL DIVN (MN m) (MN 0)
 staticEval2 DIVN (MN m) (MN n) = Lit . MN $ m `div` n
 staticEval2 MODN (MN m) (MN n) = Lit . MN $ m `mod` n
 staticEval2 SHLN (MN m) (MN n) = Lit . MN $ m `shiftL` fromIntegral n
@@ -2106,12 +2118,11 @@ staticEval2 LESU (MC m) (MC n) = packBool $ m < n
 staticEval2 LESU (MT m) (MT n) = packBool $ m < n
 staticEval2 LESU (MM m) (MM n) = packBool $ m < n
 staticEval2 LESU (MY m) (MY n) = packBool $ m < n
-staticEval2 CAST (MI 0) l = Lit . MC $ castToChar l
-staticEval2 CAST (MI 1) l = Lit . MD $ castToDouble l
-staticEval2 CAST (MI 2) l = Lit . MI $ castToInt l
-staticEval2 CAST (MI 3) l = Lit . MN $ castToNat l
-staticEval2 p l r =
-  error $ "staticEval2: could not process binary primop: " ++ show (p, l, r)
+staticEval2 CAST l (MI 0) = Lit . MC $ castToChar l
+staticEval2 CAST l (MI 1) = Lit . MD $ castToDouble l
+staticEval2 CAST l (MI 2) = Lit . MI $ castToInt l
+staticEval2 CAST l (MI 3) = Lit . MN $ castToNat l
+staticEval2 op l r = PrimLL op l r
 
 castToNat :: MLit -> Word64
 castToNat (MI i) = fromIntegral i

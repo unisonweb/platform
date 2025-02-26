@@ -152,7 +152,9 @@ getSection =
 
 data InstrT
   = Prim1T
+  | PrimLT
   | PrimXXT
+  | PrimLLT
   | PrimIXT
   | PrimXIT
   | PrimDXT
@@ -181,66 +183,72 @@ data InstrT
 
 instance Tag InstrT where
   tag2word Prim1T = 0
-  tag2word PrimXXT = 1
-  tag2word PrimIXT = 2
-  tag2word PrimXIT = 3
-  tag2word PrimDXT = 4
-  tag2word PrimXDT = 5
-  tag2word PrimTXT = 6
-  tag2word PrimXTT = 7
-  tag2word PrimMXT = 8
-  tag2word PrimXMT = 9
-  tag2word PrimYXT = 10
-  tag2word PrimXYT = 11
-  tag2word ForeignCallT = 12
-  tag2word SetDynT = 13
-  tag2word CaptureT = 14
-  tag2word NameT = 15
-  tag2word InfoT = 16
-  tag2word PackT = 17
-  tag2word LitT = 18
-  tag2word PrintT = 19
-  tag2word ResetT = 20
-  tag2word ForkT = 21
-  tag2word AtomicallyT = 22
-  tag2word SeqT = 23
-  tag2word TryForceT = 24
-  tag2word RefCAST = 25
-  tag2word SandboxingFailureT = 26
+  tag2word PrimLT = 1
+  tag2word PrimXXT = 2
+  tag2word PrimLLT = 3
+  tag2word PrimIXT = 4
+  tag2word PrimXIT = 5
+  tag2word PrimDXT = 6
+  tag2word PrimXDT = 7
+  tag2word PrimTXT = 8
+  tag2word PrimXTT = 9
+  tag2word PrimMXT = 10
+  tag2word PrimXMT = 11
+  tag2word PrimYXT = 12
+  tag2word PrimXYT = 13
+  tag2word ForeignCallT = 14
+  tag2word SetDynT = 15
+  tag2word CaptureT = 16
+  tag2word NameT = 17
+  tag2word InfoT = 18
+  tag2word PackT = 19
+  tag2word LitT = 20
+  tag2word PrintT = 21
+  tag2word ResetT = 22
+  tag2word ForkT = 23
+  tag2word AtomicallyT = 24
+  tag2word SeqT = 25
+  tag2word TryForceT = 26
+  tag2word RefCAST = 27
+  tag2word SandboxingFailureT = 28
 
   word2tag 0 = pure Prim1T
-  word2tag 1 = pure PrimXXT
-  word2tag 2 = pure PrimIXT
-  word2tag 3 = pure PrimXIT
-  word2tag 4 = pure PrimDXT
-  word2tag 5 = pure PrimXDT
-  word2tag 6 = pure PrimTXT
-  word2tag 7 = pure PrimXTT
-  word2tag 8 = pure PrimMXT
-  word2tag 9 = pure PrimXMT
-  word2tag 10 = pure PrimYXT
-  word2tag 11 = pure PrimXYT
-  word2tag 12 = pure ForeignCallT
-  word2tag 13 = pure SetDynT
-  word2tag 14 = pure CaptureT
-  word2tag 15 = pure NameT
-  word2tag 16 = pure InfoT
-  word2tag 17 = pure PackT
-  word2tag 18 = pure LitT
-  word2tag 19 = pure PrintT
-  word2tag 20 = pure ResetT
-  word2tag 21 = pure ForkT
-  word2tag 22 = pure AtomicallyT
-  word2tag 23 = pure SeqT
-  word2tag 24 = pure TryForceT
-  word2tag 25 = pure RefCAST
-  word2tag 26 = pure SandboxingFailureT
+  word2tag 1 = pure PrimLT
+  word2tag 2 = pure PrimXXT
+  word2tag 3 = pure PrimLLT
+  word2tag 4 = pure PrimIXT
+  word2tag 5 = pure PrimXIT
+  word2tag 6 = pure PrimDXT
+  word2tag 7 = pure PrimXDT
+  word2tag 8 = pure PrimTXT
+  word2tag 9 = pure PrimXTT
+  word2tag 10 = pure PrimMXT
+  word2tag 11 = pure PrimXMT
+  word2tag 12 = pure PrimYXT
+  word2tag 13 = pure PrimXYT
+  word2tag 14 = pure ForeignCallT
+  word2tag 15 = pure SetDynT
+  word2tag 16 = pure CaptureT
+  word2tag 17 = pure NameT
+  word2tag 18 = pure InfoT
+  word2tag 19 = pure PackT
+  word2tag 20 = pure LitT
+  word2tag 21 = pure PrintT
+  word2tag 22 = pure ResetT
+  word2tag 23 = pure ForkT
+  word2tag 24 = pure AtomicallyT
+  word2tag 25 = pure SeqT
+  word2tag 26 = pure TryForceT
+  word2tag 27 = pure RefCAST
+  word2tag 28 = pure SandboxingFailureT
   word2tag n = unknownTag "InstrT" n
 
 putInstr :: (MonadPut m) => GInstr cix -> m ()
 putInstr = \case
   (Prim1 p i) -> putTag Prim1T *> putTag p *> pInt i
+  (PrimL p l) -> putTag PrimLT *> putTag p *> putLit l
   (PrimXX bp i j) -> putTag PrimXXT *> putTag bp *> pInt i *> pInt j
+  (PrimLL bp l r) -> putTag PrimLLT *> putTag bp *> putLit l *> putLit r
   (PrimIX bp tt i j) ->
     putTag PrimIXT *> putTag bp *> putUTypeTag tt *> pInt i *> pInt j
   (PrimXI bp i tt j) ->
@@ -283,7 +291,9 @@ getInstr :: (MonadGet m) => m Instr
 getInstr =
   getTag >>= \case
     Prim1T -> Prim1 <$> getTag <*> gInt
+    PrimLT -> PrimL <$> getTag <*> getLit
     PrimXXT -> PrimXX <$> getTag <*> gInt <*> gInt
+    PrimLLT -> PrimLL <$> getTag <*> getLit <*> getLit
     PrimIXT -> PrimIX <$> getTag <*> getUTypeTag <*> gInt <*> gInt
     PrimXIT -> PrimXI <$> getTag <*> gInt <*> getUTypeTag <*> gInt
     PrimDXT -> PrimDX <$> getTag <*> getFloat <*> gInt
