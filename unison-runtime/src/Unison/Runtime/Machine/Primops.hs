@@ -11,6 +11,7 @@ import Data.Ord (comparing)
 import Data.IORef (IORef)
 import Data.IORef qualified as IORef
 import Data.Sequence qualified as Sq
+import Data.Set qualified as S
 import Data.Word
 import Unison.Builtin.Decls qualified as Ty
 import Unison.Prelude hiding (Text)
@@ -31,388 +32,89 @@ import Unison.Util.Bytes qualified as By
 import Unison.Util.Monoid qualified as Monoid
 import Unison.Util.Text as UText
 
+prim1wrap ::
+  ForeignConvention x =>
+  (Stack -> x -> IO ()) ->
+  Stack -> Int -> IO Stack
+prim1wrap f stk i = do
+  x <- readAtIndex stk i
+  stk <- bump stk
+  stk <$ f stk x
+{-# inline prim1wrap #-}
+
+prim1wrapl ::
+  ForeignConvention x =>
+  (Stack -> x -> IO ()) ->
+  Stack -> MLit -> IO Stack
+prim1wrapl f stk l = do
+  x <- readLit l
+  stk <- bump stk
+  stk <$ f stk x
+{-# inline prim1wrapl #-}
+
 prim1 :: CCache -> Stack -> Prim1 -> Int -> IO Stack
-prim1 !_env !stk DECI !i = do
-  m <- peekOffI stk i
-  stk <- bump stk
-  pokeI stk (m - 1)
-  pure stk
-prim1 !_env !stk DECN !i = do
-  m <- peekOffN stk i
-  stk <- bump stk
-  pokeN stk (m - 1)
-  pure stk
-prim1 !_env !stk INCI !i = do
-  m <- peekOffI stk i
-  stk <- bump stk
-  pokeI stk (m + 1)
-  pure stk
-prim1 !_env !stk INCN !i = do
-  m <- peekOffN stk i
-  stk <- bump stk
-  pokeN stk (m + 1)
-  pure stk
-prim1 !_env !stk TRNC !i = do
-  v <- peekOffI stk i
-  stk <- bump stk
-  unsafePokeIasN stk (max 0 v)
-  pure stk
-prim1 !_env !stk NEGI !i = do
-  m <- upeekOff stk i
-  stk <- bump stk
-  pokeI stk (-m)
-  pure stk
-prim1 !_env !stk SGNI !i = do
-  m <- upeekOff stk i
-  stk <- bump stk
-  pokeI stk (signum m)
-  pure stk
-prim1 !_env !stk ABSF !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (abs d)
-  pure stk
-prim1 !_env !stk CEIL !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeI stk (ceiling d)
-  pure stk
-prim1 !_env !stk FLOR !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeI stk (floor d)
-  pure stk
-prim1 !_env !stk TRNF !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeI stk (truncate d)
-  pure stk
-prim1 !_env !stk RNDF !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeI stk (round d)
-  pure stk
-prim1 !_env !stk EXPF !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (exp d)
-  pure stk
-prim1 !_env !stk LOGF !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (log d)
-  pure stk
-prim1 !_env !stk SQRT !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (sqrt d)
-  pure stk
-prim1 !_env !stk COSF !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (cos d)
-  pure stk
-prim1 !_env !stk SINF !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (sin d)
-  pure stk
-prim1 !_env !stk TANF !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (tan d)
-  pure stk
-prim1 !_env !stk COSH !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (cosh d)
-  pure stk
-prim1 !_env !stk SINH !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (sinh d)
-  pure stk
-prim1 !_env !stk TANH !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (tanh d)
-  pure stk
-prim1 !_env !stk ACOS !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (acos d)
-  pure stk
-prim1 !_env !stk ASIN !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (asin d)
-  pure stk
-prim1 !_env !stk ATAN !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (atan d)
-  pure stk
-prim1 !_env !stk ASNH !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (asinh d)
-  pure stk
-prim1 !_env !stk ACSH !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (acosh d)
-  pure stk
-prim1 !_env !stk ATNH !i = do
-  d <- peekOffD stk i
-  stk <- bump stk
-  pokeD stk (atanh d)
-  pure stk
-prim1 !_env !stk ITOF !i = do
-  n <- upeekOff stk i
-  stk <- bump stk
-  pokeD stk (fromIntegral n)
-  pure stk
-prim1 !_env !stk NTOF !i = do
-  n <- peekOffN stk i
-  stk <- bump stk
-  pokeD stk (fromIntegral n)
-  pure stk
-prim1 !_env !stk LZRO !i = do
-  n <- peekOffN stk i
-  stk <- bump stk
-  unsafePokeIasN stk (countLeadingZeros n)
-  pure stk
-prim1 !_env !stk TZRO !i = do
-  n <- peekOffN stk i
-  stk <- bump stk
-  unsafePokeIasN stk (countTrailingZeros n)
-  pure stk
-prim1 !_env !stk POPC !i = do
-  n <- peekOffN stk i
-  stk <- bump stk
-  unsafePokeIasN stk (popCount n)
-  pure stk
-prim1 !_env !stk COMN !i = do
-  n <- peekOffN stk i
-  stk <- bump stk
-  pokeN stk (complement n)
-  pure stk
-prim1 !_env !stk COMI !i = do
-  n <- peekOffI stk i
-  stk <- bump stk
-  pokeI stk (complement n)
-  pure stk
-prim1 !_env !stk NOTB !i = do
-  b <- peekOffBool stk i
-  stk <- bump stk
-  pokeBool stk (not b)
-  pure stk
-prim1 !_env !stk SIZT i = do
-  t <- peekOffBi stk i
-  stk <- bump stk
-  unsafePokeIasN stk $ UText.size t
-  pure stk
-prim1 !_env !stk SIZS i = do
-  s <- peekOffS stk i
-  stk <- bump stk
-  unsafePokeIasN stk $ Sq.length s
-  pure stk
-prim1 !_env !stk ITOT i = do
-  n <- upeekOff stk i
-  stk <- bump stk
-  pokeBi stk . UText.pack $ show n
-  pure stk
-prim1 !_env !stk NTOT i = do
-  n <- peekOffN stk i
-  stk <- bump stk
-  pokeBi stk . UText.pack $ show n
-  pure stk
-prim1 !_env !stk FTOT i = do
-  f <- peekOffD stk i
-  stk <- bump stk
-  pokeBi stk . UText.pack $ show f
-  pure stk
-prim1 !_env !stk USNC i =
-  peekOffBi stk i >>= \t -> case UText.unsnoc t of
-    Nothing -> do
-      stk <- bump stk
-      pokeTag stk 0
-      pure stk
-    Just (t, c) -> do
-      stk <- bumpn stk 3
-      pokeOffC stk 2 $ c -- char value
-      pokeOffBi stk 1 t -- remaining text
-      pokeTag stk 1 -- 'Just' tag
-      pure stk
-prim1 !_env !stk UCNS i =
-  peekOffBi stk i >>= \t -> case UText.uncons t of
-    Nothing -> do
-      stk <- bump stk
-      pokeTag stk 0
-      pure stk
-    Just (c, t) -> do
-      stk <- bumpn stk 3
-      pokeOffBi stk 2 t -- remaining text
-      pokeOffC stk 1 $ c -- char value
-      pokeTag stk 1 -- 'Just' tag
-      pure stk
-prim1 !_env !stk TTOI i =
-  peekOffBi stk i >>= \t -> case readm $ UText.unpack t of
-    Just n
-      | fromIntegral (minBound :: Int) <= n,
-        n <= fromIntegral (maxBound :: Int) -> do
-          stk <- bumpn stk 2
-          pokeTag stk 1
-          pokeOffI stk 1 (fromInteger n)
-          pure stk
-    _ -> do
-      stk <- bump stk
-      pokeTag stk 0
-      pure stk
-  where
-    readm ('+' : s) = readMaybe s
-    readm s = readMaybe s
-prim1 !_env !stk TTON i =
-  peekOffBi stk i >>= \t -> case readMaybe $ UText.unpack t of
-    Just n
-      | 0 <= n,
-        n <= fromIntegral (maxBound :: Word) -> do
-          stk <- bumpn stk 2
-          pokeTag stk 1
-          pokeOffN stk 1 (fromInteger n)
-          pure stk
-    _ -> do
-      stk <- bump stk
-      pokeTag stk 0
-      pure stk
-prim1 !_env !stk TTOF i =
-  peekOffBi stk i >>= \t -> case readMaybe $ UText.unpack t of
-    Nothing -> do
-      stk <- bump stk
-      pokeTag stk 0
-      pure stk
-    Just f -> do
-      stk <- bumpn stk 2
-      pokeTag stk 1
-      pokeOffD stk 1 f
-      pure stk
-prim1 !_env !stk VWLS i =
-  peekOffS stk i >>= \case
-    Sq.Empty -> do
-      stk <- bump stk
-      pokeTag stk 0 -- 'Empty' tag
-      pure stk
-    x Sq.:<| xs -> do
-      stk <- bumpn stk 3
-      pokeOffS stk 2 xs -- remaining seq
-      pokeOff stk 1 x -- head
-      pokeTag stk 1 -- ':<|' tag
-      pure stk
-prim1 !_env !stk VWRS i =
-  peekOffS stk i >>= \case
-    Sq.Empty -> do
-      stk <- bump stk
-      pokeTag stk 0 -- 'Empty' tag
-      pure stk
-    xs Sq.:|> x -> do
-      stk <- bumpn stk 3
-      pokeOff stk 2 x -- last
-      pokeOffS stk 1 xs -- remaining seq
-      pokeTag stk 1 -- ':|>' tag
-      pure stk
-prim1 !_env !stk PAKT i = do
-  s <- peekOffS stk i
-  stk <- bump stk
-  pokeBi stk . UText.pack . toList $ val2char <$> s
-  pure stk
-  where
-    val2char :: Val -> Char
-    val2char (CharVal c) = c
-    val2char c = error $ "pack text: non-character closure: " ++ show c
-prim1 !_env !stk UPKT i = do
-  t <- peekOffBi stk i
-  stk <- bump stk
-  pokeS stk
-    . Sq.fromList
-    . fmap CharVal
-    . UText.unpack
-    $ t
-  pure stk
-prim1 !_env !stk PAKB i = do
-  s <- peekOffS stk i
-  stk <- bump stk
-  pokeBi stk . By.fromWord8s . fmap val2w8 $ toList s
-  pure stk
-  where
-    -- TODO: Should we have a tag for bytes specifically?
-    val2w8 :: Val -> Word8
-    val2w8 (NatVal n) = toEnum . fromEnum $ n
-    val2w8 c = error $ "pack bytes: non-natural closure: " ++ show c
-prim1 !_env !stk UPKB i = do
-  b <- peekOffBi stk i
-  stk <- bump stk
-  pokeS stk . Sq.fromList . fmap (NatVal . toEnum @Word64 . fromEnum @Word8) $
-    By.toWord8s b
-  pure stk
-prim1 !_env !stk SIZB i = do
-  b <- peekOffBi stk i
-  stk <- bump stk
-  unsafePokeIasN stk $ By.size b
-  pure stk
-prim1 !_env !stk FLTB i = do
-  b <- peekOffBi stk i
-  stk <- bump stk
-  pokeBi stk $ By.flatten b
-  pure stk
+prim1 !_env !stk DECI !i = prim1wrap deci stk i
+prim1 !_env !stk DECN !i = prim1wrap decn stk i
+prim1 !_env !stk INCI !i = prim1wrap inci stk i
+prim1 !_env !stk INCN !i = prim1wrap incn stk i
+prim1 !_env !stk TRNC !i = prim1wrap trnc stk i
+prim1 !_env !stk NEGI !i = prim1wrap negi stk i
+prim1 !_env !stk SGNI !i = prim1wrap sgni stk i
+prim1 !_env !stk ABSF !i = prim1wrap absf stk i
+prim1 !_env !stk CEIL !i = prim1wrap ceil stk i
+prim1 !_env !stk FLOR !i = prim1wrap flor stk i
+prim1 !_env !stk TRNF !i = prim1wrap trnf stk i
+prim1 !_env !stk RNDF !i = prim1wrap rndf stk i
+prim1 !_env !stk EXPF !i = prim1wrap expf stk i
+prim1 !_env !stk LOGF !i = prim1wrap logf stk i
+prim1 !_env !stk SQRT !i = prim1wrap sqtf stk i
+prim1 !_env !stk COSF !i = prim1wrap cosf stk i
+prim1 !_env !stk SINF !i = prim1wrap sinf stk i
+prim1 !_env !stk TANF !i = prim1wrap tanf stk i
+prim1 !_env !stk COSH !i = prim1wrap cshf stk i
+prim1 !_env !stk SINH !i = prim1wrap snhf stk i
+prim1 !_env !stk TANH !i = prim1wrap tnhf stk i
+prim1 !_env !stk ACOS !i = prim1wrap acsf stk i
+prim1 !_env !stk ASIN !i = prim1wrap asnf stk i
+prim1 !_env !stk ATAN !i = prim1wrap atnf stk i
+prim1 !_env !stk ASNH !i = prim1wrap asnh stk i
+prim1 !_env !stk ACSH !i = prim1wrap acsh stk i
+prim1 !_env !stk ATNH !i = prim1wrap atnh stk i
+prim1 !_env !stk ITOF !i = prim1wrap itof stk i
+prim1 !_env !stk NTOF !i = prim1wrap ntof stk i
+prim1 !_env !stk LZRO !i = prim1wrap lzro stk i
+prim1 !_env !stk TZRO !i = prim1wrap tzro stk i
+prim1 !_env !stk POPC !i = prim1wrap popc stk i
+prim1 !_env !stk COMN !i = prim1wrap comn stk i
+prim1 !_env !stk COMI !i = prim1wrap comi stk i
+prim1 !_env !stk NOTB !i = prim1wrap notb stk i
+prim1 !_env !stk SIZT i = prim1wrap sizt stk i
+prim1 !_env !stk SIZS i = prim1wrap sizs stk i
+prim1 !_env !stk ITOT i = prim1wrap itot stk i
+prim1 !_env !stk NTOT i = prim1wrap ntot stk i
+prim1 !_env !stk FTOT i = prim1wrap ftot stk i
+prim1 !_env !stk USNC i = prim1wrap usnc stk i
+prim1 !_env !stk UCNS i = prim1wrap ucns stk i
+prim1 !_env !stk TTOI i = prim1wrap ttoi stk i
+prim1 !_env !stk TTON i = prim1wrap tton stk i
+prim1 !_env !stk TTOF i = prim1wrap ttof stk i
+prim1 !_env !stk VWLS i = prim1wrap vwls stk i
+prim1 !_env !stk VWRS i = prim1wrap vwrs stk i
+prim1 !_env !stk PAKT i = prim1wrap pakt stk i
+prim1 !_env !stk UPKT i = prim1wrap upkt stk i
+prim1 !_env !stk PAKB i = prim1wrap pakb stk i
+prim1 !_env !stk UPKB i = prim1wrap upkb stk i
+prim1 !_env !stk SIZB i = prim1wrap sizb stk i
+prim1 !_env !stk FLTB i = prim1wrap fltb stk i
+prim1 !_env !stk REFR i = prim1wrap refr stk i
+prim1 !_env !stk REFN i = prim1wrap refn stk i
+prim1 !env !stk RRFC i = prim1wrap (rrfc env) stk i
+prim1 !_env !stk TIKR i = prim1wrap tikr stk i
 
--- The docs for IORef state that IORef operations can be observed
--- out of order ([1]) but actually GHC does emit the appropriate
--- load and store barriers nowadays ([2], [3]).
---
--- [1] https://hackage.haskell.org/package/base-4.17.0.0/docs/Data-IORef.html#g:2
--- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
--- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
-prim1 !_env !stk REFR i = do
-  (ref :: IORef Val) <- peekOffBi stk i
-  v <- IORef.readIORef ref
-  stk <- bump stk
-  poke stk v
-  pure stk
-prim1 !_env !stk REFN i = do
-  -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
-  -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
-  -- forcing of the values and tickets.
-  !v <- evaluate =<< peekOff stk i
-  ref <- IORef.newIORef v
-  stk <- bump stk
-  pokeBi stk ref
-  pure stk
-prim1 !env !stk RRFC i
-  | sandboxed env = die "attempted to use sandboxed operation: Ref.readForCAS"
-  | otherwise = do
-      (ref :: IORef Val) <- peekOffBi stk i
-      ticket <- Atomic.readForCAS ref
-      stk <- bump stk
-      pokeBi stk ticket
-      pure stk
-prim1 !_env !stk TIKR i = do
-  (t :: Atomic.Ticket Val) <- peekOffBi stk i
-  stk <- bump stk
-  let v = Atomic.peekTicket t
-  poke stk v
-  pure stk
+prim1 !env !stk MISS i = prim1wrap (miss env) stk i
+prim1 !env !stk SDBL i = prim1wrap (sdbl env) stk i
 
-prim1 !env !stk MISS i
-  | sandboxed env = die "attempted to use sandboxed operation: isMissing"
-  | otherwise = do
-      clink <- bpeekOff stk i
-      let link = case unwrapForeign $ marshalToForeign clink of
-            Ref r -> r
-            _ -> error "exec:prim1:MISS: Expected Ref"
-      m <- readTVarIO (intermed env)
-      stk <- bump stk
-      stk <$ pokeBool stk (link `M.member` m)
-
+-- handled elsewhere
 prim1 !_env !stk CACH _ = pure stk
 prim1 !_env !stk LKUP _ = pure stk
 prim1 !_env !stk CVLD _ = pure stk
@@ -420,8 +122,72 @@ prim1 !_env !stk TLTT _ = pure stk
 prim1 !_env !stk LOAD _ = pure stk
 prim1 !_env !stk VALU _ = pure stk
 prim1 !_env !stk DBTX _ = pure stk
-prim1 !_env !stk SDBL _ = pure stk
 {-# inline prim1 #-}
+
+priml :: CCache -> Stack -> Prim1 -> MLit -> IO Stack
+priml !_env !stk DECI !l = prim1wrapl deci stk l
+priml !_env !stk DECN !l = prim1wrapl decn stk l
+priml !_env !stk INCI !l = prim1wrapl inci stk l
+priml !_env !stk INCN !l = prim1wrapl incn stk l
+priml !_env !stk TRNC !l = prim1wrapl trnc stk l
+priml !_env !stk NEGI !l = prim1wrapl negi stk l
+priml !_env !stk SGNI !l = prim1wrapl sgni stk l
+priml !_env !stk ABSF !l = prim1wrapl absf stk l
+priml !_env !stk CEIL !l = prim1wrapl ceil stk l
+priml !_env !stk FLOR !l = prim1wrapl flor stk l
+priml !_env !stk TRNF !l = prim1wrapl trnf stk l
+priml !_env !stk RNDF !l = prim1wrapl rndf stk l
+priml !_env !stk EXPF !l = prim1wrapl expf stk l
+priml !_env !stk LOGF !l = prim1wrapl logf stk l
+priml !_env !stk SQRT !l = prim1wrapl sqtf stk l
+priml !_env !stk COSF !l = prim1wrapl cosf stk l
+priml !_env !stk SINF !l = prim1wrapl sinf stk l
+priml !_env !stk TANF !l = prim1wrapl tanf stk l
+priml !_env !stk COSH !l = prim1wrapl cshf stk l
+priml !_env !stk SINH !l = prim1wrapl snhf stk l
+priml !_env !stk TANH !l = prim1wrapl tnhf stk l
+priml !_env !stk ACOS !l = prim1wrapl acsf stk l
+priml !_env !stk ASIN !l = prim1wrapl asnf stk l
+priml !_env !stk ATAN !l = prim1wrapl atnf stk l
+priml !_env !stk ASNH !l = prim1wrapl asnh stk l
+priml !_env !stk ACSH !l = prim1wrapl acsh stk l
+priml !_env !stk ATNH !l = prim1wrapl atnh stk l
+priml !_env !stk ITOF !l = prim1wrapl itof stk l
+priml !_env !stk NTOF !l = prim1wrapl ntof stk l
+priml !_env !stk LZRO !l = prim1wrapl lzro stk l
+priml !_env !stk TZRO !l = prim1wrapl tzro stk l
+priml !_env !stk POPC !l = prim1wrapl popc stk l
+priml !_env !stk COMN !l = prim1wrapl comn stk l
+priml !_env !stk COMI !l = prim1wrapl comi stk l
+priml !_env !stk NOTB !l = prim1wrapl notb stk l
+priml !_env !stk SIZT l = prim1wrapl sizt stk l
+priml !_env !stk SIZS l = prim1wrapl sizs stk l
+priml !_env !stk ITOT l = prim1wrapl itot stk l
+priml !_env !stk NTOT l = prim1wrapl ntot stk l
+priml !_env !stk FTOT l = prim1wrapl ftot stk l
+priml !_env !stk USNC l = prim1wrapl usnc stk l
+priml !_env !stk UCNS l = prim1wrapl ucns stk l
+priml !_env !stk TTOI l = prim1wrapl ttoi stk l
+priml !_env !stk TTON l = prim1wrapl tton stk l
+priml !_env !stk TTOF l = prim1wrapl ttof stk l
+priml !_env !stk VWLS l = prim1wrapl vwls stk l
+priml !_env !stk VWRS l = prim1wrapl vwrs stk l
+priml !_env !stk PAKT l = prim1wrapl pakt stk l
+priml !_env !stk UPKT l = prim1wrapl upkt stk l
+priml !_env !stk PAKB l = prim1wrapl pakb stk l
+priml !_env !stk UPKB l = prim1wrapl upkb stk l
+priml !_env !stk SIZB l = prim1wrapl sizb stk l
+priml !_env !stk FLTB l = prim1wrapl fltb stk l
+priml !_env !stk REFR l = prim1wrapl refr stk l
+priml !_env !stk REFN l = prim1wrapl refn stk l
+
+priml !env !stk MISS l = prim1wrapl (miss env) stk l
+priml !env !stk SDBL l = prim1wrapl (sdbl env) stk l
+
+priml _ _ op _ = throwIO $ Panic msg Nothing
+  where
+    msg = "priml: operation `" ++ show op ++ "` applied to invalid literal"
+{-# inline priml #-}
 
 -- Wrap an implementation to act on an index on two indices
 prim2wrap2 ::
@@ -457,6 +223,18 @@ prim2wrapr f stk x j = do
   stk <- bump stk
   stk <$ f stk x y
 {-# inline prim2wrapr #-}
+
+prim2wrapll ::
+  ForeignConvention x =>
+  ForeignConvention y =>
+  (Stack -> x -> y -> IO ()) ->
+  Stack -> MLit -> MLit -> IO Stack
+prim2wrapll f stk l r = do
+  x <- readLit l
+  y <- readLit r
+  stk <- bump stk
+  stk <$ f stk x y
+{-# inline prim2wrapll #-}
 
 -- Primops applied to two stack indices
 primxx :: Stack -> Prim2 -> Int -> Int -> IO Stack
@@ -541,6 +319,86 @@ primxx stk SDBX _ _ = pure stk
 primxx stk SDBV _ _ = pure stk
 primxx stk TRCE _ _ = pure stk
 {-# inline primxx #-}
+
+primll :: Stack -> Prim2 -> MLit -> MLit -> IO Stack
+primll stk ADDI i j = prim2wrapll addi stk i j
+primll stk SUBI i j = prim2wrapll subi stk i j
+primll stk MULI i j = prim2wrapll muli stk i j
+primll stk DIVI i j = prim2wrapll divi stk i j
+primll stk MODI i j = prim2wrapll modi stk i j
+primll stk EQLI i j = prim2wrapll eqli stk i j
+primll stk NEQI i j = prim2wrapll neqi stk i j
+primll stk LEQI i j = prim2wrapll leqi stk i j
+primll stk LESI i j = prim2wrapll lesi stk i j
+primll stk ANDI i j = prim2wrapll andi stk i j
+primll stk IORI i j = prim2wrapll iori stk i j
+primll stk XORI i j = prim2wrapll xori stk i j
+primll stk SHLI i j = prim2wrapll shli stk i j
+primll stk SHRI i j = prim2wrapll shri stk i j
+primll stk POWI i j = prim2wrapll powi stk i j
+
+primll stk ADDN i j = prim2wrapll addn stk i j
+primll stk SUBN i j = prim2wrapll subn stk i j
+primll stk MULN i j = prim2wrapll muln stk i j
+primll stk DIVN i j = prim2wrapll divn stk i j
+primll stk MODN i j = prim2wrapll modn stk i j
+primll stk SHLN i j = prim2wrapll shln stk i j
+primll stk SHRN i j = prim2wrapll shrn stk i j
+primll stk POWN i j = prim2wrapll pown stk i j
+primll stk EQLN i j = prim2wrapll eqln stk i j
+primll stk NEQN i j = prim2wrapll neqn stk i j
+primll stk LEQN i j = prim2wrapll leqn stk i j
+primll stk LESN i j = prim2wrapll lesn stk i j
+primll stk ANDN i j = prim2wrapll andn stk i j
+primll stk IORN i j = prim2wrapll iorn stk i j
+primll stk XORN i j = prim2wrapll xorn stk i j
+primll stk DRPN i j = prim2wrapll drpn stk i j
+
+primll stk EQLF i j = prim2wrapll eqlf stk i j
+primll stk NEQF i j = prim2wrapll neqf stk i j
+primll stk LEQF i j = prim2wrapll leqf stk i j
+primll stk LESF i j = prim2wrapll lesf stk i j
+primll stk ADDF i j = prim2wrapll addf stk i j
+primll stk SUBF i j = prim2wrapll subf stk i j
+primll stk MULF i j = prim2wrapll mulf stk i j
+primll stk DIVF i j = prim2wrapll divf stk i j
+primll stk ATN2 i j = prim2wrapll atn2 stk i j
+primll stk POWF i j = prim2wrapll powf stk i j
+primll stk LOGB i j = prim2wrapll logb stk i j
+primll stk MAXF i j = prim2wrapll maxf stk i j
+primll stk MINF i j = prim2wrapll minf stk i j
+primll stk DRPT i j = prim2wrapll drpt stk i j
+primll stk TAKT i j = prim2wrapll takt stk i j
+primll stk CATT i j = prim2wrapll catt stk i j
+primll stk IXOT i j = prim2wrapll ixot stk i j
+primll stk EQLT i j = prim2wrapll eqlt stk i j
+primll stk LEQT i j = prim2wrapll leqt stk i j
+primll stk LEST i j = prim2wrapll lest stk i j
+primll stk EQLU i j = prim2wrapll eqlu stk i j
+primll stk CMPU i j = prim2wrapll cmpu stk i j
+primll stk LEQU i j = prim2wrapll lequ stk i j
+primll stk LESU i j = prim2wrapll lesu stk i j
+primll stk DRPS i j = prim2wrapll drps stk i j
+primll stk TAKS i j = prim2wrapll taks stk i j
+primll stk CONS i j = prim2wrapll cons stk i j
+primll stk SNOC i j = prim2wrapll snoc stk i j
+primll stk IDXS i j = prim2wrapll idxs stk i j
+primll stk SPLL i j = prim2wrapll spll stk i j
+primll stk SPLR i j = prim2wrapll splr stk i j
+primll stk CATS i j = prim2wrapll cats stk i j
+primll stk TAKB i j = prim2wrapll takb stk i j
+primll stk DRPB i j = prim2wrapll drpb stk i j
+primll stk IDXB i j = prim2wrapll idxb stk i j
+primll stk CATB i j = prim2wrapll catb stk i j
+primll stk REFW i j = prim2wrapll refw stk i j
+primll stk CAST i j = prim2wrapll cast stk i j
+primll stk ANDB i j = prim2wrapll andb stk i j
+primll stk IORB i j = prim2wrapll iorb stk i j
+
+primll _ op _ _ = throwIO $ Panic msg Nothing
+  where
+    msg = "primll: operation `" ++ show op ++ "` applied to invalid literal"
+
 
 -- Primops applied to two stack indices
 primix :: Stack -> Prim2 -> UnboxedTypeTag -> Int -> Int -> IO Stack
@@ -641,6 +499,10 @@ primxi stk LESU i t n = prim2wrapl lesu stk i (UnboxedVal n t)
 primxi stk SNOC i t n = prim2wrapl snoc stk i (UnboxedVal n t)
 primxi stk REFW i t n = prim2wrapl refw stk i (UnboxedVal n t)
 primxi stk CAST i _ n = prim2wrapl cast stk i n
+-- literal values aren't sandboxed
+primxi stk SDBX _ _ _ = do
+  stk <- bump stk
+  stk <$ pokeBool stk True
 
 -- bad literals
 primxi _ op _ _ _ = throwIO $ Panic msg Nothing
@@ -667,6 +529,7 @@ primdx stk CMPU d j = prim2wrapr cmpu stk (DoubleVal d) j
 primdx stk LEQU d j = prim2wrapr lequ stk (DoubleVal d) j
 primdx stk LESU d j = prim2wrapr lesu stk (DoubleVal d) j
 primdx stk CONS d j = prim2wrapr cons stk (DoubleVal d) j
+primdx stk CAST d j = prim2wrapr cast stk (doubleToInt d) j
 
 -- bad literals
 primdx _ op _ _ = throwIO $ Panic msg Nothing
@@ -694,7 +557,10 @@ primxd stk LEQU i d = prim2wrapl lequ stk i (DoubleVal d)
 primxd stk LESU i d = prim2wrapl lesu stk i (DoubleVal d)
 primxd stk SNOC i d = prim2wrapl snoc stk i (DoubleVal d)
 primxd stk REFW i d = prim2wrapl refw stk i (DoubleVal d)
-primxd stk CAST i d = prim2wrapl cast stk i (doubleToInt d)
+-- literal values aren't sandboxed
+primxd stk SDBX _ _ = do
+  stk <- bump stk
+  stk <$ pokeBool stk True
 
 -- bad literals
 primxd _ op _ _ = throwIO $ Panic msg Nothing
@@ -734,6 +600,10 @@ primxt stk LEQU i t = prim2wrapl lequ stk i (TextVal t)
 primxt stk LESU i t = prim2wrapl lesu stk i (TextVal t)
 primxt stk SNOC i t = prim2wrapl snoc stk i (TextVal t)
 primxt stk REFW i t = prim2wrapl refw stk i (TextVal t)
+-- literal values aren't sandboxed
+primxt stk SDBX _ _ = do
+  stk <- bump stk
+  stk <$ pokeBool stk True
 
 -- bad literals
 primxt _ op _ _ = throwIO $ Panic msg Nothing
@@ -742,6 +612,16 @@ primxt _ op _ _ = throwIO $ Panic msg Nothing
 {-# inline primxt #-}
 
 primxm :: Stack -> Prim2 -> Int -> Referent -> IO Stack
+primxm stk EQLU i m = prim2wrapl eqlu stk i (termLinkVal m)
+primxm stk CMPU i m = prim2wrapl cmpu stk i (termLinkVal m)
+primxm stk LEQU i m = prim2wrapl lequ stk i (termLinkVal m)
+primxm stk LESU i m = prim2wrapl lesu stk i (termLinkVal m)
+primxm stk SNOC i m = prim2wrapl snoc stk i (termLinkVal m)
+-- literal values aren't sandboxed
+primxm stk SDBX _ _ = do
+  stk <- bump stk
+  stk <$ pokeBool stk True
+
 -- bad literals
 primxm _ op _ _ = throwIO $ Panic msg Nothing
   where
@@ -749,6 +629,11 @@ primxm _ op _ _ = throwIO $ Panic msg Nothing
 {-# inline primxm #-}
 
 primmx :: Stack -> Prim2 -> Referent -> Int -> IO Stack
+primmx stk EQLU m j = prim2wrapr eqlu stk (termLinkVal m) j
+primmx stk CMPU m j = prim2wrapr cmpu stk (termLinkVal m) j
+primmx stk LEQU m j = prim2wrapr lequ stk (termLinkVal m) j
+primmx stk LESU m j = prim2wrapr lesu stk (termLinkVal m) j
+primmx stk CONS m j = prim2wrapr cons stk (termLinkVal m) j
 
 -- bad literals
 primmx _ op _ _ = throwIO $ Panic msg Nothing
@@ -756,7 +641,19 @@ primmx _ op _ _ = throwIO $ Panic msg Nothing
     msg = "primmx: operation `" ++ show op ++ "` applied to bad literal"
 {-# inline primmx #-}
 
+termLinkVal :: Referent -> Val
+termLinkVal = BoxedVal . Foreign . Wrap Rf.termLinkRef
+
 primxy :: Stack -> Prim2 -> Int -> Reference -> IO Stack
+primxy stk EQLU i y = prim2wrapl eqlu stk i (typeLinkVal y)
+primxy stk CMPU i y = prim2wrapl cmpu stk i (typeLinkVal y)
+primxy stk LEQU i y = prim2wrapl lequ stk i (typeLinkVal y)
+primxy stk LESU i y = prim2wrapl lesu stk i (typeLinkVal y)
+primxy stk SNOC i y = prim2wrapl snoc stk i (typeLinkVal y)
+-- literal values aren't sandboxed
+primxy stk SDBX _ _ = do
+  stk <- bump stk
+  stk <$ pokeBool stk True
 
 -- bad literals
 primxy _ op _ _ = throwIO $ Panic msg Nothing
@@ -765,12 +662,20 @@ primxy _ op _ _ = throwIO $ Panic msg Nothing
 {-# inline primxy #-}
 
 primyx :: Stack -> Prim2 -> Reference -> Int -> IO Stack
+primyx stk EQLU y j = prim2wrapr eqlu stk (typeLinkVal y) j
+primyx stk CMPU y j = prim2wrapr cmpu stk (typeLinkVal y) j
+primyx stk LEQU y j = prim2wrapr lequ stk (typeLinkVal y) j
+primyx stk LESU y j = prim2wrapr lesu stk (typeLinkVal y) j
+primyx stk CONS y j = prim2wrapr cons stk (typeLinkVal y) j
 
 -- bad literals
 primyx _ op _ _ = throwIO $ Panic msg Nothing
   where
     msg = "primyx: operation `" ++ show op ++ "` applied to bad literal"
 {-# inline primyx #-}
+
+typeLinkVal :: Reference -> Val
+typeLinkVal = BoxedVal . Foreign . Wrap Rf.typeLinkRef
 
 -- Evaluation and writeback portion of primops.
 --
@@ -780,6 +685,249 @@ primyx _ op _ _ = throwIO $ Panic msg Nothing
 --
 -- The bodies always accept a stack that has already been bumped to
 -- the appropriate location for their return result.
+deci :: Stack -> Int -> IO ()
+deci stk m = pokeI stk (m - 1)
+
+decn :: Stack -> Word64 -> IO ()
+decn stk m = pokeN stk (m - 1)
+
+inci :: Stack -> Int -> IO ()
+inci stk m = pokeI stk (m + 1)
+
+incn :: Stack -> Word64 -> IO ()
+incn stk m = pokeN stk (m + 1)
+
+trnc :: Stack -> Int -> IO ()
+trnc stk v = unsafePokeIasN stk (max 0 v)
+
+negi :: Stack -> Int -> IO ()
+negi stk m = pokeI stk (-m)
+
+sgni :: Stack -> Int -> IO ()
+sgni stk m = pokeI stk (signum m)
+
+absf :: Stack -> Double -> IO ()
+absf stk d = pokeD stk (abs d)
+
+ceil :: Stack -> Double -> IO ()
+ceil stk d = pokeI stk (ceiling d)
+
+flor :: Stack -> Double -> IO ()
+flor stk d = pokeI stk (floor d)
+
+trnf :: Stack -> Double -> IO ()
+trnf stk d = pokeI stk (truncate d)
+
+rndf :: Stack -> Double -> IO ()
+rndf stk d = pokeI stk (round d)
+
+expf :: Stack -> Double -> IO ()
+expf stk d = pokeD stk (exp d)
+
+logf :: Stack -> Double -> IO ()
+logf stk d = pokeD stk (log d)
+
+sqtf :: Stack -> Double -> IO ()
+sqtf stk d = pokeD stk (sqrt d)
+
+cosf :: Stack -> Double -> IO ()
+cosf stk d = pokeD stk (cos d)
+
+sinf :: Stack -> Double -> IO ()
+sinf stk d = pokeD stk (sin d)
+
+tanf :: Stack -> Double -> IO ()
+tanf stk d = pokeD stk (tan d)
+
+cshf :: Stack -> Double -> IO ()
+cshf stk d = pokeD stk (cosh d)
+
+snhf :: Stack -> Double -> IO ()
+snhf stk d = pokeD stk (sinh d)
+
+tnhf :: Stack -> Double -> IO ()
+tnhf stk d = pokeD stk (tanh d)
+
+acsf :: Stack -> Double -> IO ()
+acsf stk d = pokeD stk (acos d)
+
+asnf :: Stack -> Double -> IO ()
+asnf stk d = pokeD stk (asin d)
+
+atnf :: Stack -> Double -> IO ()
+atnf stk d = pokeD stk (atan d)
+
+asnh :: Stack -> Double -> IO ()
+asnh stk d = pokeD stk (asinh d)
+
+acsh :: Stack -> Double -> IO ()
+acsh stk d = pokeD stk (acosh d)
+
+atnh :: Stack -> Double -> IO ()
+atnh stk d = pokeD stk (atanh d)
+
+itof :: Stack -> Int -> IO ()
+itof stk n = pokeD stk (fromIntegral n)
+
+ntof :: Stack -> Word64 -> IO ()
+ntof stk n = pokeD stk (fromIntegral n)
+
+lzro :: Stack -> Word64 -> IO ()
+lzro stk n = unsafePokeIasN stk (countLeadingZeros n)
+
+tzro :: Stack -> Word64 -> IO ()
+tzro stk n = unsafePokeIasN stk (countTrailingZeros n)
+
+popc :: Stack -> Word64 -> IO ()
+popc stk n = unsafePokeIasN stk (popCount n)
+
+comn :: Stack -> Word64 -> IO ()
+comn stk n = pokeN stk (complement n)
+
+comi :: Stack -> Int -> IO ()
+comi stk n = pokeI stk (complement n)
+
+notb :: Stack -> Bool -> IO ()
+notb stk b = pokeBool stk (not b)
+
+sizt :: Stack -> Text -> IO ()
+sizt stk t = unsafePokeIasN stk $ UText.size t
+
+sizs :: Stack -> USeq -> IO ()
+sizs stk s = unsafePokeIasN stk $ Sq.length s
+
+itot :: Stack -> Int -> IO ()
+itot stk n = pokeBi stk . UText.pack $ show n
+
+ntot :: Stack -> Word64 -> IO ()
+ntot stk n = pokeBi stk . UText.pack $ show n
+
+ftot :: Stack -> Double -> IO ()
+ftot stk f = pokeBi stk . UText.pack $ show f
+
+usnc :: Stack -> Text -> IO ()
+usnc stk t = writeBack stk (UText.unsnoc t)
+
+ucns :: Stack -> Text -> IO ()
+ucns stk t = writeBack stk (UText.uncons t)
+
+ttoi :: Stack -> Text -> IO ()
+ttoi stk t = writeBack stk (readi $ UText.unpack t)
+  where
+    readi :: String -> Maybe Int
+    readi ('+' : s) = readMaybe s
+    readi s = readMaybe s
+
+tton :: Stack -> Text -> IO ()
+tton stk t = writeBack stk (readn $ UText.unpack t)
+  where
+    readn :: String -> Maybe Word64
+    readn = readMaybe
+
+ttof :: Stack -> Text -> IO ()
+ttof stk t = writeBack stk (readd $ UText.unpack t)
+  where
+    readd :: String -> Maybe Double
+    readd = readMaybe
+
+vwls :: Stack -> USeq -> IO ()
+vwls stk s = writeBack stk result
+  where
+    result = case s of
+      Sq.Empty -> SeqViewEmpty
+      x Sq.:<| xs -> SeqViewElem x xs
+
+vwrs :: Stack -> USeq -> IO ()
+vwrs stk s = writeBack stk result
+  where
+    result = case s of
+      Sq.Empty -> SeqViewEmpty
+      xs Sq.:|> x -> SeqViewElem xs x
+
+pakt :: Stack -> USeq -> IO ()
+pakt stk s = pokeBi stk . UText.pack . toList $ val2char <$> s
+  where
+    val2char :: Val -> Char
+    val2char (CharVal c) = c
+    val2char c = error $ "pack text: non-character closure: " ++ show c
+
+upkt :: Stack -> Text -> IO ()
+upkt stk t =
+  pokeS stk
+    . Sq.fromList
+    . fmap CharVal
+    . UText.unpack
+    $ t
+
+pakb :: Stack -> USeq -> IO ()
+pakb stk s = pokeBi stk . By.fromWord8s . fmap val2w8 $ toList s
+  where
+    -- TODO: Should we have a tag for bytes specifically?
+    val2w8 :: Val -> Word8
+    val2w8 (NatVal n) = toEnum . fromEnum $ n
+    val2w8 c = error $ "pack bytes: non-natural closure: " ++ show c
+
+upkb :: Stack -> Bytes -> IO ()
+upkb stk b =
+  pokeS stk . Sq.fromList . fmap (NatVal . toEnum @Word64 . fromEnum @Word8) $
+    By.toWord8s b
+
+sizb :: Stack -> Bytes -> IO ()
+sizb stk b = unsafePokeIasN stk $ By.size b
+
+fltb :: Stack -> Bytes -> IO ()
+fltb stk b = pokeBi stk $ By.flatten b
+
+-- The docs for IORef state that IORef operations can be observed
+-- out of order ([1]) but actually GHC does emit the appropriate
+-- load and store barriers nowadays ([2], [3]).
+--
+-- [1] https://hackage.haskell.org/package/base-4.17.0.0/docs/Data-IORef.html#g:2
+-- [2] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L286
+-- [3] https://github.com/ghc/ghc/blob/master/compiler/GHC/StgToCmm/Prim.hs#L298
+refr :: Stack -> IORef Val -> IO ()
+refr stk ref = IORef.readIORef ref >>= poke stk
+
+refn :: Stack -> Val -> IO ()
+refn stk v = do
+  -- Note that the CAS machinery is extremely fussy w/r to whether things are forced because it
+  -- uses unsafe pointer equality. The only way we've gotten it to work as expected is with liberal
+  -- forcing of the values and tickets.
+  !v <- evaluate v
+  ref <- IORef.newIORef v
+  pokeBi stk ref
+
+rrfc :: CCache -> Stack -> IORef Val -> IO ()
+rrfc env stk ref
+  | sandboxed env = die "attempted to use sandboxed operation: Ref.readForCAS"
+  | otherwise = do
+      ticket <- Atomic.readForCAS ref
+      pokeBi stk ticket
+
+tikr :: Stack -> Atomic.Ticket Val -> IO ()
+tikr stk t = poke stk (Atomic.peekTicket t)
+
+miss :: CCache -> Stack -> Closure -> IO ()
+miss env stk clink
+  | sandboxed env = die "attempted to use sandboxed operation: isMissing"
+  | otherwise = do
+      let link = case unwrapForeign $ marshalToForeign clink of
+            Ref r -> r
+            _ -> error "exec:prim1:MISS: Expected Ref"
+      m <- readTVarIO (intermed env)
+      pokeBool stk (link `M.member` m)
+{-# inline miss #-}
+
+sdbl :: CCache -> Stack -> Referent -> IO ()
+sdbl env stk tl = writeBack stk =<< sandboxList env tl
+{-# inline sdbl #-}
+
+sandboxList :: CCache -> Referent -> IO [Reference]
+sandboxList cc (Ref r) = do
+  sands <- readTVarIO $ sandbox cc
+  pure . maybe [] S.toList $ M.lookup r sands
+sandboxList _ _ = pure []
+
 addi :: Stack -> Int -> Int -> IO ()
 addi stk m n = pokeI stk (m + n)
 {-# inline addi #-}
@@ -845,7 +993,7 @@ addn stk m n = pokeN stk (m + n)
 {-# inline addn #-}
 
 subn :: Stack -> Word64 -> Word64 -> IO ()
-subn stk m n = pokeN stk (m - n)
+subn stk m n = pokeI stk . fromIntegral $ m - n
 {-# inline subn #-}
 
 muln :: Stack -> Word64 -> Word64 -> IO ()
@@ -957,9 +1105,8 @@ minf stk x y = pokeD stk (min x y)
 {-# inline minf #-}
 
 drpt :: Stack -> Int -> Text -> IO ()
-drpt stk n0 t0 = pokeBi stk t
+drpt stk n t0 = pokeBi stk t
   where
-    n = fromIntegral n0
     -- Note; if n < 0, the Nat argument was greater than the maximum
     -- signed integer. As an approximation, just return the empty
     -- string, as a string larger than this would require an absurd
@@ -968,14 +1115,13 @@ drpt stk n0 t0 = pokeBi stk t
       | otherwise = UText.drop n t0
 
 takt :: Stack -> Int -> Text -> IO ()
-takt stk n0 t0 = pokeBi stk t
+takt stk n t0 = pokeBi stk t
   where
-    n = fromIntegral n0
     -- Note: if n < 0, the Nat argument was greater than the maximum
     -- signed integer. As an approximation, we just return the
     -- original string, because it's unlikely such a large string
     -- exists.
-    t | n < 0 = t
+    t | n < 0 = t0
       | otherwise = UText.take n t0
 
 catt :: Stack -> Text -> Text -> IO ()
@@ -1059,7 +1205,7 @@ encodeSeqView ::
   SeqView a b -> Closure
 encodeSeqView SeqViewEmpty = seqViewE
 encodeSeqView (SeqViewElem x y) =
-  Data2 Ty.seqViewRef Ty.seqViewEmptyTag (encodeVal x) (encodeVal y)
+  Data2 Ty.seqViewRef Ty.seqViewElemTag (encodeVal x) (encodeVal y)
 
 instance ( ForeignConvention a
          , ForeignConvention b
@@ -1123,7 +1269,7 @@ refw stk ref v = IORef.writeIORef ref v *> bpoke stk unitClosure
 {-# inline refw #-}
 
 cast :: Stack -> Int -> Int -> IO ()
-cast stk tag n = poke stk $ UnboxedVal n (unboxedTypeTagFromInt tag)
+cast stk n tag = poke stk $ UnboxedVal n (unboxedTypeTagFromInt tag)
 {-# inline cast #-}
 
 andb :: Stack -> Bool -> Bool -> IO ()

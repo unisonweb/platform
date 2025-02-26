@@ -51,7 +51,7 @@ import Unison.Reference
     isBuiltin,
     toShortHash,
   )
-import Unison.Referent (Referent, pattern Con, pattern Ref)
+import Unison.Referent (pattern Con, pattern Ref)
 import Unison.Runtime.ANF as ANF
   ( Cacheability (..),
     Code (..),
@@ -360,16 +360,11 @@ exec env !denv !_activeThreads !stk !k _ (Prim1 DBTX i)
           stk <- bump stk
           stk <$ pokeTag stk 2
       pure (False, denv, stk, k)
-exec env !denv !_activeThreads !stk !k _ (Prim1 SDBL i)
-  | sandboxed env =
-      die "attempted to use sandboxed operation: sandboxLinks"
-  | otherwise = do
-      tl <- peekOffBi stk i
-      stk <- bump stk
-      pokeS stk . encodeSandboxListResult =<< sandboxList env tl
-      pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (Prim1 op i) = do
   stk <- prim1 env stk op i
+  pure (False, denv, stk, k)
+exec env !denv !_activeThreads !stk !k _ (PrimL op l) = do
+  stk <- priml env stk op l
   pure (False, denv, stk, k)
 exec env !denv !_activeThreads !stk !k _ (PrimXX SDBX i j) = do
   s <- peekOffS stk i
@@ -1284,12 +1279,6 @@ codeValidate tml cc = do
       let msg = Util.Text.pack $ toPlainUnbroken perr
           extra = Foreign . Wrap Rf.textRef . Util.Text.pack $ show cs
        in pure . Just $ Failure ioFailureRef msg extra
-
-sandboxList :: CCache -> Referent -> IO [Reference]
-sandboxList cc (Ref r) = do
-  sands <- readTVarIO $ sandbox cc
-  pure . maybe [] S.toList $ M.lookup r sands
-sandboxList _ _ = pure []
 
 checkSandboxing ::
   CCache ->
