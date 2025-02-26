@@ -241,6 +241,11 @@ instance BuiltinForeign ProcessHandle where
   foreignName = Tagged "ProcessHandle"
   foreignRef = Tagged Ty.processHandleRef
 
+-- | Note: References are assumed to be type links
+instance BuiltinForeign Reference where
+  foreignName = Tagged "Reference"
+  foreignRef = Tagged Ty.typeLinkRef
+
 instance BuiltinForeign Referent where
   foreignName = Tagged "Referent"
   foreignRef = Tagged Ty.termLinkRef

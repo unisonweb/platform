@@ -764,7 +764,7 @@ foreignCallHelper = \case
   IO_array -> mkForeign $
     \n -> PA.newArray n emptyVal
   IO_arrayOf -> mkForeign $
-    \(v :: Val, n) -> PA.newArray n v
+    \(v :: Val, n :: Word64) -> PA.newArray (fromIntegral n) v
   IO_bytearray -> mkForeign $ PA.newByteArray
   IO_bytearrayOf -> mkForeign $
     \(init, sz) -> do
@@ -772,9 +772,9 @@ foreignCallHelper = \case
       PA.fillByteArray arr 0 sz init
       pure arr
   Scope_array -> mkForeign $
-    \n -> PA.newArray n emptyVal
+    \(n :: Word64) -> PA.newArray (fromIntegral n) emptyVal
   Scope_arrayOf -> mkForeign $
-    \(v :: Val, n) -> PA.newArray n v
+    \(v :: Val, n :: Word64) -> PA.newArray (fromIntegral n) v
   Scope_bytearray -> mkForeign $ PA.newByteArray
   Scope_bytearrayOf -> mkForeign $
     \(init, sz) -> do
@@ -1900,6 +1900,26 @@ instance {-# overlapping #-} ForeignConvention String where
   readAtIndex = readAsBuiltin unpack
   writeBack = writeAsBuiltin pack
 
+instance {-# overlapping #-} ForeignConvention Text where
+  decodeVal = decodeBuiltin
+  encodeVal = encodeBuiltin
+
+  readLit (MT t) = pure t
+  readLit l = readLitError (Just "Unison.Util.Text") l
+
+  readAtIndex = readBuiltinAt
+  writeBack = writeBuiltin
+
+instance {-# overlapping #-} ForeignConvention Data.Text.Text where
+  decodeVal = decodeAsBuiltin Util.Text.toText
+  encodeVal = encodeAsBuiltin Util.Text.fromText
+
+  readLit (MT t) = pure (Util.Text.toText t)
+  readLit l = readLitError (Just "Data.Text.Text") l
+
+  readAtIndex = readAsBuiltin Util.Text.toText
+  writeBack = writeAsBuiltin Util.Text.fromText
+
 instance ForeignConvention Bool where
   decodeVal (BoolVal b) = pure b
   decodeVal v = foreignConventionError "Bool" v
@@ -1929,6 +1949,21 @@ instance ForeignConvention Val where
 
   readAtIndex = peekOff
   writeBack = poke
+
+instance ForeignConvention Closure where
+  decodeVal (BoxedVal c) = pure c
+  decodeVal v = foreignConventionError "Closure" v
+
+  encodeVal = BoxedVal
+
+  readLit (MT t) = pure . Foreign $ Wrap Ty.textRef t
+  readLit (MM r) = pure . Foreign $ Wrap Ty.termLinkRef r
+  readLit (MY r) = pure . Foreign $ Wrap Ty.typeLinkRef r
+  readLit l = readLitError (Just "Closure") l
+
+  readAtIndex = bpeekOff
+
+  writeBack = bpoke
 
 instance ForeignConvention Foreign where
   decodeVal (BoxedVal (Foreign f)) = pure f
@@ -1969,8 +2004,30 @@ instance ForeignConvention a => ForeignConvention [a] where
 
   writeBack stk sq = pokeS stk . Sq.fromList $ encodeVal <$> sq
 
+instance ForeignConvention Reference where
+  decodeVal = decodeBuiltin
+  encodeVal = encodeBuiltin
+  readAtIndex = readBuiltinAt
+  writeBack = writeBuiltin
+
+  readLit (MY r) = pure r
+  readLit l = readLitError (Just "Reference") l
+
+instance ForeignConvention Referent where
+  decodeVal = decodeBuiltin
+  encodeVal = encodeBuiltin
+  readAtIndex = readBuiltinAt
+  writeBack = writeBuiltin
+
+  readLit (MM r) = pure r
+  readLit l = readLitError (Just "Referent") l
+
 instance {-# overlappable #-} (BuiltinForeign b) => ForeignConvention b where
   decodeVal = decodeBuiltin
   encodeVal = encodeBuiltin
   readAtIndex = readBuiltinAt
   writeBack = writeBuiltin
+
+  readLit l = readLitError (Just name) l
+    where
+      Tagged name = foreignName @b
