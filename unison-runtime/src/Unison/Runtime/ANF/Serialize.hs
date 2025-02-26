@@ -1037,7 +1037,7 @@ deserializeCode bs = runGetS (getVersion >>= getCode) bs
   where
     getVersion =
       getWord32be >>= \case
-        n | 1 <= n && n <= 3 -> pure n
+        n | 1 <= n && n <= 4 -> pure n
         n -> fail $ "deserializeGroup: unknown version: " ++ show n
 
 serializeCode :: Map ForeignFunc Text -> Code -> ByteString
