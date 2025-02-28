@@ -20,6 +20,7 @@ import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
 import Unison.Cli.NamesUtils qualified as Cli
+import Unison.Cli.Pretty qualified as Cli
 import Unison.Codebase qualified as Codebase
 import Unison.Codebase.Branch qualified as Branch
 import Unison.Codebase.Editor.HandleInput.RuntimeUtils (EvalMode (..))
@@ -27,7 +28,6 @@ import Unison.Codebase.Editor.HandleInput.RuntimeUtils qualified as RuntimeUtils
 import Unison.Codebase.Editor.Input (TestInput (..))
 import Unison.Codebase.Editor.Output
 import Unison.Codebase.Editor.Output qualified as Output
-import Unison.Codebase.Path (Path)
 import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.Runtime qualified as Runtime
 import Unison.ConstructorReference (GConstructorReference (..))
@@ -54,6 +54,7 @@ import Unison.Type qualified as Type
 import Unison.Typechecker qualified as Typechecker
 import Unison.UnisonFile qualified as UF
 import Unison.Util.Monoid (foldMapM)
+import Unison.Util.Pretty qualified as P
 import Unison.Util.Relation qualified as R
 import Unison.Util.Set qualified as Set
 import Unison.WatchKind qualified as WK
@@ -118,8 +119,11 @@ handleTest native TestInput {includeLibNamespace, path, showFailures, showSucces
           tm' <- RuntimeUtils.evalPureUnison native fqnPPE False tm
           case tm' of
             Left e -> do
-              Cli.respond (EvaluationFailure e)
-              pure []
+              Cli.respond $ TestIncrementalOutputEnd fqnPPE (n, total) r False
+              let
+                testName = (Cli.prettyTermName fqnPPE (Referent.fromTermReferenceId r))
+                e' = P.callout ("Error while evaluating test " <> P.backticked testName) e
+              Cli.returnEarly (EvaluationFailure e')
             Right tm' -> do
               -- After evaluation, cache the result of the test
               Cli.runTransaction (Codebase.putWatch WK.TestWatch r tm')
@@ -150,7 +154,7 @@ handleIOTest native main = do
       refs
   Cli.respondNumbered $ TestResults Output.NewlyComputed suffixifiedPPE True True oks fails
 
-findTermsOfTypes :: Codebase.Codebase m Symbol Ann -> Bool -> Path -> NESet (Type.Type Symbol Ann) -> Cli (Set TermReferenceId)
+findTermsOfTypes :: Codebase.Codebase m Symbol Ann -> Bool -> Path.Relative -> NESet (Type.Type Symbol Ann) -> Cli (Set TermReferenceId)
 findTermsOfTypes codebase includeLib path filterTypes = do
   branch <- Cli.expectBranch0AtPath path
 
@@ -172,7 +176,7 @@ handleAllIOTests native = do
   names <- Cli.currentNames
   let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
   let suffixifiedPPE = PPED.suffixifiedPPE pped
-  ioTestRefs <- findTermsOfTypes codebase False Path.empty (Runtime.ioTestTypes runtime)
+  ioTestRefs <- findTermsOfTypes codebase False mempty (Runtime.ioTestTypes runtime)
   case NESet.nonEmptySet ioTestRefs of
     Nothing -> Cli.respondNumbered $ TestResults Output.NewlyComputed suffixifiedPPE True True Map.empty Map.empty
     Just neTestRefs -> do

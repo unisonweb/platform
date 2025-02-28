@@ -4,6 +4,7 @@ module U.Codebase.Projects
 where
 
 import Control.Lens (ifoldMap)
+import Data.Bool (bool)
 import Data.Map qualified as Map
 import U.Codebase.Branch
 import U.Codebase.Branch qualified as Branch
@@ -24,29 +25,24 @@ import Unison.Util.Monoid (ifoldMapM)
 -- For the top-level name lookup of a user codebase it returns the project roots, and will return something like:
 -- @[(public.nested.myproject.latest, #abc), (public.other.namespace.otherproject.main, #def)]@
 inferDependencyMounts :: Branch Sqlite.Transaction -> Sqlite.Transaction [(Path, BranchHash)]
-inferDependencyMounts branch = do
-  children <- Branch.nonEmptyChildren branch
-  do
-    children
-    & ifoldMapM \segment child -> do
-      case segment of
-        seg
-          | seg == libSegment -> do
-              childBranch <- Causal.value child
-              deps <- Branch.nonEmptyChildren childBranch
-              deps
-                & ( ifoldMap \depName depBranch ->
-                      [(Path.fromList [seg, depName], Causal.valueHash depBranch)]
-                  )
-                & pure
-          | otherwise -> do
-              childBranch <- Causal.value child
-              nestedChildren <- Branch.nonEmptyChildren childBranch
-              -- If a given child has a lib child, then it's inferred to be a project root.
-              -- This allows us to detect most project roots in loose code.
-              -- Note, we only do this on children nested at least one level deep
-              -- to avoid treating project roots as their own self-referential dependency
-              -- mounts. Mount paths must not be empty.
-              case Map.member libSegment nestedChildren of
-                True -> pure [(Path.fromList [seg], Causal.valueHash child)]
-                False -> inferDependencyMounts childBranch <&> map (first (Path.cons seg))
+inferDependencyMounts =
+  ifoldMapM
+    ( \seg child -> do
+        childBranch <- Causal.value child
+        if seg == libSegment
+          then
+            ifoldMap (\depName depBranch -> [(Path.fromList [seg, depName], Causal.valueHash depBranch)])
+              <$> Branch.nonEmptyChildren childBranch
+          else -- If a given child has a lib child, then it's inferred to be a project root.
+          -- This allows us to detect most project roots in loose code.
+          -- Note, we only do this on children nested at least one level deep
+          -- to avoid treating project roots as their own self-referential dependency
+          -- mounts. Mount paths must not be empty.
+
+            bool
+              (map (first . Path.resolve $ Path.singleton seg) <$> inferDependencyMounts childBranch)
+              (pure [(Path.singleton seg, Causal.valueHash child)])
+              . Map.member libSegment
+              =<< Branch.nonEmptyChildren childBranch
+    )
+    <=< Branch.nonEmptyChildren

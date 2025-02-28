@@ -21,7 +21,6 @@ module Unison.CommandLine.Completion
 where
 
 import Control.Lens
-import Control.Lens qualified as Lens
 import Data.Aeson qualified as Aeson
 import Data.List (isPrefixOf)
 import Data.List qualified as List
@@ -83,8 +82,8 @@ haskelineTabComplete patterns codebase authedHTTPClient ppCtx = Line.completeWor
     case words $ reverse prev of
       h : t -> fromMaybe (pure []) $ do
         p <- Map.lookup h patterns
-        argType <- IP.argType p (length t)
-        pure $ IP.suggestions argType word codebase authedHTTPClient ppCtx
+        paramType <- IP.paramType (IP.params p) (length t)
+        pure $ IP.suggestions paramType word codebase authedHTTPClient ppCtx
       _ -> pure []
 
 -- | Things which we may want to complete for.
@@ -152,7 +151,7 @@ completeWithinNamespace compTypes query ppCtx = do
       & fmap
         ( \(ty, isFinished, match) ->
             ( isFinished,
-              Text.unpack (dotifyNamespace ty (Path.toText' (queryPathPrefix Lens.:> NameSegment match)))
+              Text.unpack (dotifyNamespace ty (Path.toText (Path.descend queryPathPrefix $ NameSegment match)))
             )
         )
       & filter (\(_isFinished, match) -> List.isPrefixOf query match)
@@ -187,7 +186,7 @@ completeWithinNamespace compTypes query ppCtx = do
                     & fmap
                       ( \(ty, isFinished, match) ->
                           ( isFinished,
-                            Text.unpack (dotifyNamespace ty (Path.toText' (queryPathPrefix Lens.:> suffix Lens.:> NameSegment match)))
+                            Text.unpack (dotifyNamespace ty (Path.toText (Path.descend (Path.descend queryPathPrefix suffix) $ NameSegment match)))
                           )
                       )
                     & filter (\(_isFinished, match) -> List.isPrefixOf query match)
@@ -265,11 +264,11 @@ completeWithinNamespace compTypes query ppCtx = do
 parseLaxPath'Query :: Text -> (Path.Path', Text)
 parseLaxPath'Query txt =
   case P.runParser ((,) <$> Path.splitP' <*> P.takeRest) "" (Text.unpack txt) of
-    Left _err -> (Path.relativeEmpty', txt)
-    Right ((path, segment), rest) ->
+    Left _err -> (Path.Current', txt)
+    Right (name, rest) ->
       if take 1 rest == "."
-        then (Path.unsplit' (path, segment), Text.empty)
-        else (path, NameSegment.toEscapedText segment)
+        then (Path.unsplit name, Text.empty)
+        else NameSegment.toEscapedText <$> name
 
 -- | Completes a namespace argument by prefix-matching against the query.
 prefixCompleteNamespace ::
@@ -376,7 +375,7 @@ shareCompletion completionTypes authHTTPClient str =
         let (path, pathSuffix) =
               case unsnoc path0 of
                 Just (path, pathSuffix) -> (Path.fromList path, NameSegment.toEscapedText pathSuffix)
-                Nothing -> (Path.empty, "")
+                Nothing -> (mempty, "")
         NamespaceListing {namespaceListingChildren} <- MaybeT $ fetchShareNamespaceInfo authHTTPClient (NameSegment.toEscapedText userHandle) path
         namespaceListingChildren
           & fmap

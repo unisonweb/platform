@@ -87,7 +87,7 @@ modifierP = do
   where
     unique = do
       tok <- openBlockWith "unique"
-      optional (openBlockWith "[" *> importWordyId <* closeBlock) >>= \case
+      optional (openBlockWith "[" *> importRelativeWordyId <* closeBlock) >>= \case
         Nothing -> pure (UnresolvedModifier'UniqueWithoutGuid <$ tok)
         Just guid -> pure (UnresolvedModifier'UniqueWithGuid (Name.toText (L.payload guid)) <$ tok)
     structural = do

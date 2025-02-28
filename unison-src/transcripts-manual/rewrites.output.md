@@ -184,9 +184,11 @@ scratch/main> rewrite woot1to2
 -- | Rewrote using: 
 -- | Modified definition(s): wootEx
 
-ability Woot1 where woot1 : '{Woot1} Nat
+ability Woot1 where
+  woot1 : '{Woot1} Nat
 
-ability Woot2 where woot2 : '{Woot2} Nat
+ability Woot2 where
+  woot2 : '{Woot2} Nat
 
 woot1to2 x =
   @rewrite

@@ -11,7 +11,6 @@ module Unison.Codebase.ProjectPath
     path,
     toProjectAndBranch,
     projectAndBranch_,
-    toText,
     toIds,
     toNames,
     projectPathParser,
@@ -46,16 +45,27 @@ data ProjectPathG proj branch = ProjectPath
   }
   deriving stock (Eq, Functor, Ord, Show, Generic)
 
+instance Path.Pathy ProjectPath where
+  descend p seg = over absPath_ (flip Path.descend seg) p
+  prefix pre suf = over absPath_ (flip Path.prefix suf) pre
+  split (ProjectPath proj branch path) = first (ProjectPath proj branch) <$> Path.split path
+  toText = Path.toText . toNames
+
+instance Path.Pathy ProjectPathNames where
+  descend p seg = over absPath_ (flip Path.descend seg) p
+  prefix pre suf = over absPath_ (flip Path.prefix suf) pre
+  split (ProjectPath proj branch path) = first (ProjectPath proj branch) <$> Path.split path
+  toText (ProjectPath proj branch (Path.Absolute path)) = into @Text (ProjectAndBranch proj branch) <> ":" <> Path.toText path
+
 type ProjectPathIds = ProjectPathG ProjectId ProjectBranchId
 
 type ProjectPathNames = ProjectPathG ProjectName ProjectBranchName
 
 instance From ProjectPath Text where
-  from = from . toNames
+  from = Path.toText
 
 instance From ProjectPathNames Text where
-  from (ProjectPath proj branch (Path.Absolute path)) =
-    into @Text (ProjectAndBranch proj branch) <> ":" <> Path.toText path
+  from = Path.toText
 
 instance From (ProjectPathG () ProjectBranchName) Text where
   from (ProjectPath () branch (Path.Absolute path)) =
@@ -64,11 +74,11 @@ instance From (ProjectPathG () ProjectBranchName) Text where
 type ProjectPath = ProjectPathG Project ProjectBranch
 
 projectBranchRoot :: ProjectAndBranch Project ProjectBranch -> ProjectPath
-projectBranchRoot (ProjectAndBranch proj branch) = ProjectPath proj branch Path.absoluteEmpty
+projectBranchRoot (ProjectAndBranch proj branch) = ProjectPath proj branch Path.Root
 
 -- | Discard any path within the project and get the project's root
 toRoot :: ProjectPath -> ProjectPath
-toRoot (ProjectPath proj branch _) = ProjectPath proj branch Path.absoluteEmpty
+toRoot (ProjectPath proj branch _) = ProjectPath proj branch Path.Root
 
 fromProjectAndBranch :: ProjectAndBranch Project ProjectBranch -> Path.Absolute -> ProjectPath
 fromProjectAndBranch (ProjectAndBranch proj branch) path = ProjectPath proj branch path
@@ -92,10 +102,6 @@ instance Bifoldable ProjectPathG where
 
 instance Bitraversable ProjectPathG where
   bitraverse f g (ProjectPath p b path) = ProjectPath <$> f p <*> g b <*> pure path
-
-toText :: ProjectPathG Project ProjectBranch -> Text
-toText (ProjectPath proj branch path) =
-  into @Text (proj ^. #name) <> "/" <> into @Text (branch ^. #name) <> ":" <> Path.absToText path
 
 absPath_ :: Lens' (ProjectPathG p b) Path.Absolute
 absPath_ = lens absPath set

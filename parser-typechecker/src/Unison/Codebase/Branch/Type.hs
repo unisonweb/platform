@@ -39,7 +39,8 @@ import Unison.Codebase.Causal.Type (Causal)
 import Unison.Codebase.Causal.Type qualified as Causal
 import Unison.Codebase.Metadata qualified as Metadata
 import Unison.Codebase.Patch (Patch)
-import Unison.Codebase.Path (Path (..))
+import Unison.Codebase.Path (Path)
+import Unison.Codebase.Path qualified as Path
 import Unison.Hash qualified as Hash
 import Unison.Name (Name)
 import Unison.Name qualified as Name
@@ -269,7 +270,7 @@ deriveDeepPaths branch =
               paths =
                 if isEmpty0 b0
                   then Set.empty
-                  else (Set.singleton . Path . Seq.fromList . reverse) reversePrefix
+                  else (Set.singleton . Path.fromList . reverse) reversePrefix
           children <- deepChildrenHelper e
           go (work <> children) (paths <> acc)
 

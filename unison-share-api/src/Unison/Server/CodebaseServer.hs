@@ -302,7 +302,7 @@ urlFor service baseUrl =
 
     namespacePath :: Path.Path -> [URISegment]
     namespacePath path =
-      if path == Path.empty
+      if path == mempty
         then []
         else [DontEscape "namespaces"] <> (EscapeMe . NameSegment.toEscapedText <$> Path.toList path)
 

@@ -55,7 +55,7 @@ file = do
     optional (reserved "namespace") >>= \case
       Nothing -> pure Nothing
       Just _ -> do
-        namespace <- importWordyId <|> importSymbolyId
+        namespace <- importRelativeWordyId <|> importRelativeSymbolyId
         void (optional semi)
         pure (Just namespace.payload)
   let maybeNamespaceVar = Name.toVar <$> maybeNamespace
@@ -401,9 +401,9 @@ stanza = watchExpression <|> unexpectedAction <|> binding
 
 watched :: (Monad m, Var v) => P v m (UF.WatchKind, Text, Ann)
 watched = P.try do
-  kind <- (fmap . fmap . fmap) (Text.unpack . Name.toText) (optional importWordyId)
+  kind <- (fmap . fmap . fmap) (Text.unpack . Name.toText) (optional importRelativeWordyId)
   guid <- uniqueName 10
-  op <- optional (L.payload <$> P.lookAhead importSymbolyId)
+  op <- optional (L.payload <$> P.lookAhead importRelativeSymbolyId)
   guard (op == Just (Name.fromSegment NameSegment.watchSegment))
   tok <- anyToken
   guard $ maybe True (`L.touches` tok) kind

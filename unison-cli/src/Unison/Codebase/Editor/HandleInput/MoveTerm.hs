@@ -1,6 +1,5 @@
 module Unison.Codebase.Editor.HandleInput.MoveTerm (doMoveTerm, moveTermSteps) where
 
-import Control.Lens (_1, _2)
 import Data.Set qualified as Set
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
@@ -13,12 +12,12 @@ import Unison.Codebase.Path (Path')
 import Unison.Codebase.Path qualified as Path
 import Unison.Codebase.ProjectPath qualified as PP
 import Unison.HashQualifiedPrime qualified as HQ'
-import Unison.NameSegment (NameSegment)
 import Unison.Prelude
 
-moveTermSteps :: (Path', HQ'.HQSegment) -> (Path', NameSegment) -> Cli [(Path.Absolute, Branch0 m -> Branch0 m)]
+moveTermSteps ::
+  HQ'.HashQualified (Path.Split Path') -> Path.Split Path' -> Cli [(Path.Absolute, Branch0 m -> Branch0 m)]
 moveTermSteps src' dest' = do
-  src <- Cli.resolveSplit' src'
+  src <- traverse Cli.resolveSplit' src'
   srcTerms <- Cli.getTermsAt src
   case Set.toList srcTerms of
     [] -> pure []
@@ -27,17 +26,16 @@ moveTermSteps src' dest' = do
       Cli.returnEarly (Output.DeleteNameAmbiguous hqLength src' srcTerms Set.empty)
     [srcTerm] -> do
       dest <- Cli.resolveSplit' dest'
-      destTerms <- Cli.getTermsAt (HQ'.NameOnly <$> dest)
+      destTerms <- Cli.getTermsAt $ HQ'.NameOnly dest
       when (not (Set.null destTerms)) do
         Cli.returnEarly (Output.TermAlreadyExists dest' destTerms)
-      let p = src & _1 %~ view PP.absPath_
       pure
         [ -- Mitchell: throwing away any hash-qualification here seems wrong!
-          BranchUtil.makeDeleteTermName (over _2 HQ'.toName p) srcTerm,
-          BranchUtil.makeAddTermName (over _1 (view PP.absPath_) dest) srcTerm
+          BranchUtil.makeDeleteTermName (first (view PP.absPath_) $ HQ'.toName src) srcTerm,
+          BranchUtil.makeAddTermName (first (view PP.absPath_) dest) srcTerm
         ]
 
-doMoveTerm :: (Path', HQ'.HQSegment) -> (Path', NameSegment) -> Text -> Cli ()
+doMoveTerm :: HQ'.HashQualified (Path.Split Path') -> Path.Split Path' -> Text -> Cli ()
 doMoveTerm src' dest' description = do
   steps <- moveTermSteps src' dest'
   when (null steps) do

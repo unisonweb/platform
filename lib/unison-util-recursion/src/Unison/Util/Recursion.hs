@@ -8,6 +8,7 @@ module Unison.Util.Recursion
     cataM,
     para,
     Fix (..),
+    XNor (..),
   )
 where
 
@@ -16,6 +17,7 @@ import Control.Comonad.Cofree (Cofree ((:<)))
 import Control.Comonad.Trans.Cofree (CofreeF)
 import Control.Comonad.Trans.Cofree qualified as CofreeF
 import Control.Monad ((<=<))
+import Data.Sequence (Seq (Empty, (:<|)))
 
 type Algebra f a = f a -> a
 
@@ -53,3 +55,26 @@ instance (Functor f) => Recursive (Fix f) f where
 instance (Functor f) => Recursive (Cofree f a) (CofreeF f a) where
   embed (a CofreeF.:< fco) = a :< fco
   project (a :< fco) = a CofreeF.:< fco
+
+-- | The pattern functor for sequences.
+data XNor a b = Neither | Both a !b
+
+instance Functor (XNor a) where
+  fmap fn = \case
+    Neither -> Neither
+    Both a b -> Both a $ fn b
+
+-- |
+--
+--  __NB__: Lists are lazy, so this instance is technically partial.
+instance Recursive [a] (XNor a) where
+  cata φ = foldr (\a -> φ . Both a) $ φ Neither
+  embed = \case
+    Neither -> []
+    Both a b -> a : b
+
+instance Recursive (Seq a) (XNor a) where
+  cata φ = foldr (\a -> φ . Both a) $ φ Neither
+  embed = \case
+    Neither -> Empty
+    Both a b -> a :<| b

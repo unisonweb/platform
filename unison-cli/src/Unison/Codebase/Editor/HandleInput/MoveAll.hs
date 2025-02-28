@@ -14,9 +14,9 @@ import Unison.Prelude
 handleMoveAll :: Bool -> Path.Path' -> Path.Path' -> Text -> Cli ()
 handleMoveAll hasConfirmed src' dest' description = do
   moveBranchFunc <- moveBranchFunc hasConfirmed src' dest'
-  moveTermTypeSteps <- case (,) <$> Path.toSplit' src' <*> Path.toSplit' dest' of
+  moveTermTypeSteps <- case (,) <$> Path.split src' <*> Path.split dest' of
     Nothing -> pure []
-    Just (fmap HQ'.NameOnly -> src, dest) -> do
+    Just (HQ'.NameOnly -> src, dest) -> do
       termSteps <- moveTermSteps src dest
       typeSteps <- moveTypeSteps src dest
       pure (termSteps ++ typeSteps)

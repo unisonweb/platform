@@ -9,7 +9,6 @@ module Unison.Codebase.Editor.Input
     Event (..),
     OutputLocation (..),
     RelativeToFold (..),
-    PatchPath,
     BranchIdG (..),
     BranchId,
     BranchId2,
@@ -18,7 +17,6 @@ module Unison.Codebase.Editor.Input
     parseBranchId,
     parseBranchId2,
     parseShortCausalHash,
-    HashOrHQSplit',
     Insistence (..),
     PullMode (..),
     OptionalPatch (..),
@@ -48,11 +46,11 @@ import Unison.Codebase.ShortCausalHash (ShortCausalHash)
 import Unison.Codebase.ShortCausalHash qualified as SCH
 import Unison.CommandLine.BranchRelativePath (BranchRelativePath, parseBranchRelativePath)
 import Unison.HashQualified qualified as HQ
+import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.Name (Name)
 import Unison.NameSegment (NameSegment)
 import Unison.Prelude
 import Unison.Project (ProjectAndBranch, ProjectAndBranchNames, ProjectBranchName, ProjectBranchNameOrLatestRelease, ProjectName, Semver)
-import Unison.ShortHash (ShortHash)
 import Unison.Util.Pretty qualified as P
 
 data Event
@@ -63,7 +61,7 @@ type Source = Text -- "id x = x\nconst a b = a"
 
 type SourceName = Text -- "foo.u" or "buffer 7"
 
-type PatchPath = Path.Split'
+type PatchPath = Path.Split Path'
 
 type ErrorMessageOrValue a = Either (P.Pretty P.ColorText) a
 
@@ -94,8 +92,6 @@ type AbsBranchId = BranchIdG Path.Absolute
 
 -- | An unambiguous project branch name, use the current project name if not provided.
 type UnresolvedProjectBranch = ProjectAndBranch (Maybe ProjectName) ProjectBranchName
-
-type HashOrHQSplit' = Either ShortHash Path.HQSplit'
 
 -- | Should we force the operation or not?
 data Insistence = Force | Try
@@ -157,13 +153,12 @@ data Input
     -- > names #sdflkjsdfhsdf
     -- > names foo.bar foo.baz #sdflkjsdfhsdf
     NamesI IsGlobal [(RawQuery, ErrorMessageOrName)]
-  | AliasTermI !Bool HashOrHQSplit' Path.Split' -- bool = force?
-  | AliasTypeI !Bool HashOrHQSplit' Path.Split' -- bool = force?
-  | AliasManyI [Path.HQSplit] Path'
+  | AliasTermI !Bool (HQ'.HashOrHQ (Path.Split Path')) (Path.Split Path') -- bool = force?
+  | AliasTypeI !Bool (HQ'.HashOrHQ (Path.Split Path')) (Path.Split Path') -- bool = force?
+  | AliasManyI [HQ'.HashQualified (Path.Split Path)] Path'
   | MoveAllI Path.Path' Path.Path'
-  | -- Move = Rename; It's an HQSplit' not an HQSplit', meaning the arg has to have a name.
-    MoveTermI Path.HQSplit' Path.Split'
-  | MoveTypeI Path.HQSplit' Path.Split'
+  | MoveTermI (HQ'.HashQualified (Path.Split Path')) (Path.Split Path')
+  | MoveTypeI (HQ'.HashQualified (Path.Split Path')) (Path.Split Path')
   | MoveBranchI Path.Path' Path.Path'
   | -- delete = unname
     DeleteI DeleteTarget
@@ -213,8 +208,8 @@ data Input
   | ShowProjectReflogI (Maybe ProjectName)
   | ShowProjectBranchReflogI (Maybe (ProjectAndBranch (Maybe ProjectName) ProjectBranchName))
   | UpdateBuiltinsI
-  | MergeBuiltinsI (Maybe Path)
-  | MergeIOBuiltinsI (Maybe Path)
+  | MergeBuiltinsI (Maybe Path.Relative)
+  | MergeIOBuiltinsI (Maybe Path.Relative)
   | ListDependenciesI (HQ.HashQualified Name)
   | ListDependentsI (HQ.HashQualified Name)
   | -- | List all external dependencies of a given namespace, or the current namespace if
@@ -301,7 +296,7 @@ data TestInput = TestInput
   { -- | Should we run tests in the `lib` namespace?
     includeLibNamespace :: Bool,
     -- | Relative path to run the tests in. Ignore if `includeLibNamespace` is True - that means test everything.
-    path :: Path,
+    path :: Path.Relative,
     showFailures :: Bool,
     showSuccesses :: Bool
   }
@@ -338,10 +333,10 @@ data DeleteOutput
   deriving stock (Eq, Show)
 
 data DeleteTarget
-  = DeleteTarget'TermOrType DeleteOutput [Path.HQSplit']
-  | DeleteTarget'Term DeleteOutput [Path.HQSplit']
-  | DeleteTarget'Type DeleteOutput [Path.HQSplit']
-  | DeleteTarget'Namespace Insistence (Maybe Path.Split)
+  = DeleteTarget'TermOrType DeleteOutput [HQ'.HashQualified (Path.Split Path')]
+  | DeleteTarget'Term DeleteOutput [HQ'.HashQualified (Path.Split Path')]
+  | DeleteTarget'Type DeleteOutput [HQ'.HashQualified (Path.Split Path')]
+  | DeleteTarget'Namespace Insistence (Maybe (Path.Split Path.Relative))
   | DeleteTarget'ProjectBranch (ProjectAndBranch (Maybe ProjectName) ProjectBranchName)
   | DeleteTarget'Project ProjectName
   deriving stock (Eq, Show)

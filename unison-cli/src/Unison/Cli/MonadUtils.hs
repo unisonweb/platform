@@ -6,7 +6,6 @@ module Unison.Cli.MonadUtils
     getCurrentProjectName,
     getCurrentProjectBranchName,
     getCurrentProjectPath,
-    resolvePath,
     resolvePath',
     resolvePath'ToAbsolute,
     resolveSplit',
@@ -86,6 +85,7 @@ where
 import Control.Lens
 import Control.Monad.Reader (ask)
 import Control.Monad.State
+import Data.Bitraversable (bitraverse)
 import Data.Foldable
 import Data.Set qualified as Set
 import U.Codebase.Branch qualified as V2 (Branch)
@@ -163,12 +163,6 @@ getCurrentProjectBranchName :: Cli ProjectBranchName
 getCurrentProjectBranchName = do
   view (#branch . #name) <$> getCurrentProjectPath
 
--- | Resolve a @Path@ (interpreted as relative) to a @Path.Absolute@, per the current path.
-resolvePath :: Path -> Cli PP.ProjectPath
-resolvePath path = do
-  pp <- getCurrentProjectPath
-  pure $ pp & PP.absPath_ %~ \p -> Path.resolve p path
-
 -- | Resolve a @Path'@ to a @Path.Absolute@, per the current path.
 resolvePath' :: Path' -> Cli PP.ProjectPath
 resolvePath' path' = do
@@ -180,9 +174,8 @@ resolvePath'ToAbsolute path' = do
   view PP.absPath_ <$> resolvePath' path'
 
 -- | Resolve a path split, per the current path.
-resolveSplit' :: (Path', a) -> Cli (PP.ProjectPath, a)
-resolveSplit' =
-  traverseOf _1 resolvePath'
+resolveSplit' :: Path.Split Path' -> Cli (Path.Split ProjectPath)
+resolveSplit' = bitraverse resolvePath' pure
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Branch resolution
@@ -193,8 +186,7 @@ resolveAbsBranchId :: Input.AbsBranchId -> Cli (Branch IO)
 resolveAbsBranchId = \case
   Input.BranchAtSCH hash -> resolveShortCausalHash hash
   Input.BranchAtPath absPath -> do
-    pp <- resolvePath' (Path' (Left absPath))
-    getBranchFromProjectPath pp
+    getBranchFromProjectPath <=< resolvePath' $ AbsolutePath' absPath
   Input.BranchAtProjectPath pp -> getBranchFromProjectPath pp
 
 -- | V2 version of 'resolveAbsBranchId2'.
@@ -301,9 +293,9 @@ getMaybeBranch0FromProjectPath pp =
   fmap Branch.head <$> getMaybeBranchFromProjectPath pp
 
 -- | Get the branch at a relative path, or return early if there's no such branch.
-expectBranchAtPath :: Path -> Cli (Branch IO)
+expectBranchAtPath :: Path.Relative -> Cli (Branch IO)
 expectBranchAtPath =
-  expectBranchAtPath' . Path' . Right . Path.Relative
+  expectBranchAtPath' . RelativePath'
 
 -- | Get the branch at an absolute or relative path, or return early if there's no such branch.
 expectBranchAtPath' :: Path' -> Cli (Branch IO)
@@ -317,9 +309,9 @@ expectBranch0AtPath' =
   fmap Branch.head . expectBranchAtPath'
 
 -- | Get the branch0 at a relative path, or return early if there's no such branch.
-expectBranch0AtPath :: Path -> Cli (Branch0 IO)
+expectBranch0AtPath :: Path.Relative -> Cli (Branch0 IO)
 expectBranch0AtPath =
-  expectBranch0AtPath' . Path' . Right . Path.Relative
+  expectBranch0AtPath' . RelativePath'
 
 -- | Assert that there's "no branch" at an absolute or relative path, or return early if there is one, where "no branch"
 -- means either there's actually no branch, or there is a branch whose head is empty (i.e. it may have a history, but no
@@ -469,34 +461,33 @@ updateProjectBranchRoot_ projectBranch reason f = do
 ------------------------------------------------------------------------------------------------------------------------
 -- Getting terms
 
-getTermsAt :: (PP.ProjectPath, HQ'.HQSegment) -> Cli (Set Referent)
-getTermsAt (pp, hqSeg) = do
-  rootBranch0 <- getBranch0FromProjectPath pp
-  pure (BranchUtil.getTerm (mempty, hqSeg) rootBranch0)
+getTermsAt :: HQ'.HashQualified (Path.Split ProjectPath) -> Cli (Set Referent)
+getTermsAt hq =
+  let (pp, seg) = HQ'.toName hq
+   in BranchUtil.getTerm ((mempty, seg) <$ hq) <$> getBranch0FromProjectPath pp
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Getting types
 
-getTypesAt :: (PP.ProjectPath, HQ'.HQSegment) -> Cli (Set TypeReference)
-getTypesAt (pp, hqSeg) = do
-  rootBranch0 <- getBranch0FromProjectPath pp
-  pure (BranchUtil.getType (mempty, hqSeg) rootBranch0)
+getTypesAt :: HQ'.HashQualified (Path.Split ProjectPath) -> Cli (Set TypeReference)
+getTypesAt hq =
+  let (pp, seg) = HQ'.toName hq
+   in BranchUtil.getType ((mempty, seg) <$ hq) <$> getBranch0FromProjectPath pp
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Getting patches
 
 -- | The default patch path.
-defaultPatchPath :: Path.Split'
-defaultPatchPath =
-  (Path.RelativePath' (Path.Relative Path.empty), NameSegment.defaultPatchSegment)
+defaultPatchPath :: Path.Split Path'
+defaultPatchPath = (Path.Current', NameSegment.defaultPatchSegment)
 
 -- | Get the patch at a path, or the empty patch if there's no such patch.
-getPatchAt :: Path.Split' -> Cli Patch
+getPatchAt :: Path.Split Path' -> Cli Patch
 getPatchAt path =
   getMaybePatchAt path <&> fromMaybe Patch.empty
 
 -- | Get the patch at a path.
-getMaybePatchAt :: Path.Split' -> Cli (Maybe Patch)
+getMaybePatchAt :: Path.Split Path' -> Cli (Maybe Patch)
 getMaybePatchAt path0 = do
   (pp, name) <- resolveSplit' path0
   branch <- getBranch0FromProjectPath pp

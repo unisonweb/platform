@@ -4,14 +4,12 @@ module Unison.CommandLine.BranchRelativePath
     branchRelativePathParser,
     parseIncrementalBranchRelativePath,
     IncrementalBranchRelativePath (..),
-    toText,
   )
 where
 
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.These (These (..))
-import Text.Builder qualified
 import Text.Megaparsec qualified as Megaparsec
 import Text.Megaparsec.Char qualified as Megaparsec
 import Unison.Codebase.Path qualified as Path
@@ -30,6 +28,24 @@ data BranchRelativePath
   | -- | A path which is relative to the user's current location.
     UnqualifiedPath Path.Path'
   deriving stock (Eq, Show)
+
+instance Path.Pathy BranchRelativePath where
+  descend brp seg = case brp of
+    BranchPathInCurrentProject branch abs -> BranchPathInCurrentProject branch $ Path.descend abs seg
+    QualifiedBranchPath proj branch abs -> QualifiedBranchPath proj branch $ Path.descend abs seg
+    UnqualifiedPath path -> UnqualifiedPath $ Path.descend path seg
+  prefix pre suf = case pre of
+    BranchPathInCurrentProject branch abs -> BranchPathInCurrentProject branch $ Path.prefix abs suf
+    QualifiedBranchPath proj branch abs -> QualifiedBranchPath proj branch $ Path.prefix abs suf
+    UnqualifiedPath path -> UnqualifiedPath $ Path.prefix path suf
+  split = \case
+    BranchPathInCurrentProject branch abs -> first (BranchPathInCurrentProject branch) <$> Path.split abs
+    QualifiedBranchPath proj branch abs -> first (QualifiedBranchPath proj branch) <$> Path.split abs
+    UnqualifiedPath path -> first UnqualifiedPath <$> Path.split path
+  toText = \case
+    BranchPathInCurrentProject pbName path -> ProjectPath () pbName path & into @Text
+    QualifiedBranchPath projName pbName path -> ProjectPath projName pbName path & into @Text
+    UnqualifiedPath path' -> Path.toText path'
 
 -- | Strings without colons are parsed as loose code paths. A path with a colon may specify:
 -- 1. A project and branch
@@ -52,30 +68,13 @@ data BranchRelativePath
 -- >>> parseBranchRelativePath ".branch"
 -- Right (UnqualifiedPath .branch)
 parseBranchRelativePath :: String -> Either (P.Pretty CT.ColorText) BranchRelativePath
-parseBranchRelativePath str =
-  case Megaparsec.parse branchRelativePathParser "<none>" (Text.pack str) of
-    Left e -> Left (P.string (Megaparsec.errorBundlePretty e))
-    Right x -> Right x
+parseBranchRelativePath =
+  first (P.string . Megaparsec.errorBundlePretty) . Megaparsec.parse branchRelativePathParser "<none>" . Text.pack
 
 -- |
 -- >>> from @BranchRelativePath @Text (BranchPathInCurrentProject "foo" (Path.absoluteEmpty "bar"))
 instance From BranchRelativePath Text where
-  from = \case
-    BranchPathInCurrentProject branch path ->
-      Text.Builder.run $
-        Text.Builder.char '/'
-          <> Text.Builder.text (into @Text branch)
-          <> Text.Builder.char ':'
-          <> Text.Builder.text (Path.absToText path)
-    QualifiedBranchPath proj branch path ->
-      Text.Builder.run $
-        Text.Builder.text (into @Text proj)
-          <> Text.Builder.char '/'
-          <> Text.Builder.text (into @Text branch)
-          <> Text.Builder.char ':'
-          <> Text.Builder.text (Path.absToText path)
-    UnqualifiedPath path ->
-      Path.toText' path
+  from = Path.toText
 
 data IncrementalBranchRelativePath
   = -- | no dots, slashes, or colons, so could be a project name or a single path segment
@@ -113,10 +112,10 @@ data IncrementalBranchRelativePath
 -- >>> parseIncrementalBranchRelativePath "/"
 -- Right (IncompleteBranch Nothing Nothing)
 parseIncrementalBranchRelativePath :: String -> Either (P.Pretty CT.ColorText) IncrementalBranchRelativePath
-parseIncrementalBranchRelativePath str =
-  case Megaparsec.parse incrementalBranchRelativePathParser "<none>" (Text.pack str) of
-    Left e -> Left (P.string (Megaparsec.errorBundlePretty e))
-    Right x -> Right x
+parseIncrementalBranchRelativePath =
+  first (P.string . Megaparsec.errorBundlePretty)
+    . Megaparsec.parse incrementalBranchRelativePathParser "<none>"
+    . Text.pack
 
 incrementalBranchRelativePathParser :: Megaparsec.Parsec Void Text IncrementalBranchRelativePath
 incrementalBranchRelativePathParser =
@@ -132,21 +131,20 @@ incrementalBranchRelativePathParser =
       -- unambiguously parse one or the other.
       parseThese Project.projectNameParser path' >>= \case
         -- project name parser consumed the slash
-        This (_, (projectName, True)) ->
-          startingAtBranch (Just projectName)
+        This (projectName, True) -> startingAtBranch (Just projectName)
         -- project name parser did not consume a slash
         --
         -- Either we are at the end of input or the next character
         -- is not a slash, so we have invalid input
-        This (_, (projectName, False)) ->
+        This (projectName, False) ->
           let end = do
                 Megaparsec.eof
                 pure (IncompleteProject projectName)
            in end <|> startingAtSlash (Just projectName)
         -- The string doesn't parse as a project name but does parse as a path
-        That (_, path) -> pure (OnlyPath' path)
+        That path -> pure (OnlyPath' path)
         -- The string parses both as a project name and a path
-        These _ (_, path) -> ProjectOrPath' <$> Megaparsec.takeRest <*> pure path
+        These (_, _) path -> ProjectOrPath' <$> Megaparsec.takeRest <*> pure path
 
     startingAtBranch :: Maybe ProjectName -> Megaparsec.Parsec Void Text IncrementalBranchRelativePath
     startingAtBranch mproj =
@@ -186,16 +184,13 @@ incrementalBranchRelativePathParser =
     brPath :: Megaparsec.Parsec Void Text Path.Absolute
     brPath = do
       offset <- Megaparsec.getOffset
-      path' >>= \(Path.Path' inner) -> case inner of
-        Left _ -> failureAt offset "Branch qualified paths don't require a leading '.'"
+      path' >>= \case
+        Path.AbsolutePath' _ -> failureAt offset "Branch qualified paths don't require a leading '.'"
         -- Branch relative paths are written as relative paths, but are always absolute to the branch root
-        Right (Path.Relative x) -> pure $ Path.Absolute x
+        Path.RelativePath' (Path.Relative x) -> pure $ Path.Absolute x
     path' = Megaparsec.try do
       offset <- Megaparsec.getOffset
-      pathStr <- Megaparsec.takeRest
-      case Path.parsePath' (Text.unpack pathStr) of
-        Left err -> failureAt offset err
-        Right x -> pure x
+      either (failureAt offset) pure . Path.parsePath' . Text.unpack =<< Megaparsec.takeRest
 
     failureAt :: forall a. Int -> Text -> Megaparsec.Parsec Void Text a
     failureAt offset str = Megaparsec.parseError (Megaparsec.FancyError offset (Set.singleton (Megaparsec.ErrorFail (Text.unpack str))))
@@ -204,38 +199,34 @@ incrementalBranchRelativePathParser =
       forall a b.
       Megaparsec.Parsec Void Text a ->
       Megaparsec.Parsec Void Text b ->
-      Megaparsec.Parsec Void Text (These (Int, a) (Int, b))
+      Megaparsec.Parsec Void Text (These a b)
     parseThese pa pb = do
-      ea <- Megaparsec.observing $ Megaparsec.lookAhead $ Megaparsec.try $ first Text.length <$> Megaparsec.match pa
-      eb <- Megaparsec.observing $ Megaparsec.lookAhead $ Megaparsec.try $ first Text.length <$> Megaparsec.match pb
+      ea <- observeParse pa
+      eb <- observeParse pb
       case (ea, eb) of
-        (Left aerr, Left berr) ->
-          Megaparsec.parseError (aerr <> berr)
+        (Left aerr, Left berr) -> Megaparsec.parseError $ aerr <> berr
         (Left _, Right (blen, b)) -> do
           Megaparsec.takeP Nothing blen
-          pure (That (blen, b))
+          pure $ That b
         (Right (alen, a), Left _) -> do
           Megaparsec.takeP Nothing alen
-          pure (This (alen, a))
-        (Right a, Right b) -> pure (These a b)
+          pure $ This a
+        (Right (_, a), Right (_, b)) -> pure $ These a b
+    observeParse = Megaparsec.observing . Megaparsec.lookAhead . Megaparsec.try . fmap (first Text.length) . Megaparsec.match
 
 branchRelativePathParser :: Megaparsec.Parsec Void Text BranchRelativePath
 branchRelativePathParser =
   incrementalBranchRelativePathParser >>= \case
-    ProjectOrPath' _txt path -> pure (UnqualifiedPath path)
-    OnlyPath' path -> pure (UnqualifiedPath path)
+    ProjectOrPath' _txt path -> pure $ UnqualifiedPath path
+    OnlyPath' path -> pure $ UnqualifiedPath path
     IncompleteProject _proj -> fail "Branch relative paths require a branch. Expected `/` here."
     IncompleteBranch _mproj _mbranch -> fail "Branch relative paths require a colon. Expected `:` here."
-    PathRelativeToCurrentBranch p -> pure (UnqualifiedPath (Path.AbsolutePath' p))
+    PathRelativeToCurrentBranch p -> pure . UnqualifiedPath $ Path.AbsolutePath' p
     IncompletePath projStuff mpath ->
-      case projStuff of
-        Left (ProjectAndBranch projName branchName) ->
-          pure $ QualifiedBranchPath projName branchName (fromMaybe Path.absoluteEmpty mpath)
-        Right branch ->
-          pure $ BranchPathInCurrentProject branch (fromMaybe Path.absoluteEmpty mpath)
-
-toText :: BranchRelativePath -> Text
-toText = \case
-  BranchPathInCurrentProject pbName path -> ProjectPath () pbName path & into @Text
-  QualifiedBranchPath projName pbName path -> ProjectPath projName pbName path & into @Text
-  UnqualifiedPath path' -> Path.toText' path'
+      pure $
+        either
+          ( \(ProjectAndBranch projName branchName) ->
+              QualifiedBranchPath projName branchName $ fromMaybe Path.Root mpath
+          )
+          (flip BranchPathInCurrentProject $ fromMaybe Path.Root mpath)
+          projStuff

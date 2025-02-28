@@ -643,7 +643,7 @@ typecheckedUnisonFileToBranchAdds tuf = do
           guard (WatchKind.watchKindShouldBeStoredInDatabase wk)
           Just (BranchUtil.makeAddTermName (splitVar var) (Referent.fromTermReferenceId ref))
 
-    splitVar :: Symbol -> Path.Split
+    splitVar :: Symbol -> Path.Split Path
     splitVar = Path.splitFromName . Name.unsafeParseVar
 
 ------------------------------------------------------------------------------------------------------------------------

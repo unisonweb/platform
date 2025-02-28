@@ -25,15 +25,15 @@ moveBranchFunc hasConfirmed src' dest' = do
     -- We want the move to appear as a single step in the root namespace, but we need to make
     -- surgical changes in both the root and the destination, so we make our modifications at the shared parent of
     -- those changes such that they appear as a single change in the root.
-    let (changeRootPath, srcLoc, destLoc) = Path.longestPathPrefix (Path.unabsolute srcAbs) (Path.unabsolute destAbs)
+    let (changeRootPath, srcLoc, destLoc) = Path.longestPathPrefix srcAbs destAbs
     let doMove changeRoot =
           changeRoot
-            & Branch.modifyAt srcLoc (const Branch.empty)
-            & Branch.modifyAt destLoc (const srcBranch)
+            & Branch.modifyAt (Path.unrelative srcLoc) (const Branch.empty)
+            & Branch.modifyAt (Path.unrelative destLoc) (const srcBranch)
     if (destBranchExists && not isRootMove)
       then Cli.respond (MovedOverExistingBranch dest')
       else pure ()
-    pure (Path.Absolute changeRootPath, doMove)
+    pure (changeRootPath, doMove)
 
 -- | Moves a branch and its history from one location to another, and saves the new root
 -- branch.

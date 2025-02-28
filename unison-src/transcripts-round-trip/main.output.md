@@ -48,14 +48,17 @@ scratch/a1> edit.new 1-1000
 ```
 
 ````` unison :added-by-ucm scratch.u
-structural ability Abort where abort : {Abort} a
+structural ability Abort where
+  abort : {Abort} a
 
-structural ability Ask a where ask : {Ask a} a
+structural ability Ask a where
+  ask : {Ask a} a
 
 structural type Fix_2337
   = Fix_2337 Boolean Boolean
 
-structural ability Fix_2392 where zonk : {Fix_2392} Nat
+structural ability Fix_2392 where
+  zonk : {Fix_2392} Nat
 
 structural type Fix_2392a x y
   = Oog Nat Nat (Nat, Nat)

@@ -104,7 +104,7 @@ serveTermSummary ::
 serveTermSummary codebase referent mayName root relativeTo mayWidth = do
   let shortHash = Referent.toShortHash referent
   let displayName = maybe (HQ.HashOnly shortHash) HQ.NameOnly mayName
-  let relativeToPath = fromMaybe Path.empty relativeTo
+  let relativeToPath = fromMaybe mempty relativeTo
   let termReference = Referent.toReference referent
   let v2Referent = Cv.referent1to2 referent
 
@@ -122,7 +122,7 @@ serveTermSummary codebase referent mayName root relativeTo mayWidth = do
           True -> do
             let deps = Type.labeledDependencies typeSig
             liftIO . Codebase.runTransaction codebase $ do
-              namesPerspective <- Ops.namesPerspectiveForRootAndPath (V2Causal.valueHash root) (coerce . Path.toList $ fromMaybe Path.Empty relativeTo)
+              namesPerspective <- Ops.namesPerspectiveForRootAndPath (V2Causal.valueHash root) (coerce $ Path.toList relativeToPath)
               PPESqlite.ppedForReferences namesPerspective deps
           False -> do
             (_localNames, ppe) <- Backend.namesAtPathFromRootBranchHash codebase root relativeToPath

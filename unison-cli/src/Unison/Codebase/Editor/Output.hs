@@ -220,14 +220,14 @@ data Output
   | BranchAlreadyExists Path'
   | FindNoLocalMatches
   | NoExactTypeMatches
-  | TypeAlreadyExists Path.Split' (Set Reference)
+  | TypeAlreadyExists (Path.Split Path') (Set Reference)
   | TypeParseError String (Parser.Err Symbol)
   | ParseResolutionFailures String [Names.ResolutionFailure Ann]
   | TypeHasFreeVars (Type Symbol Ann)
-  | TermAlreadyExists Path.Split' (Set Referent)
+  | TermAlreadyExists (Path.Split Path') (Set Referent)
   | LabeledReferenceAmbiguous Int (HQ.HashQualified Name) (Set LabeledDependency)
   | LabeledReferenceNotFound (HQ.HashQualified Name)
-  | DeleteNameAmbiguous Int Path.HQSplit' (Set Referent) (Set Reference)
+  | DeleteNameAmbiguous Int (HQ'.HashQualified (Path.Split Path')) (Set Referent) (Set Reference)
   | TermAmbiguous PPE.PrettyPrintEnv (HQ.HashQualified Name) (Set Referent)
   | HashAmbiguous ShortHash (Set Referent)
   | BranchHashAmbiguous ShortCausalHash (Set ShortCausalHash)
@@ -235,10 +235,10 @@ data Output
   | BranchNotFound Path'
   | EmptyLooseCodePush Path'
   | EmptyProjectBranchPush (ProjectAndBranch ProjectName ProjectBranchName)
-  | NameNotFound Path.HQSplit'
+  | NameNotFound (HQ'.HashQualified (Path.Split Path'))
   | NamesNotFound [Name]
-  | TypeNotFound Path.HQSplit'
-  | TermNotFound Path.HQSplit'
+  | TypeNotFound (HQ'.HashQualified (Path.Split Path'))
+  | TermNotFound (HQ'.HashQualified (Path.Split Path'))
   | MoveNothingFound Path'
   | TypeNotFound' ShortHash
   | TermNotFound' ShortHash
@@ -338,7 +338,14 @@ data Output
   | NoBranchWithHash ShortCausalHash
   | ListDependencies PPE.PrettyPrintEnv (Set LabeledDependency) [HQ.HashQualified Name] [HQ.HashQualified Name] -- types, terms
   | -- | List dependents of a type or term.
-    ListDependents PPE.PrettyPrintEnv (Set LabeledDependency) [HQ.HashQualified Name] [HQ.HashQualified Name] -- types, terms
+    ListDependents
+      PPE.PrettyPrintEnv
+      (Set LabeledDependency)
+      ( DefnsF
+          []
+          (HQ'.HashQualified Name, HQ'.HashQualified Name)
+          (HQ'.HashQualified Name, HQ'.HashQualified Name)
+      )
   | DumpNumberedArgs HashLength NumberedArgs
   | DumpBitBooster CausalHash (Map CausalHash [CausalHash])
   | DumpUnisonFileHashes Int [(Name, Reference.Id)] [(Name, Reference.Id)] [(Name, Reference.Id)]
@@ -359,6 +366,8 @@ data Output
   | DisplayDebugCompletions [Completion.Completion]
   | DisplayDebugLSPNameCompletions [(Text, Name, LabeledDependency)]
   | DebugDisplayFuzzyOptions Text [String {- arg description, options -}]
+  | DebugFuzzyOptionsIncorrectArgs (NonEmpty String)
+  | DebugFuzzyOptionsNoCommand String
   | DebugFuzzyOptionsNoResolver
   | DebugTerm (Bool {- verbose mode -}) (Either (Text {- A builtin hash -}) (Term Symbol Ann))
   | DebugDecl (Either (Text {- A builtin hash -}) (DD.Decl Symbol Ann)) (Maybe ConstructorId {- If 'Just' we're debugging a constructor of the given decl -})
@@ -620,6 +629,8 @@ isFailure o = case o of
   DisplayDebugCompletions {} -> False
   DisplayDebugLSPNameCompletions {} -> False
   DebugDisplayFuzzyOptions {} -> False
+  DebugFuzzyOptionsIncorrectArgs {} -> True
+  DebugFuzzyOptionsNoCommand {} -> True
   DebugFuzzyOptionsNoResolver {} -> True
   DebugTerm {} -> False
   DebugDecl {} -> False

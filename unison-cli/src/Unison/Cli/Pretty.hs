@@ -4,7 +4,6 @@
 -- paths, and project names.
 module Unison.Cli.Pretty
   ( displayBranchHash,
-    prettyAbsolute,
     prettyProjectPath,
     prettyBranchRelativePath,
     prettyBase32Hex#,
@@ -19,7 +18,6 @@ module Unison.Cli.Pretty
     prettyHumanReadableTime,
     prettyLabeledDependencies,
     prettyPath,
-    prettyPath',
     prettyMergeSource,
     prettyMergeSourceOrTarget,
     prettyProjectAndBranchName,
@@ -29,7 +27,6 @@ module Unison.Cli.Pretty
     prettyNamespaceKey,
     prettyReadRemoteNamespace,
     prettyReadRemoteNamespaceWith,
-    prettyRelative,
     prettyRemoteBranchInfo,
     prettyRepoInfo,
     prettySCH,
@@ -156,28 +153,18 @@ prettyRepoInfo (Share.RepoInfo repoInfo) =
 
 prettySharePath :: Share.Path -> Pretty
 prettySharePath =
-  prettyRelative
-    . Path.Relative
-    . Path.fromList
-    . coerce @[Text] @[NameSegment]
-    . toList
-    . Share.pathSegments
+  prettyPath . Path.fromList . coerce @[Text] @[NameSegment] . toList . Share.pathSegments
 
 prettyFilePath :: FilePath -> Pretty
 prettyFilePath fp =
   P.blue (P.string fp)
 
-prettyPath :: Path.Path -> Pretty
+prettyPath :: (Path.Pathy path) => path -> Pretty
 prettyPath path =
-  if path == Path.empty
-    then "the current namespace"
-    else P.blue (P.shown path)
-
-prettyPath' :: Path.Path' -> Pretty
-prettyPath' p' =
-  if Path.isCurrentPath p'
-    then "the current namespace"
-    else P.blue (P.shown p')
+  let txt = Path.toText path
+   in if txt == mempty
+        then "the current namespace"
+        else P.blue $ P.text txt
 
 prettyNamespaceKey :: Either ProjectPath (ProjectAndBranch Sqlite.Project Sqlite.ProjectBranch) -> Pretty
 prettyNamespaceKey = \case
@@ -188,21 +175,15 @@ prettyNamespaceKey = \case
 prettyBranchId :: Input.AbsBranchId -> Pretty
 prettyBranchId = \case
   Input.BranchAtSCH sch -> prettySCH sch
-  Input.BranchAtPath absPath -> prettyAbsolute $ absPath
+  Input.BranchAtPath absPath -> prettyPath absPath
   Input.BranchAtProjectPath pp -> prettyProjectPath pp
-
-prettyRelative :: Path.Relative -> Pretty
-prettyRelative = P.blue . P.shown
-
-prettyAbsolute :: Path.Absolute -> Pretty
-prettyAbsolute = P.blue . P.shown
 
 prettyProjectPath :: PP.ProjectPath -> Pretty
 prettyProjectPath (PP.ProjectPath project branch path) =
   prettyProjectAndBranchName (ProjectAndBranch project.name branch.name)
     <>
     -- Only show the path if it's not the root
-    Monoid.whenM (path /= Path.absoluteEmpty) (P.cyan (":" <> P.shown path))
+    Monoid.whenM (not $ Path.isRoot path) (P.cyan ":" <> prettyPath path)
 
 prettySCH :: (IsString s) => ShortCausalHash -> P.Pretty s
 prettySCH hash = P.group $ "#" <> P.text (SCH.toText hash)
@@ -466,7 +447,7 @@ prettyType pped (n, r, dt) =
   case dt of
     MissingObject r -> missingDefinitionMsg n r
     BuiltinObject _ -> builtin n
-    UserObject decl -> DeclPrinter.prettyDecl (PPED.biasTo (maybeToList $ HQ.toName n) $ PPE.declarationPPEDecl pped r) r n decl
+    UserObject decl -> DeclPrinter.prettyDecl (PPED.biasTo (maybeToList $ HQ.toName n) $ pped) r n decl
   where
     builtin n = P.wrap $ "--" <> prettyHashQualified n <> " is built-in."
 

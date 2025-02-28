@@ -48,8 +48,8 @@ import Unison.Codebase.Transcript.Parser qualified as Transcript
 import Unison.Codebase.Verbosity (Verbosity, isSilent)
 import Unison.Codebase.Verbosity qualified as Verbosity
 import Unison.CommandLine
-import Unison.CommandLine.InputPattern (InputPattern (aliases, patternName))
-import Unison.CommandLine.InputPatterns (validInputs)
+import Unison.CommandLine.InputPattern (aliases, patternName)
+import Unison.CommandLine.InputPatterns qualified as IP
 import Unison.CommandLine.OutputMessages (notifyNumbered, notifyUser)
 import Unison.CommandLine.Welcome (asciiartUnison)
 import Unison.Parser.Ann (Ann)
@@ -174,7 +174,7 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
   expectFailure <- newIORef False
   hasErrors <- newIORef False
   mBlock <- newIORef Nothing
-  let patternMap = Map.fromList $ (\p -> (patternName p, p) : ((,p) <$> aliases p)) =<< validInputs
+  let patternMap = Map.fromList $ (\p -> (patternName p, p) : ((,p) <$> aliases p)) =<< IP.validInputs
   let output' :: Bool -> Stanza -> IO ()
       output' inputEcho msg = do
         hide <- hideOutput inputEcho
@@ -326,7 +326,8 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
                     liftIO (parseInput codebase curPath getProjectRoot numberedArgs patternMap args)
                       >>= either
                         -- invalid command is treated as a failure
-                        ( \msg -> do
+                        ( \failure -> do
+                            let msg = reportParseFailure failure
                             liftIO $ outputUcmResult msg
                             liftIO $ maybeDieWithMsg msg
                             Cli.returnEarlyWithoutOutput
@@ -360,7 +361,6 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
             writeIORef isHidden $ hidden infoTags
             writeIORef allowErrors $ expectingError infoTags
             writeIORef expectFailure $ hasBug infoTags
-            writeIORef hasErrors False
           traverse_ (atomically . Q.enqueue cmdQueue . Just) cmds
           atomically . Q.enqueue cmdQueue $ Nothing
           Cli.returnEarlyWithoutOutput
@@ -401,6 +401,7 @@ run isTest verbosity dir codebase runtime sbRuntime nRuntime ucmVersion baseURL 
         liftIO $ writeIORef isHidden Shown
         liftIO $ writeIORef allowErrors False
         liftIO $ writeIORef expectFailure False
+        liftIO $ writeIORef hasErrors False
         maybe (liftIO finishTranscript) (uncurry processStanza) =<< atomically (Q.tryDequeue inputQueue)
 
       awaitInput :: Cli (Either Event Input)

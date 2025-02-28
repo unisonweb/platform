@@ -305,7 +305,7 @@ main version = do
                             )
                         System.exitFailure
                       Just pab -> do
-                        pure $ PP.fromProjectAndBranch pab Path.absoluteEmpty
+                        pure $ PP.fromProjectAndBranch pab Path.Root
                   Nothing -> do
                     Codebase.runTransaction theCodebase Codebase.expectCurrentProjectPath
               currentPP <- Codebase.runTransaction theCodebase do
@@ -328,7 +328,7 @@ main version = do
                             [ "I've started the Codebase API server at",
                               P.text $ Server.urlFor Server.Api baseUrl,
                               "and the Codebase UI at",
-                              P.text $ Server.urlFor (Server.ProjectBranchUI (ProjectAndBranch (UnsafeProjectName "scratch") (UnsafeProjectBranchName "main")) Path.absoluteEmpty Nothing) baseUrl
+                              P.text $ Server.urlFor (Server.ProjectBranchUI (ProjectAndBranch (UnsafeProjectName "scratch") (UnsafeProjectBranchName "main")) Path.Root Nothing) baseUrl
                             ]
                         PT.putPrettyLn $
                           P.string "Running the codebase manager headless with "

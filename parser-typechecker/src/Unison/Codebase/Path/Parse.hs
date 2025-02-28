@@ -6,7 +6,7 @@ module Unison.Codebase.Path.Parse
     parseSplit',
     parseHQSplit,
     parseHQSplit',
-    parseShortHashOrHQSplit',
+    parseHashOrHQSplit',
 
     -- * Path parsers
     pathP,
@@ -24,7 +24,6 @@ import Text.Megaparsec.Internal qualified as P (withParsecT)
 import Unison.Codebase.Path
 import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.Prelude hiding (empty, toList)
-import Unison.ShortHash (ShortHash)
 import Unison.Syntax.Lexer qualified as Lexer
 import Unison.Syntax.Name qualified as Name
 import Unison.Syntax.NameSegment qualified as NameSegment (renderParseErr)
@@ -34,36 +33,31 @@ import Unison.Syntax.ShortHash qualified as ShortHash
 -- Path parsing functions
 
 parsePath :: String -> Either Text Path
-parsePath =
-  runParser pathP
+parsePath = runParser pathP
 
 parsePath' :: String -> Either Text Path'
 parsePath' = \case
-  "" -> Right relativeEmpty'
-  "." -> Right absoluteEmpty'
-  path -> unsplit' <$> parseSplit' path
+  "" -> Right Current'
+  "." -> Right Root'
+  path -> unsplit <$> parseSplit' path
 
-parseSplit :: String -> Either Text Split
-parseSplit =
-  runParser splitP
+parseSplit :: String -> Either Text (Split Path)
+parseSplit = runParser splitP
 
-parseSplit' :: String -> Either Text Split'
-parseSplit' =
-  runParser splitP'
+parseSplit' :: String -> Either Text (Split Path')
+parseSplit' = runParser splitP'
 
-parseShortHashOrHQSplit' :: String -> Either Text (Either ShortHash HQSplit')
-parseShortHashOrHQSplit' =
-  runParser shortHashOrHqSplitP'
+parseHashOrHQSplit' :: String -> Either Text (HQ'.HashOrHQ (Split Path'))
+parseHashOrHQSplit' = runParser shortHashOrHQSplitP'
 
-parseHQSplit :: String -> Either Text HQSplit
+parseHQSplit :: String -> Either Text (HQ'.HashQualified (Split Path))
 parseHQSplit s =
-  parseHQSplit' s >>= \case
-    (RelativePath' (Relative p), hqseg) -> Right (p, hqseg)
-    _ -> Left $ "Sorry, you can't use an absolute name like " <> Text.pack s <> " here."
+  parseHQSplit' s >>= traverse \(path, seg) -> case path of
+    RelativePath' (Relative p) -> pure (p, seg)
+    AbsolutePath' (Absolute _) -> Left $ "Sorry, you can't use an absolute name like " <> Text.pack s <> " here."
 
-parseHQSplit' :: String -> Either Text HQSplit'
-parseHQSplit' =
-  runParser hqSplitP'
+parseHQSplit' :: String -> Either Text (HQ'.HashQualified (Split Path'))
+parseHQSplit' = runParser hqSplitP'
 
 runParser :: Parsec (Lexer.Token Text) [Char] a -> String -> Either Text a
 runParser p =
@@ -73,32 +67,28 @@ runParser p =
 -- Path parsers
 
 pathP :: Parsec (Lexer.Token Text) [Char] Path
-pathP =
-  (unsplit <$> splitP) <|> pure empty
+pathP = (unsplit <$> splitP) <|> pure mempty
 
 pathP' :: Parsec (Lexer.Token Text) [Char] Path'
 pathP' =
   asum
-    [ unsplit' <$> splitP',
-      P.char '.' $> absoluteEmpty',
-      pure relativeEmpty'
+    [ unsplit <$> splitP',
+      P.char '.' $> Root',
+      pure Current'
     ]
 
-splitP :: Parsec (Lexer.Token Text) [Char] Split
-splitP =
-  splitFromName <$> P.withParsecT (fmap NameSegment.renderParseErr) Name.relativeNameP
+splitP :: Parsec (Lexer.Token Text) [Char] (Split Path)
+splitP = splitFromName <$> P.withParsecT (fmap NameSegment.renderParseErr) Name.relativeNameP
 
-splitP' :: Parsec (Lexer.Token Text) [Char] Split'
-splitP' =
-  splitFromName' <$> P.withParsecT (fmap NameSegment.renderParseErr) Name.nameP
+splitP' :: Parsec (Lexer.Token Text) [Char] (Split Path')
+splitP' = parentOfName <$> P.withParsecT (fmap NameSegment.renderParseErr) Name.nameP
 
-shortHashOrHqSplitP' :: Parsec (Lexer.Token Text) [Char] (Either ShortHash HQSplit')
-shortHashOrHqSplitP' =
-  Left <$> ShortHash.shortHashP <|> Right <$> hqSplitP'
+shortHashOrHQSplitP' :: Parsec (Lexer.Token Text) [Char] (HQ'.HashOrHQ (Split Path'))
+shortHashOrHQSplitP' = Left <$> ShortHash.shortHashP <|> Right <$> hqSplitP'
 
-hqSplitP' :: Parsec (Lexer.Token Text) [Char] HQSplit'
+hqSplitP' :: Parsec (Lexer.Token Text) [Char] (HQ'.HashQualified (Split Path'))
 hqSplitP' = do
-  (segs, seg) <- splitP'
+  split <- splitP'
   P.optional (P.withParsecT (fmap ("invalid hash: " <>)) ShortHash.shortHashP) <&> \case
-    Nothing -> (segs, HQ'.fromName seg)
-    Just hash -> (segs, HQ'.HashQualified seg hash)
+    Nothing -> HQ'.fromName split
+    Just hash -> HQ'.HashQualified split hash

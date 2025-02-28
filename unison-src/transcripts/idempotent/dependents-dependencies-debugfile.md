@@ -111,7 +111,7 @@ scratch/main> dependents d
 
     Terms:
 
-    1. r
+    1. inside.r
 
   Tip: Try `view 1` to see the source of any numbered item in
        the above list.

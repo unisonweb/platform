@@ -230,7 +230,7 @@ data BackendError
   | -- The inferred project root for a given perspective is neither a parent nor child
     -- of the perspective. This shouldn't happen and indicates a bug.
     -- (perspective, project root)
-    DisjointProjectAndPerspective Path Path
+    DisjointProjectAndPerspective Path.Absolute Path.Absolute
   | ProjectBranchNameNotFound ProjectName ProjectBranchName
   deriving stock (Show)
 
@@ -588,12 +588,12 @@ lsBranch codebase b0 = do
 --           name cat.dog     becomes .cat.dog
 fixupNamesRelative :: Path.Absolute -> Names -> Names
 fixupNamesRelative root names =
-  case Path.toName $ Path.unabsolute root of
+  case Path.toName root of
     Nothing -> names
     Just prefix -> Names.map (fixName prefix) names
   where
     fixName prefix n =
-      if root == Path.absoluteEmpty
+      if Path.isRoot root
         then n
         else fromMaybe (Name.makeAbsolute n) (Name.stripNamePrefix prefix n)
 
@@ -605,7 +605,7 @@ hqNameQuery ::
   Sqlite.Transaction QueryResult
 hqNameQuery codebase NameSearch {typeSearch, termSearch} searchType hqs = do
   -- Split the query into hash-only and hash-qualified-name queries.
-  let (hashes, hqnames) = partitionEithers (map HQ'.fromHQ2 hqs)
+  let (hashes, hqnames) = partitionEithers (map HQ'.fromHQ hqs)
   -- Find the terms with those hashes.
   termRefs <-
     filter (not . Set.null . snd) . zip hashes
@@ -1193,7 +1193,7 @@ typesToSyntax suff width ppe0 types =
             MissingObject sh -> MissingObject sh
             UserObject d ->
               UserObject . Pretty.render width $
-                DeclPrinter.prettyDecl (PPE.declarationPPEDecl ppe0 r) r n d
+                DeclPrinter.prettyDecl ppe0 r n d
   where
     ppeDecl =
       if suffixified suff

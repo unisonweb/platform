@@ -75,6 +75,7 @@ import Unison.Term qualified as Term
 import Unison.Type (Type)
 import Unison.Type qualified as Type
 import Unison.Util.Cache qualified as Cache
+import Unison.Util.Recursion (XNor (Both, Neither), project)
 import Unison.Util.Relation qualified as Rel
 import Unison.Util.Set qualified as Set
 import Unison.WatchKind qualified as UF
@@ -623,13 +624,13 @@ namesAtPath bh path = do
   let termsInPath = convertTerms termNamesInPerspective
   let typesInPath = convertTypes typeNamesInPerspective
   let relativeScopedNames =
-        case relativePath of
-          Path.Empty -> (Names {terms = Rel.fromList termsInPath, types = Rel.fromList typesInPath})
-          p ->
-            let reversedPathSegments = reverse . Path.toList $ p
-                relativeTerms = mapMaybe (stripPathPrefix reversedPathSegments) termsInPath
-                relativeTypes = mapMaybe (stripPathPrefix reversedPathSegments) typesInPath
-             in (Names {terms = Rel.fromList relativeTerms, types = Rel.fromList relativeTypes})
+        if relativePath == mempty
+          then Names {terms = Rel.fromList termsInPath, types = Rel.fromList typesInPath}
+          else
+            let discardPathsNotUnder = mapMaybe . stripPathPrefix . reverse . Path.toList
+                relativeTerms = discardPathsNotUnder relativePath termsInPath
+                relativeTypes = discardPathsNotUnder relativePath typesInPath
+             in Names {terms = Rel.fromList relativeTerms, types = Rel.fromList relativeTypes}
   pure $ relativeScopedNames
   where
     convertTypes names =
@@ -697,9 +698,9 @@ ensureNameLookupForBranchHash getDeclType mayFromBranchHash toBranchHash = do
   where
     alterTreeDiffAtPath :: (Functor m) => Path -> (TreeDiff m -> TreeDiff m) -> TreeDiff m -> TreeDiff m
     alterTreeDiffAtPath path f (TreeDiff cfr) =
-      case path of
-        Path.Empty -> f (TreeDiff cfr)
-        (segment Path.:< rest) ->
+      case project path of
+        Neither -> f (TreeDiff cfr)
+        Both segment rest ->
           let (a Cofree.:< (Compose rest')) = cfr
            in TreeDiff (a Cofree.:< Compose (Map.adjust (fmap (coerce $ alterTreeDiffAtPath rest f)) segment rest'))
     -- Delete portions of the diff which are covered by dependency mounts.

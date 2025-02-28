@@ -38,7 +38,6 @@ module Unison.Codebase.Branch
     children,
     nonEmptyChildren,
     deepEdits',
-    toList0,
     namespaceStats,
 
     -- * step
@@ -131,8 +130,7 @@ import Unison.Codebase.Causal (Causal)
 import Unison.Codebase.Causal qualified as Causal
 import Unison.Codebase.Patch (Patch)
 import Unison.Codebase.Patch qualified as Patch
-import Unison.Codebase.Path (Path (..))
-import Unison.Codebase.Path qualified as Path
+import Unison.Codebase.Path (Path)
 import Unison.Hashing.V2 qualified as Hashing (ContentAddressable (contentHash))
 import Unison.Hashing.V2.Convert qualified as H
 import Unison.Name (Name)
@@ -145,6 +143,7 @@ import Unison.Reference qualified as Reference
 import Unison.Referent (Referent)
 import Unison.Referent qualified as Referent
 import Unison.Util.List qualified as List
+import Unison.Util.Recursion (XNor (Both, Neither), cata, project)
 import Unison.Util.Relation qualified as R
 import Unison.Util.Relation qualified as Relation
 import Unison.Util.Set qualified as Set
@@ -254,42 +253,23 @@ discardHistory :: (Applicative m) => Branch m -> Branch m
 discardHistory b =
   one (discardHistory0 (head b))
 
--- `before b1 b2` is true if `b2` incorporates all of `b1`
+-- | `before b1 b2` is true if `b2` incorporates all of `b1`
 before :: (Monad m) => Branch m -> Branch m -> m Bool
 before (Branch b1) (Branch b2) = Causal.before b1 b2
 
--- | what does this do? —AI
-toList0 :: Branch0 m -> [(Path, Branch0 m)]
-toList0 = go Path.empty
-  where
-    go p b =
-      (p, b)
-        : ( Map.toList (b ^. children)
-              >>= ( \(seg, cb) ->
-                      go (Path.snoc p seg) (head cb)
-                  )
-          )
-
 -- returns `Nothing` if no Branch at `path` or if Branch is empty at `path`
-getAt ::
-  Path ->
-  Branch m ->
-  Maybe (Branch m)
-getAt path root = case Path.uncons path of
-  Nothing -> if isEmpty root then Nothing else Just root
-  Just (seg, path) -> case Map.lookup seg (head root ^. children) of
-    Just b -> getAt path b
-    Nothing -> Nothing
+getAt :: Path -> Branch m -> Maybe (Branch m)
+getAt = cata \case
+  Neither -> \root -> if isEmpty root then Nothing else Just root
+  Both seg fn -> fn <=< Map.lookup seg . view children . head
 
 getAt' :: Path -> Branch m -> Branch m
 getAt' p b = fromMaybe empty $ getAt p b
 
 getAt0 :: Path -> Branch0 m -> Branch0 m
-getAt0 p b = case Path.uncons p of
-  Nothing -> b
-  Just (seg, path) -> case Map.lookup seg (b ^. children) of
-    Just c -> getAt0 path (head c)
-    Nothing -> empty0
+getAt0 = cata \case
+  Neither -> id
+  Both seg fn -> fn . maybe empty0 head . Map.lookup seg . view children
 
 empty :: Branch m
 empty = Branch $ Causal.one empty0
@@ -458,12 +438,11 @@ modifyAtM ::
   (Branch m -> n (Branch m)) ->
   Branch m ->
   n (Branch m)
-modifyAtM path f b = case Path.uncons path of
-  Nothing -> f b
-  Just (seg, path) ->
-    let child = getChildBranch seg (head b)
-     in -- step the branch by updating its children according to fixup
-        (\child' -> step (setChildBranch seg child') b) <$> modifyAtM path f child
+modifyAtM path f = flip cata path \case
+  Neither -> f
+  Both seg fn -> \b ->
+    -- step the branch by updating its children according to fixup
+    flip step b . setChildBranch seg <$> fn (getChildBranch seg $ head b)
 
 -- | Perform updates over many locations within a branch by batching up operations on
 -- sub-branches as much as possible without affecting semantics.
@@ -536,12 +515,11 @@ batchUpdatesM (toList -> actions) curBranch = foldM execActions curBranch (group
     -- The order within a given key is stable.
     groupByNextSegment :: [(Path, x)] -> Map NameSegment [(Path, x)]
     groupByNextSegment =
-      Map.unionsWith (<>) . fmap \case
-        (seg :< rest, action) -> Map.singleton seg [(rest, action)]
-        _ -> error "groupByNextSegment called on current path, which shouldn't happen."
+      Map.unionsWith (<>) . fmap \(p, action) -> case project p of
+        Neither -> error "groupByNextSegment called on current path, which shouldn't happen."
+        Both seg rest -> Map.singleton seg [(rest, action)]
     pathLocation :: Path -> ActionLocation
-    pathLocation (Path Empty) = HereActions
-    pathLocation _ = ChildActions
+    pathLocation p = if p == mempty then HereActions else ChildActions
 
 -- todo: consider inlining these into Actions2
 addTermName :: Referent -> NameSegment -> Branch0 m -> Branch0 m
