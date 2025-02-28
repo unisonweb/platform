@@ -28,10 +28,8 @@ import Unison.Referent (Referent, pattern Con, pattern Ref)
 import Unison.Runtime.Array qualified as PA
 import Unison.Runtime.Exception
 import Unison.Runtime.MCode
-  ( BPrim1 (..),
-    BPrim2 (..),
-    UPrim1 (..),
-    UPrim2 (..),
+  ( Prim1 (..),
+    Prim2 (..),
   )
 import Unison.Util.Bytes qualified as Bytes
 import Unison.Util.EnumContainers as EC
@@ -294,7 +292,7 @@ getConstructorReference :: (MonadGet m) => m ConstructorReference
 getConstructorReference =
   ConstructorReference <$> getReference <*> getLength
 
-instance Tag UPrim1 where
+instance Tag Prim1 where
   tag2word DECI = 0
   tag2word DECN = 1
   tag2word INCI = 2
@@ -331,6 +329,38 @@ instance Tag UPrim1 where
   tag2word TRNC = 33
   tag2word NOTB = 34
 
+  tag2word SIZT = 35
+  tag2word USNC = 36
+  tag2word UCNS = 37
+  tag2word ITOT = 38
+  tag2word NTOT = 39
+  tag2word FTOT = 40
+  tag2word TTOI = 41
+  tag2word TTON = 42
+  tag2word TTOF = 43
+  tag2word PAKT = 44
+  tag2word UPKT = 45
+  tag2word VWLS = 46
+  tag2word VWRS = 47
+  tag2word SIZS = 48
+  tag2word PAKB = 49
+  tag2word UPKB = 50
+  tag2word SIZB = 51
+  tag2word FLTB = 52
+  tag2word MISS = 53
+  tag2word CACH = 54
+  tag2word LKUP = 55
+  tag2word LOAD = 56
+  tag2word CVLD = 57
+  tag2word VALU = 58
+  tag2word TLTT = 59
+  tag2word DBTX = 60
+  tag2word SDBL = 61
+  tag2word REFN = 62
+  tag2word REFR = 63
+  tag2word RRFC = 64
+  tag2word TIKR = 65
+
   word2tag 0 = pure DECI
   word2tag 1 = pure DECN
   word2tag 2 = pure INCI
@@ -366,9 +396,41 @@ instance Tag UPrim1 where
   word2tag 32 = pure RNDF
   word2tag 33 = pure TRNC
   word2tag 34 = pure NOTB
-  word2tag n = unknownTag "UPrim1" n
 
-instance Tag UPrim2 where
+  word2tag 35 = pure SIZT
+  word2tag 36 = pure USNC
+  word2tag 37 = pure UCNS
+  word2tag 38 = pure ITOT
+  word2tag 39 = pure NTOT
+  word2tag 40 = pure FTOT
+  word2tag 41 = pure TTOI
+  word2tag 42 = pure TTON
+  word2tag 43 = pure TTOF
+  word2tag 44 = pure PAKT
+  word2tag 45 = pure UPKT
+  word2tag 46 = pure VWLS
+  word2tag 47 = pure VWRS
+  word2tag 48 = pure SIZS
+  word2tag 49 = pure PAKB
+  word2tag 50 = pure UPKB
+  word2tag 51 = pure SIZB
+  word2tag 52 = pure FLTB
+  word2tag 53 = pure MISS
+  word2tag 54 = pure CACH
+  word2tag 55 = pure LKUP
+  word2tag 56 = pure LOAD
+  word2tag 57 = pure CVLD
+  word2tag 58 = pure VALU
+  word2tag 59 = pure TLTT
+  word2tag 60 = pure DBTX
+  word2tag 61 = pure SDBL
+  word2tag 62 = pure REFN
+  word2tag 63 = pure REFR
+  word2tag 64 = pure RRFC
+  word2tag 65 = pure TIKR
+  word2tag n = unknownTag "Prim1" n
+
+instance Tag Prim2 where
   tag2word ADDI = 0
   tag2word ADDN = 1
   tag2word SUBI = 2
@@ -416,6 +478,35 @@ instance Tag UPrim2 where
   tag2word DRPN = 44
   tag2word ANDB = 45
   tag2word IORB = 46
+  tag2word EQLU = 47
+  tag2word LEQU = 48
+  tag2word LESU = 49
+  tag2word CMPU = 50
+  tag2word DRPT = 51
+  tag2word CATT = 52
+  tag2word TAKT = 53
+  tag2word EQLT = 54
+  tag2word LEQT = 55
+  tag2word LEST = 56
+  tag2word DRPS = 57
+  tag2word CATS = 58
+  tag2word TAKS = 59
+  tag2word CONS = 60
+  tag2word SNOC = 61
+  tag2word IDXS = 62
+  tag2word SPLL = 63
+  tag2word SPLR = 64
+  tag2word TAKB = 65
+  tag2word DRPB = 66
+  tag2word IDXB = 67
+  tag2word CATB = 68
+  tag2word THRO = 69
+  tag2word TRCE = 70
+  tag2word SDBX = 71
+  tag2word IXOT = 72
+  tag2word IXOB = 73
+  tag2word SDBV = 74
+  tag2word REFW = 75
 
   word2tag 0 = pure ADDI
   word2tag 1 = pure ADDN
@@ -464,132 +555,35 @@ instance Tag UPrim2 where
   word2tag 44 = pure DRPN
   word2tag 45 = pure ANDB
   word2tag 46 = pure IORB
-  word2tag n = unknownTag "UPrim2" n
 
-instance Tag BPrim1 where
-  tag2word SIZT = 0
-  tag2word USNC = 1
-  tag2word UCNS = 2
-  tag2word ITOT = 3
-  tag2word NTOT = 4
-  tag2word FTOT = 5
-  tag2word TTOI = 6
-  tag2word TTON = 7
-  tag2word TTOF = 8
-  tag2word PAKT = 9
-  tag2word UPKT = 10
-  tag2word VWLS = 11
-  tag2word VWRS = 12
-  tag2word SIZS = 13
-  tag2word PAKB = 14
-  tag2word UPKB = 15
-  tag2word SIZB = 16
-  tag2word FLTB = 17
-  tag2word MISS = 18
-  tag2word CACH = 19
-  tag2word LKUP = 20
-  tag2word LOAD = 21
-  tag2word CVLD = 22
-  tag2word VALU = 23
-  tag2word TLTT = 24
-  tag2word DBTX = 25
-  tag2word SDBL = 26
-  tag2word REFN = 27
-  tag2word REFR = 28
-  tag2word RRFC = 29
-  tag2word TIKR = 30
+  word2tag 47 = pure EQLU
+  word2tag 48 = pure LEQU
+  word2tag 49 = pure LESU
+  word2tag 50 = pure CMPU
+  word2tag 51 = pure DRPT
+  word2tag 52 = pure CATT
+  word2tag 53 = pure TAKT
+  word2tag 54 = pure EQLT
+  word2tag 55 = pure LEQT
+  word2tag 56 = pure LEST
+  word2tag 57 = pure DRPS
+  word2tag 58 = pure CATS
+  word2tag 59 = pure TAKS
+  word2tag 60 = pure CONS
+  word2tag 61 = pure SNOC
+  word2tag 62 = pure IDXS
+  word2tag 63 = pure SPLL
+  word2tag 64 = pure SPLR
+  word2tag 65 = pure TAKB
+  word2tag 66 = pure DRPB
+  word2tag 67 = pure IDXB
+  word2tag 68 = pure CATB
+  word2tag 69 = pure THRO
+  word2tag 70 = pure TRCE
+  word2tag 71 = pure SDBX
+  word2tag 72 = pure IXOT
+  word2tag 73 = pure IXOB
+  word2tag 74 = pure SDBV
+  word2tag 75 = pure REFW
+  word2tag n = unknownTag "Prim2" n
 
-  word2tag 0 = pure SIZT
-  word2tag 1 = pure USNC
-  word2tag 2 = pure UCNS
-  word2tag 3 = pure ITOT
-  word2tag 4 = pure NTOT
-  word2tag 5 = pure FTOT
-  word2tag 6 = pure TTOI
-  word2tag 7 = pure TTON
-  word2tag 8 = pure TTOF
-  word2tag 9 = pure PAKT
-  word2tag 10 = pure UPKT
-  word2tag 11 = pure VWLS
-  word2tag 12 = pure VWRS
-  word2tag 13 = pure SIZS
-  word2tag 14 = pure PAKB
-  word2tag 15 = pure UPKB
-  word2tag 16 = pure SIZB
-  word2tag 17 = pure FLTB
-  word2tag 18 = pure MISS
-  word2tag 19 = pure CACH
-  word2tag 20 = pure LKUP
-  word2tag 21 = pure LOAD
-  word2tag 22 = pure CVLD
-  word2tag 23 = pure VALU
-  word2tag 24 = pure TLTT
-  word2tag 25 = pure DBTX
-  word2tag 26 = pure SDBL
-  word2tag 27 = pure REFN
-  word2tag 28 = pure REFR
-  word2tag 29 = pure RRFC
-  word2tag 30 = pure TIKR
-  word2tag n = unknownTag "BPrim1" n
-
-instance Tag BPrim2 where
-  tag2word EQLU = 0
-  tag2word LEQU = 1
-  tag2word LESU = 2
-  tag2word CMPU = 3
-  tag2word DRPT = 4
-  tag2word CATT = 5
-  tag2word TAKT = 6
-  tag2word EQLT = 7
-  tag2word LEQT = 8
-  tag2word LEST = 9
-  tag2word DRPS = 10
-  tag2word CATS = 11
-  tag2word TAKS = 12
-  tag2word CONS = 13
-  tag2word SNOC = 14
-  tag2word IDXS = 15
-  tag2word SPLL = 16
-  tag2word SPLR = 17
-  tag2word TAKB = 18
-  tag2word DRPB = 19
-  tag2word IDXB = 20
-  tag2word CATB = 21
-  tag2word THRO = 22
-  tag2word TRCE = 23
-  tag2word SDBX = 24
-  tag2word IXOT = 25
-  tag2word IXOB = 26
-  tag2word SDBV = 27
-  tag2word REFW = 28
-
-  word2tag 0 = pure EQLU
-  word2tag 1 = pure LEQU
-  word2tag 2 = pure LESU
-  word2tag 3 = pure CMPU
-  word2tag 4 = pure DRPT
-  word2tag 5 = pure CATT
-  word2tag 6 = pure TAKT
-  word2tag 7 = pure EQLT
-  word2tag 8 = pure LEQT
-  word2tag 9 = pure LEST
-  word2tag 10 = pure DRPS
-  word2tag 11 = pure CATS
-  word2tag 12 = pure TAKS
-  word2tag 13 = pure CONS
-  word2tag 14 = pure SNOC
-  word2tag 15 = pure IDXS
-  word2tag 16 = pure SPLL
-  word2tag 17 = pure SPLR
-  word2tag 18 = pure TAKB
-  word2tag 19 = pure DRPB
-  word2tag 20 = pure IDXB
-  word2tag 21 = pure CATB
-  word2tag 22 = pure THRO
-  word2tag 23 = pure TRCE
-  word2tag 24 = pure SDBX
-  word2tag 25 = pure IXOT
-  word2tag 26 = pure IXOB
-  word2tag 27 = pure SDBV
-  word2tag 28 = pure REFW
-  word2tag n = unknownTag "BPrim2" n

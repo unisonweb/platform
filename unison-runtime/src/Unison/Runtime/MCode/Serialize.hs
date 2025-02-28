@@ -151,10 +151,8 @@ getSection =
       RMatch <$> gInt <*> getSection <*> getEnumMap gWord getBranch
 
 data InstrT
-  = UPrim1T
-  | UPrim2T
-  | BPrim1T
-  | BPrim2T
+  = Prim1T
+  | Prim2T
   | ForeignCallT
   | SetDynT
   | CaptureT
@@ -172,10 +170,8 @@ data InstrT
   | SandboxingFailureT
 
 instance Tag InstrT where
-  tag2word UPrim1T = 0
-  tag2word UPrim2T = 1
-  tag2word BPrim1T = 2
-  tag2word BPrim2T = 3
+  tag2word Prim1T = 0
+  tag2word Prim2T = 1
   tag2word ForeignCallT = 4
   tag2word SetDynT = 5
   tag2word CaptureT = 6
@@ -192,10 +188,8 @@ instance Tag InstrT where
   tag2word RefCAST = 17
   tag2word SandboxingFailureT = 18
 
-  word2tag 0 = pure UPrim1T
-  word2tag 1 = pure UPrim2T
-  word2tag 2 = pure BPrim1T
-  word2tag 3 = pure BPrim2T
+  word2tag 0 = pure Prim1T
+  word2tag 1 = pure Prim2T
   word2tag 4 = pure ForeignCallT
   word2tag 5 = pure SetDynT
   word2tag 6 = pure CaptureT
@@ -215,10 +209,8 @@ instance Tag InstrT where
 
 putInstr :: (MonadPut m) => GInstr cix -> m ()
 putInstr = \case
-  (UPrim1 up i) -> putTag UPrim1T *> putTag up *> pInt i
-  (UPrim2 up i j) -> putTag UPrim2T *> putTag up *> pInt i *> pInt j
-  (BPrim1 bp i) -> putTag BPrim1T *> putTag bp *> pInt i
-  (BPrim2 bp i j) -> putTag BPrim2T *> putTag bp *> pInt i *> pInt j
+  (Prim1 up i) -> putTag Prim1T *> putTag up *> pInt i
+  (Prim2 up i j) -> putTag Prim2T *> putTag up *> pInt i *> pInt j
   (RefCAS i j k) -> putTag RefCAST *> pInt i *> pInt j *> pInt k
   (ForeignCall b ff a) -> putTag ForeignCallT *> serialize b *> putMForeignFunc ff *> putArgs a
   (SetDyn w i) -> putTag SetDynT *> pWord w *> pInt i
@@ -240,10 +232,8 @@ putInstr = \case
 getInstr :: (MonadGet m) => m Instr
 getInstr =
   getTag >>= \case
-    UPrim1T -> UPrim1 <$> getTag <*> gInt
-    UPrim2T -> UPrim2 <$> getTag <*> gInt <*> gInt
-    BPrim1T -> BPrim1 <$> getTag <*> gInt
-    BPrim2T -> BPrim2 <$> getTag <*> gInt <*> gInt
+    Prim1T -> Prim1 <$> getTag <*> gInt
+    Prim2T -> Prim2 <$> getTag <*> gInt <*> gInt
     RefCAST -> RefCAS <$> gInt <*> gInt <*> gInt
     ForeignCallT -> ForeignCall <$> deserialize <*> getMForeignFunc <*> getArgs
     SetDynT -> SetDyn <$> gWord <*> gInt
