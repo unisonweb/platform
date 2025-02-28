@@ -285,10 +285,6 @@ unitValue :: Val
 unitValue = BoxedVal $ unitClosure
 {-# NOINLINE unitValue #-}
 
-unitClosure :: Closure
-unitClosure = Enum Ty.unitRef TT.unitTag
-{-# NOINLINE unitClosure #-}
-
 litToVal :: MLit -> Val
 litToVal = \case
   MT t -> BoxedVal $ Foreign (Wrap Rf.textRef t)
