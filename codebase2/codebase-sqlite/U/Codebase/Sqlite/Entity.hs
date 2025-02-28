@@ -24,6 +24,7 @@ data SyncEntity' text hash defn patch branchh branch causal
   | N (Namespace.SyncBranchFormat' branch text defn patch (branch, causal))
   | P (Patch.SyncPatchFormat' patch text hash defn)
   | C (Causal.SyncCausalFormat' causal branchh)
+  deriving stock (Eq, Show)
 
 entityType :: SyncEntity' text hash defn patch branchh branch causal -> TempEntityType
 entityType = \case

@@ -36,9 +36,11 @@ type SyncDeclFormat =
 
 data SyncDeclFormat' t d
   = SyncDecl (SyncLocallyIndexedComponent' t d)
+  deriving stock (Eq, Show)
 
 newtype SyncLocallyIndexedComponent' t d
   = SyncLocallyIndexedComponent (Vector (LocalIds' t d, ByteString))
+  deriving stock (Eq, Show)
 
 -- [OldDecl] ==map==> [NewDecl] ==number==> [(NewDecl, Int)] ==sort==> [(NewDecl, Int)] ==> permutation is map snd of that
 

@@ -232,6 +232,7 @@ main dir welcome ppIds initialInputs runtime sbRuntime nRuntime codebase serverB
             codebase,
             credentialManager,
             loadSource = loadSourceFile,
+            lspCheckForChanges,
             writeSource,
             generateUniqueName = Parser.uniqueBase32Namegen <$> Random.getSystemDRG,
             notify,
@@ -252,9 +253,6 @@ main dir welcome ppIds initialInputs runtime sbRuntime nRuntime codebase serverB
     -- Handle inputs until @HaltRepl@, staying in the loop on Ctrl+C or synchronous exception.
     let loop0 :: Cli.LoopState -> IO ()
         loop0 s0 = do
-          -- It's always possible the previous command changed the branch head, so tell the LSP to check if the current
-          -- path or project has changed.
-          lspCheckForChanges (NEL.head $ Cli.projectPathStack s0)
           let step = do
                 input <- awaitInput s0
                 (!result, resultState) <- Cli.runCli env s0 (HandleInput.loop input)

@@ -97,6 +97,9 @@ module Unison.CommandLine.InputPatterns
     pushCreate,
     pushExhaustive,
     pushForce,
+    syncToFile,
+    syncFromFile,
+    syncFromCodebase,
     quit,
     releaseDraft,
     renameBranch,
@@ -281,9 +284,13 @@ formatStructuredArgument schLength = \case
               else "." <> s
         pathArgStr = Text.pack $ show pathArg
 
--- | Converts an arbitrary argument to a `String`. This is for cases where the
+-- | Converts an arbitrary argument to a `String`.
+--
+-- This is for cases where the
 -- command /should/ accept a structured argument of some type, but currently
 -- wants a `String`.
+--
+-- This can also be used where the input argument needs to be included in the output.
 unifyArgument :: I.Argument -> String
 unifyArgument = either id (Text.unpack . formatStructuredArgument Nothing)
 
@@ -737,6 +744,55 @@ handleProjectAndBranchNamesArg =
       SA.Project project -> pure $ This project
       SA.ProjectBranch (ProjectAndBranch mproj branch) -> pure $ maybe That These mproj branch
       otherNumArg -> Left $ wrongStructuredArgument "a project or branch" otherNumArg
+
+handleOptionalProjectAndBranch :: I.Argument -> Either (P.Pretty CT.ColorText) (ProjectAndBranch (Maybe ProjectName) (Maybe ProjectBranchName))
+handleOptionalProjectAndBranch =
+  either
+    (\str -> fmap intoProjectAndBranch . first (const $ expectedButActually' "a project or branch" str) . tryInto @(These ProjectName ProjectBranchName) $ Text.pack str)
+    $ \case
+      SA.Project project -> pure $ ProjectAndBranch (Just project) Nothing
+      SA.ProjectBranch (ProjectAndBranch mproj branch) -> pure $ ProjectAndBranch mproj (Just branch)
+      otherNumArg -> Left $ wrongStructuredArgument "a project or branch" otherNumArg
+  where
+    intoProjectAndBranch :: These ProjectName ProjectBranchName -> ProjectAndBranch (Maybe ProjectName) (Maybe ProjectBranchName)
+    intoProjectAndBranch = \case
+      This project -> ProjectAndBranch (Just project) Nothing
+      That branch -> ProjectAndBranch Nothing (Just branch)
+      These project branch -> ProjectAndBranch (Just project) (Just branch)
+
+handleBranchWithOptionalProject :: I.Argument -> Either (P.Pretty CT.ColorText) (ProjectAndBranch (Maybe ProjectName) ProjectBranchName)
+handleBranchWithOptionalProject =
+  either
+    ( \str ->
+        Text.pack str
+          & tryInto @(These ProjectName ProjectBranchName)
+          & first (const $ expectedButActually' "a project branch" str)
+          >>= \case
+            These project branch -> pure $ ProjectAndBranch (Just project) branch
+            That branch -> pure $ ProjectAndBranch Nothing branch
+            This _project -> Left $ expectedButActually' "a  project branch" str
+    )
+    ( \case
+        SA.ProjectBranch (ProjectAndBranch mproj branch) -> pure $ ProjectAndBranch mproj branch
+        otherNumArg -> Left $ wrongStructuredArgument "a project branch" otherNumArg
+    )
+
+handleBranchWithProject :: I.Argument -> Either (P.Pretty CT.ColorText) (ProjectAndBranch ProjectName ProjectBranchName)
+handleBranchWithProject =
+  either
+    ( \str ->
+        Text.pack str
+          & tryInto @(These ProjectName ProjectBranchName)
+          & first (const $ expectedButActually' "a project branch" str)
+          >>= \case
+            These project branch -> pure $ ProjectAndBranch project branch
+            That _branch -> Left $ expectedButActually' "a project branch" str
+            This _project -> Left $ expectedButActually' "a project branch" str
+    )
+    ( \case
+        SA.ProjectBranch (ProjectAndBranch (Just proj) branch) -> pure $ ProjectAndBranch proj branch
+        otherNumArg -> Left $ wrongStructuredArgument "a project branch" otherNumArg
+    )
 
 mergeBuiltins :: InputPattern
 mergeBuiltins =
@@ -2088,6 +2144,88 @@ pushExhaustive =
           branchInclusion = AllBranches
         }
 
+syncToFile :: InputPattern
+syncToFile =
+  InputPattern
+    { patternName = "sync.to-file",
+      aliases = [],
+      visibility = I.Hidden,
+      args = [("file-path", Required, filePathArg), ("branch", Optional, projectAndBranchNamesArg suggestionsConfig)],
+      help =
+        ( P.wrapColumn2
+            [ ( makeExample syncToFile ["./branch.usync"],
+                "saves the current branch to the file `foo.u`."
+              ),
+              ( makeExample syncToFile ["./main.usync", "/main"],
+                "saves the main branch to the file `main.usync`."
+              )
+            ]
+        ),
+      parse = \case
+        [filePath, branch] -> Input.SyncToFileI <$> unsupportedStructuredArgument makeStandalone "a file name" filePath <*> handleOptionalProjectAndBranch branch
+        [filePath] -> Input.SyncToFileI <$> unsupportedStructuredArgument makeStandalone "a file name" filePath <*> pure (ProjectAndBranch Nothing Nothing)
+        args -> wrongArgsLength "one or two arguments" args
+    }
+  where
+    suggestionsConfig =
+      ProjectBranchSuggestionsConfig
+        { showProjectCompletions = True,
+          projectInclusion = AllProjects,
+          branchInclusion = AllBranches
+        }
+
+syncFromFile :: InputPattern
+syncFromFile =
+  InputPattern
+    { patternName = "sync.from-file",
+      aliases = [],
+      visibility = I.Hidden,
+      args = [("file-path", Required, filePathArg), ("destination branch", Required, projectAndBranchNamesArg suggestionsConfig)],
+      help =
+        ( P.wrapColumn2
+            [ ( makeExample syncFromFile ["./feature.usync", "/feature"],
+                "Sets the /feature branch to the contents of the file `main.usync`."
+              )
+            ]
+        ),
+      parse = \case
+        [filePath, branch] -> Input.SyncFromFileI <$> unsupportedStructuredArgument makeStandalone "a file name" filePath <*> handleBranchWithOptionalProject branch
+        args -> wrongArgsLength "one or two arguments" args
+    }
+  where
+    suggestionsConfig =
+      ProjectBranchSuggestionsConfig
+        { showProjectCompletions = True,
+          projectInclusion = AllProjects,
+          branchInclusion = AllBranches
+        }
+
+syncFromCodebase :: InputPattern
+syncFromCodebase =
+  InputPattern
+    { patternName = "sync.from-codebase",
+      aliases = [],
+      visibility = I.Hidden,
+      args = [("codebase-location", Required, filePathArg), ("branch-to-sync", Required, projectAndBranchNamesArg suggestionsConfig), ("destination-branch", Optional, projectAndBranchNamesArg suggestionsConfig)],
+      help =
+        ( P.wrapColumn2
+            [ ( makeExample syncFromCodebase ["./codebase", "srcProject/main", "destProject/main"],
+                "Imports srcProject/main from the specified codebase, then sets destProject/main to the imported branch."
+              )
+            ]
+        ),
+      parse = \case
+        [codebaseLocation, srcBranch, destinationBranch] -> Input.SyncFromCodebaseI <$> unsupportedStructuredArgument makeStandalone "a file name" codebaseLocation <*> handleBranchWithProject srcBranch <*> handleBranchWithOptionalProject destinationBranch
+        args -> wrongArgsLength "three arguments" args
+    }
+  where
+    suggestionsConfig =
+      ProjectBranchSuggestionsConfig
+        { showProjectCompletions = True,
+          projectInclusion = AllProjects,
+          branchInclusion = AllBranches
+        }
+
 mergeOldSquashInputPattern :: InputPattern
 mergeOldSquashInputPattern =
   InputPattern
@@ -2687,16 +2825,30 @@ names isGlobal =
     cmdName
     []
     I.Visible
-    [("name or hash", Required, definitionQueryArg)]
-    (P.wrap $ makeExample (names isGlobal) ["foo"] <> description)
-    $ \case
-      [thing] -> Input.NamesI isGlobal <$> handleHashQualifiedNameArg thing
-      args -> wrongArgsLength "exactly one argument" args
-  where
+    [("name or hash", OnePlus, definitionQueryArg)]
     description
-      | isGlobal = "Iteratively search across all projects and branches for names matching `foo`. Note that this is expected to be quite slow and is primarily for debugging issues with your codebase."
-      | otherwise = "List all known names for `foo` in the current branch."
+    $ \case
+      [] -> wrongArgsLength "at least one argument" []
+      [rawArg] -> do
+        let arg = handleArg rawArg
+        case arg of
+          (_, Left errMsg) -> Left errMsg
+          (argString, Right name) -> pure $ Input.NamesI isGlobal [(argString, Right name)]
+      rawArgs -> do
+        let args = handleArg <$> rawArgs
+        pure $ Input.NamesI isGlobal args
+  where
+    isGlobalPreamble = "Iteratively search names or hashes across all projects and branches."
+    isNotGlobalPreamble = "Search names or hashes in the current branch."
     cmdName = if isGlobal then "debug.names.global" else "names"
+    description =
+      P.lines
+        [ if isGlobal then isGlobalPreamble else isNotGlobalPreamble,
+          P.wrap $ makeExample (names isGlobal) ["foo"] <> "List all known names for `foo`.",
+          P.wrap $ makeExample (names isGlobal) ["foo", "#bar"] <> "List all known names for the name `foo` and for the hash `#bar`.",
+          P.wrap $ makeExample (names isGlobal) [] <> "without arguments invokes a search to select names/hashes to list, which requires that `fzf` can be found within your PATH."
+        ]
+    handleArg arg = (unifyArgument arg, handleHashQualifiedNameArg arg)
 
 dependents, dependencies :: InputPattern
 dependents =
@@ -3666,6 +3818,9 @@ validInputs =
       pushCreate,
       pushExhaustive,
       pushForce,
+      syncToFile,
+      syncFromFile,
+      syncFromCodebase,
       quit,
       releaseDraft,
       renameBranch,

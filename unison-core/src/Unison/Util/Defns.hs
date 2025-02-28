@@ -4,6 +4,8 @@ module Unison.Util.Defns
     DefnsF2,
     DefnsF3,
     DefnsF4,
+    terms_,
+    types_,
     alignDefnsWith,
     defnsAreEmpty,
     fromTerms,
@@ -19,6 +21,7 @@ module Unison.Util.Defns
   )
 where
 
+import Control.Lens (Lens)
 import Data.Align (Semialign, alignWith)
 import Data.Bifoldable (Bifoldable, bifoldMap)
 import Data.Bitraversable (Bitraversable, bitraverse)
@@ -31,7 +34,7 @@ data Defns terms types = Defns
   { terms :: terms,
     types :: types
   }
-  deriving stock (Generic, Functor, Show)
+  deriving stock (Generic, Functor, Show, Eq, Ord)
   deriving (Monoid, Semigroup) via GenericSemigroupMonoid (Defns terms types)
 
 instance Bifoldable Defns where
@@ -45,6 +48,12 @@ instance Bifunctor Defns where
 instance Bitraversable Defns where
   bitraverse f g (Defns x y) =
     Defns <$> f x <*> g y
+
+terms_ :: Lens (Defns terms types) (Defns terms' types) terms terms'
+terms_ f (Defns x y) = (\x' -> Defns x' y) <$> f x
+
+types_ :: Lens (Defns terms types) (Defns terms types') types types'
+types_ f (Defns x y) = (\y' -> Defns x y') <$> f y
 
 -- | A common shape of definitions - terms and types are stored in the same structure.
 type DefnsF f terms types =

@@ -99,6 +99,7 @@ module Unison.Codebase
     -- * Direct codebase access
     runTransaction,
     runTransactionWithRollback,
+    runTransactionExceptT,
     withConnection,
     withConnectionIO,
 
@@ -112,6 +113,7 @@ module Unison.Codebase
   )
 where
 
+import Control.Monad.Except (ExceptT)
 import Data.Map qualified as Map
 import Data.Set qualified as Set
 import U.Codebase.Branch qualified as V2Branch
@@ -173,6 +175,14 @@ runTransactionWithRollback ::
   m b
 runTransactionWithRollback Codebase {withConnection} action =
   withConnection \conn -> Sqlite.runTransactionWithRollback conn action
+
+runTransactionExceptT ::
+  (MonadIO m) =>
+  Codebase m v a ->
+  ExceptT e Sqlite.Transaction b ->
+  m (Either e b)
+runTransactionExceptT Codebase {withConnection} action =
+  withConnection \conn -> Sqlite.runTransactionExceptT conn action
 
 getShallowCausalAtPathFromRootHash ::
   -- Causal to start at, if Nothing use the codebase's root branch.

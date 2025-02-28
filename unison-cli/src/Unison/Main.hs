@@ -25,7 +25,7 @@ import ArgParse
   )
 import Compat (defaultInterruptHandler, withInterruptHandler)
 import Control.Concurrent (newEmptyMVar, runInUnboundThread, takeMVar)
-import Control.Exception (displayException, evaluate)
+import Control.Exception (displayException, evaluate, fromException)
 import Data.ByteString.Lazy qualified as BL
 import Data.Either.Validation (Validation (..))
 import Data.List.NonEmpty (NonEmpty)
@@ -45,6 +45,7 @@ import System.Directory
     removeDirectoryRecursive,
   )
 import System.Environment (getExecutablePath, getProgName, withArgs)
+import System.Exit (ExitCode (..))
 import System.Exit qualified as Exit
 import System.Exit qualified as System
 import System.FilePath
@@ -110,26 +111,30 @@ main version = do
   -- Replace the default exception handler with one complains loudly, because we shouldn't have any uncaught exceptions.
   -- Sometimes `show` and `displayException` are different strings; in this case, we want to show them both, so this
   -- issue is easier to debug.
+  --
+  -- We've made one exception for `ExitSuccess`, because we've discovered the `lsp` library unhelpfully throws it from a
+  -- background thread as part of the default "exit notification handler", with no way to modify the behavior.
   setUncaughtExceptionHandler \exception -> do
-    let shown = tShow exception
-    let displayed = Text.pack (displayException exception)
-    let indented = Text.unlines . map ("  " <>) . Text.lines
+    when (not (isExitSuccess exception)) do
+      let shown = tShow exception
+      let displayed = Text.pack (displayException exception)
+      let indented = Text.unlines . map ("  " <>) . Text.lines
 
-    Text.hPutStrLn stderr . Text.unlines . fold $
-      [ [ "Uh oh, an unexpected exception brought the process down! That should never happen. Please file a bug report.",
-          "",
-          "Here's a stringy rendering of the exception:",
-          "",
-          indented shown
-        ],
-        if shown /= displayed
-          then
-            [ "And here's a different one, in case it's easier to understand:",
-              "",
-              indented displayed
-            ]
-          else []
-      ]
+      Text.hPutStrLn stderr . Text.unlines . fold $
+        [ [ "Uh oh, an unexpected exception brought the process down! That should never happen. Please file a bug report.",
+            "",
+            "Here's a stringy rendering of the exception:",
+            "",
+            indented shown
+          ],
+          if shown /= displayed
+            then
+              [ "And here's a different one, in case it's easier to understand:",
+                "",
+                indented displayed
+              ]
+            else []
+        ]
 
   withCP65001 . runInUnboundThread . Ki.scoped $ \scope -> do
     interruptHandler <- defaultInterruptHandler
@@ -306,7 +311,7 @@ main version = do
               currentPP <- Codebase.runTransaction theCodebase do
                 PP.toIds <$> Codebase.expectCurrentProjectPath
               changeSignal <- Signal.newSignalIO (Just currentPP)
-              let lspCheckForChanges pp = Signal.writeSignalIO changeSignal pp
+              let lspCheckForChanges = Signal.writeSignalIO changeSignal
               -- Unfortunately, the windows IO manager on GHC 8.* is prone to just hanging forever
               -- when waiting for input on handles, so if we listen for LSP connections it will
               -- prevent UCM from shutting down properly. Hopefully we can re-enable LSP on
@@ -359,6 +364,10 @@ main version = do
           action . (runtime,sbRuntime,)
             -- startNativeRuntime saves the path to `unison-runtime`
             =<< RTI.startNativeRuntime (Version.gitDescribeWithDate version) nrtp
+
+isExitSuccess :: SomeException -> Bool
+isExitSuccess =
+  (== Just ExitSuccess) . fromException
 
 -- | Set user agent and configure TLS on global http client.
 -- Note that the authorized http client is distinct from the global http client.

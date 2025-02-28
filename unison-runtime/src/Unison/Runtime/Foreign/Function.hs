@@ -11,7 +11,6 @@ import Control.Concurrent as SYS
     threadDelay,
   )
 import Control.Concurrent.MVar as SYS
-import Control.Concurrent.STM (TVar)
 import Control.Concurrent.STM qualified as STM
 import Control.DeepSeq (NFData)
 import Control.Exception
@@ -24,17 +23,16 @@ import Crypto.MAC.HMAC qualified as HMAC
 import Crypto.PubKey.Ed25519 qualified as Ed25519
 import Crypto.PubKey.RSA.PKCS15 qualified as RSA
 import Crypto.Random (getRandomBytes)
-import Data.Atomics (Ticket)
 import Data.Bits (shiftL, shiftR, (.|.))
 import Data.ByteArray qualified as BA
 import Data.ByteString (hGet, hGetSome, hPut)
 import Data.ByteString.Lazy qualified as L
 import Data.Default (def)
 import Data.Digest.Murmur64 (asWord64, hash64)
-import Data.IORef (IORef)
 import Data.IP (IP)
 import Data.PEM (PEM, pemContent, pemParseLBS)
 import Data.Sequence qualified as Sq
+import Data.Tagged (Tagged (..))
 import Data.Text qualified
 import Data.Text.IO qualified as Text.IO
 import Data.Time.Clock.POSIX (POSIXTime)
@@ -49,7 +47,6 @@ import Data.X509.CertificateStore qualified as X
 import Data.X509.Memory qualified as X
 import GHC.Conc qualified as STM
 import GHC.IO (IO (IO))
-import GHC.IO.Exception (IOErrorType (..), IOException (..))
 import Network.Simple.TCP as SYS
   ( HostPreference (..),
     bindSock,
@@ -103,7 +100,7 @@ import System.Environment as SYS
   )
 import System.Exit as SYS (ExitCode (..))
 import System.FilePath (isPathSeparator)
-import System.IO (BufferMode (..), Handle, IOMode, SeekMode)
+import System.IO (BufferMode (..), Handle, IOMode, SeekMode (..))
 import System.IO as SYS
   ( IOMode (..),
     hClose,
@@ -137,7 +134,6 @@ import Unison.Builtin.Decls qualified as Ty
 import Unison.Prelude hiding (Text, some)
 import Unison.Reference
 import Unison.Referent (Referent, pattern Ref)
-import Unison.Runtime.ANF (Code, Value, internalBug)
 import Unison.Runtime.ANF qualified as ANF
 import Unison.Runtime.ANF.Rehash (checkGroupHashes)
 import Unison.Runtime.ANF.Serialize qualified as ANF
@@ -153,19 +149,12 @@ import Unison.Runtime.Stack
 import Unison.Runtime.TypeTags qualified as TT
 import Unison.Symbol
 import Unison.Type
-  ( iarrayRef,
-    ibytearrayRef,
-    marrayRef,
-    mbytearrayRef,
-    mvarRef,
-    promiseRef,
-    refRef,
-    ticketRef,
-    tvarRef,
+  ( anyRef,
+    listRef,
+    textRef,
     typeLinkRef,
   )
 import Unison.Type qualified as Ty
-import Unison.Util.Bytes (Bytes)
 import Unison.Util.Bytes qualified as Bytes
 import Unison.Util.RefPromise
   ( Promise,
@@ -186,12 +175,12 @@ import UnliftIO qualified
 -- unbox all of 'foreignCallHelper' when we write it this way, but it's way less work to use the regular lifted stack
 -- in its implementation.
 {-# NOINLINE foreignCall #-}
-foreignCall :: ForeignFunc -> Args -> XStack -> IOXStack
+foreignCall :: ForeignFunc -> Args -> XStack -> IOEXStack
 foreignCall !ff !args !xstk =
-  stackIOToIOX $ foreignCallHelper ff args (packXStack xstk)
+  estackIOToIOX $ foreignCallHelper ff args (packXStack xstk)
 
 {-# INLINE foreignCallHelper #-}
-foreignCallHelper :: ForeignFunc -> Args -> Stack -> IO Stack
+foreignCallHelper :: ForeignFunc -> Args -> Stack -> IO (Bool, Stack)
 foreignCallHelper = \case
   IO_UDP_clientSocket_impl_v1 -> mkForeignIOF $ \(host :: Util.Text.Text, port :: Util.Text.Text) ->
     let hostStr = Util.Text.toString host
@@ -225,13 +214,8 @@ foreignCallHelper = \case
   IO_UDP_ListenSocket_sendTo_impl_v1 -> mkForeignIOF $
     \(socket :: ListenSocket, bytes :: Bytes.Bytes, addr :: ClientSockAddr) ->
       UDP.sendTo socket (Bytes.toArray bytes) addr
-  IO_openFile_impl_v3 -> mkForeignIOF $ \(fnameText :: Util.Text.Text, n :: Int) ->
+  IO_openFile_impl_v3 -> mkForeignIOF $ \(fnameText :: Util.Text.Text, mode :: IOMode) ->
     let fname = Util.Text.toString fnameText
-        mode = case n of
-          0 -> ReadMode
-          1 -> WriteMode
-          2 -> AppendMode
-          _ -> ReadWriteMode
      in openFile fname mode
   IO_closeFile_impl_v3 -> mkForeignIOF hClose
   IO_isFileEOF_impl_v3 -> mkForeignIOF hIsEOF
@@ -347,11 +331,10 @@ foreignCallHelper = \case
   IO_kill_impl_v3 -> mkForeignIOF killThread
   IO_delay_impl_v3 -> mkForeignIOF customDelay
   IO_stdHandle -> mkForeign $
-    \(n :: Int) -> case n of
-      0 -> pure SYS.stdin
-      1 -> pure SYS.stdout
-      2 -> pure SYS.stderr
-      _ -> die "IO.stdHandle: invalid input."
+    \case
+      StdIn -> pure SYS.stdin
+      StdOut -> pure SYS.stdout
+      StdErr -> pure SYS.stderr
   IO_process_call -> mkForeign $
     \(exe, map Util.Text.unpack -> args) ->
       withCreateProcess (proc exe args) $ \_ _ _ p ->
@@ -494,7 +477,7 @@ foreignCallHelper = \case
       pure $ Bytes.fromArray bs
   Tls_terminate_impl_v3 -> mkForeignTls $
     \(tls :: TLS.Context) -> TLS.bye tls
-  Code_validateLinks -> mkForeign $
+  Code_validateLinks -> mkForeignExn $
     \(lsgs0 :: [(Referent, ANF.Code)]) -> do
       let f (msg, rs) =
             F.Failure Ty.miscFailureRef (Util.Text.fromText msg) rs
@@ -609,7 +592,7 @@ foreignCallHelper = \case
   Bytes_encodeNat32le -> mkForeign $ pure . Bytes.encodeNat32le
   Bytes_encodeNat16be -> mkForeign $ pure . Bytes.encodeNat16be
   Bytes_encodeNat16le -> mkForeign $ pure . Bytes.encodeNat16le
-  MutableArray_copyTo_force -> mkForeign $
+  MutableArray_copyTo_force -> mkForeignExn $
     \(dst, doff, src, soff, l) ->
       let name = "MutableArray.copyTo!"
        in if l == 0
@@ -624,7 +607,7 @@ foreignCallHelper = \case
                       src
                       (fromIntegral soff)
                       (fromIntegral l)
-  MutableByteArray_copyTo_force -> mkForeign $
+  MutableByteArray_copyTo_force -> mkForeignExn $
     \(dst, doff, src, soff, l) ->
       let name = "MutableByteArray.copyTo!"
        in if l == 0
@@ -639,7 +622,7 @@ foreignCallHelper = \case
                       src
                       (fromIntegral soff)
                       (fromIntegral l)
-  ImmutableArray_copyTo_force -> mkForeign $
+  ImmutableArray_copyTo_force -> mkForeignExn $
     \(dst, doff, src, soff, l) ->
       let name = "ImmutableArray.copyTo!"
        in if l == 0
@@ -666,7 +649,7 @@ foreignCallHelper = \case
   MutableByteArray_size ->
     mkForeign $
       pure . fromIntegral @Int @Word64 . PA.sizeofMutableByteArray @PA.RealWorld
-  ImmutableByteArray_copyTo_force -> mkForeign $
+  ImmutableByteArray_copyTo_force -> mkForeignExn $
     \(dst, doff, src, soff, l) ->
       let name = "ImmutableByteArray.copyTo!"
        in if l == 0
@@ -682,61 +665,61 @@ foreignCallHelper = \case
                       (fromIntegral soff)
                       (fromIntegral l)
   MutableArray_read ->
-    mkForeign $
+    mkForeignExn $
       checkedRead "MutableArray.read"
   MutableByteArray_read8 ->
-    mkForeign $
+    mkForeignExn $
       checkedRead8 "MutableByteArray.read8"
   MutableByteArray_read16be ->
-    mkForeign $
+    mkForeignExn $
       checkedRead16 "MutableByteArray.read16be"
   MutableByteArray_read24be ->
-    mkForeign $
+    mkForeignExn $
       checkedRead24 "MutableByteArray.read24be"
   MutableByteArray_read32be ->
-    mkForeign $
+    mkForeignExn $
       checkedRead32 "MutableByteArray.read32be"
   MutableByteArray_read40be ->
-    mkForeign $
+    mkForeignExn $
       checkedRead40 "MutableByteArray.read40be"
   MutableByteArray_read64be ->
-    mkForeign $
+    mkForeignExn $
       checkedRead64 "MutableByteArray.read64be"
   MutableArray_write ->
-    mkForeign $
+    mkForeignExn $
       checkedWrite "MutableArray.write"
   MutableByteArray_write8 ->
-    mkForeign $
+    mkForeignExn $
       checkedWrite8 "MutableByteArray.write8"
   MutableByteArray_write16be ->
-    mkForeign $
+    mkForeignExn $
       checkedWrite16 "MutableByteArray.write16be"
   MutableByteArray_write32be ->
-    mkForeign $
+    mkForeignExn $
       checkedWrite32 "MutableByteArray.write32be"
   MutableByteArray_write64be ->
-    mkForeign $
+    mkForeignExn $
       checkedWrite64 "MutableByteArray.write64be"
   ImmutableArray_read ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex "ImmutableArray.read"
   ImmutableByteArray_read8 ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex8 "ImmutableByteArray.read8"
   ImmutableByteArray_read16be ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex16 "ImmutableByteArray.read16be"
   ImmutableByteArray_read24be ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex24 "ImmutableByteArray.read24be"
   ImmutableByteArray_read32be ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex32 "ImmutableByteArray.read32be"
   ImmutableByteArray_read40be ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex40 "ImmutableByteArray.read40be"
   ImmutableByteArray_read64be ->
-    mkForeign $
+    mkForeignExn $
       checkedIndex64 "ImmutableByteArray.read64be"
   MutableByteArray_freeze_force ->
     mkForeign $
@@ -744,7 +727,7 @@ foreignCallHelper = \case
   MutableArray_freeze_force ->
     mkForeign $
       PA.unsafeFreezeArray @IO @Val
-  MutableByteArray_freeze -> mkForeign $
+  MutableByteArray_freeze -> mkForeignExn $
     \(src, off, len) ->
       if len == 0
         then fmap Right . PA.unsafeFreezeByteArray =<< PA.newByteArray 0
@@ -755,7 +738,7 @@ foreignCallHelper = \case
             (off + len)
             0
             $ Right <$> PA.freezeByteArray src (fromIntegral off) (fromIntegral len)
-  MutableArray_freeze -> mkForeign $
+  MutableArray_freeze -> mkForeignExn $
     \(src :: PA.MutableArray PA.RealWorld Val, off, len) ->
       if len == 0
         then fmap Right . PA.unsafeFreezeArray =<< PA.newArray 0 emptyVal
@@ -896,25 +879,17 @@ foreignCallHelper = \case
         Right a -> Right a
 
 {-# INLINE mkHashAlgorithm #-}
-mkHashAlgorithm :: forall alg. (Hash.HashAlgorithm alg) => Data.Text.Text -> alg -> Args -> Stack -> IO Stack
+mkHashAlgorithm :: forall alg. (Hash.HashAlgorithm alg) => Data.Text.Text -> alg -> Args -> Stack -> IO (Bool, Stack)
 mkHashAlgorithm txt alg =
   let algoRef = Builtin ("crypto.HashAlgorithm." <> txt)
    in mkForeign $ \() -> pure (HashAlgorithm algoRef alg)
 
 {-# INLINE mkForeign #-}
-mkForeign :: (ForeignConvention a, ForeignConvention b) => (a -> IO b) -> Args -> Stack -> IO Stack
+mkForeign :: (ForeignConvention a, ForeignConvention b) => (a -> IO b) -> Args -> Stack -> IO (Bool, Stack)
 mkForeign !f !args !stk = do
-  args <- decodeArgs args stk
-  res <- f args
-  writeForeign stk res
-  where
-    decodeArgs :: (ForeignConvention x) => Args -> Stack -> IO x
-    decodeArgs !args !stk =
-      readForeign (argsToLists args) stk >>= \case
-        ([], a) -> pure a
-        _ ->
-          error
-            "mkForeign: too many arguments for foreign function"
+  r <- f =<< readsAt stk args
+  stk <- bump stk
+  (False, stk) <$ writeBack stk r
 
 {-# INLINE mkForeignIOF #-}
 mkForeignIOF ::
@@ -922,7 +897,7 @@ mkForeignIOF ::
   (a -> IO r) ->
   Args ->
   Stack ->
-  IO Stack
+  IO (Bool, Stack)
 mkForeignIOF f = mkForeign $ \a -> tryIOE (f a)
   where
     tryIOE :: IO a -> IO (Either (F.Failure Val) a)
@@ -931,6 +906,22 @@ mkForeignIOF f = mkForeign $ \a -> tryIOE (f a)
     handleIOE (Left e) = Left $ F.Failure Ty.ioFailureRef (Util.Text.pack (show e)) unitValue
     handleIOE (Right a) = Right a
 
+{-# inline mkForeignExn #-}
+mkForeignExn ::
+  (ForeignConvention a, ForeignConvention e, ForeignConvention r) =>
+  (a -> IO (Either (F.Failure e) r)) ->
+  Args ->
+  Stack ->
+  IO (Bool, Stack)
+mkForeignExn f args stk =
+  readsAt stk args >>= f >>= \case
+    Left e -> do
+      stk <- bump stk
+      (True, stk) <$ writeBack stk e
+    Right r -> do
+      stk <- bump stk
+      (False, stk) <$ writeBack stk r
+
 {-# INLINE mkForeignTls #-}
 mkForeignTls ::
   forall a r.
@@ -938,7 +929,7 @@ mkForeignTls ::
   (a -> IO r) ->
   Args ->
   Stack ->
-  IO Stack
+  IO (Bool, Stack)
 mkForeignTls f = mkForeign $ \a -> fmap flatten (tryIO2 (tryIO1 (f a)))
   where
     tryIO1 :: IO r -> IO (Either TLS.TLSException r)
@@ -957,7 +948,7 @@ mkForeignTlsE ::
   (a -> IO (Either Failure r)) ->
   Args ->
   Stack ->
-  IO Stack
+  IO (Bool, Stack)
 mkForeignTlsE f = mkForeign $ \a -> fmap flatten (tryIO2 (tryIO1 (f a)))
   where
     tryIO1 :: IO (Either Failure r) -> IO (Either TLS.TLSException (Either Failure r))
@@ -1317,311 +1308,285 @@ checkedIndex64 name (arr, i) =
           (PA.indexByteArray arr (j + 6))
           (PA.indexByteArray arr (j + 7))
 
+-- A ForeignConvention explains how to encode foreign values as
+-- unison types. Depending on the situation, this can take three
+-- forms.
+--
+--   1. Reading/writing directly from/to the stack
+--   2. Reading a tuple directly from the stack
+--   3. Translating a standalone value
+--
+-- The first is used when the value in question is the one that is
+-- going to be directly on the stack, to allow for slight
+-- optimization (e.g. an `Either` only requires reading/writing the
+-- boxed portion of the stack). For compound types, though, it's
+-- necessary to be able to de/encode a value that was nested inside
+-- something else.
+--
+-- The second is used for multi-argument foreign functions. The
+-- default implementation expects a single argument, and reads at
+-- that specific index. But, tuples and the unit type can override
+-- to read multiple arguments directly from the stack. This works
+-- out better than having a separate class with a default
+-- ForeignConvention instance, because the latter requires
+-- incoherence to work as expected.
+--
+-- We can give a default implementation of the stack operations in
+-- terms of the other coding.
 class ForeignConvention a where
-  readForeign ::
-    [Int] -> Stack -> IO ([Int], a)
-  writeForeign ::
-    Stack -> a -> IO Stack
+  readAtIndex :: Stack -> Int -> IO a
+  readsAt :: Stack -> Args -> IO a
+  decodeVal :: Val -> IO a
+
+  readAtIndex stk i = peekOff stk i >>= decodeVal
+
+  readsAt stk (VArg1 i) = readAtIndex stk i
+  readsAt _ args = readsAtError "one argument" args
+
+  writeBack :: Stack -> a -> IO ()
+  encodeVal :: a -> Val
+
+  writeBack stk v = poke stk (encodeVal v)
+
+readsAtError :: String -> Args -> IO a
+readsAtError expect args = throwIO $ Panic msg Nothing
+  where
+    msg = "readsAt: expected " ++ expect ++ ", got: " ++ show args
+
+foreignConventionError :: String -> Val -> IO a
+foreignConventionError ty v = throwIO $ Panic msg (Just v)
+  where
+    msg = "mismatched foreign calling convention for `" ++ ty ++ "`"
+
+instance
+  ( ForeignConvention a,
+    ForeignConvention b
+  ) => ForeignConvention (Either a b) where
+  decodeVal (BoxedVal (Data1 _ t v))
+    | t == TT.leftTag = Left <$> decodeVal v
+    | otherwise = Right <$> decodeVal v
+  decodeVal v = foreignConventionError "Either" v
+
+  encodeVal (Left x) =
+    BoxedVal . Data1 Ty.eitherRef TT.leftTag $ encodeVal x
+  encodeVal (Right y) =
+    BoxedVal . Data1 Ty.eitherRef TT.rightTag $ encodeVal y
+
+  readAtIndex stk i = bpeekOff stk i >>= \case
+    Data1 _ t v
+      | t == TT.leftTag -> Left <$> decodeVal v
+      | otherwise -> Right <$> decodeVal v
+    c -> foreignConventionError "Either" (BoxedVal c)
+
+  writeBack stk (Left x) =
+    bpoke stk . Data1 Ty.eitherRef TT.leftTag $ encodeVal x
+  writeBack stk (Right y) =
+    bpoke stk . Data1 Ty.eitherRef TT.rightTag $ encodeVal y
+
+instance ForeignConvention a => ForeignConvention (Maybe a) where
+  decodeVal (BoxedVal (Enum _ _)) = pure Nothing
+  decodeVal (BoxedVal (Data1 _ _ v)) = Just <$> decodeVal v
+  decodeVal v = foreignConventionError "Maybe" v
+
+  encodeVal Nothing = noneVal
+  encodeVal (Just v) = someVal (encodeVal v)
+
+  readAtIndex stk i = bpeekOff stk i >>= \case
+    Data1 _ _ v -> Just <$> decodeVal v
+    Enum _ _ -> pure Nothing
+    c -> foreignConventionError "Maybe" (BoxedVal c)
+
+  writeBack stk Nothing = bpoke stk noneClo
+  writeBack stk (Just v) = bpoke stk (someClo (encodeVal v))
+
+noneClo :: Closure
+noneClo = Enum Ty.optionalRef TT.noneTag
+
+noneVal :: Val
+noneVal = BoxedVal noneClo
+
+someClo :: Val -> Closure
+someClo v = Data1 Ty.optionalRef TT.someTag v
+
+someVal :: Val -> Val
+someVal v = BoxedVal (someClo v)
 
 instance ForeignConvention Int where
-  readForeign (i : args) !stk = (args,) <$> peekOffI stk i
-  readForeign [] !_ = foreignCCError "Int"
-  writeForeign !stk !i = do
-    stk <- bump stk
-    stk <$ pokeI stk i
+  decodeVal (IntVal v) = pure v
+  decodeVal v = foreignConventionError "Int" v
+  encodeVal = IntVal
 
-instance ForeignConvention Word64 where
-  readForeign (i : args) !stk = (args,) <$> peekOffN stk i
-  readForeign [] !_ = foreignCCError "Word64"
-  writeForeign !stk !n = do
-    stk <- bump stk
-    stk <$ pokeN stk n
+  readAtIndex stk i = upeekOff stk i
+  writeBack stk v = upokeT stk v intTypeTag
 
 -- We don't have a clear mapping from these types to Unison types, most are just mapped to Nats.
 
 instance ForeignConvention Word8 where
-  readForeign = readForeignAs (fromIntegral :: Word64 -> Word8)
-  writeForeign = writeForeignAs (fromIntegral :: Word8 -> Word64)
+  decodeVal (NatVal v) = pure $ fromIntegral v
+  decodeVal v = foreignConventionError "Word8" v
+  encodeVal w = NatVal $ fromIntegral w
+
+  readAtIndex stk i = fromIntegral <$> peekOffN stk i
+  writeBack stk v = pokeN stk $ fromIntegral v
 
 instance ForeignConvention Word16 where
-  readForeign = readForeignAs (fromIntegral :: Word64 -> Word16)
-  writeForeign = writeForeignAs (fromIntegral :: Word16 -> Word64)
+  decodeVal (NatVal v) = pure $ fromIntegral v
+  decodeVal v = foreignConventionError "Word16" v
+  encodeVal w = NatVal $ fromIntegral w
+
+  readAtIndex stk i = fromIntegral <$> peekOffN stk i
+  writeBack stk v = pokeN stk $ fromIntegral v
 
 instance ForeignConvention Word32 where
-  readForeign = readForeignAs (fromIntegral :: Word64 -> Word32)
-  writeForeign = writeForeignAs (fromIntegral :: Word32 -> Word64)
+  decodeVal (NatVal v) = pure $ fromIntegral v
+  decodeVal v = foreignConventionError "Word32" v
+  encodeVal w = NatVal $ fromIntegral w
+
+  readAtIndex stk i = fromIntegral <$> upeekOff stk i
+  writeBack stk v = pokeN stk $ fromIntegral v
+
+instance ForeignConvention Word64 where
+  decodeVal (NatVal w) = pure w
+  decodeVal v = foreignConventionError "Word64" v
+  encodeVal w = NatVal w
+
+  readAtIndex stk i = peekOffN stk i
+  writeBack stk w = pokeN stk w
 
 instance ForeignConvention Char where
-  readForeign (i : args) !stk = (args,) <$> peekOffC stk i
-  readForeign [] !_ = foreignCCError "Char"
-  writeForeign !stk !ch = do
-    stk <- bump stk
-    stk <$ pokeC stk ch
+  decodeVal (CharVal c) = pure c
+  decodeVal v = foreignConventionError "Char" v
 
-instance ForeignConvention Val where
-  readForeign (i : args) !stk = (args,) <$> peekOff stk i
-  readForeign [] !_ = foreignCCError "Val"
-  writeForeign !stk !v = do
-    stk <- bump stk
-    stk <$ (poke stk =<< evaluate v)
+  encodeVal c = CharVal c
 
--- In reality this fixes the type to be 'RClosure', but allows us to defer
--- the typechecker a bit and avoid a bunch of annoying type annotations.
-instance ForeignConvention Closure where
-  readForeign (i : args) !stk = (args,) <$> bpeekOff stk i
-  readForeign [] !_ = foreignCCError "Closure"
-  writeForeign !stk !c = do
-    stk <- bump stk
-    stk <$ (bpoke stk =<< evaluate c)
+  readAtIndex = peekOffC
+  writeBack = pokeC
 
-instance ForeignConvention Text where
-  readForeign = readForeignBuiltin
-  writeForeign = writeForeignBuiltin
+unitClo :: Closure
+unitClo = Enum Ty.unitRef TT.unitTag
 
-instance ForeignConvention Unison.Util.Bytes.Bytes where
-  readForeign = readForeignBuiltin
-  writeForeign = writeForeignBuiltin
-
-instance ForeignConvention Socket where
-  readForeign = readForeignBuiltin
-  writeForeign = writeForeignBuiltin
-
-instance ForeignConvention UDPSocket where
-  readForeign = readForeignBuiltin
-  writeForeign = writeForeignBuiltin
-
-instance ForeignConvention ThreadId where
-  readForeign = readForeignBuiltin
-  writeForeign = writeForeignBuiltin
-
-instance ForeignConvention Handle where
-  readForeign = readForeignBuiltin
-  writeForeign = writeForeignBuiltin
-
-instance ForeignConvention POSIXTime where
-  readForeign = readForeignAs (fromIntegral :: Int -> POSIXTime)
-  writeForeign = writeForeignAs (round :: POSIXTime -> Int)
-
-instance (ForeignConvention a) => ForeignConvention (Maybe a) where
-  readForeign (i : args) !stk =
-    upeekOff stk i >>= \case
-      0 -> pure (args, Nothing)
-      1 -> fmap Just <$> readForeign args stk
-      _ -> foreignCCError "Maybe"
-  readForeign [] !_ = foreignCCError "Maybe"
-
-  writeForeign !stk Nothing = do
-    stk <- bump stk
-    stk <$ pokeTag stk 0
-  writeForeign !stk (Just x) = do
-    stk <- writeForeign stk x
-    stk <- bump stk
-    stk <$ pokeTag stk 1
-
-instance
-  (ForeignConvention a, ForeignConvention b) =>
-  ForeignConvention (Either a b)
-  where
-  readForeign (i : args) !stk =
-    peekTagOff stk i >>= \case
-      0 -> readForeignAs Left args stk
-      1 -> readForeignAs Right args stk
-      _ -> foreignCCError "Either"
-  readForeign !_ !_ = foreignCCError "Either"
-
-  writeForeign !stk !(Left a) = do
-    stk <- writeForeign stk a
-    stk <- bump stk
-    stk <$ pokeTag stk 0
-  writeForeign !stk !(Right b) = do
-    stk <- writeForeign stk b
-    stk <- bump stk
-    stk <$ pokeTag stk 1
-
-ioeDecode :: Int -> IOErrorType
-ioeDecode 0 = AlreadyExists
-ioeDecode 1 = NoSuchThing
-ioeDecode 2 = ResourceBusy
-ioeDecode 3 = ResourceExhausted
-ioeDecode 4 = EOF
-ioeDecode 5 = IllegalOperation
-ioeDecode 6 = PermissionDenied
-ioeDecode 7 = UserError
-ioeDecode _ = internalBug "ioeDecode"
-
-ioeEncode :: IOErrorType -> Int
-ioeEncode AlreadyExists = 0
-ioeEncode NoSuchThing = 1
-ioeEncode ResourceBusy = 2
-ioeEncode ResourceExhausted = 3
-ioeEncode EOF = 4
-ioeEncode IllegalOperation = 5
-ioeEncode PermissionDenied = 6
-ioeEncode UserError = 7
-ioeEncode _ = internalBug "ioeDecode"
-
-instance ForeignConvention IOException where
-  readForeign = readForeignAs (bld . ioeDecode)
-    where
-      bld t = IOError Nothing t "" "" Nothing Nothing
-
-  writeForeign = writeForeignAs (ioeEncode . ioe_type)
-
-readForeignAs ::
-  (ForeignConvention a) =>
-  (a -> b) ->
-  [Int] ->
-  Stack ->
-  IO ([Int], b)
-readForeignAs !f !args !stk = fmap f <$> readForeign args stk
-
-writeForeignAs ::
-  (ForeignConvention b) =>
-  (a -> b) ->
-  Stack ->
-  a ->
-  IO Stack
-writeForeignAs !f !stk !x = writeForeign stk (f x)
-
-readForeignEnum ::
-  (Enum a) =>
-  [Int] ->
-  Stack ->
-  IO ([Int], a)
-readForeignEnum = readForeignAs toEnum
-
-writeForeignEnum ::
-  (Enum a) =>
-  Stack ->
-  a ->
-  IO Stack
-writeForeignEnum = writeForeignAs fromEnum
-
-readForeignBuiltin ::
-  (BuiltinForeign b) =>
-  [Int] ->
-  Stack ->
-  IO ([Int], b)
-readForeignBuiltin = readForeignAs (unwrapBuiltin . marshalToForeign)
-
-writeForeignBuiltin ::
-  (BuiltinForeign b) =>
-  Stack ->
-  b ->
-  IO Stack
-writeForeignBuiltin = writeForeignAs (Foreign . wrapBuiltin)
-
-writeTypeLink ::
-  Stack ->
-  Reference ->
-  IO Stack
-writeTypeLink = writeForeignAs (Foreign . Wrap typeLinkRef)
-{-# INLINE writeTypeLink #-}
-
-readTypelink ::
-  [Int] ->
-  Stack ->
-  IO ([Int], Reference)
-readTypelink = readForeignAs (unwrapForeign . marshalToForeign)
-{-# INLINE readTypelink #-}
-
-instance ForeignConvention Double where
-  readForeign (i : args) !stk = (args,) <$> peekOffD stk i
-  readForeign !_ !_ = foreignCCError "Double"
-  writeForeign !stk !d =
-    bump stk >>= \(!stk) -> do
-      pokeD stk d
-      pure stk
-
-instance ForeignConvention Bool where
-  readForeign (i : args) !stk = do
-    b <- peekOffBool stk i
-    pure (args, b)
-  readForeign !_ !_ = foreignCCError "Bool"
-  writeForeign !stk !b = do
-    stk <- bump stk
-    pokeBool stk b
-    pure stk
-
-instance ForeignConvention String where
-  readForeign = readForeignAs unpack
-  writeForeign = writeForeignAs pack
-
-instance ForeignConvention SeekMode where
-  readForeign = readForeignEnum
-  writeForeign = writeForeignEnum
-
-instance ForeignConvention IOMode where
-  readForeign = readForeignEnum
-  writeForeign = writeForeignEnum
+unitVal :: Val
+unitVal = BoxedVal unitClo
 
 instance ForeignConvention () where
-  readForeign !args !_ = pure (args, ())
-  writeForeign !stk !_ = pure stk
+  decodeVal _ = pure ()
+  encodeVal _ = unitVal
+
+  readsAt _ ZArgs = pure ()
+  readsAt _ as = readsAtError "zero arguments" as
+
+  readAtIndex _ _ = pure ()
+  writeBack stk _ = bpoke stk $ unitClo
+
+pattern ConsC :: Val -> Val -> Closure
+pattern ConsC x y <- Data2 _ _ x y
+  where
+    ConsC x y = Data2 Ty.pairRef TT.pairTag x y
+
+pattern ConsV x y = BoxedVal (ConsC x y)
+
+pattern Tup2C :: Val -> Val -> Closure
+pattern Tup2C x y <- ConsC x (ConsV y _)
+  where
+    Tup2C x y = ConsC x (ConsV y unitVal)
+
+pattern Tup2V x y = BoxedVal (Tup2C x y)
+
+decodeTup2 :: (ForeignConvention a, ForeignConvention b) => Closure -> IO (a, b)
+decodeTup2 (Tup2C x y) = (,) <$> decodeVal x <*> decodeVal y
+decodeTup2 c = foreignConventionError "Pair" (BoxedVal c)
+
+encodeTup2 :: (ForeignConvention a, ForeignConvention b) => (a, b) -> Closure
+encodeTup2 (x,y) = Tup2C (encodeVal x) (encodeVal y)
 
 instance
-  (ForeignConvention a, ForeignConvention b) =>
-  ForeignConvention (a, b)
-  where
-  readForeign !args !stk = do
-    (args, a) <- readForeign args stk
-    (args, b) <- readForeign args stk
-    pure (args, (a, b))
+  ( ForeignConvention a,
+    ForeignConvention b
+  ) => ForeignConvention (a, b) where
+  decodeVal (BoxedVal v) = decodeTup2 v
+  decodeVal v = foreignConventionError "Pair" v
+  encodeVal p = BoxedVal $ encodeTup2 p
 
-  writeForeign !stk (x, y) = do
-    stk <- writeForeign stk y
-    writeForeign stk x
+  readsAt stk (VArg2 i j) =
+    (,) <$> readAtIndex stk i
+        <*> readAtIndex stk j
+  readsAt _ as = readsAtError "two arguments" as
 
-instance (ForeignConvention a) => ForeignConvention (F.Failure a) where
-  readForeign !args !stk = do
-    (args, typeref) <- readTypelink args stk
-    (args, message) <- readForeign args stk
-    (args, any) <- readForeign args stk
-    pure (args, F.Failure typeref message any)
+  readAtIndex stk i = bpeekOff stk i >>= decodeTup2
+  writeBack stk p = bpoke stk $ encodeTup2 p
 
-  writeForeign !stk (F.Failure typeref message any) = do
-    stk <- writeForeign stk any
-    stk <- writeForeign stk message
-    writeTypeLink stk typeref
+pattern Tup3C x y z = ConsC x (Tup2V y z)
+pattern Tup3V x y z = BoxedVal (Tup3C x y z)
+
+decodeTup3 :: (ForeignConvention a, ForeignConvention b, ForeignConvention c) => Closure -> IO (a, b, c)
+decodeTup3 (Tup3C x y z) =
+  (,,) <$> decodeVal x <*> decodeVal y <*> decodeVal z
+decodeTup3 c = foreignConventionError "Triple" (BoxedVal c)
+
+encodeTup3 :: (ForeignConvention a, ForeignConvention b, ForeignConvention c) => (a, b, c) -> Closure
+encodeTup3 (x,y,z) = Tup3C (encodeVal x) (encodeVal y) (encodeVal z)
 
 instance
   ( ForeignConvention a,
     ForeignConvention b,
     ForeignConvention c
-  ) =>
-  ForeignConvention (a, b, c)
-  where
-  readForeign !args !stk = do
-    (args, a) <- readForeign args stk
-    (args, b) <- readForeign args stk
-    (args, c) <- readForeign args stk
-    pure (args, (a, b, c))
+  ) => ForeignConvention (a, b, c) where
+  decodeVal (BoxedVal v) = decodeTup3 v
+  decodeVal v = foreignConventionError "Triple" v
+  encodeVal p = BoxedVal $ encodeTup3 p
 
-  writeForeign !stk (a, b, c) = do
-    stk <- writeForeign stk c
-    stk <- writeForeign stk b
-    writeForeign stk a
+  readsAt stk (VArgN v) =
+    (,,) <$> readAtIndex stk (PA.indexPrimArray v 0)
+         <*> readAtIndex stk (PA.indexPrimArray v 1)
+         <*> readAtIndex stk (PA.indexPrimArray v 2)
+  readsAt _ as = readsAtError "three arguments" as
+
+  readAtIndex stk i = bpeekOff stk i >>= decodeTup3
+  writeBack stk p = bpoke stk $ encodeTup3 p
+
+pattern Tup4C w x y z = ConsC w (Tup3V x y z)
+pattern Tup4V w x y z = BoxedVal (Tup4C w x y z)
+
+decodeTup4 :: (ForeignConvention a, ForeignConvention b, ForeignConvention c, ForeignConvention d) => Closure -> IO (a, b, c, d)
+decodeTup4 (Tup4C w x y z) =
+  (,,,) <$> decodeVal w <*> decodeVal x <*> decodeVal y <*> decodeVal z
+decodeTup4 c = foreignConventionError "Quadruple" (BoxedVal c)
+
+encodeTup4 :: (ForeignConvention a, ForeignConvention b, ForeignConvention c, ForeignConvention d) => (a, b, c, d) -> Closure
+encodeTup4 (w,x,y,z) =
+  Tup4C (encodeVal w) (encodeVal x) (encodeVal y) (encodeVal z)
 
 instance
   ( ForeignConvention a,
     ForeignConvention b,
     ForeignConvention c,
     ForeignConvention d
-  ) =>
-  ForeignConvention (a, b, c, d)
-  where
-  readForeign !args !stk = do
-    (args, a) <- readForeign args stk
-    (args, b) <- readForeign args stk
-    (args, c) <- readForeign args stk
-    (args, d) <- readForeign args stk
-    pure (args, (a, b, c, d))
+  ) => ForeignConvention (a, b, c, d) where
+  decodeVal (BoxedVal v) = decodeTup4 v
+  decodeVal v = foreignConventionError "Quadruple" v
 
-  writeForeign !stk (a, b, c, d) = do
-    stk <- writeForeign stk d
-    stk <- writeForeign stk c
-    stk <- writeForeign stk b
-    writeForeign stk a
+  encodeVal p = BoxedVal $ encodeTup4 p
+
+  readsAt stk (VArgN v) =
+    (,,,) <$> readAtIndex stk (PA.indexPrimArray v 0)
+          <*> readAtIndex stk (PA.indexPrimArray v 1)
+          <*> readAtIndex stk (PA.indexPrimArray v 2)
+          <*> readAtIndex stk (PA.indexPrimArray v 3)
+  readsAt _ as = readsAtError "four arguments" as
+
+  readAtIndex stk i = bpeekOff stk i >>= decodeTup4
+  writeBack stk p = bpoke stk $ encodeTup4 p
+
+pattern Tup5C v w x y z = ConsC v (Tup4V w x y z)
+
+decodeTup5 :: (ForeignConvention a, ForeignConvention b, ForeignConvention c, ForeignConvention d, ForeignConvention e) => Closure -> IO (a, b, c, d, e)
+decodeTup5 (Tup5C v w x y z) =
+  (,,,,) <$> decodeVal v <*> decodeVal w <*> decodeVal x <*> decodeVal y <*> decodeVal z
+decodeTup5 c = foreignConventionError "Quintuple" (BoxedVal c)
+
+encodeTup5 :: (ForeignConvention a, ForeignConvention b, ForeignConvention c, ForeignConvention d, ForeignConvention e) => (a, b, c, d, e) -> Closure
+encodeTup5 (v,w,x,y,z) =
+  Tup5C (encodeVal v) (encodeVal w) (encodeVal x) (encodeVal y) (encodeVal z)
 
 instance
   ( ForeignConvention a,
@@ -1632,171 +1597,310 @@ instance
   ) =>
   ForeignConvention (a, b, c, d, e)
   where
-  readForeign !args !stk = do
-    (args, a) <- readForeign args stk
-    (args, b) <- readForeign args stk
-    (args, c) <- readForeign args stk
-    (args, d) <- readForeign args stk
-    (args, e) <- readForeign args stk
-    pure (args, (a, b, c, d, e))
+  decodeVal (BoxedVal c) = decodeTup5 c
+  decodeVal v = foreignConventionError "Quintuple" v
 
-  writeForeign !stk (a, b, c, d, e) = do
-    stk <- writeForeign stk e
-    stk <- writeForeign stk d
-    stk <- writeForeign stk c
-    stk <- writeForeign stk b
-    writeForeign stk a
+  encodeVal = BoxedVal . encodeTup5
 
-no'buf, line'buf, block'buf, sblock'buf :: Word64
-no'buf = fromIntegral Ty.bufferModeNoBufferingId
-line'buf = fromIntegral Ty.bufferModeLineBufferingId
-block'buf = fromIntegral Ty.bufferModeBlockBufferingId
-sblock'buf = fromIntegral Ty.bufferModeSizedBlockBufferingId
+  readsAt stk (VArgN v) =
+    (,,,,) <$> readAtIndex stk (PA.indexPrimArray v 0)
+           <*> readAtIndex stk (PA.indexPrimArray v 1)
+           <*> readAtIndex stk (PA.indexPrimArray v 2)
+           <*> readAtIndex stk (PA.indexPrimArray v 3)
+           <*> readAtIndex stk (PA.indexPrimArray v 4)
+  readsAt _ as = readsAtError "five arguments" as
+
+  readAtIndex stk i = bpeekOff stk i >>= decodeTup5
+  writeBack stk p = bpoke stk $ encodeTup5 p
+
+
+decodeFailure :: ForeignConvention a => Closure -> IO (F.Failure a)
+decodeFailure (DataG _ _ (_, args)) =
+  F.Failure
+    <$> decodeTypeLink (PA.indexArray args 0)
+    <*> decodeText (PA.indexArray args 1)
+    <*> decodeAny (PA.indexArray args 2)
+decodeFailure c = foreignConventionError "Failure" (BoxedVal c)
+
+encodeFailure :: ForeignConvention a => F.Failure a -> Closure
+encodeFailure (F.Failure r msg v) = DataG Ty.failureRef TT.failureTag payload
+  where
+    payload = boxedSeg [encodeTypeLink r, encodeText msg, encodeAny v]
+
+boxedSeg :: [Closure] -> Seg
+boxedSeg cs = (useg (0 <$ cs), bseg cs)
+
+decodeTypeLink :: Closure -> IO Reference
+decodeTypeLink = marshalUnwrapForeignIO
+
+encodeTypeLink :: Reference -> Closure
+encodeTypeLink rf = Foreign (Wrap typeLinkRef rf)
+
+encodeAny :: ForeignConvention a => a -> Closure
+encodeAny v = Data1 anyRef TT.anyTag (encodeVal v)
+
+decodeAny :: ForeignConvention a => Closure -> IO a
+decodeAny (Data1 _ _ v) = decodeVal v
+decodeAny c = foreignConventionError "Any" (BoxedVal c)
+
+decodeText :: Closure -> IO Text
+decodeText = marshalUnwrapForeignIO
+
+encodeText :: Text -> Closure
+encodeText tx = Foreign (Wrap textRef tx)
+
+instance ForeignConvention a => ForeignConvention (F.Failure a) where
+  decodeVal (BoxedVal v) = decodeFailure v
+  decodeVal v = foreignConventionError "Failure" v
+  encodeVal v = BoxedVal $ encodeFailure v
+
+  readAtIndex stk i = bpeekOff stk i >>= decodeFailure
+  writeBack stk f = bpoke stk $ encodeFailure f
+
+decodeForeignClo :: String -> Closure -> IO a
+decodeForeignClo _ (Foreign x) = pure $ unwrapForeign x
+decodeForeignClo ty c = foreignConventionError ty (BoxedVal c)
+
+encodeForeignClo :: Reference -> a -> Closure
+encodeForeignClo r = Foreign . Wrap r
+
+decodeBuiltin :: forall a. BuiltinForeign a => Val -> IO a
+decodeBuiltin v
+  | BoxedVal c <- v = decodeForeignClo ty c
+  | otherwise = foreignConventionError ty v
+  where
+    Tagged ty = foreignName :: Tagged a String
+
+encodeBuiltin :: forall a. BuiltinForeign a => a -> Val
+encodeBuiltin = BoxedVal . encodeForeignClo r
+  where
+    Tagged r = foreignRef :: Tagged a Reference
+
+readBuiltinAt :: forall a. BuiltinForeign a => Stack -> Int -> IO a
+readBuiltinAt stk i = bpeekOff stk i >>= decodeForeignClo ty
+  where
+    Tagged ty = foreignName :: Tagged a String
+
+writeBuiltin :: forall a. BuiltinForeign a => Stack -> a -> IO ()
+writeBuiltin stk = bpoke stk . encodeForeignClo r
+  where
+    Tagged r = foreignRef :: Tagged a Reference
+
+decodeAsBuiltin :: BuiltinForeign t => (t -> a) -> Val -> IO a
+decodeAsBuiltin k = fmap k . decodeBuiltin
+
+encodeAsBuiltin :: BuiltinForeign t => (a -> t) -> a -> Val
+encodeAsBuiltin k = encodeBuiltin . k
+
+readAsBuiltin
+  :: BuiltinForeign t => (t -> a) -> Stack -> Int -> IO a
+readAsBuiltin k stk i = k <$> readBuiltinAt stk i
+
+writeAsBuiltin :: BuiltinForeign t => (a -> t) -> Stack -> a -> IO ()
+writeAsBuiltin k stk = writeBuiltin stk . k
+
+instance ForeignConvention POSIXTime where
+  decodeVal (IntVal i) = pure (fromIntegral i)
+  decodeVal v = foreignConventionError "POSIXTime" v
+  encodeVal pt = IntVal (round pt)
+  readAtIndex stk i = fromIntegral <$> peekOffI stk i
+  writeBack stk pt = pokeI stk (round pt)
+
+decodeBufferMode :: Closure -> IO BufferMode
+decodeBufferMode (Enum _ t)
+  | t == TT.noBufTag = pure NoBuffering
+  | t == TT.lineBufTag = pure LineBuffering
+  | t == TT.blockBufTag = pure $ BlockBuffering Nothing
+decodeBufferMode (Data1 _ t (NatVal i))
+  | t == TT.sizedBlockBufTag = pure . BlockBuffering $ Just (fromIntegral i)
+decodeBufferMode c = foreignConventionError "BufferMode" (BoxedVal c)
+
+encodeBufferMode :: BufferMode -> Closure
+encodeBufferMode NoBuffering = no'buf
+encodeBufferMode LineBuffering = line'buf
+encodeBufferMode (BlockBuffering Nothing) = block'buf
+encodeBufferMode (BlockBuffering (Just n)) =
+  Data1 Ty.bufferModeRef TT.sizedBlockBufTag . NatVal $ fromIntegral n
+
+no'buf, line'buf, block'buf :: Closure
+no'buf = Enum Ty.bufferModeRef TT.noBufTag
+line'buf = Enum Ty.bufferModeRef TT.lineBufTag
+block'buf = Enum Ty.bufferModeRef TT.blockBufTag
 
 instance ForeignConvention BufferMode where
-  readForeign (i : args) !stk =
-    peekOffN stk i >>= \case
-      t
-        | t == no'buf -> pure (args, NoBuffering)
-        | t == line'buf -> pure (args, LineBuffering)
-        | t == block'buf -> pure (args, BlockBuffering Nothing)
-        | t == sblock'buf ->
-            fmap (BlockBuffering . Just)
-              <$> readForeign args stk
-        | otherwise ->
-            foreignCCError $
-              "BufferMode (unknown tag: " <> show t <> ")"
-  readForeign !_ !_ = foreignCCError $ "BufferMode (empty stack)"
+  decodeVal (BoxedVal c) = decodeBufferMode c
+  decodeVal v = foreignConventionError "BufferMode" v
 
-  writeForeign !stk !bm =
-    bump stk >>= \(stk) ->
-      case bm of
-        NoBuffering -> stk <$ pokeN stk no'buf
-        LineBuffering -> stk <$ pokeN stk line'buf
-        BlockBuffering Nothing -> stk <$ pokeN stk block'buf
-        BlockBuffering (Just n) -> do
-          pokeI stk n
-          stk <- bump stk
-          stk <$ pokeN stk sblock'buf
+  encodeVal = BoxedVal . encodeBufferMode
+
+  readAtIndex stk i = bpeekOff stk i >>= decodeBufferMode
+  writeBack stk bm = bpoke stk (encodeBufferMode bm)
+
+decodeIOMode :: Closure -> IO IOMode
+decodeIOMode (Enum _ t)
+  | t == TT.readModeTag = pure ReadMode
+  | t == TT.writeModeTag = pure WriteMode
+  | t == TT.appendModeTag = pure AppendMode
+  | t == TT.readWriteModeTag = pure ReadWriteMode
+decodeIOMode c = foreignConventionError "IOMode" (BoxedVal c)
+
+encodeIOMode :: IOMode -> Closure
+encodeIOMode ReadMode = read'mode
+encodeIOMode WriteMode = write'mode
+encodeIOMode AppendMode = append'mode
+encodeIOMode ReadWriteMode = read'write'mode
+
+read'mode, write'mode, append'mode, read'write'mode :: Closure
+read'mode = Enum Ty.bufferModeRef TT.readModeTag
+write'mode = Enum Ty.bufferModeRef TT.writeModeTag
+append'mode = Enum Ty.bufferModeRef TT.appendModeTag
+read'write'mode = Enum Ty.bufferModeRef TT.readWriteModeTag
+
+instance ForeignConvention IOMode where
+  decodeVal (BoxedVal c) = decodeIOMode c
+  decodeVal v = foreignConventionError "IOMode" v
+
+  encodeVal = BoxedVal . encodeIOMode
+
+  readAtIndex stk i = bpeekOff stk i >>= decodeIOMode
+  writeBack stk im = bpoke stk (encodeIOMode im)
+
+decodeSeekMode :: Closure -> IO SeekMode
+decodeSeekMode (Enum _ t)
+  | t == TT.seekAbsoluteTag = pure AbsoluteSeek
+  | t == TT.seekRelativeTag = pure RelativeSeek
+  | t == TT.seekEndTag = pure SeekFromEnd
+decodeSeekMode v = foreignConventionError "SeekMode" (BoxedVal v)
+
+encodeSeekMode :: SeekMode -> Closure
+encodeSeekMode AbsoluteSeek = absolute'seek
+encodeSeekMode RelativeSeek = relative'seek
+encodeSeekMode SeekFromEnd = seek'from'end
+
+absolute'seek, relative'seek, seek'from'end :: Closure
+absolute'seek = Enum Ty.seekModeRef TT.seekAbsoluteTag
+relative'seek = Enum Ty.seekModeRef TT.seekRelativeTag
+seek'from'end = Enum Ty.seekModeRef TT.seekEndTag
+
+instance ForeignConvention SeekMode where
+  decodeVal (BoxedVal c) = decodeSeekMode c
+  decodeVal v = foreignConventionError "SeekMode" v
+
+  encodeVal = BoxedVal . encodeSeekMode
+
+  readAtIndex stk i = bpeekOff stk i >>= decodeSeekMode
+  writeBack stk sm = bpoke stk (encodeSeekMode sm)
+
+data StdHnd = StdIn | StdOut | StdErr
+
+decodeStdHnd :: Closure -> IO StdHnd
+decodeStdHnd (Enum _ t)
+  | t == TT.stdInTag = pure StdIn
+  | t == TT.stdOutTag = pure StdOut
+  | t == TT.stdErrTag = pure StdErr
+decodeStdHnd c = foreignConventionError "StdHandle" (BoxedVal c)
+
+encodeStdHnd :: StdHnd -> Closure
+encodeStdHnd StdIn = std'in
+encodeStdHnd StdOut = std'out
+encodeStdHnd StdErr = std'err
+
+std'in, std'out, std'err :: Closure
+std'in = Enum Ty.stdHandleRef TT.stdInTag
+std'out = Enum Ty.stdHandleRef TT.stdOutTag
+std'err = Enum Ty.stdHandleRef TT.stdErrTag
+
+instance ForeignConvention StdHnd where
+  decodeVal (BoxedVal c) = decodeStdHnd c
+  decodeVal v = foreignConventionError "StdHandle" v
+
+  encodeVal = BoxedVal . encodeStdHnd
+
+  readAtIndex stk i = bpeekOff stk i >>= decodeStdHnd
+  writeBack stk = bpoke stk . encodeStdHnd
 
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
-instance {-# OVERLAPPING #-} ForeignConvention [Val] where
-  readForeign (i : args) !stk =
-    (args,) . toList <$> peekOffS stk i
-  readForeign !_ !_ = foreignCCError "[Val]"
-  writeForeign !stk !l = do
-    stk <- bump stk
-    stk <$ pokeS stk (Sq.fromList l)
+-- instance {-# OVERLAPPING #-} ForeignConvention [Val] where
+--   decodeVal = decode
+--   readForeign (i : args) stk =
+--     (args,) . toList <$> peekOffS stk i
+--   readForeign _ _ = foreignCCError "[Val]"
+--   writeForeign stk l = do
+--     stk <- bump stk
+--     stk <$ pokeS stk (Sq.fromList l)
 
 -- In reality this fixes the type to be 'RClosure', but allows us to defer
 -- the typechecker a bit and avoid a bunch of annoying type annotations.
-instance {-# OVERLAPPING #-} ForeignConvention [Closure] where
-  readForeign (i : args) !stk =
-    (args,) . fmap getBoxedVal . toList <$> peekOffS stk i
-  readForeign !_ !_ = foreignCCError "[Closure]"
-  writeForeign !stk !l = do
-    stk <- bump stk
-    stk <$ pokeS stk (Sq.fromList . fmap BoxedVal $ l)
+-- instance {-# OVERLAPPING #-} ForeignConvention [Closure] where
+--   readForeign (i : args) stk =
+--     (args,) . fmap getBoxedVal . toList <$> peekOffS stk i
+--   readForeign _ _ = foreignCCError "[Closure]"
+--   writeForeign stk l = do
+--     stk <- bump stk
+--     stk <$ pokeS stk (Sq.fromList . fmap BoxedVal $ l)
+--
+-- instance ForeignConvention [Foreign] where
+--   readForeign = readForeignAs (fmap marshalToForeign)
+--   writeForeign = writeForeignAs (fmap Foreign)
+--
 
-instance ForeignConvention [Foreign] where
-  readForeign = readForeignAs (fmap marshalToForeign)
-  writeForeign = writeForeignAs (fmap Foreign)
+instance {-# overlapping #-} ForeignConvention String where
+  decodeVal = decodeAsBuiltin unpack
+  encodeVal = encodeAsBuiltin pack
 
-instance ForeignConvention (MVar Val) where
-  readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  writeForeign = writeForeignAs (Foreign . Wrap mvarRef)
+  readAtIndex = readAsBuiltin unpack
+  writeBack = writeAsBuiltin pack
 
-instance ForeignConvention (TVar Val) where
-  readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  writeForeign = writeForeignAs (Foreign . Wrap tvarRef)
+instance ForeignConvention Bool where
+  decodeVal (BoolVal b) = pure b
+  decodeVal v = foreignConventionError "Bool" v
 
-instance ForeignConvention (IORef Val) where
-  readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  writeForeign = writeForeignAs (Foreign . Wrap refRef)
+  encodeVal = BoolVal
 
-instance ForeignConvention (Ticket Val) where
-  readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  writeForeign = writeForeignAs (Foreign . Wrap ticketRef)
+  readAtIndex = peekOffBool
+  writeBack = pokeBool
 
-instance ForeignConvention (Promise Val) where
-  readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  writeForeign = writeForeignAs (Foreign . Wrap promiseRef)
+instance ForeignConvention Double where
+  decodeVal (DoubleVal d) = pure d
+  decodeVal v = foreignConventionError "Double" v
 
-instance ForeignConvention Code where
-  readForeign = readForeignBuiltin
-  writeForeign = writeForeignBuiltin
+  encodeVal = DoubleVal
 
-instance ForeignConvention Value where
-  readForeign = readForeignBuiltin
-  writeForeign = writeForeignBuiltin
+  readAtIndex = peekOffD
+  writeBack = pokeD
+
+instance ForeignConvention Val where
+  decodeVal = pure
+  encodeVal = id
+
+  readAtIndex = peekOff
+  writeBack = poke
 
 instance ForeignConvention Foreign where
-  readForeign = readForeignAs marshalToForeign
-  writeForeign = writeForeignAs Foreign
+  decodeVal (BoxedVal (Foreign f)) = pure f
+  decodeVal v = foreignConventionError "Foreign" v
+  encodeVal f = BoxedVal (Foreign f)
 
-instance ForeignConvention (PA.MutableArray s Val) where
-  readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  writeForeign = writeForeignAs (Foreign . Wrap marrayRef)
+  readAtIndex stk i = bpeekOff stk i >>= \case
+    Foreign f -> pure f
+    c -> foreignConventionError "Foreign" (BoxedVal c)
+  writeBack stk f = bpoke stk (Foreign f)
 
-instance ForeignConvention (PA.MutableByteArray s) where
-  readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  writeForeign = writeForeignAs (Foreign . Wrap mbytearrayRef)
+instance ForeignConvention a => ForeignConvention [a] where
+  decodeVal (BoxedVal (Foreign f))
+    | (sq :: Sq.Seq Val) <- unwrapForeign f = traverse decodeVal (toList sq)
+  decodeVal v = foreignConventionError "List" v
 
-instance ForeignConvention (PA.Array Val) where
-  readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  writeForeign = writeForeignAs (Foreign . Wrap iarrayRef)
+  encodeVal l =
+    BoxedVal . Foreign . Wrap listRef . Sq.fromList $ encodeVal <$> l
 
-instance ForeignConvention PA.ByteArray where
-  readForeign = readForeignAs (unwrapForeign . marshalToForeign)
-  writeForeign = writeForeignAs (Foreign . Wrap ibytearrayRef)
+  readAtIndex stk i = traverse decodeVal . toList =<< peekOffS stk i
 
-instance {-# OVERLAPPABLE #-} (BuiltinForeign b) => ForeignConvention b where
-  readForeign = readForeignBuiltin
-  writeForeign = writeForeignBuiltin
+  writeBack stk sq = pokeS stk . Sq.fromList $ encodeVal <$> sq
 
-fromUnisonPair :: (BuiltinForeign a, BuiltinForeign b) => Closure -> (a, b)
-fromUnisonPair (DataC _ _ [BoxedVal x, BoxedVal (DataC _ _ [BoxedVal y, BoxedVal _unit])]) =
-  (unwrapForeignClosure x, unwrapForeignClosure y)
-fromUnisonPair _ = error "fromUnisonPair: invalid closure"
-
-toUnisonPair ::
-  (BuiltinForeign a, BuiltinForeign b) => (a, b) -> Closure
-toUnisonPair (x, y) =
-  DataC
-    Ty.pairRef
-    TT.pairTag
-    [BoxedVal $ wr x, BoxedVal $ DataC Ty.pairRef TT.pairTag [BoxedVal $ wr y, BoxedVal $ un]]
-  where
-    un = DataC Ty.unitRef TT.unitTag []
-    wr z = Foreign $ wrapBuiltin z
-
-unwrapForeignClosure :: Closure -> a
-unwrapForeignClosure = unwrapForeign . marshalToForeign
-
-instance {-# OVERLAPPABLE #-} (BuiltinForeign a, BuiltinForeign b) => ForeignConvention [(a, b)] where
-  readForeign (i : args) !stk =
-    (args,)
-      . fmap (fromUnisonPair . getBoxedVal)
-      . toList
-      <$> peekOffS stk i
-  readForeign !_ !_ = foreignCCError "[(a,b)]"
-
-  writeForeign !stk !l = do
-    stk <- bump stk
-    stk <$ pokeS stk (boxedVal . toUnisonPair <$> Sq.fromList l)
-
-instance {-# OVERLAPPABLE #-} (BuiltinForeign b) => ForeignConvention [b] where
-  readForeign (i : args) !stk =
-    (args,)
-      . fmap (unwrapForeignClosure . getBoxedVal)
-      . toList
-      <$> peekOffS stk i
-  readForeign !_ !_ = foreignCCError "[b]"
-  writeForeign !stk !l = do
-    stk <- bump stk
-    stk <$ pokeS stk (boxedVal . Foreign . wrapBuiltin <$> Sq.fromList l)
-
-foreignCCError :: String -> IO a
-foreignCCError nm =
-  die $ "mismatched foreign calling convention for `" ++ nm ++ "`"
+instance {-# overlappable #-} (BuiltinForeign b) => ForeignConvention b where
+  decodeVal = decodeBuiltin
+  encodeVal = encodeBuiltin
+  readAtIndex = readBuiltinAt
+  writeBack = writeBuiltin

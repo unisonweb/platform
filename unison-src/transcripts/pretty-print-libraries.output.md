@@ -12,40 +12,42 @@ scratch/main> clone @unison/base/releases/3.19.0
 @unison/base/releases/3.19.0> edit.namespace
 
   ☝️
-  
+
   I added 6902 definitions to the top of scratch.u
-  
+
   You can edit them there, then run `update` to replace the
   definitions currently in this namespace.
-
 ```
-```` unison:added-by-ucm scratch.u
-structural ability abilities.Abort where abort : {abilities.Abort} a
 
-structural ability abilities.Ask a where ask : {abilities.Ask a} a
+```` unison :added-by-ucm scratch.u
+structural ability abilities.Abort where
+  abort : {Abort} a
+
+structural ability abilities.Ask a where
+  ask : {Ask a} a
 
 ability abilities.Clock where
-  elapsed : {abilities.Clock} Duration
-  now : {abilities.Clock} Instant
+  elapsed : {Clock} Duration
+  now : {Clock} Instant
 
 structural ability abilities.Each where
-  lazily : '{Stream a} () ->{abilities.Each} a
+  lazily : '{Stream a} () ->{Each} a
 
 structural ability abilities.Exception where
-  raise : Failure ->{abilities.Exception} x
+  raise : Failure ->{Exception} x
 
 type abilities.Exception.Generic
   = 
 
 ability abilities.Label where
-  label : Text -> a ->{abilities.Label} ()
-  popScope : {abilities.Label} ()
-  pushScope : Text ->{abilities.Label} ()
+  label : Text -> a ->{Label} ()
+  popScope : {Label} ()
+  pushScope : Text ->{Label} ()
 
 ability abilities.Random where
-  split! : {abilities.Random} (∀ g a. '{g, abilities.Random} a ->{g} a)
-  nat! : {abilities.Random} Nat
-  bytes : Nat ->{abilities.Random} Bytes
+  split! : {Random} (∀ g a. '{g, Random} a ->{g} a)
+  nat! : {Random} Nat
+  bytes : Nat ->{Random} Bytes
 
 structural type abilities.Random.RNG
   = RNG (∀ g a. '{Random, g} a ->{g} a)
@@ -53,12 +55,14 @@ structural type abilities.Random.RNG
 -- abilities.Request is built-in.
 
 structural ability abilities.Store a where
-  put : a ->{abilities.Store a} ()
-  get : {abilities.Store a} a
+  put : a ->{Store a} ()
+  get : {Store a} a
 
-structural ability abilities.Throw e where throw : e ->{abilities.Throw e} a
+structural ability abilities.Throw e where
+  throw : e ->{Throw e} a
 
-ability abilities.Wait where wait : Duration ->{abilities.Wait} ()
+ability abilities.Wait where
+  wait : Duration ->{Wait} ()
 
 -- Any is built-in.
 
@@ -114,12 +118,12 @@ structural type data.ByteArray
 -- data.ByteArray.Raw is built-in.
 
 structural type data.deprecated.Heap k v
-  = Heap Nat k v [data.deprecated.Heap k v]
+  = Heap Nat k v [Heap k v]
 
 structural type data.deprecated.Weighted a
-  = Weight Nat ('data.deprecated.Weighted a)
+  = Weight Nat ('Weighted a)
   | Fail
-  | Yield a (data.deprecated.Weighted a)
+  | Yield a (Weighted a)
 
 type data.Graph v
   = AdjLists (data.Array.Raw [Nat]) (data.Array.Raw v)
@@ -137,7 +141,7 @@ structural type data.List.Nonempty a
   = Nonempty a [a]
 
 type data.Map k v
-  = internal.Bin Nat k v (data.Map k v) (data.Map k v)
+  = internal.Bin Nat k v (Map k v) (Map k v)
   | internal.Tip
 
 type data.Map.internal.MaxView k v
@@ -160,15 +164,14 @@ type data.NatMap a
 
 type data.NatMap.Nonempty a
   = NatMap.Nonempty.Tip Nat a
-  | NatMap.Nonempty.Bin
-      Nat Nat Nat (data.NatMap.Nonempty a) (data.NatMap.Nonempty a)
+  | NatMap.Nonempty.Bin Nat Nat Nat (NatMap.Nonempty a) (NatMap.Nonempty a)
 
 type data.NatSet
   = NatSet (Optional NatSet.Nonempty)
 
 type data.NatSet.Nonempty
   = Tip Nat Nat
-  | Bin Nat Nat Nat data.NatSet.Nonempty data.NatSet.Nonempty
+  | Bin Nat Nat Nat NatSet.Nonempty NatSet.Nonempty
 
 structural type data.OneOrBoth a b
   = Both a b
@@ -185,14 +188,15 @@ structural type data.Set a
 structural type data.Set.Nonempty a
   = Set (Map.Nonempty a ())
 
-structural ability data.Stream e where emit : e ->{data.Stream e} ()
+structural ability data.Stream e where
+  emit : e ->{Stream e} ()
 
 ability data.Stream.collate.test.Counter where
-  comma! : {data.Stream.collate.test.Counter} ()
-  nat! : {data.Stream.collate.test.Counter} ()
+  comma! : {Counter} ()
+  nat! : {Counter} ()
 
 structural type data.Trie k v
-  = Trie (Optional v) (Map k (data.Trie k v))
+  = Trie (Optional v) (Map k (Trie k v))
 
 structural type data.Tuple a b
   = Cons a b
@@ -233,7 +237,7 @@ type Doc.Deprecated
   | Source Link
   | Signature Link.Term
   | Evaluate Link.Term
-  | Join [Doc.Deprecated]
+  | Join [Deprecated]
 
 type Doc.EmbedSvg
   = EmbedSvg Text
@@ -289,11 +293,11 @@ type IO.concurrent.STM.STMFailure
   = 
 
 type IO.concurrent.STM.TMap a
-  = TMap (TVar (Optional a)) [TVar (IO.concurrent.STM.TMap.impl.F a)]
+  = TMap (TVar (Optional a)) [TVar (F a)]
 
 type IO.concurrent.STM.TMap.impl.F a
   = One Bytes a
-  | Many (IO.concurrent.STM.TMap a)
+  | Many (TMap a)
   | Empty
 
 type IO.concurrent.STM.TQueue a
@@ -521,16 +525,12 @@ structural type Pretty txt
   = Pretty (Annotated () txt)
 
 type Pretty.Annotated w txt
-  = Table w [[Pretty.Annotated w txt]]
-  | Append w [Pretty.Annotated w txt]
-  | OrElse w (Pretty.Annotated w txt) (Pretty.Annotated w txt)
-  | Indent
-      w
-      (Pretty.Annotated w txt)
-      (Pretty.Annotated w txt)
-      (Pretty.Annotated w txt)
-  | Group w (Pretty.Annotated w txt)
-  | Wrap w (Pretty.Annotated w txt)
+  = Table w [[Annotated w txt]]
+  | Append w [Annotated w txt]
+  | OrElse w (Annotated w txt) (Annotated w txt)
+  | Indent w (Annotated w txt) (Annotated w txt) (Annotated w txt)
+  | Group w (Annotated w txt)
+  | Wrap w (Annotated w txt)
   | Empty
   | Lit w txt
 
@@ -577,19 +577,19 @@ type system.ANSI.Color
   | BrightWhite
 
 type system.ConsoleText
-  = Bold system.ConsoleText
-  | Underline system.ConsoleText
-  | Invert system.ConsoleText
+  = Bold ConsoleText
+  | Underline ConsoleText
+  | Invert ConsoleText
   | Plain Text
-  | Foreground Color system.ConsoleText
-  | Background Color system.ConsoleText
+  | Foreground Color ConsoleText
+  | Background Color ConsoleText
 
 structural type test.deprecated.Domain a
   = Large (Weighted a)
   | Small [a]
 
 structural ability test.deprecated.Gen where
-  sample : Weighted a ->{test.deprecated.Gen} a
+  sample : Weighted a ->{Gen} a
 
 type test.deprecated.internals.v1.Test.Labels
   = Labels [Text]
@@ -1988,7 +1988,7 @@ abilities.Each.interleaveMap.doc =
     toList do
       (do each [1, 2, 3])
         |> interleaveMap
-             (x -> (do each [?a, ?b]) |> interleaveMap (y -> (x, y)))
+          (x -> (do each [?a, ?b]) |> interleaveMap (y -> (x, y)))
     ```
     
     Compare with the following normal conjunction, where each result of `y` is
@@ -2247,6 +2247,7 @@ abilities.Each.optionally = cases
 
 abilities.Each.optionally.doc : Doc
 abilities.Each.optionally.doc =
+  use Each toList
   use Nat +
   {{
   Given an {type Optional} value `x`, `` optionally x `` returns the value from
@@ -2257,14 +2258,14 @@ abilities.Each.optionally.doc =
   # Examples
   
     ```
-    Each.toList do
+    toList do
       x = optionally (Some 1)
       y = optionally (Some 2)
       x + y
     ```
     
     ```
-    Each.toList do
+    toList do
       x = optionally (Some 1)
       y = optionally None
       x + y
@@ -3806,7 +3807,8 @@ abilities.Random.functionOf valueGen =
   input ->
     let
       inputSeed =
-        hash Blake2b_256 input |> decodeNat64be
+        hash Blake2b_256 input
+          |> decodeNat64be
           |> getOrBug "Blake2b_256 returned fewer than 64 bits"
           |> at1
       seed = Nat.xor rngSeed inputSeed
@@ -4097,7 +4099,8 @@ abilities.Random.nat.natsWithSum sum count =
       (acc, prev), current ->
         interval = current - prev
         (acc :+ interval, current)
-    (fill' (Nat.decrement count) do Random.natIn 0 upperExclusive) |> List.sort
+    (fill' (Nat.decrement count) do Random.natIn 0 upperExclusive)
+      |> List.sort
       |> List.foldLeft intervals ([], 0)
       |> (cases (acc, last) -> acc :+ (sum - last))
 
@@ -4613,7 +4616,8 @@ abilities.Random.splits size splitAt =
       remaining
   chunkCount original ->
     do
-      natsWithSum (size original) chunkCount |> List.foldLeft go original
+      natsWithSum (size original) chunkCount
+        |> List.foldLeft go original
         |> ignore
 
 abilities.Random.splits.bytes : Nat -> Bytes -> '{Random, Stream Bytes} ()
@@ -4695,7 +4699,8 @@ abilities.Random.splits.list.doc =
   # Examples
   
     ```
-    splits.list 3 [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] |> toDelayedList
+    splits.list 3 [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+      |> toDelayedList
       |> splitmix 42
     ```
     
@@ -8090,7 +8095,9 @@ Bytes.truncateLeft n =
       else
         put 0
         Nat.and b (Nat.shiftLeft 255 (8 - bits))
-  Bytes.take ((n + 7) / 8) << fromList.impl << accumulateLeft f n
+  Bytes.take ((n + 7) / 8)
+    << fromList.impl
+    << accumulateLeft f n
     << Bytes.toList
 
 Bytes.truncateLeft.doc : Doc
@@ -8132,7 +8139,9 @@ Bytes.truncateRight n bs =
       else
         put 0
         dropBits (64 - bits) w
-  Bytes.toList bs |> accumulateRight f n |> fromList.impl
+  Bytes.toList bs
+    |> accumulateRight f n
+    |> fromList.impl
     |> Bytes.drop (Bytes.size bs - (n + 7) / 8)
 
 Bytes.truncateRight.doc : Doc
@@ -8545,7 +8554,7 @@ Char.ascii.fromBase36Digit n =
   if n > 36 then None
   else
     if n < 10 then Some (impl (toNat ?0 + n))
-    else Some (impl (toNat ?A + n - 10))
+    else Some (impl (toNat ?A + (n - 10)))
 
 Char.ascii.fromBase36Digit.doc : Doc
 Char.ascii.fromBase36Digit.doc =
@@ -9163,7 +9172,7 @@ Char.Class.fromChar.doc =
 Char.Class.hexDigit : Class
 Char.Class.hexDigit =
   use Class + range
-  Class.digit + range ?a ?f + range ?A ?F
+  Class.digit + (range ?a ?f + range ?A ?F)
 
 Char.Class.hexDigit.doc : Doc
 Char.Class.hexDigit.doc =
@@ -9174,7 +9183,7 @@ Char.Class.hexDigit.doc =
   docExample
     2
     (_ Char.Class.range1 Char.Class.or1 ->
-      range ?0 ?9 + range ?a ?f + range ?A ?F)
+      range ?0 ?9 + (range ?a ?f + range ?A ?F))
   }}.
   
   # Examples
@@ -9958,7 +9967,10 @@ Char.rangeClosed.doc =
 
 Char.toLowercase : Char -> Char
 Char.toLowercase =
-  Char.toText >> Text.toLowercase >> toCharList >> List.head
+  Char.toText
+    >> Text.toLowercase
+    >> toCharList
+    >> List.head
     >> getOrBug "Char.toLowercase"
 
 Char.toLowercase.doc : Doc
@@ -10028,7 +10040,10 @@ Char.toText.doc =
 
 Char.toUppercase : Char -> Char
 Char.toUppercase =
-  Char.toText >> Text.toUppercase >> toCharList >> List.head
+  Char.toText
+    >> Text.toUppercase
+    >> toCharList
+    >> List.head
     >> getOrBug "Char.toUppercase"
 
 Char.toUppercase.doc : Doc
@@ -11400,7 +11415,7 @@ data.Array.randomChoice array =
   randomIndex = Random.natIn 0 (data.Array.size array)
   Array.at randomIndex array
     |> Optional.toException
-         "data.Array.randomChoice: empty data.Array" (typeLink data.Array)
+      "data.Array.randomChoice: empty data.Array" (typeLink data.Array)
 
 data.Array.randomChoice.doc : Doc
 data.Array.randomChoice.doc =
@@ -12265,11 +12280,10 @@ test> data.Bag.empty.test = runs 2 do
 
 data.Bag.equals.doc : Doc
 data.Bag.equals.doc =
-  use Bag count
   use Nat ==
   {{
   Checks if two {type Bag}s are equal. Any two {type Bag}s `b1` and `b2` are
-  equal when for every value `k`, ``count k b1 == count k b2``.
+  equal when for every value `k`, ``Bag.count k b1 == Bag.count k b2``.
   
   Note that {===} does not have the correct behaviour for {type Bag}, as two
   equal {type Bag}s may have different internal structure.
@@ -14628,7 +14642,7 @@ data.deprecated.Heap.toList = cases
   Heap _ k v tail ->
     (k, v)
       +| List.flatMap
-           (List.Nonempty.toList << data.deprecated.Heap.toList) tail
+        (List.Nonempty.toList << data.deprecated.Heap.toList) tail
 
 data.deprecated.Heap.toList.doc : Doc
 data.deprecated.Heap.toList.doc =
@@ -14856,9 +14870,7 @@ data.deprecated.Weighted.ints =
   go n =
     yield n
       <|> (weight 1 do
-            go
-              (if Universal.gt n +0 then negate n
-              else Int.increment (negate n)))
+        go (if Universal.gt n +0 then negate n else Int.increment (negate n)))
   List.foldLeft
     (a n -> a <|> yield n) Weighted.Fail [+0, +1, -1, maxInt, minInt]
     <|> go +2
@@ -14885,7 +14897,7 @@ data.deprecated.Weighted.lists w =
   use Weighted <|>
   yield []
     <|> (weight 1 do
-          Weighted.mergeWith (+:) w (data.deprecated.Weighted.lists w))
+      Weighted.mergeWith (+:) w (data.deprecated.Weighted.lists w))
 
 data.deprecated.Weighted.lists.doc : Doc
 data.deprecated.Weighted.lists.doc =
@@ -17284,7 +17296,8 @@ test> data.List.dropRightWhile.tests.all =
 test> data.List.dropRightWhile.tests.last =
   use Nat <
   check
-    (List.dropRightWhile (flip (<) 3) [1, 2, 3, 4, 5, 1, 2] === [1, 2, 3, 4, 5])
+    (List.dropRightWhile (flip (<) 3) [1, 2, 3, 4, 5, 1, 2]
+      === [1, 2, 3, 4, 5])
 
 test> data.List.dropRightWhile.tests.none =
   use Nat <
@@ -19477,13 +19490,13 @@ test> data.List.modifyAt.tests =
     (List.map
       (i -> modifyAt i (x -> x + 10) [0, 1, 2, 3, 4, 5]) [0, 1, 2, 3, 4, 5, 6]
       === [ Some [10, 1, 2, 3, 4, 5]
-          , Some [0, 11, 2, 3, 4, 5]
-          , Some [0, 1, 12, 3, 4, 5]
-          , Some [0, 1, 2, 13, 4, 5]
-          , Some [0, 1, 2, 3, 14, 5]
-          , Some [0, 1, 2, 3, 4, 15]
-          , None
-          ])
+      , Some [0, 11, 2, 3, 4, 5]
+      , Some [0, 1, 12, 3, 4, 5]
+      , Some [0, 1, 2, 13, 4, 5]
+      , Some [0, 1, 2, 3, 14, 5]
+      , Some [0, 1, 2, 3, 4, 15]
+      , None
+      ])
 
 data.List.mostFrequent : [a] -> Optional a
 data.List.mostFrequent as = withInitialValue Bag.empty do
@@ -20018,7 +20031,7 @@ test> data.List.Nonempty.foldRight.tests.multiple =
   check
     (assertEquals
       (List.Nonempty.foldRight (-) +1 (Nonempty.Nonempty +5 [+4, +2]))
-      (+5 - +4 - +2 - +1))
+      (+5 - (+4 - (+2 - +1))))
 
 test> data.List.Nonempty.foldRight.tests.single =
   use Int -
@@ -20086,7 +20099,7 @@ test> data.List.Nonempty.join.tests.unit = runs 100 do
   nats = atLeastOne natInOrder ()
   right = join (List.Nonempty.map singleton nats)
   left = join (singleton nats)
-  expect ((left === right && left === nats) === right === nats)
+  expect ((left === right && left === nats) === (right === nats))
 
 data.List.Nonempty.last : List.Nonempty a -> a
 data.List.Nonempty.last = cases
@@ -20455,7 +20468,7 @@ data.List.Nonempty.reduceRight.doc =
     This is equivalent to:
     
     ```
-    10 / 5 / 2
+    10 / (5 / 2)
     ```
   }}
 
@@ -20466,7 +20479,7 @@ test> data.List.Nonempty.reduceRight.test =
     y = natInOrder()
     z = natInOrder()
     expect
-      (reduceRight (-) (x +| [y, z]) === x - y - z
+      (reduceRight (-) (x +| [y, z]) === x - (y - z)
         && reduceRight (-) (x +| [y]) === x - y
         && reduceRight (-) (List.Nonempty.singleton x) === x)
 
@@ -20604,7 +20617,7 @@ test> data.List.Nonempty.scanRight.test =
     z = int()
     expect
       (Nonempty.scanRight (-) (Nonempty x [y, z])
-        === Nonempty (x - y - z) [y - z, z])
+        === Nonempty (x - (y - z)) [y - z, z])
 
 data.List.Nonempty.sequenceOptional :
   List.Nonempty (Optional a) -> Optional (List.Nonempty a)
@@ -20668,7 +20681,7 @@ test> data.List.Nonempty.size.test =
     expect
       (List.Nonempty.size units
         === List.foldLeft
-              (+) 0 (List.Nonempty.toList (List.Nonempty.map (const 1) units)))
+          (+) 0 (List.Nonempty.toList (List.Nonempty.map (const 1) units)))
 
 data.List.Nonempty.snoc : List.Nonempty a -> a -> List.Nonempty a
 data.List.Nonempty.snoc = cases
@@ -20868,13 +20881,13 @@ test> data.List.nonEmptySubsequences.tests.base =
   check
     (nonEmptySubsequences [1, 2, 3]
       === [ singleton 1
-          , singleton 2
-          , 1 +| [2]
-          , singleton 3
-          , 1 +| [3]
-          , 2 +| [3]
-          , 1 +| [2, 3]
-          ])
+      , singleton 2
+      , 1 +| [2]
+      , singleton 3
+      , 1 +| [3]
+      , 2 +| [3]
+      , 1 +| [2, 3]
+      ])
 
 data.List.of : x -> Nat -> [x]
 data.List.of = flip List.fill
@@ -26206,7 +26219,7 @@ data.Map.Nonempty.mapKeysWith c f = cases
       c
       ((f k, v)
         +| Map.toList
-             (Map.union (Map.mapKeysWith c f l) (Map.mapKeysWith c f r)))
+          (Map.union (Map.mapKeysWith c f l) (Map.mapKeysWith c f r)))
 
 data.Map.Nonempty.mapKeysWith.doc : Doc
 data.Map.Nonempty.mapKeysWith.doc =
@@ -26447,7 +26460,7 @@ data.Map.Nonempty.nth n = cases
     match Universal.ordering sizel n with
       Greater -> nth n l
       Equal   -> Some (k, v)
-      Less    -> nth (n - sizel + 1) r
+      Less    -> nth (n - (sizel + 1)) r
 
 data.Map.Nonempty.nth.doc : Doc
 data.Map.Nonempty.nth.doc =
@@ -26987,7 +27000,7 @@ data.Map.nth n = cases
     match Universal.ordering sizel n with
       Greater -> nth n l
       Equal   -> Some (k, v)
-      Less    -> nth (n - sizel + 1) r
+      Less    -> nth (n - (sizel + 1)) r
 
 data.Map.nth.doc : Doc
 data.Map.nth.doc =
@@ -29418,7 +29431,8 @@ test> data.NatBag.Nonempty.nth.tests =
         (List.map
           (i -> NatBag.Nonempty.nth i s)
           (List.range 0 (NatBag.Nonempty.size s)))
-        === (NatBag.Nonempty.toList s |> List.Nonempty.toList))
+        === (NatBag.Nonempty.toList s
+          |> List.Nonempty.toList))
 
 data.NatBag.Nonempty.occurrenceList :
   NatBag.Nonempty -> List.Nonempty (Nat, Nat)
@@ -33541,8 +33555,8 @@ data.NatMap.Nonempty.compareBy f m1 m2 =
   go = cases
     Tip k1 v1, Tip k2 v2 -> Ordering.andThen (ordering k1 k2) (f v1 v2)
     t1@(Bin p1 mask1 sz1 l1 r1), t2@(Bin p2 mask2 sz2 l2 r2) ->
-      largest1 = p1 + mask1 - 1
-      largest2 = p2 + mask2 - 1
+      largest1 = p1 + (mask1 - 1)
+      largest2 = p2 + (mask2 - 1)
       if largest1 < p2 then Less
       else
         if largest2 < p1 then Greater
@@ -35812,7 +35826,8 @@ test> data.NatMap.Nonempty.nth.tests =
         (List.map
           (i -> NatMap.Nonempty.nth i s)
           (List.range 0 (NatMap.Nonempty.size s)))
-        === (NatMap.Nonempty.toList s |> List.Nonempty.toList))
+        === (NatMap.Nonempty.toList s
+          |> List.Nonempty.toList))
 
 data.NatMap.Nonempty.partition :
   (a ->{g} Boolean) -> NatMap.Nonempty a ->{g} (NatMap a, NatMap a)
@@ -36002,13 +36017,16 @@ data.NatMap.Nonempty.restrict.doc =
   # Examples
   
     ```
-    (1, ?a) +| [(2, ?b), (3, ?c), (4, ?d), (5, ?e)] |> fromList
+    (1, ?a) +| [(2, ?b), (3, ?c), (4, ?d), (5, ?e)]
+      |> fromList
       |> Nonempty.restrict 2 4
       |> toList
     ```
     
     ```
-    (1, ?a) +| [(3, ?c), (5, ?e)] |> fromList |> Nonempty.restrict 2 4
+    (1, ?a) +| [(3, ?c), (5, ?e)]
+      |> fromList
+      |> Nonempty.restrict 2 4
       |> toList
     ```
   
@@ -36034,7 +36052,8 @@ data.NatMap.Nonempty.restrictAbove.doc =
   # Example
   
     ```
-    (1, ?a) +| [(2, ?b), (3, ?c), (4, ?d), (5, ?e)] |> NatMap.Nonempty.fromList
+    (1, ?a) +| [(2, ?b), (3, ?c), (4, ?d), (5, ?e)]
+      |> NatMap.Nonempty.fromList
       |> Nonempty.restrictAbove 2
       |> NatMap.toList
     ```
@@ -36062,7 +36081,8 @@ data.NatMap.Nonempty.restrictBelow.doc =
   # Example
   
     ```
-    (1, ?a) +| [(2, ?b), (3, ?c), (4, ?d), (5, ?e)] |> NatMap.Nonempty.fromList
+    (1, ?a) +| [(2, ?b), (3, ?c), (4, ?d), (5, ?e)]
+      |> NatMap.Nonempty.fromList
       |> Nonempty.restrictBelow 4
       |> NatMap.toList
     ```
@@ -36948,7 +36968,7 @@ data.NatMap.randomChoice map =
   randomIndex = Random.natIn 0 (NatMap.size map)
   NatMap.nth randomIndex map
     |> Optional.toException
-         "NatMap.randomChoice: empty NatMap" (typeLink NatMap)
+      "NatMap.randomChoice: empty NatMap" (typeLink NatMap)
 
 data.NatMap.randomChoice.doc : Doc
 data.NatMap.randomChoice.doc =
@@ -37897,7 +37917,7 @@ test> data.NatSet.alter.test =
     ensure
       (alter Boolean.not n s
         == (if NatSet.contains n s then delete n s
-           else NatSet (Some (nonempty n s))))
+        else NatSet (Some (nonempty n s))))
 
 data.NatSet.any : (Nat ->{g} Boolean) ->{g} NatSet ->{g} Boolean
 data.NatSet.any p = NatSet.foldRight (x b -> p x || b) false
@@ -38030,8 +38050,7 @@ test> data.NatSet.deleteMax.test =
       toOptional! do
         NatSet.deleteMax (fromList xs)
           === fromList
-                (List.filter
-                  (flip (!=) (Optional.toAbort (List.maximum xs))) xs)
+            (List.filter (flip (!=) (Optional.toAbort (List.maximum xs))) xs)
     ensure (r === Some true)
 
 data.NatSet.deleteMin : NatSet -> NatSet
@@ -38069,8 +38088,7 @@ test> data.NatSet.deleteMin.test =
       toOptional! do
         NatSet.deleteMin (fromList xs)
           === fromList
-                (List.filter
-                  (flip (!=) (Optional.toAbort (List.minimum xs))) xs)
+            (List.filter (flip (!=) (Optional.toAbort (List.minimum xs))) xs)
     ensure (r === Some true)
 
 data.NatSet.difference : NatSet -> NatSet -> NatSet
@@ -38503,8 +38521,7 @@ test> data.NatSet.filterMap.test =
       (NatSet.filterMap
         (n -> (if n Nat.== f then Some (n * 2) else None)) (fromList xs)
         NatSet.== fromList
-                    (List.filterMap
-                      (n -> (if n Nat.== f then Some (n * 2) else None)) xs))
+          (List.filterMap (n -> (if n Nat.== f then Some (n * 2) else None)) xs))
 
 data.NatSet.foldLeft : (a ->{g} Nat ->{g} a) -> a ->{g} NatSet ->{g} a
 data.NatSet.foldLeft f z = cases
@@ -39266,8 +39283,8 @@ test> data.NatSet.maxView.test =
       toOptional! do
         NatSet.maxView (fromList xs)
           === ( toAbort (maximum xs)
-              , fromList (List.filter (flip (!=) (toAbort (maximum xs))) xs)
-              )
+          , fromList (List.filter (flip (!=) (toAbort (maximum xs))) xs)
+          )
     ensure (r === Some true)
 
 data.NatSet.minView : NatSet ->{Abort} (Nat, NatSet)
@@ -39312,8 +39329,8 @@ test> data.NatSet.minView.test =
       toOptional! do
         NatSet.minView (fromList xs)
           === ( toAbort (minimum xs)
-              , fromList (List.filter (flip (!=) (toAbort (minimum xs))) xs)
-              )
+          , fromList (List.filter (flip (!=) (toAbort (minimum xs))) xs)
+          )
     ensure (r === Some true)
 
 (data.NatSet.Nonempty.==) : NatSet.Nonempty -> NatSet.Nonempty -> Boolean
@@ -40696,7 +40713,8 @@ test> data.NatSet.Nonempty.nth.tests =
         (List.map
           (i -> NatSet.Nonempty.nth i s)
           (List.range 0 (NatSet.Nonempty.size s)))
-        === (Nonempty.toListAscending s |> List.Nonempty.toList))
+        === (Nonempty.toListAscending s
+          |> List.Nonempty.toList))
 
 data.NatSet.Nonempty.ordering : NatSet.Nonempty -> NatSet.Nonempty -> Ordering
 data.NatSet.Nonempty.ordering m1 m2 =
@@ -40712,8 +40730,8 @@ data.NatSet.Nonempty.ordering m1 m2 =
           lowest = and diff (twosComplement diff)
           if and lowest m2 == 0 then Less else Greater)
     t1@(Bin p1 mask1 sz1 l1 r1), t2@(Bin p2 mask2 sz2 l2 r2) ->
-      largest1 = p1 + mask1 - 1
-      largest2 = p2 + mask2 - 1
+      largest1 = p1 + (mask1 - 1)
+      largest2 = p2 + (mask2 - 1)
       if largest1 < p2 then Less
       else
         if largest2 < p1 then Greater
@@ -41526,8 +41544,8 @@ test> data.NatSet.partition.test =
     ensure
       (NatSet.partition ((==) f) (fromList xs)
         === ( fromList (filter ((==) f) xs)
-            , fromList (filter (Boolean.not << (==) f) xs)
-            ))
+        , fromList (filter (Boolean.not << (==) f) xs)
+        ))
 
 data.NatSet.properSubset : NatSet -> NatSet -> Boolean
 data.NatSet.properSubset = cases
@@ -41624,7 +41642,7 @@ data.NatSet.randomChoice = cases
   NatSet internalSet ->
     Optional.map (s -> NatSet.Nonempty.randomChoice s) internalSet
       |> Optional.toException
-           "NatSet.randomChoice: empty set" (typeLink NatSet)
+        "NatSet.randomChoice: empty set" (typeLink NatSet)
 
 data.NatSet.randomChoice.doc : Doc
 data.NatSet.randomChoice.doc =
@@ -41747,8 +41765,8 @@ test> data.NatSet.split.test =
     ensure
       (NatSet.split x (fromList xs)
         === ( fromList (filter (flip (<) x) xs)
-            , fromList (filter (flip (>) x) xs)
-            ))
+        , fromList (filter (flip (>) x) xs)
+        ))
 
 data.NatSet.splitContains : Nat -> NatSet -> (NatSet, Boolean, NatSet)
 data.NatSet.splitContains x = cases
@@ -41800,9 +41818,9 @@ test> data.NatSet.splitContains.test =
     ensure
       (NatSet.splitContains x (fromList xs)
         === ( fromList (filter (flip (<) x) xs)
-            , List.contains x xs
-            , fromList (filter (flip (>) x) xs)
-            ))
+        , List.contains x xs
+        , fromList (filter (flip (>) x) xs)
+        ))
 
 data.NatSet.subset : NatSet -> NatSet -> Boolean
 data.NatSet.subset = cases
@@ -43793,7 +43811,9 @@ data.Set.intersects.doc =
 
 test> data.Set.intersects.test =
   check
-    ([[1, 2, 3], [3, 4, 5]] |> List.map Set.fromList |> Set.intersects
+    ([[1, 2, 3], [3, 4, 5]]
+      |> List.map Set.fromList
+      |> Set.intersects
       |> Set.toList
       |> (===) [3])
 
@@ -46672,7 +46692,9 @@ test> data.Stream.take.tests.pullMinimal =
       use Nat ==
       n = gen.natIn 0 1000 ()
       ref = Scope.ref 0
-      (Stream.repeat do Ref.modify ref Nat.increment) |> Stream.take n |> drain
+      (Stream.repeat do Ref.modify ref Nat.increment)
+        |> Stream.take n
+        |> drain
         |> ignore
       expect (Ref.read ref == n)
 
@@ -50560,10 +50582,10 @@ Float.emod n d =
 
 Float.emod.doc : Doc
 Float.emod.doc =
-  use Float - emod
+  use Float emod
   {{
   `` emod x y `` gets the Euclidean modulus of dividing `x` by `y`. The result
-  is ``Float.abs (truncate (x / y) * y - x)``.
+  is ``Float.abs (truncate (x / y) * y Float.- x)``.
   
   This modulus operation differs from {Float.mod} in that the result is always
   a positive {type Float}.
@@ -51285,10 +51307,10 @@ Float.mod = cases
 
 Float.mod.doc : Doc
 Float.mod.doc =
-  use Float * - / mod
+  use Float - mod
   {{
   `` mod x y `` gets the modulus of a floored division of `x` by `y`. A formula
-  for the result is ``x - Float.floor (x / y) * y``.
+  for the result is ``x - Float.floor (x Float./ y) Float.* y``.
   
   The result of this function is not defined if the divisor (the second
   arument) is ``0.0``, or if either argument is `` NaN `` or infinite.
@@ -51301,29 +51323,29 @@ Float.mod.doc =
     catch do mod 10.0 3.0
     ```
     
-    The floored division of `` 10.0 `` by `` -3.0 `` is ``-4.0``, and `` -3.0 *
-    -4.0 `` is ``12.0``, so the remainder is ``-2.0``:
+    The floored division of `` 10.0 `` by `` -3.0 `` is ``-4.0``, and ``
+    -3.0 .Float.* -4.0 `` is ``12.0``, so the remainder is ``-2.0``:
     
     ```
     catch do mod 10.0 -3.0
     ```
     
-    The floored division of `` -10.0 `` by `` 3.0 `` is ``-4.0``, and `` 3.0 *
-    -4.0 `` is ``-12.0``, so the remainder is ``2.0``:
+    The floored division of `` -10.0 `` by `` 3.0 `` is ``-4.0``, and ``
+    3.0 .Float.* -4.0 `` is ``-12.0``, so the remainder is ``2.0``:
     
     ```
     catch do mod -10.0 3.0
     ```
     
-    The floored division of `` -10.0 `` by `` -3.0 `` is ``3.0``, and `` -3.0 *
-    3.0 `` is ``-9.0``, so the remainder is ``-1.0``:
+    The floored division of `` -10.0 `` by `` -3.0 `` is ``3.0``, and ``
+    -3.0 .Float.* 3.0 `` is ``-9.0``, so the remainder is ``-1.0``:
     
     ```
     catch do mod -10.0 -3.0
     ```
     
-    The floored division of `` 10.25 `` by `` 0.5 `` is ``20.0``, and `` 0.5 *
-    20.0 `` is ``10.0``, so the remainder is ``0.25``:
+    The floored division of `` 10.25 `` by `` 0.5 `` is ``20.0``, and ``
+    0.5 .Float.* 20.0 `` is ``10.0``, so the remainder is ``0.25``:
     
     ```
     catch do mod 10.25 0.5
@@ -52065,7 +52087,8 @@ Float.toHalfPrecision n =
   fraction = and double 4503599627370495
   let
     (halfExp, halfFraction) =
-      if exp == 0 && fraction == 0 then (0, 0)
+      if exp == 0
+        && fraction == 0 then (0, 0)
       else
         if exp == 2047 then
           (shiftLeft 31 10, and (shiftRight fraction 42) 1023)
@@ -52209,20 +52232,20 @@ Float.toNat : Float -> Optional Nat
 Float.toNat f =
   use Float < <= >=
   use Nat != + - == > shiftRight
-  if f >= 0.0 && f <= Float.fromNat maxNat then
+  if f >= 0.0
+    && f <= Float.fromNat maxNat then
     if f < 1.0 then Some 0
     else
       Some
         <| let
-             r = Float.toRepresentation f
-             pow' = shiftRight r 52
-             pow = pow' - 1023
-             significand =
-               dropBits 12 r + (if pow' != 0 then Nat.pow 2 52 else 0)
-             if pow == 52 then significand
-             else
-               if pow > 52 then Nat.shiftLeft significand (pow - 52)
-               else shiftRight significand (52 - pow)
+          r = Float.toRepresentation f
+          pow' = shiftRight r 52
+          pow = pow' - 1023
+          significand = dropBits 12 r + (if pow' != 0 then Nat.pow 2 52 else 0)
+          if pow == 52 then significand
+          else
+            if pow > 52 then Nat.shiftLeft significand (pow - 52)
+            else shiftRight significand (52 - pow)
   else None
 
 Float.toNat.doc : Doc
@@ -52315,7 +52338,8 @@ Float.toSinglePrecision n =
   fraction = and double 4503599627370495
   let
     (singleExp, singleFraction) =
-      if exp == 0 && fraction == 0 then (0, 0)
+      if exp == 0
+        && fraction == 0 then (0, 0)
       else
         if exp == 2047 then
           (shiftLeft 255 23, and (shiftRight fraction 29) 8388607)
@@ -53124,7 +53148,8 @@ Function.tap.doc =
   
     @typecheck ```
     x =
-      [1, 2, 3] |> List.map Nat.increment
+      [1, 2, 3]
+        |> List.map Nat.increment
         |> Function.tap (Debug.trace "incremented")
         |> Nat.sum
     check (x == 9)
@@ -53321,7 +53346,10 @@ GUID.new =
         |> (Text.map cases
              ?x -> hex()
              ?y ->
-               Random.natIn 0 16 |> Nat.and 3 |> Nat.or 8 |> Nat.toTextBase 16
+               Random.natIn 0 16
+                 |> Nat.and 3
+                 |> Nat.or 8
+                 |> Nat.toTextBase 16
                  |> Optional.flatMap Text.head
                  |> Optional.getOrElse ?8
              v -> v)
@@ -53878,10 +53906,10 @@ Int.diff x y =
 
 Int.diff.doc : Doc
 Int.diff.doc =
-  use Int - abs diff
+  use Int abs diff
   {{
   Returns the absolute distance between two {type Int} values as a {type Nat}.
-  This is the same as ``abs (x - y)``.
+  This is the same as ``abs (x Int.- y)``.
   
   # Examples
   
@@ -53904,7 +53932,7 @@ Int.diff.doc =
   # See also
   
     * {abs} for the absolute value of an {type Int}.
-    * {-} for the difference of two {type Int} values.
+    * {.Int.-} for the difference of two {type Int} values.
   }}
 
 -- builtin Int.div.impl : Int -> Int -> Int
@@ -54333,7 +54361,7 @@ Int.ediv x y =
   use Int * / ==
   signum y
     * (if y == minInt then if signum x == -1 then -1 else +0
-      else x / Nat.toInt (Int.abs y))
+    else x / Nat.toInt (Int.abs y))
 
 Int.ediv.doc : Doc
 Int.ediv.doc =
@@ -54396,10 +54424,10 @@ Int.emod x y =
 
 Int.emod.doc : Doc
 Int.emod.doc =
-  use Int * + == emod
+  use Int == emod
   {{
   `` emod x y `` gets the modulus of dividing `x` by `y`, which is the
-  {type Nat} `r` such that ``ediv x y * y + r == x``.
+  {type Nat} `r` such that ``ediv x y Int.* y Int.+ r == x``.
   
   This modulus operation differs from {Int.mod} in that the result is always a
   natural number.
@@ -54801,14 +54829,14 @@ Int.minInt.doc = {{ The minimum value of an {type Int}, -2^63. }}
 
 Int.mod.doc : Doc
 Int.mod.doc =
-  use Int * + / == mod
+  use Int == mod
   {{
   `` mod x y `` gets the modulus of dividing `x` by `y`, which is the number
-  `r` such that ``x / y * y + r == x``.
+  `r` such that ``x Int./ y Int.* y Int.+ r == x``.
   
-  This uses flooring division (truncating towards negative infinity — see {/}).
-  This coincides with {Int.emod} when the divisor (the second argument) is
-  positive.
+  This uses flooring division (truncating towards negative infinity — see
+  {.Int./}). This coincides with {Int.emod} when the divisor (the second
+  argument) is positive.
   
   # Examples
   
@@ -54838,7 +54866,7 @@ test> Int.mod.test = runs 1000 do
   use gen int
   a = int()
   n = int()
-  expect (n == +0 || a == minInt && n == -1 || Int.mod a n == a - n * a / n)
+  expect (n == +0 || a == minInt && n == -1 || Int.mod a n == a - n * (a / n))
 
 -- builtin Int.negate : Int -> Int
 
@@ -56998,7 +57026,7 @@ IO.concurrent.TVar.readIO.doc =
 IO.concurrent.TVar.state : TVar s -> (s ->{e} (a, s)) ->{e, STM} a
 IO.concurrent.TVar.state tv f =
   (r, s) = f (TVar.read tv)
-  TVar.write tv s
+  _ = TVar.write tv s
   r
 
 IO.concurrent.TVar.state.doc : Doc
@@ -57571,7 +57599,9 @@ IO.FilePath.getTempDirectory.doc =
 
 IO.FilePath.getTimestamp : FilePath ->{IO, Exception} Instant
 IO.FilePath.getTimestamp =
-  fromEpochSeconds << Int.fromRepresentation << Either.toException
+  fromEpochSeconds
+    << Int.fromRepresentation
+    << Either.toException
     << getTimestamp.impl
     << FilePath.toText
 
@@ -59980,7 +60010,8 @@ IO.net.URI.encode.percent.char.special c =
     [x]            -> bug "URI.encode.percent.char.special"
     []             -> acc
   hexBytes =
-    Bytes.toBase16 (Text.toUtf8 (Char.toText c)) |> fromUtf8.impl
+    Bytes.toBase16 (Text.toUtf8 (Char.toText c))
+      |> fromUtf8.impl
       |> Either.toOptional
       |> getOrBug "bug in char.special"
       |> toCharList
@@ -60135,7 +60166,8 @@ IO.net.URI.parse._internal.parseQuery txt' =
       makePair = cases
         []      -> ("", [""])
         k +: vs -> (k, [Text.join "=" vs])
-      split ?& txt |> List.map (makePair << split ?=)
+      split ?& txt
+        |> List.map (makePair << split ?=)
         |> List.foldRight
              (cases
                (k, v) -> if Text.size k === 0 then id else Map.putWith (++) k v)
@@ -60175,7 +60207,9 @@ IO.net.URI.parse._internal.renderPercentEncoded txt =
               [] -> ()
               bytes ->
                 decoded =
-                  fromList.impl bytes |> fromUtf8.impl |> Either.toOptional
+                  fromList.impl bytes
+                    |> fromUtf8.impl
+                    |> Either.toOptional
                     |> toAbort
                 emit decoded
             emit text
@@ -60288,7 +60322,7 @@ IO.net.URI.Path.encode.char = cases
   c
     | isAlphaNum c
       || List.contains
-      c [?-, ?., ?_, ?~, ?:, ?@, ?!, ?$, ?&, ?\', ?(, ?), ?*, ?+, ?,, ?;, ?=]  ->
+        c [?-, ?., ?_, ?~, ?:, ?@, ?!, ?$, ?&, ?\', ?(, ?), ?*, ?+, ?,, ?;, ?=]  ->
       fromCharList [c]
     | otherwise                                                                                              ->
       special c
@@ -60467,9 +60501,12 @@ IO.net.URI.pattern.heirPart :
 IO.net.URI.pattern.heirPart =
   use IPattern ++ +: <|> capture
   use Pattern or
-  literal "//" +: (pattern.authority ++ capture pathAbEmpty)
-    <|> (capture (literal "") ++ capture (literal "") ++ capture (literal "")
-          ++ capture (or pathAbsolute (or pathRootless pathEmpty)))
+  literal "//"
+    +: (pattern.authority ++ capture pathAbEmpty)
+    <|> (capture (literal "")
+      ++ capture (literal "")
+      ++ capture (literal "")
+      ++ capture (or pathAbsolute (or pathRootless pathEmpty)))
 
 IO.net.URI.pattern.host : IPattern Capture Text
 IO.net.URI.pattern.host =
@@ -60679,7 +60716,8 @@ IO.net.URI.Query.doc =
   Example:
   
   ```
-  Query.empty & ("version", "1.0") & ("hashtag", "#unison") |> toRawQuery
+  Query.empty & ("version", "1.0") & ("hashtag", "#unison")
+    |> toRawQuery
     |> RawQuery.encode
   ```
   }}
@@ -60841,7 +60879,10 @@ IO.net.URI.RawQuery.encodeRaw.char = cases
     | c === ?: || c === ?# || c === ?[ || c === ?]  -> special c
     | otherwise                                     ->
       if Char.toNat c Nat.> 127 then
-        fromCharList [c] |> Text.toUtf8 |> Bytes.toBase16 |> fromUtf8.impl
+        fromCharList [c]
+          |> Text.toUtf8
+          |> Bytes.toBase16
+          |> fromUtf8.impl
           |> Either.toOptional
           |> getOrBug "bug in encodeRaw.char"
           |> toCharList
@@ -61053,7 +61094,8 @@ IO.net.URI.toText = cases
     schemeText = match Scheme.toText scheme with
       "" -> ""
       s  -> s ++ "://"
-    schemeText ++ Optional.fold (do "") Authority.toText authorityMaybe
+    schemeText
+      ++ Optional.fold (do "") Authority.toText authorityMaybe
       ++ Path.toText path
       ++ RawQuery.encode query
       ++ Fragment.toText fragment
@@ -61102,7 +61144,8 @@ IO.net.URI.toUnescapedText = cases
     schemeText = match Scheme.toText scheme with
       "" -> ""
       s  -> s ++ "://"
-    schemeText ++ Optional.fold (do "") Authority.toText authorityMaybe
+    schemeText
+      ++ Optional.fold (do "") Authority.toText authorityMaybe
       ++ Path.toUnescapedText path
       ++ RawQuery.encode query
       ++ Fragment.toText fragment
@@ -61933,7 +61976,7 @@ u math.Natural.* v =
       replace
         (i + j)
         (Nat.mod t b)
-        (if size ws > i + j then ws else ws ++ fill (size ws - i + j) 0)
+        (if size ws > i + j then ws else ws ++ fill (size ws - (i + j)) 0)
     k' = t / b
     i' = i + 1
     if i' < m then m4 i' j k' vj ws'
@@ -61942,7 +61985,8 @@ u math.Natural.* v =
         replace
           (m + j)
           k'
-          (if size ws' > m + j then ws' else ws' ++ fill (size ws' - m + j) 0)
+          (if size ws' > m + j then ws'
+          else ws' ++ fill (size ws' - (m + j)) 0)
       m6 (j + 1) ws''
   mkNatural (dropRightWhile (x -> x == 0) (m2 0 (fill m 0)))
 
@@ -62440,12 +62484,12 @@ math.Natural.internal.divImpl u v =
         use Nat * - > >= shiftRight
         j = j' - 1
         if j' >= 1 then
-          x = atOr0 (j + n) uns * radix + atOr0 (j + n - 1) uns
+          x = atOr0 (j + n) uns * radix + atOr0 (j + (n - 1)) uns
           vmsd = last (digits vn)
           ignore "estimate a digit in the quotient and remainder"
           estimate qh rh =
             if qh >= radix
-              || qh * atOr0 (n - 2) vns > radix * rh + atOr0 (j + n - 2) uns then
+              || qh * atOr0 (n - 2) vns > radix * rh + atOr0 (j + (n - 2)) uns then
               qh' = qh - 1
               rh' = rh + vmsd
               if rh' < radix then estimate qh' rh' else (qh', rh')
@@ -62915,8 +62959,7 @@ math.Natural.tests.gen.natural =
     naturals n r =
       yield n
         <|> (weight 1 do
-              yield r
-                <|> (weight 1 do naturals (n + fromNat 1) (r + fromNat 1)))
+          yield r <|> (weight 1 do naturals (n + fromNat 1) (r + fromNat 1)))
     Gen.sample (naturals (fromNat 0) (fromNat bitMask))
 
 test> math.Natural.tests.multiplicationAssociative = 
@@ -62936,8 +62979,8 @@ test> math.Natural.tests.subtraction = runs 1000 do
   x = natural()
   y = natural()
   z = natural()
-  a = x + y - x === y + x - y
-  b = x - y - z === x - y + z
+  a = x + (y - x) === y + (x - y)
+  b = x - y - z === x - (y + z)
   c = x - x === zero
   d = zero - x === zero
   expect (a && b && c && d)
@@ -70331,10 +70374,10 @@ reflection.Rewrites.doc =
     docCallout
       None
       {{
-      Notice that the `x` in the rule's left-hand side (LHS) `` ( x + 1 ) ``
+      Notice that the `x` in the rule's left-hand side (LHS) `` (x + 1) ``
       matches any subexpression. In this case, the rule matches with `x` bound
-      to ``(92 * 8)``, and that same `` ( 92 * 8 ) `` expresison is referenced
-      in the right hand side of the rule.
+      to ``(92 * 8)``, and that same `` (92 * 8) `` expresison is referenced in
+      the right hand side of the rule.
       }} }}
     
     The rewritten scratch file's definitions will be copied and written to the
@@ -71073,11 +71116,13 @@ syntax.docFormatConsole d =
     CodeBlock typ d ->
       group (lit "``` " <> group (lit typ) <> nl <> go d <> nl <> lit "```")
     Italic (Paragraph (([l] ++ mid) ++ [r])) ->
-      group (lit "*" <> go l) <> join (List.map go mid)
+      group (lit "*" <> go l)
+        <> join (List.map go mid)
         <> group (go r <> lit "*")
     Italic d -> group (lit "*" <> go d <> lit "*")
     Strikethrough (Paragraph (([l] ++ mid) ++ [r])) ->
-      group (lit "~~" <> go l) <> join (List.map go mid)
+      group (lit "~~" <> go l)
+        <> join (List.map go mid)
         <> group (go r <> lit "~~")
     Strikethrough d -> group (lit "~~" <> go d <> lit "~~")
     Doc.Bold d -> map ConsoleText.Bold (go d)
@@ -71681,9 +71726,7 @@ test.deprecated.Domain.ints =
   go n =
     yield n
       <|> (weight 1 do
-            go
-              (if Universal.gt n +0 then negate n
-              else Int.increment (negate n)))
+        go (if Universal.gt n +0 then negate n else Int.increment (negate n)))
   Large
     (List.foldLeft
       (a n -> a <|> yield n) Weighted.Fail [+0, +1, -1, maxInt, minInt]
@@ -71801,7 +71844,7 @@ test.deprecated.gen.atLeastOneDistinct gen =
     size = natInOrder()
     gen()
       +| (deprecated.sample (size + 1) do
-           Gen.sample (Weighted.drop 1 (toWeighted gen)))
+        Gen.sample (Weighted.drop 1 (toWeighted gen)))
 
 test.deprecated.gen.atLeastOneDistinct.doc : Doc
 test.deprecated.gen.atLeastOneDistinct.doc =
@@ -72621,10 +72664,9 @@ test.deprecated.internals.v1.Test.forAll' maxSize domain property =
             v1.Test.label.deprecated
               ("test case " ++ Nat.toText i) (finished Failed))
       (List.indexed xs)
-  List.foldBalanced id Test.both proved
-    <| (match domain with
-         Small xs -> check (List.take maxSize xs) Proved
-         Large _  -> check (Domain.sample maxSize domain) (Passed 1))
+  List.foldBalanced id Test.both proved <| (match domain with
+    Small xs -> check (List.take maxSize xs) Proved
+    Large _  -> check (Domain.sample maxSize domain) (Passed 1))
 
 test.deprecated.internals.v1.Test.modifyScope :
   (Labels -> Labels) -> Test -> Test
@@ -72684,13 +72726,13 @@ test.deprecated.laws.absorption gen f g =
 
 test.deprecated.laws.absorption.doc : Doc
 test.deprecated.laws.absorption.doc =
-  use Nat max min
   {{
   Given a generator and two binary functions, constructs a test that they're
   connected by the absorption law.
   
-  For example, `` deprecated.laws.absorption test.gen.nat min max `` checks
-  that `` min a (max a b) === a `` and ``max a (min a b) === a``.
+  For example, `` deprecated.laws.absorption test.gen.nat Nat.min Nat.max ``
+  checks that `` Nat.min a (Nat.max a b) === a `` and
+  ``Nat.max a (Nat.min a b) === a``.
   }}
 
 test.deprecated.laws.adjoint :
@@ -72801,13 +72843,12 @@ test.deprecated.laws.idempotence gen f =
 
 test.deprecated.laws.idempotence.doc : Doc
 test.deprecated.laws.idempotence.doc =
-  use Nat min
   {{
   Given a generator `gen`, a binary function `f`, constructs a test that the
   function is idempotent.
   
-  For example, `` deprecated.laws.idempotence test.gen.nat min `` checks that
-  ``min x x === x``.
+  For example, `` deprecated.laws.idempotence test.gen.nat Nat.min `` checks
+  that ``Nat.min x x === x``.
   }}
 
 test.deprecated.laws.lattice :
@@ -73417,7 +73458,8 @@ test.deprecated.verifyWithSeedAndIgnore seed a =
       ind = Text.repeat (List.size labels * 2) " "
       [ Fail
           (unlines
-            ([""] List.++ lines (formatLabels labels)
+            ([""]
+              List.++ lines (formatLabels labels)
               List.++ [ ind Text.++ msg
                       , ind Text.++ toDebugText (unsafeExtract payload)
                       ]))
@@ -73633,9 +73675,9 @@ test.laws.absorption.doc =
   returned by `gen`, `f x (g x y)` is equal to `x` and also equal to
   `g x (f x y)`.
   
-  For example, if `f` is {Nat.max} and `g` is {Nat.min}, then ``
+  For example, if `f` is {Nat.max} and `g` is {.Nat.min}, then ``
   Nat.max x (Nat.min x y) `` is equal to `x` and also equal to
-  ``Nat.min x (max x y)``.
+  ``.Nat.min x (max x y)``.
   }}
 
 test.laws.associativity :
@@ -73659,8 +73701,9 @@ test.laws.associativity.doc =
   `` associativity gen f `` checks that for all elements `x`, `y`, and `z`
   returned by `gen`, `f x (f y z)` is equal to `f (f x y) z`.
   
-  For example, if `f` is {Nat.+}, then {{ docExample 4 do x + y z -> x + y + z
-  }} is equal to {{ docExample 4 do + x y z -> x + y + z }}.
+  For example, if `f` is {Nat.+}, then {{
+  docExample 4 do x + y z -> x + (y + z) }} is equal to
+  {{ docExample 4 do + x y z -> x + y + z }}.
   }}
 
 test.laws.commutativity :
@@ -73702,15 +73745,14 @@ test.laws.distributivity gen op1 op2 =
 
 test.laws.distributivity.doc : Doc
 test.laws.distributivity.doc =
-  use Nat * +
   {{
   Checks the distributivity property of a pair of binary operations.
   
   `` distributivity gen f g `` checks that for all elements `x`, `y`, and `z`
   returned by `gen`, `f x (g y z)` is equal to `g (f x y) (f x z)`.
   
-  For example, if `f` is {*} and `g` is {+}, then `` x * ( y + z ) `` is equal
-  to ``x * y + x * z``.
+  For example, if `f` is {.Nat.*} and `g` is {.Nat.+}, then ``
+  x .Nat.* (y Nat.+ z) `` is equal to ``x Nat.* y .Nat.+ x Nat.* z``.
   }}
 
 test.laws.group :
@@ -73754,7 +73796,6 @@ test.laws.homomorphism genA opA opB h = labeled "homomorphism" do
 test.laws.homomorphism.doc : Doc
 test.laws.homomorphism.doc =
   use Nat +
-  use Text ++ size
   {{
   Checks the homomorphism property of a pair of binary operations and a
   function.
@@ -73762,8 +73803,8 @@ test.laws.homomorphism.doc =
   `` test.laws.homomorphism gen f g h `` checks that for all elements `x` and
   `y` returned by `gen`, `h (f x y)` is equal to `g (h x) (h y)`.
   
-  For example, if `f` is {++}, `g` is {+} and `h` is {size}, then ``
-  size (x ++ y) `` is equal to ``size x + size y``.
+  For example, if `f` is {.Text.++}, `g` is {+} and `h` is {.Text.size}, then
+  `` .Text.size (x Text.++ y) `` is equal to ``Text.size x + Text.size y``.
   }}
 
 test.laws.idempotence :
@@ -73775,15 +73816,15 @@ test.laws.idempotence gen op = labeled "idempotence" do
 
 test.laws.idempotence.doc : Doc
 test.laws.idempotence.doc =
-  use Int abs
   {{
   Checks the idempotence property of a unary operation.
   
   `` test.laws.idempotence gen f `` checks that for all elements `x` returned
   by `gen`, `f (f x)` is equal to `f x`.
   
-  For example, if `f` is {abs}, then {{
-  docExample 2 do Int.abs x -> abs (abs x) }} is equal to ``abs x``.
+  For example, if `f` is {.Int.abs}, then {{
+  docExample 2 do Int.abs x -> Int.abs (Int.abs x) }} is equal to
+  ``.Int.abs x``.
   }}
 
 test.laws.identity :
@@ -73819,15 +73860,15 @@ test.laws.involutive gen op = labeled "involutive" do
 
 test.laws.involutive.doc : Doc
 test.laws.involutive.doc =
-  use Boolean not
   {{
   Checks the involutive property of a unary operation.
   
   `` involutive gen f `` checks that for all elements `x` returned by `gen`,
   `f (f x)` is equal to `x`.
   
-  For example, if `f` is {not}, then {{
-  docExample 2 do Boolean.not x -> not (not x) }} is equal to `x`.
+  For example, if `f` is {.Boolean.not}, then {{
+  docExample 2 do Boolean.not x -> Boolean.not (Boolean.not x) }} is equal to
+  `x`.
   }}
 
 test.laws.lattice :
@@ -76365,16 +76406,16 @@ Text.slice start end text =
 Text.slice.doc : Doc
 Text.slice.doc =
   use Nat -
-  use Text size slice
+  use Text slice
   {{
   `` slice start end text `` returns the the part of `text` that starts at the
   inclusive index `start` and ends immediately before the exclusive index
   `end`.
   
-  The length of the result is always ``Nat.min (size text end) - start``. If
-  `start` is greater than `end`, the result is the empty string. If `end` is
+  The length of the result is always ``Nat.min (Text.size text end) - start``.
+  If `start` is greater than `end`, the result is the empty string. If `end` is
   greater than the text size, the result is the same as
-  ``slice start (size text) text``.
+  ``slice start (Text.size text) text``.
   
   # Examples
   
@@ -78648,66 +78689,65 @@ time.Duration.toText : Duration -> Text
 time.Duration.toText d = 
   (if Duration.isNegative d then "T-" else "")
     Text.++ (match Duration.abs d with
-              d
-                | Universal.gteq d averageYear      ->
-                  use Text ++
-                  remainder = unsafeRun! do Duration.mod d averageYear
-                  Int.toText (countYears d) ++ "y"
-                    ++ (if Duration.isZero remainder then ""
-                       else " " ++ time.Duration.toText remainder)
-                | Universal.gteq d week             ->
-                  use Text ++
-                  remainder = unsafeRun! do Duration.mod d week
-                  Int.toText (countWeeks d) ++ "w"
-                    ++ (if Duration.isZero remainder then ""
-                       else " " ++ time.Duration.toText remainder)
-                | Universal.gteq d Duration.day     ->
-                  use Text ++
-                  remainder = unsafeRun! do Duration.mod d Duration.day
-                  Int.toText (countDays d) ++ "d"
-                    ++ (if Duration.isZero remainder then ""
-                       else " " ++ time.Duration.toText remainder)
-                | Universal.gteq d Duration.hour    ->
-                  use Text ++
-                  remainder = unsafeRun! do Duration.mod d Duration.hour
-                  Int.toText (countHours d) ++ "h"
-                    ++ (if Duration.isZero remainder then ""
-                       else " " ++ time.Duration.toText remainder)
-                | Universal.gteq d Duration.minute  ->
-                  use Text ++
-                  remainder = unsafeRun! do Duration.mod d Duration.minute
-                  Int.toText (countMinutes d) ++ "m"
-                    ++ (if Duration.isZero remainder then ""
-                       else " " ++ time.Duration.toText remainder)
-                | Universal.gteq d Duration.second  ->
-                  use Float /
-                  use Text ++
-                  remainder = unsafeRun! do Duration.mod d Duration.second
-                  if Duration.isZero remainder then
-                    Int.toText (countSeconds d) ++ "s"
-                  else
-                    Float.toText (Float.fromInt (asNanoseconds d) / 1.0e9)
-                      ++ "s"
-                | Universal.gteq d millisecond      ->
-                  use Float /
-                  use Text ++
-                  remainder = unsafeRun! do Duration.mod d millisecond
-                  if Duration.isZero remainder then
-                    Int.toText (countMilliseconds d) ++ "ms"
-                  else
-                    Float.toText (Float.fromInt (asNanoseconds d) / 1000000.0)
-                      ++ "ms"
-                | Universal.gteq d microsecond      ->
-                  use Float /
-                  use Text ++
-                  remainder = unsafeRun! do Duration.mod d microsecond
-                  if Duration.isZero remainder then
-                    Int.toText (countMicroseconds d) ++ "µs"
-                  else
-                    Float.toText (Float.fromInt (asNanoseconds d) / 1000.0)
-                      ++ "µs"
-                | otherwise                         ->
-                  Int.toText (asNanoseconds d) Text.++ "ns")
+      d
+        | Universal.gteq d averageYear      ->
+          use Text ++
+          remainder = unsafeRun! do Duration.mod d averageYear
+          Int.toText (countYears d)
+            ++ "y"
+            ++ (if Duration.isZero remainder then ""
+               else " " ++ time.Duration.toText remainder)
+        | Universal.gteq d week             ->
+          use Text ++
+          remainder = unsafeRun! do Duration.mod d week
+          Int.toText (countWeeks d)
+            ++ "w"
+            ++ (if Duration.isZero remainder then ""
+               else " " ++ time.Duration.toText remainder)
+        | Universal.gteq d Duration.day     ->
+          use Text ++
+          remainder = unsafeRun! do Duration.mod d Duration.day
+          Int.toText (countDays d)
+            ++ "d"
+            ++ (if Duration.isZero remainder then ""
+               else " " ++ time.Duration.toText remainder)
+        | Universal.gteq d Duration.hour    ->
+          use Text ++
+          remainder = unsafeRun! do Duration.mod d Duration.hour
+          Int.toText (countHours d)
+            ++ "h"
+            ++ (if Duration.isZero remainder then ""
+               else " " ++ time.Duration.toText remainder)
+        | Universal.gteq d Duration.minute  ->
+          use Text ++
+          remainder = unsafeRun! do Duration.mod d Duration.minute
+          Int.toText (countMinutes d)
+            ++ "m"
+            ++ (if Duration.isZero remainder then ""
+               else " " ++ time.Duration.toText remainder)
+        | Universal.gteq d Duration.second  ->
+          use Float /
+          use Text ++
+          remainder = unsafeRun! do Duration.mod d Duration.second
+          if Duration.isZero remainder then Int.toText (countSeconds d) ++ "s"
+          else Float.toText (Float.fromInt (asNanoseconds d) / 1.0e9) ++ "s"
+        | Universal.gteq d millisecond      ->
+          use Float /
+          use Text ++
+          remainder = unsafeRun! do Duration.mod d millisecond
+          if Duration.isZero remainder then
+            Int.toText (countMilliseconds d) ++ "ms"
+          else
+            Float.toText (Float.fromInt (asNanoseconds d) / 1000000.0) ++ "ms"
+        | Universal.gteq d microsecond      ->
+          use Float /
+          use Text ++
+          remainder = unsafeRun! do Duration.mod d microsecond
+          if Duration.isZero remainder then
+            Int.toText (countMicroseconds d) ++ "µs"
+          else Float.toText (Float.fromInt (asNanoseconds d) / 1000.0) ++ "µs"
+        | otherwise                         ->
+          Int.toText (asNanoseconds d) Text.++ "ns")
 
 time.Duration.toText.doc : Doc
 time.Duration.toText.doc =
@@ -78719,7 +78759,9 @@ time.Duration.toText.doc =
   
     ```
     toText
-      (+4 * Duration.hour + +15 * Duration.minute + +12 * Duration.second
+      (+4 * Duration.hour
+        + +15 * Duration.minute
+        + +12 * Duration.second
         + +123 * millisecond)
     ```
     
@@ -78976,7 +79018,7 @@ time.Instant.ceiling d i =
   use Duration -
   use Instant +
   di = Instant.timeSinceEpoch i
-  i + d - Duration.mod di d
+  i + (d - Duration.mod di d)
 
 time.Instant.ceiling.doc : Doc
 time.Instant.ceiling.doc =
@@ -80360,7 +80402,15 @@ time.LocalDateTime.toRFC1123AtGMT = cases
     hh = leftPad 2 "0" (Nat.toText hour)
     mm = leftPad 2 "0" (Nat.toText minute)
     ss = leftPad 2 "0" (Nat.toText second)
-    shortName wkDay ++ ", " ++ dd ++ " " ++ mon ++ " " ++ yyyy ++ " " ++ hh
+    shortName wkDay
+      ++ ", "
+      ++ dd
+      ++ " "
+      ++ mon
+      ++ " "
+      ++ yyyy
+      ++ " "
+      ++ hh
       ++ ":"
       ++ mm
       ++ ":"
@@ -80712,7 +80762,7 @@ time.LocalTime.toBasicISO8601 = cases
         else
           "."
             Text.++ Text.dropRightWhile
-                      ((Char.==) ?0) (leftPad 9 "0" (Nat.toText nano))
+              ((Char.==) ?0) (leftPad 9 "0" (Nat.toText nano))
       ]
 
 time.LocalTime.toBasicISO8601.doc : Doc
@@ -80746,11 +80796,10 @@ time.LocalTime.toText = cases
       , leftPad 2 "0" (Nat.toText second)
       ]
       Text.++ (if nanosecond Nat.== 0 then ""
-              else
-                "."
-                  Text.++ Text.dropRightWhile
-                            ((Char.==) ?0)
-                            (leftPad 9 "0" (Nat.toText nanosecond)))
+      else
+        "."
+          Text.++ Text.dropRightWhile
+            ((Char.==) ?0) (leftPad 9 "0" (Nat.toText nanosecond)))
 
 time.LocalTime.toText.doc : Doc
 time.LocalTime.toText.doc =
@@ -81103,8 +81152,7 @@ test> time.OffsetDateTime.fromRFC1123.test =
     check
       (parsed
         === OffsetDateTime
-              GMT
-              (LocalDateTime (LocalDate +2022 10 12) (LocalTime 18 32 45 0)))
+          GMT (LocalDateTime (LocalDate +2022 10 12) (LocalTime 18 32 45 0)))
 
 time.OffsetDateTime.fromRFC2822 : Text ->{Exception} OffsetDateTime
 time.OffsetDateTime.fromRFC2822 text =
@@ -81162,8 +81210,8 @@ test> time.OffsetDateTime.fromRFC2822.test =
     check
       (parsed
         === OffsetDateTime
-              (UTCOffset -300)
-              (LocalDateTime (LocalDate +2022 10 12) (LocalTime 18 32 45 0)))
+          (UTCOffset -300)
+          (LocalDateTime (LocalDate +2022 10 12) (LocalTime 18 32 45 0)))
 
 time.OffsetDateTime.fromTimeAndDate : OffsetTime -> LocalDate -> OffsetDateTime
 time.OffsetDateTime.fromTimeAndDate t date =
@@ -81274,7 +81322,8 @@ time.OffsetDateTime.toInstant = cases
           prev = yyyy - +1
           prev / +4 - prev / +100 + prev / +400
         totalLeapYears - +477
-      years * +365 Int.+ leapYears
+      years * +365
+        Int.+ leapYears
         Int.+ toInt
                 (List.foldLeft
                   (Nat.+)
@@ -81284,9 +81333,12 @@ time.OffsetDateTime.toInstant = cases
                     (List.Nonempty.toList (monthLengths (isLeapYear yyyy)))))
         Int.+ toInt day Int.- +1
     seconds =
-      days * +86400 Int.+ toInt hh * +3600 Int.+ toInt min * +60
+      days * +86400
+        Int.+ toInt hh * +3600
+        Int.+ toInt min * +60
         Int.+ toInt sec
-        Int.- offset * +60
+        Int.- offset
+          * +60
     Instant seconds nan
 
 time.OffsetDateTime.toInstant.doc : Doc
@@ -81354,7 +81406,15 @@ time.OffsetDateTime.toRFC2822 = cases
     hh = leftPad 2 "0" (Nat.toText hour)
     mm = leftPad 2 "0" (Nat.toText minute)
     ss = leftPad 2 "0" (Nat.toText second)
-    shortName wkDay ++ ", " ++ dd ++ " " ++ mon ++ " " ++ yyyy ++ " " ++ hh
+    shortName wkDay
+      ++ ", "
+      ++ dd
+      ++ " "
+      ++ mon
+      ++ " "
+      ++ yyyy
+      ++ " "
+      ++ hh
       ++ ":"
       ++ mm
       ++ ":"
@@ -81632,16 +81692,16 @@ time.patterns.iso8601Timezone =
   oneOf
     (capture (literal "Z")
       +| [ join
-             [ capture (oneOf (literal "+" +| [literal "-"]))
-             , capture (replicate 2 2 digit)
-             , Pattern.optional (literal ":")
-             , capture (replicate 2 2 digit)
-             ]
-         , join
-             [ capture (oneOf (literal "+" +| [literal "-"]))
-             , capture (replicate 2 2 digit)
-             ]
-         ])
+          [ capture (oneOf (literal "+" +| [literal "-"]))
+          , capture (replicate 2 2 digit)
+          , Pattern.optional (literal ":")
+          , capture (replicate 2 2 digit)
+          ]
+      , join
+          [ capture (oneOf (literal "+" +| [literal "-"]))
+          , capture (replicate 2 2 digit)
+          ]
+      ])
 
 time.patterns.rfc2822DateTime : Pattern Text
 time.patterns.rfc2822DateTime =
@@ -82992,7 +83052,7 @@ test> Universal.max.tests.partialOrder = runs 100 do
   use gen int
   x = int()
   y = int()
-  expect (Universal.gteq x y === Universal.max x y === x)
+  expect (Universal.gteq x y === (Universal.max x y === x))
 
 Universal.min : a -> a -> a
 Universal.min a b = if Universal.lt a b then a else b
@@ -83017,7 +83077,7 @@ test> Universal.min.tests.partialOrder = runs 100 do
   use gen int
   x = int()
   y = int()
-  expect (Universal.lteq x y === Universal.min x y === x)
+  expect (Universal.lteq x y === (Universal.min x y === x))
 
 -- builtin Universal.murmurHash : a -> Nat
 
@@ -83149,14 +83209,14 @@ scratch/main> clone @unison/http/releases/3.3.2
 @unison/http/releases/3.3.2> edit.namespace
 
   ☝️
-  
+
   I added 410 definitions to the top of scratch.u
-  
+
   You can edit them there, then run `update` to replace the
   definitions currently in this namespace.
-
 ```
-```` unison:added-by-ucm scratch.u
+
+```` unison :added-by-ucm scratch.u
 type Body
   = Body Bytes
 
@@ -83179,10 +83239,10 @@ type client.failure.WebSocketHandsakeFailure
   = 
 
 ability client.Http where
-  tryRequest : HttpRequest ->{client.Http} Either Failure HttpResponse
+  tryRequest : HttpRequest ->{Http} Either Failure HttpResponse
 
 ability client.HttpWebSocket where
-  tryWebSocket : HttpRequest ->{client.HttpWebSocket} Either Failure WebSocket
+  tryWebSocket : HttpRequest ->{HttpWebSocket} Either Failure WebSocket
 
 type client.proxy.Config
   = { proxy : Authority }
@@ -83525,11 +83585,15 @@ client.Http.configuredHandler.webSocket cfg conn req =
       validate txt =
         use Text ++ ==
         expected =
-          keyStr ++ magicKeyString |> Text.toUtf8 |> hashBytes Sha1 |> toBase64
+          keyStr ++ magicKeyString
+            |> Text.toUtf8
+            |> hashBytes Sha1
+            |> toBase64
             |> fromUtf8
         txt == expected
       req' =
-        req |> setHeader "Connection" ["Upgrade"]
+        req
+          |> setHeader "Connection" ["Upgrade"]
           |> setHeader "Upgrade" ["websocket"]
           |> setHeader "Sec-WebSocket-Version" ["13"]
           |> setHeader "Sec-WebSocket-Key" [keyStr]
@@ -83771,7 +83835,9 @@ client.proxy.host cfg = cfg |> proxy.Config.proxy |> Authority.host
 
 client.proxy.port : proxy.Config -> Port
 client.proxy.port cfg =
-  cfg |> proxy.Config.proxy |> Authority.port
+  cfg
+    |> proxy.Config.proxy
+    |> Authority.port
     |> Optional.getOrElse (Port "1080")
 
 client.README : Doc
@@ -84109,7 +84175,15 @@ Headers.HttpDate.fromGMTDateTime = cases
     hh = leftPad 2 "0" (Nat.toText hour)
     mm = leftPad 2 "0" (Nat.toText minute)
     ss = leftPad 2 "0" (Nat.toText second)
-    shortName wkDay ++ ", " ++ dd ++ " " ++ mon ++ " " ++ yyyy ++ " " ++ hh
+    shortName wkDay
+      ++ ", "
+      ++ dd
+      ++ " "
+      ++ mon
+      ++ " "
+      ++ yyyy
+      ++ " "
+      ++ hh
       ++ ":"
       ++ mm
       ++ ":"
@@ -84409,14 +84483,16 @@ Headers.parseHeaders =
 
 Headers.requireHeader : Text -> Headers ->{Exception} Text
 Headers.requireHeader h hs = 
-  hs |> getValues h |> List.head
+  hs
+    |> getValues h
+    |> List.head
     |> (cases
          None ->
            Exception.raise
              <| Failure
-                  (typeLink Headers)
-                  ("Missing " Text.++ h Text.++ " header in response.")
-                  (Any hs)
+               (typeLink Headers)
+               ("Missing " Text.++ h Text.++ " header in response.")
+               (Any hs)
          Some v -> v)
 
 Headers.requireHeader.doc : Doc
@@ -84719,7 +84795,10 @@ HttpRequest.encode.nonProxyRequestLine = cases
         _ ->
           Path.encode (URI.path uri)
             ++ toUtf8 (RawQuery.encode (URI.query uri))
-    toUtf8 (Method.toText method) ++ space ++ resource ++ space
+    toUtf8 (Method.toText method)
+      ++ space
+      ++ resource
+      ++ space
       ++ toUtf8 (Version.toText version)
 
 HttpRequest.encode.proxyRequestLineText : HttpRequest -> Text
@@ -84732,7 +84811,10 @@ HttpRequest.encode.proxyRequestLineText = cases
         u = URI.toText uri
         if u === "/*" then "*" else u
       _       -> URI.toText uri
-    Method.toText method ++ space ++ URI.toText uri ++ space
+    Method.toText method
+      ++ space
+      ++ URI.toText uri
+      ++ space
       ++ Version.toText version
 
 HttpRequest.encodeChunked :
@@ -84819,28 +84901,28 @@ test> HttpRequest.encodeChunked.tests.withTrailers =
     expected =
       toUtf8
         <| Text.join
-             "\n"
-             [ "POST / HTTP/1.1\r"
-             , "Accept-Encoding: gzip\r"
-             , "Accept-Encoding: deflate\r"
-             , "Host: google.com\r"
-             , "Trailer: Client-Timing\r"
-             , "Trailer: Expires\r"
-             , "Transfer-Encoding: chunked\r"
-             , "\r"
-             , "5\r"
-             , "hello\r"
-             , "2\r"
-             , ", \r"
-             , "6\r"
-             , "world!\r"
-             , "F\r"
-             , "Sincerely,\n  me\r"
-             , "0\r"
-             , "Client-Timing: cache;desc=\"Cache Read\";dur=23.2\r"
-             , "Expires: Wed, 21 Oct 2015 07:28:00 GMT\r"
-             , "\r\n"
-             ]
+          "\n"
+          [ "POST / HTTP/1.1\r"
+          , "Accept-Encoding: gzip\r"
+          , "Accept-Encoding: deflate\r"
+          , "Host: google.com\r"
+          , "Trailer: Client-Timing\r"
+          , "Trailer: Expires\r"
+          , "Transfer-Encoding: chunked\r"
+          , "\r"
+          , "5\r"
+          , "hello\r"
+          , "2\r"
+          , ", \r"
+          , "6\r"
+          , "world!\r"
+          , "F\r"
+          , "Sincerely,\n  me\r"
+          , "0\r"
+          , "Client-Timing: cache;desc=\"Cache Read\";dur=23.2\r"
+          , "Expires: Wed, 21 Oct 2015 07:28:00 GMT\r"
+          , "\r\n"
+          ]
     test.ensureEqual encodedRequest expected
 
 HttpRequest.encodeNoBody : proxy.ProxyPresence -> HttpRequest -> Bytes
@@ -84966,7 +85048,10 @@ HttpRequest.patch uri body =
 HttpRequest.pattern.method : IPattern Capture Text
 HttpRequest.pattern.method =
   use IPattern <|>
-  method.connect <|> method.delete <|> method.get <|> method.head
+  method.connect
+    <|> method.delete
+    <|> method.get
+    <|> method.head
     <|> method.options
     <|> method.patch
     <|> method.post
@@ -85185,21 +85270,21 @@ test> HttpRequest.tests.roundTrip =
         host =
           HostName
             <| each
-                 [ "localhost"
-                 , "127.0.0.1"
-                 , "unison-lang.org"
-                 , "www.unison-lang.org"
-                 ]
+              [ "localhost"
+              , "127.0.0.1"
+              , "unison-lang.org"
+              , "www.unison-lang.org"
+              ]
         port = each [None, Some (Port "80"), Some (Port "8080")]
         Some (Authority userInfo host port)
     path = each [root, root / "foo", root / "foo" / "&%3" / "bar" / ""]
     query =
       fromQuery
         <| each
-             [ Query.empty
-             , Query.empty & ("foo", "bar")
-             , Query.empty & ("foo", "bar") & ("baz", "/&?%")
-             ]
+          [ Query.empty
+          , Query.empty & ("foo", "bar")
+          , Query.empty & ("foo", "bar") & ("baz", "/&?%")
+          ]
     fragment = Fragment.empty
     uri = URI scheme authority path query fragment
     method = each [GET, HEAD, POST, PUT, DELETE, TRACE, PATCH, OPTIONS]
@@ -85408,7 +85493,8 @@ test> HttpResponse.encodeChunked.tests.withTrailers =
       emit (toUtf8 "Sincerely,\n  me")
       trailers
     head =
-      HttpResponse.ok Body.empty |> addHeader "Content-Type" "text/plain"
+      HttpResponse.ok Body.empty
+        |> addHeader "Content-Type" "text/plain"
         |> addHeader "Trailer" "Expires"
         |> addHeader "Trailer" "Server-Timing"
     responseStream = do HttpResponse.encodeChunked head bodyStream
@@ -85445,7 +85531,10 @@ HttpResponse.encodeNoBody = cases
       if Headers.contains "Content-Length" headers then headers
       else Headers.union headers (standard.contentLength body)
     statusLine =
-      Version.toText version Text.++ " " Text.++ Nat.toText code Text.++ " "
+      Version.toText version
+        Text.++ " "
+        Text.++ Nat.toText code
+        Text.++ " "
         Text.++ reason
     headers'' = asBytes headers'
     Text.toUtf8 statusLine Bytes.++ 0xs0d0a Bytes.++ headers'' Bytes.++ 0xs0d0a
@@ -85636,7 +85725,9 @@ message.encodeChunkedBody =
   emitChunk chunk =
     use Bytes ++
     size =
-      Bytes.size chunk |> Nat.toTextBase 16 |> getOrBug "chunkSize"
+      Bytes.size chunk
+        |> Nat.toTextBase 16
+        |> getOrBug "chunkSize"
         |> Text.toUtf8
     emit (size ++ 0xs0d0a ++ chunk ++ 0xs0d0a)
   emitChunks = cases
@@ -85866,10 +85957,10 @@ server.forkServer config handler =
   interrupt = Interrupt.new()
   ignore
     <| (fork do
-         IO.logAndIgnore do
-           toDefault! (do ()) do
-             interruptibly interrupt do runServer config handler
-         signalFinalization interrupt)
+      IO.logAndIgnore do
+        toDefault! (do ()) do
+          interruptibly interrupt do runServer config handler
+      signalFinalization interrupt)
   stopServer = do interruptAndAwaitFinalization interrupt
   stopServer
 
@@ -86150,8 +86241,8 @@ server.State.handlerReq.internal.webSocketKey = cases
       (v -> Text.toLowercase v Text.== "websocket")
       (getCommaDelimitedValues "Upgrade" headers)
       && List.any
-           (v -> Text.toLowercase v Text.== "upgrade")
-           (getCommaDelimitedValues "Connection" headers) then
+        (v -> Text.toLowercase v Text.== "upgrade")
+        (getCommaDelimitedValues "Connection" headers) then
       match getValues "Sec-WebSocket-Key" headers with
         [webSocketKey] -> Some webSocketKey
         _              -> None
@@ -86235,7 +86326,9 @@ server.test.integration.client.get =
             got = body |> toBytes |> toHex
             emit
               (Result.Fail
-                ("get response does not match: expected: " ++ exp ++ " got: "
+                ("get response does not match: expected: "
+                  ++ exp
+                  ++ " got: "
                   ++ got))
     handleClientException go
 
@@ -86301,7 +86394,10 @@ server.test.integration.client.statusResults which = cases
   Status c t ->
     emit
       (Result.Fail
-        (which Text.++ "Request failed (" Text.++ Nat.toText c Text.++ "): "
+        (which
+          Text.++ "Request failed ("
+          Text.++ Nat.toText c
+          Text.++ "): "
           Text.++ t))
 
 server.test.integration.client.webSocket :
@@ -86710,7 +86806,8 @@ test> tests.chunkedWithoutTrailers =
     responseStream =
       Stream.map
         toUtf8
-        ((do emit (headText Text.++ "\r\n\r\n")) Stream.++ Stream.fromList body)
+        ((do emit (headText Text.++ "\r\n\r\n"))
+          Stream.++ Stream.fromList body)
     parsed = HttpResponse.fromStream false responseStream
     expected =
       headers = Headers.singleton "Transfer-Encoding" "chunked"
@@ -86745,7 +86842,8 @@ test> tests.chunkedWithTrailers =
     responseStream =
       Stream.map
         toUtf8
-        ((do emit (headText Text.++ "\r\n\r\n")) Stream.++ Stream.fromList body
+        ((do emit (headText Text.++ "\r\n\r\n"))
+          Stream.++ Stream.fromList body
           Stream.++ (do emit "\r\n"))
     parsed = HttpResponse.fromStream false responseStream
     expected =
@@ -86781,7 +86879,8 @@ test> tests.chunkedWithTrailersAreActuallyOptional =
     responseStream =
       Stream.map
         toUtf8
-        ((do emit (headText Text.++ "\r\n\r\n")) Stream.++ Stream.fromList body)
+        ((do emit (headText Text.++ "\r\n\r\n"))
+          Stream.++ Stream.fromList body)
     parsed = catch do HttpResponse.fromStream false responseStream
     expected =
       headers =
@@ -87072,7 +87171,8 @@ test> websockets.Frame.decoder.tests.fragmentedContinuation =
 
 test> websockets.Frame.decoder.tests.fragmentedTextUnmasked =
   check
-    ((toEither do runDecode decoder 0xs010348656c) === Right (Text false "Hel"))
+    ((toEither do runDecode decoder 0xs010348656c)
+      === Right (Text false "Hel"))
 
 test> websockets.Frame.decoder.tests.ping =
   use fromList impl
@@ -87323,7 +87423,9 @@ websockets.upgradeResponse request =
             "Not a valid websocket request" (HttpRequest.headers request))
   acceptString = createAcceptString key
   responseHeaders =
-    Headers.empty |> add "Upgrade" "websocket" |> add "Connection" "Upgrade"
+    Headers.empty
+      |> add "Upgrade" "websocket"
+      |> add "Connection" "Upgrade"
       |> add "Sec-WebSocket-Accept" acceptString
   HttpResponse
     (Status 101 "Switching Protocols")
@@ -87334,7 +87436,10 @@ websockets.upgradeResponse request =
 websockets.util.createAcceptString : Text ->{Exception} Text
 websockets.util.createAcceptString key =
   use Text ++
-  key ++ magicKeyString |> Text.toUtf8 |> hashBytes Sha1 |> toBase64
+  key ++ magicKeyString
+    |> Text.toUtf8
+    |> hashBytes Sha1
+    |> toBase64
     |> fromUtf8
 
 test> websockets.util.createAcceptString.tests.ex1 =
@@ -87501,4 +87606,3 @@ websockets.WebSocket.threadSafeWebSocket.doc =
   bytes/frames from separate messages are not interwoven.
   }}
 ````
-
