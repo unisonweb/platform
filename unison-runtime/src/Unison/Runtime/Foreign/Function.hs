@@ -3,7 +3,12 @@
 {-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Unison.Runtime.Foreign.Function (foreignCall) where
+module Unison.Runtime.Foreign.Function
+  ( ForeignConvention (..)
+  , foreignCall
+  , readsAtError
+  , foreignConventionError
+  ) where
 
 import Control.Concurrent (ThreadId)
 import Control.Concurrent as SYS
