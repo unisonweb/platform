@@ -248,7 +248,7 @@ import Unison.Util.Pretty.MegaParsec (prettyPrintParseError)
 
 formatStructuredArgument :: Maybe Int -> StructuredArgument -> Text
 formatStructuredArgument schLength = \case
-  SA.AbsolutePath path -> into @Text $ show path
+  SA.AbsolutePath path -> Path.toText path
   SA.Name name -> Name.toText name
   SA.HashQualified hqName -> HQ.toText hqName
   SA.Project projectName -> into @Text projectName
@@ -288,7 +288,7 @@ formatStructuredArgument schLength = \case
             <> if Text.null pathArgStr || Text.isSuffixOf "." pathArgStr
               then s
               else "." <> s
-        pathArgStr = Text.pack $ show pathArg
+        pathArgStr = Path.toText pathArg
 
 -- | Converts an arbitrary argument to a `String`.
 --
