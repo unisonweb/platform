@@ -26,6 +26,7 @@ makeMergeblob5 blob typeLookup =
           { ambientAbilities = [],
             termsByShortname = Map.empty,
             typeLookup,
+            freeNameToFuzzyTermsByShortName = Map.empty,
             topLevelComponents = Map.empty
           }
    in case runIdentity (Result.runResultT (FileParsers.synthesizeFile typecheckingEnv blob.file)) of

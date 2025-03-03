@@ -10,14 +10,19 @@ import Control.Monad.State (evalStateT)
 import Data.Foldable qualified as Foldable
 import Data.List (partition)
 import Data.List qualified as List
+import Data.List.NonEmpty qualified as NonEmpty
 import Data.Map qualified as Map
+import Data.Ord (clamp)
 import Data.Sequence qualified as Seq
 import Data.Set qualified as Set
+import Data.Text qualified as Text
 import Unison.ABT qualified as ABT
 import Unison.Blank qualified as Blank
 import Unison.Builtin qualified as Builtin
 import Unison.ConstructorReference qualified as ConstructorReference
 import Unison.Name (Name)
+import Unison.Name qualified as Name
+import Unison.NameSegment qualified as NameSegment
 import Unison.Names qualified as Names
 import Unison.Names.ResolvesTo (ResolvesTo (..))
 import Unison.Parser.Ann (Ann)
@@ -28,7 +33,7 @@ import Unison.Referent (Referent)
 import Unison.Referent qualified as Referent
 import Unison.Result (CompilerBug (..), Note (..), ResultT, pattern Result)
 import Unison.Result qualified as Result
-import Unison.Syntax.Name qualified as Name (unsafeParseVar)
+import Unison.Syntax.Name qualified as Name (toText, unsafeParseText, unsafeParseVar)
 import Unison.Syntax.Parser qualified as Parser
 import Unison.Term qualified as Term
 import Unison.Type qualified as Type
@@ -94,21 +99,50 @@ computeTypecheckingEnvironment shouldUseTndr ambientAbilities typeLookupf uf =
           { ambientAbilities = ambientAbilities,
             typeLookup = tl,
             termsByShortname = Map.empty,
+            freeNameToFuzzyTermsByShortName = Map.empty,
             topLevelComponents = Map.empty
           }
     ShouldUseTndr'Yes parsingEnv -> do
-      let tm = UF.typecheckingTerm uf
-          resolveName :: Name -> Relation Name (ResolvesTo Referent)
+      let resolveName :: Name -> Relation Name (ResolvesTo Referent)
           resolveName =
             Names.resolveNameIncludingNames
               (Names.shadowing1 (Names.terms (UF.toNames uf)) (Names.terms (Parser.names parsingEnv)))
-              (Set.map Name.unsafeParseVar (UF.toTermAndWatchNames uf))
-          possibleDeps = do
-            v <- Set.toList (Term.freeVars tm)
-            let shortname = Name.unsafeParseVar v
-            (name, ref) <- Rel.toList (resolveName shortname)
-            [(name, shortname, ref)]
-          possibleRefs =
+              localNames
+
+          localNames = Set.map Name.unsafeParseVar (UF.toTermAndWatchNames uf)
+          globalNamesShadowed = Names.shadowing (UF.toNames uf) (Parser.names parsingEnv)
+
+          freeNames :: [Name]
+          freeNames =
+            Name.unsafeParseVar <$> Set.toList (Term.freeVars $ UF.typecheckingTerm uf)
+
+          possibleDepsExact :: [(Name, Name, ResolvesTo Referent)]
+          possibleDepsExact = do
+            freeName <- freeNames
+            (name, ref) <- Rel.toList (resolveName freeName)
+            [(name, freeName, ref)]
+
+          getFreeNameDepsFuzzy :: Name -> [(Name, Name, ResolvesTo Referent)]
+          getFreeNameDepsFuzzy freeName = do
+            let wantedTopNFuzzyMatches = 3
+            -- We use fuzzy matching by edit distance here because it is usually more appropriate
+            -- than FZF-style fuzzy finding for offering suggestions for typos or other user errors.
+            let fuzzyMatches =
+                  take wantedTopNFuzzyMatches $
+                    fuzzyFindByEditDistanceRanked globalNamesShadowed localNames freeName
+
+            let names = fuzzyMatches ^.. each . _2
+            let resolvedNames = Rel.toList . resolveName =<< names
+            let getShortName longname = Name.unsafeParseText (NameSegment.toUnescapedText $ Name.lastSegment longname)
+
+            map (\(longname, ref) -> (longname, getShortName longname, ref)) resolvedNames
+
+          freeNameDepsFuzzy :: Map Name [(Name, Name, ResolvesTo Referent)]
+          freeNameDepsFuzzy =
+            Map.fromList [(freeName, getFreeNameDepsFuzzy freeName) | freeName <- freeNames]
+
+          getPossibleRefs :: [(Name, Name, ResolvesTo Referent)] -> Defns (Set TermReference) (Set TypeReference)
+          getPossibleRefs =
             List.foldl'
               ( \acc -> \case
                   (_, _, ResolvesToNamespace ref0) ->
@@ -118,29 +152,105 @@ computeTypecheckingEnvironment shouldUseTndr ambientAbilities typeLookupf uf =
                   (_, _, ResolvesToLocal _) -> acc
               )
               (Defns Set.empty Set.empty)
-              possibleDeps
-      tl <- fmap (UF.declsToTypeLookup uf <>) (typeLookupf (UF.dependencies uf <> possibleRefs))
-      let termsByShortname :: Map Name [Either Name (Typechecker.NamedReference v Ann)]
-          termsByShortname =
+
+      typeLookup <-
+        fmap
+          (UF.declsToTypeLookup uf <>)
+          ( typeLookupf
+              ( UF.dependencies uf
+                  <> getPossibleRefs possibleDepsExact
+                  <> getPossibleRefs (join $ Map.elems freeNameDepsFuzzy)
+              )
+          )
+
+      let getTermsByShortname :: [(Name, Name, ResolvesTo Referent)] -> Map Name [Either Name (Typechecker.NamedReference v Ann)]
+          getTermsByShortname =
             List.foldl'
               ( \acc -> \case
                   (name, shortname, ResolvesToLocal _) -> let v = Left name in Map.upsert (maybe [v] (v :)) shortname acc
                   (name, shortname, ResolvesToNamespace ref) ->
-                    case TL.typeOfReferent tl ref of
+                    case TL.typeOfReferent typeLookup ref of
                       Just ty ->
                         let v = Right (Typechecker.NamedReference name ty (Context.ReplacementRef ref))
                          in Map.upsert (maybe [v] (v :)) shortname acc
                       Nothing -> acc
               )
               Map.empty
-              possibleDeps
+
+      let termsByShortname = getTermsByShortname possibleDepsExact
+      let freeNameToFuzzyTermsByShortName = Map.mapWithKey (\_ v -> getTermsByShortname v) freeNameDepsFuzzy
+
       pure
         Typechecker.Env
           { ambientAbilities,
-            typeLookup = tl,
+            typeLookup,
             termsByShortname,
+            freeNameToFuzzyTermsByShortName,
             topLevelComponents = Map.empty
           }
+
+-- | 'fuzzyFindByEditDistanceRanked' finds matches for the given 'name' within 'names' by edit distance.
+--
+-- Returns a list of 3-tuples composed of an edit-distance Score, a Name, and a List of term and type references.
+--
+-- Adapted from Unison.Server.Backend.fuzzyFind
+--
+-- TODO: Consider moving to Unison.Names
+--
+-- TODO: Take type similarity into account when ranking matches
+fuzzyFindByEditDistanceRanked ::
+  Names.Names ->
+  Set Name ->
+  Name ->
+  [(Int, Name)]
+fuzzyFindByEditDistanceRanked globalNames localNames name =
+  let query =
+        (Text.unpack . nameToText) name
+
+      -- Use 'nameToTextFromLastNSegments' so edit distance is not biased towards shorter fully-qualified names
+      -- and the name being queried is only partially qualified.
+      fzfGlobalNames =
+        Names.queryEditDistances nameToTextFromLastNSegments query globalNames
+      fzfLocalNames =
+        Names.queryEditDistances' nameToTextFromLastNSegments query localNames
+      fzfNames = fzfGlobalNames ++ fzfLocalNames
+
+      -- Keep only matches with a sufficiently low edit-distance score
+      filterByScore = filter (\(score, _, _) -> score < maxScore)
+
+      -- Prefer lower edit distances and then prefer shorter names by segment count
+      rank (score, name, _) = (score, length $ Name.segments name)
+
+      -- Remove dupes based on refs
+      dedupe =
+        List.nubOrdOn (\(_, _, refs) -> refs)
+
+      dropRef = map (\(x, y, _) -> (x, y))
+
+      refine =
+        dropRef . dedupe . sortOn rank . filterByScore
+   in refine fzfNames
+  where
+    nNameSegments = max 1 $ NonEmpty.length $ Name.segments name
+
+    takeLast :: Int -> NonEmpty.NonEmpty a -> [a]
+    takeLast n xs = NonEmpty.drop (NonEmpty.length xs - n) xs
+    nameFromLastNSegments =
+      Name.fromSegments
+        . NonEmpty.fromList
+        . takeLast nNameSegments
+        . Name.segments
+
+    -- Convert to lowercase for case-insensitive fuzzy matching
+    nameToText = Text.toLower . Name.toText
+    nameToTextFromLastNSegments = nameToText . nameFromLastNSegments
+
+    ceilingDiv :: Int -> Int -> Int
+    ceilingDiv x y = (x + 1) `div` y
+    -- Expect edit distances (number of typos) to be about half the length of the name being queried
+    -- But clamp max edit distance to work well with very short names
+    -- and keep ranking reasonably fast when a verbose name is queried
+    maxScore = clamp (3, 16) $ Text.length (nameToText name) `ceilingDiv` 2
 
 synthesizeFile ::
   forall m v.
