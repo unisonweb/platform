@@ -155,16 +155,20 @@ syncFromCodeserver ::
   SyncV2.BranchRef ->
   -- | The hash to download.
   Share.HashJWT ->
-  -- | Callback that's given a number of entities we just downloaded.
-  (Int -> IO ()) ->
+  -- | Set of known hashes to avoid downloading.
+  -- If provided we'll skip the negotiation stage.
+  Set CausalHash ->
   Cli (Either (SyncError SyncV2.PullError) ())
-syncFromCodeserver shouldValidate unisonShareUrl branchRef hashJwt _downloadedCallback = do
+syncFromCodeserver shouldValidate unisonShareUrl branchRef hashJwt providedKnownHashes = do
   Cli.Env {authHTTPClient, codebase} <- ask
   -- Every insert into SQLite checks the temp entity tables, but syncv2 doesn't actually use them, so it's faster
   -- if we clear them out before starting a sync.
   Cli.runTransaction Q.clearTempEntityTables
   runExceptT do
-    knownHashes <- ExceptT $ negotiateKnownCausals unisonShareUrl branchRef hashJwt
+    knownHashes <-
+      if Set.null providedKnownHashes
+        then ExceptT $ negotiateKnownCausals unisonShareUrl branchRef hashJwt
+        else pure (Set.map Sync.causalHashToHash32 providedKnownHashes)
     let hash = Share.hashJWTHash hashJwt
     ExceptT $ do
       (Cli.runTransaction (Q.entityLocation hash)) >>= \case
