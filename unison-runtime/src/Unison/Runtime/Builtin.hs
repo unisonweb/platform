@@ -125,19 +125,9 @@ fls, tru :: (Var v) => ANormal v
 fls = TCon Ty.booleanRef 0 []
 tru = TCon Ty.booleanRef 1 []
 
-none :: (Var v) => ANormal v
-none = TCon Ty.optionalRef (fromIntegral Ty.noneId) []
-
-some, left, right :: (Var v) => v -> ANormal v
-some a = TCon Ty.optionalRef (fromIntegral Ty.someId) [a]
+left, right :: (Var v) => v -> ANormal v
 left x = TCon Ty.eitherRef (fromIntegral Ty.eitherLeftId) [x]
 right x = TCon Ty.eitherRef (fromIntegral Ty.eitherRightId) [x]
-
-seqViewEmpty :: (Var v) => ANormal v
-seqViewEmpty = TCon Ty.seqViewRef (fromIntegral Ty.seqViewEmpty) []
-
-seqViewElem :: (Var v) => v -> v -> ANormal v
-seqViewElem l r = TCon Ty.seqViewRef (fromIntegral Ty.seqViewElem) [l, r]
 
 unop0 :: (Var v) => Int -> ([v] -> ANormal v) -> SuperNormal v
 unop0 n f =
@@ -325,80 +315,17 @@ taket = binop0 0 $ \[x, y] ->
 dropt = binop0 0 $ \[x, y] ->
   TPrm DRPT [x, y]
 
-atb = binop0 2 $ \[n, b, t, r] ->
-  TLetD t UN (TPrm IDXB [n, b])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN],
-            TAbs r $ some r
-          )
-        )
-      ]
+atb = binop IDXB
 
-indext = binop0 2 $ \[x, y, t, r] ->
-  TLetD t UN (TPrm IXOT [x, y])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN],
-            TAbs r $ some r
-          )
-        )
-      ]
+indext = binop IXOT
 
-indexb = binop0 2 $ \[x, y, t, r] ->
-  TLetD t UN (TPrm IXOB [x, y])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN],
-            TAbs r $ some r
-          )
-        )
-      ]
+indexb = binop IXOB
 
 sizet = unop0 0 $ \[x] -> TPrm SIZT [x]
 
-unconst = unop0 6 $ \[x, t, c, y, p, u, yp] ->
-  TLetD t UN (TPrm UCNS [x])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN, BX],
-            TAbss [c, y]
-              . TLetD u BX (TCon Ty.unitRef 0 [])
-              . TLetD yp BX (TCon Ty.pairRef 0 [y, u])
-              . TLetD p BX (TCon Ty.pairRef 0 [c, yp])
-              $ some p
-          )
-        )
-      ]
+unconst = unop UCNS
 
-unsnoct = unop0 6 $ \[x, t, c, y, p, u, cp] ->
-  TLetD t UN (TPrm USNC [x])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [BX, UN],
-            TAbss [y, c]
-              . TLetD u BX (TCon Ty.unitRef 0 [])
-              . TLetD cp BX (TCon Ty.pairRef 0 [c, u])
-              . TLetD p BX (TCon Ty.pairRef 0 [y, cp])
-              $ some p
-          )
-        )
-      ]
+unsnoct = unop USNC
 
 appends, conss, snocs :: (Var v) => SuperNormal v
 appends = binop0 0 $ \[x, y] -> TPrm CATS [x, y]
@@ -409,51 +336,16 @@ takes, drops, sizes, ats, emptys :: (Var v) => SuperNormal v
 takes = binop0 0 $ \[x, y] -> TPrm TAKS [x, y]
 drops = binop0 0 $ \[x, y] -> TPrm DRPS [x, y]
 sizes = unop0 0 $ \[x] -> (TPrm SIZS [x])
-ats = binop0 2 $ \[x, y, t, r] ->
-  TLetD t UN (TPrm IDXS [x, y])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        (1, ([BX], TAbs r $ some r))
-      ]
+ats = binop IDXS
 emptys = Lambda [] $ TPrm BLDS []
 
 viewls, viewrs :: (Var v) => SuperNormal v
-viewls = unop0 3 $ \[s, u, h, t] ->
-  TLetD u UN (TPrm VWLS [s])
-    . TMatch u
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], seqViewEmpty)),
-        (1, ([BX, BX], TAbss [h, t] $ seqViewElem h t))
-      ]
-viewrs = unop0 3 $ \[s, u, i, l] ->
-  TLetD u UN (TPrm VWRS [s])
-    . TMatch u
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], seqViewEmpty)),
-        (1, ([BX, BX], TAbss [i, l] $ seqViewElem i l))
-      ]
+viewls = unop VWLS
+viewrs = unop VWRS
 
 splitls, splitrs :: (Var v) => SuperNormal v
-splitls = binop0 3 $ \[n, s, t, l, r] ->
-  TLetD t UN (TPrm SPLL [n, s])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], seqViewEmpty)),
-        (1, ([BX, BX], TAbss [l, r] $ seqViewElem l r))
-      ]
-splitrs = binop0 3 $ \[n, s, t, l, r] ->
-  TLetD t UN (TPrm SPLR [n, s])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], seqViewEmpty)),
-        (1, ([BX, BX], TAbss [l, r] $ seqViewElem l r))
-      ]
+splitls = binop SPLL
+splitrs = binop SPLR
 
 eqt, neqt, leqt, geqt, lesst, great :: SuperNormal Symbol
 eqt = binop EQLT
@@ -496,42 +388,9 @@ n2t = unop0 0 $ \[n] -> TPrm NTOT [n]
 f2t = unop0 0 $ \[f] -> TPrm FTOT [f]
 
 t2i, t2n, t2f :: SuperNormal Symbol
-t2i = unop0 2 $ \[x, t, n] ->
-  TLetD t UN (TPrm TTOI [x])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN],
-            TAbs n $ some n
-          )
-        )
-      ]
-t2n = unop0 2 $ \[x, t, n] ->
-  TLetD t UN (TPrm TTON [x])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN],
-            TAbs n $ some n
-          )
-        )
-      ]
-t2f = unop0 2 $ \[x, t, f] ->
-  TLetD t UN (TPrm TTOF [x])
-    . TMatch t
-    . MatchSum
-    $ mapFromList
-      [ (0, ([], none)),
-        ( 1,
-          ( [UN],
-            TAbs f $ some f
-          )
-        )
-      ]
+t2i = unop TTOI
+t2n = unop TTON
+t2f = unop TTOF
 
 equ :: SuperNormal Symbol
 equ = binop EQLU
@@ -645,16 +504,7 @@ gen'trace =
       TCon Ty.unitRef 0 []
 
 debug'text :: SuperNormal Symbol
-debug'text =
-  unop0 3 $ \[c, r, t, e] ->
-    TLetD r UN (TPrm DBTX [c])
-      . TMatch r
-      . MatchSum
-      $ mapFromList
-        [ (0, ([], none)),
-          (1, ([BX], TAbs t . TLetD e BX (left t) $ some e)),
-          (2, ([BX], TAbs t . TLetD e BX (right t) $ some e))
-        ]
+debug'text = unop DBTX
 
 code'missing :: SuperNormal Symbol
 code'missing = unop MISS
@@ -663,35 +513,10 @@ code'cache :: SuperNormal Symbol
 code'cache = unop0 0 $ \[new] -> TPrm CACH [new]
 
 code'lookup :: SuperNormal Symbol
-code'lookup =
-  unop0 2 $ \[link, t, r] ->
-    TLetD t UN (TPrm LKUP [link])
-      . TMatch t
-      . MatchSum
-      $ mapFromList
-        [ (0, ([], none)),
-          (1, ([BX], TAbs r $ some r))
-        ]
+code'lookup = unop LKUP
 
 code'validate :: SuperNormal Symbol
-code'validate =
-  unop0 6 $ \[item, t, ref, msg, extra, any, fail] ->
-    TLetD t UN (TPrm CVLD [item])
-      . TMatch t
-      . MatchSum
-      $ mapFromList
-        [ ( 1,
-            ([BX, BX, BX],)
-              . TAbss [ref, msg, extra]
-              . TLetD any BX (TCon Ty.anyRef 0 [extra])
-              . TLetD fail BX (TCon Ty.failureRef 0 [ref, msg, any])
-              $ some fail
-          ),
-          ( 0,
-            ([],) $
-              none
-          )
-        ]
+code'validate = unop CVLD
 
 term'link'to'text :: SuperNormal Symbol
 term'link'to'text =

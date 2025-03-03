@@ -3,7 +3,12 @@
 {-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Unison.Runtime.Foreign.Function (foreignCall) where
+module Unison.Runtime.Foreign.Function
+  ( ForeignConvention (..)
+  , foreignCall
+  , readsAtError
+  , foreignConventionError
+  ) where
 
 import Control.Concurrent (ThreadId)
 import Control.Concurrent as SYS
@@ -1877,6 +1882,15 @@ instance ForeignConvention Val where
   readAtIndex = peekOff
   writeBack = poke
 
+instance ForeignConvention Closure where
+  decodeVal (BoxedVal c) = pure c
+  decodeVal v = foreignConventionError "Closure" v
+
+  encodeVal = BoxedVal
+
+  readAtIndex = bpeekOff
+  writeBack = bpoke
+
 instance ForeignConvention Foreign where
   decodeVal (BoxedVal (Foreign f)) = pure f
   decodeVal v = foreignConventionError "Foreign" v
@@ -1886,6 +1900,16 @@ instance ForeignConvention Foreign where
     Foreign f -> pure f
     c -> foreignConventionError "Foreign" (BoxedVal c)
   writeBack stk f = bpoke stk (Foreign f)
+
+instance ForeignConvention (Seq Val) where
+  decodeVal (BoxedVal (Foreign f)) = unwrapForeign f
+  decodeVal v = foreignConventionError "Seq" v
+
+  encodeVal = BoxedVal . Foreign . Wrap listRef
+
+  readAtIndex = peekOffS
+
+  writeBack = pokeS
 
 instance ForeignConvention a => ForeignConvention [a] where
   decodeVal (BoxedVal (Foreign f))
