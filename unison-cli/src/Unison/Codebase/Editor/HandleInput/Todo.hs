@@ -62,6 +62,7 @@ handleTodo = do
 
       directDependencies <-
         Operations.directDependenciesOfScope
+          Builtin.isBuiltinType
           Defns
             { terms = Branch.deepTermReferenceIds currentNamespaceWithoutLibdeps,
               types = Branch.deepTypeReferenceIds currentNamespaceWithoutLibdeps
