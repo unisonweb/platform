@@ -9,15 +9,14 @@ RUN apt-get update                                           && \
     update-locale LANG=en_US.UTF-8
 
 
-COPY tmp/ucm/ucm /usr/local/bin/ucm
-COPY tmp/ucm/ui  /usr/local/share/ucm
+COPY tmp/ucm/ /usr/local/bin/ucm/
 
 ENV UCM_WEB_UI=/usr/local/share/ucm
 ENV UCM_PORT=8080
 ENV UCM_TOKEN=pub
 
-RUN chmod 555 /usr/local/bin/ucm
+RUN chmod 555 /usr/local/bin/ucm/ucm
 
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/ucm"]
-CMD ["--codebase","/unison"]
+ENTRYPOINT ["/usr/local/bin/ucm/ucm"]
+CMD ["--codebase-create","/codebase"]
