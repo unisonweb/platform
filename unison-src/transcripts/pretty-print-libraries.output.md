@@ -85681,11 +85681,7 @@ HttpResponse.pattern.statusLine =
 
 test> HttpResponse.pattern.statusLine.testReasonIsOptional =
   parsed = catch do
-    statusNoReason =
-      """
-      HTTP/1.1 200 
-      rest
-      """
+    statusNoReason = "HTTP/1.1 200 \r\nrest"
     IPattern.run statusLine statusNoReason
   verifyAndIgnore do
     assertEquals parsed (Right (Some (["HTTP/1.1", "200", ""], "\r\nrest")))
@@ -86951,13 +86947,7 @@ test> tests.testFromStream =
     use Path /
     use Text toUtf8
     request =
-      """
-      GET /docs?%25wei?rd=%26he+llo/&%25wei?rd=+th%23er%3de%25&simple=foo HTTP/1.0
-      Content-Type: text/plain
-      Content-Length: 12
-      
-      Hello World!
-      """
+      "GET /docs?%25wei?rd=%26he+llo/&%25wei?rd=+th%23er%3de%25&simple=foo HTTP/1.0\r\nContent-Type: text/plain\r\nContent-Length: 12\r\n\r\nHello World!"
     stream = do emit (toUtf8 request)
     actual = HttpRequest.fromStream stream
     headers =
