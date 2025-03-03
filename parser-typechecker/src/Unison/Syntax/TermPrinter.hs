@@ -271,7 +271,7 @@ pretty0
               -- we only use this syntax if we're not wrapped in something else,
               -- to avoid possible round trip issues if the text ends at an odd column
               useRaw _ | p >= Annotation = Nothing
-              useRaw s | Text.find (== '\n') s == Just '\n' && Text.all ok s = Just quotes
+              useRaw s | Text.elem '\n' s && Text.all ok s = Just quotes
               useRaw _ = Nothing
               ok ch = isPrint ch || ch == '\n' || ch == '\r'
               -- Picks smallest number of surrounding """ to be unique
