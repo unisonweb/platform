@@ -3,9 +3,11 @@ module Unison.Codebase.Editor.HandleInput.Dependencies
   )
 where
 
+import Control.Arrow ((***))
 import Data.Bifoldable (bifoldMap, binull)
 import Data.Set qualified as Set
 import U.Codebase.Sqlite.Operations qualified as Operations
+import Unison.Builtin qualified as Builtin
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils qualified as Cli
@@ -28,7 +30,6 @@ import Unison.Referent qualified as Referent
 import Unison.Syntax.HashQualifiedPrime qualified as HQ'
 import Unison.Util.Defns (Defns (..), DefnsF)
 import Unison.Util.Defns qualified as Defns
-import qualified Unison.Builtin as Builtin
 
 handleDependencies :: HQ.HashQualified Name -> Cli ()
 handleDependencies hq = do
@@ -61,22 +62,41 @@ handleDependencies hq = do
   let dependencyNames ::
         DefnsF
           []
-          (HQ'.HashQualified Name, HQ'.HashQualified Name)
-          (HQ'.HashQualified Name, HQ'.HashQualified Name)
+          (HQ.HashQualified Name, HQ.HashQualified Name)
+          (HQ.HashQualified Name, HQ.HashQualified Name)
       dependencyNames =
         bimap
           (f (Referent.fromTermReference >>> PPE.termNames ppe))
           (f (PPE.typeNames ppe))
           dependencies
         where
+          f ::
+            (Reference -> [(HQ'.HashQualified Name, HQ'.HashQualified Name)]) ->
+            Set Reference ->
+            [(HQ.HashQualified Name, HQ.HashQualified Name)]
           f g =
             Set.toList
-              >>> mapMaybe (g >>> listToMaybe)
-              >>> Name.sortByText (fst >>> HQ'.toText)
+              -- Pick the best name for a reference (with `listToMaybe`), else use the ref (if nameless)
+              >>> map (\x -> maybe (Left x) Right (listToMaybe (g x)))
+              >>> partitionEithers
+              -- Sort the named references alphabetically, then stick the hash-only ones at the end
+              >>> h
+
+          h ::
+            ([Reference], [(HQ'.HashQualified Name, HQ'.HashQualified Name)]) ->
+            [(HQ.HashQualified Name, HQ.HashQualified Name)]
+          h (nameless, named) =
+            concat
+              [ named
+                  & Name.sortByText (fst >>> HQ'.toText)
+                  & map (HQ'.toHQ *** HQ'.toHQ),
+                nameless
+                  & map (\x -> let y = HQ.fromReference x in (y, y))
+              ]
 
   -- Set numbered args
   (dependencyNames.types ++ dependencyNames.terms)
-    & map (SA.HashQualified . HQ'.toHQ . fst)
+    & map (SA.HashQualified . fst)
     & Cli.setNumberedArgs
 
   let lds = bifoldMap (Set.map LD.referent) (Set.map LD.typeRef) refs

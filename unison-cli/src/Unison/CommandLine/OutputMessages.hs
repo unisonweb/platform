@@ -1455,8 +1455,8 @@ notifyUser dir = \case
         "Dependencies"
         "dependencies"
         lds
-        (map (HQ'.toHQ *** HQ'.toHQ) defns.types)
-        (map (HQ'.toHQ *** HQ'.toHQ) defns.terms)
+        defns.types
+        defns.terms
   ListStructuredFind terms ->
     pure $ listFind False Nothing terms
   ListTextFind True terms ->

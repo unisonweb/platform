@@ -342,8 +342,8 @@ data Output
       (Set LabeledDependency)
       ( DefnsF
           []
-          (HQ'.HashQualified Name, HQ'.HashQualified Name)
-          (HQ'.HashQualified Name, HQ'.HashQualified Name)
+          (HQ.HashQualified Name, HQ.HashQualified Name)
+          (HQ.HashQualified Name, HQ.HashQualified Name)
       )
   | -- | List dependents of a type or term.
     ListDependents
