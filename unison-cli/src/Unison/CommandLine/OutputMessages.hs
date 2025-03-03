@@ -1446,10 +1446,17 @@ notifyUser dir = \case
         "Dependents"
         "dependents"
         lds
-        (map (HQ'.toHQ . fst) defns.types)
+        (map (HQ'.toHQ *** HQ'.toHQ) defns.types)
         (map (HQ'.toHQ *** HQ'.toHQ) defns.terms)
-  ListDependencies ppe lds types terms ->
-    pure $ listDependentsOrDependencies ppe "Dependencies" "dependencies" lds types (map (\x -> (x, x)) terms)
+  ListDependencies ppe lds defns ->
+    pure $
+      listDependentsOrDependencies
+        ppe
+        "Dependencies"
+        "dependencies"
+        lds
+        (map (HQ'.toHQ *** HQ'.toHQ) defns.types)
+        (map (HQ'.toHQ *** HQ'.toHQ) defns.terms)
   ListStructuredFind terms ->
     pure $ listFind False Nothing terms
   ListTextFind True terms ->
@@ -3772,7 +3779,7 @@ listDependentsOrDependencies ::
   Text ->
   Text ->
   Set LabeledDependency ->
-  [HQ.HashQualified Name] ->
+  [(HQ.HashQualified Name, HQ.HashQualified Name)] ->
   [(HQ.HashQualified Name, HQ.HashQualified Name)] ->
   Pretty
 listDependentsOrDependencies ppe labelStart label lds types terms =
@@ -3790,7 +3797,7 @@ listDependentsOrDependencies ppe labelStart label lds types terms =
           P.lines $
             [ P.indentN 2 $ P.bold "Types:",
               "",
-              P.indentN 2 . P.numberedList $ c . prettyHashQualified <$> types
+              P.indentN 2 . P.numberedList $ prettyHashQualifiedFull <$> types
             ]
     termsOut =
       if null terms
@@ -3801,7 +3808,6 @@ listDependentsOrDependencies ppe labelStart label lds types terms =
               "",
               P.indentN 2 . P.numberedListFrom (length types) $ prettyHashQualifiedFull <$> terms
             ]
-    c = P.syntaxToColor
 
 displayProjectBranchReflogEntries ::
   Maybe UTCTime ->

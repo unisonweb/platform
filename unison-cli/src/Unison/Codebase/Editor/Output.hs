@@ -336,7 +336,15 @@ data Output
   | PreviewMergeAlreadyUpToDate ProjectPath ProjectPath
   | NotImplemented
   | NoBranchWithHash ShortCausalHash
-  | ListDependencies PPE.PrettyPrintEnv (Set LabeledDependency) [HQ.HashQualified Name] [HQ.HashQualified Name] -- types, terms
+  | -- | List direct dependencies of a type or term.
+    ListDependencies
+      PPE.PrettyPrintEnv
+      (Set LabeledDependency)
+      ( DefnsF
+          []
+          (HQ'.HashQualified Name, HQ'.HashQualified Name)
+          (HQ'.HashQualified Name, HQ'.HashQualified Name)
+      )
   | -- | List dependents of a type or term.
     ListDependents
       PPE.PrettyPrintEnv

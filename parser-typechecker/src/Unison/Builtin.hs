@@ -81,7 +81,9 @@ names = Names terms types
 -- note: this function is really for deciding whether `r` is a term or type,
 -- but it can only answer correctly for Builtins.
 isBuiltinType :: R.Reference -> Bool
-isBuiltinType r = elem r . fmap snd $ builtinTypes
+isBuiltinType =
+  let refs = Set.fromList (map snd builtinTypes)
+  in (`Set.member` refs)
 
 typeLookup :: TL.TypeLookup Symbol Ann
 typeLookup =
