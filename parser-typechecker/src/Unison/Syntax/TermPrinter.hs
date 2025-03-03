@@ -273,7 +273,7 @@ pretty0
               useRaw _ | p >= Annotation = Nothing
               useRaw s | Text.find (== '\n') s == Just '\n' && Text.all ok s = n 3
               useRaw _ = Nothing
-              ok ch = isPrint ch || ch == '\n' || ch == '\r'
+              ok ch = isPrint ch || ch == '\n'
               -- Picks smallest number of surrounding """ to be unique
               n 10 = Nothing -- bail at 10, avoiding quadratic behavior in weird cases
               n cur =
