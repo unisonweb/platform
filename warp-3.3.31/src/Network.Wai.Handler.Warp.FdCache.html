@@ -1,0 +1,392 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns, CPP #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="annot"><span class="hs-comment">-- | File descriptor cache to avoid locks in kernel.</span></span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.Wai.Handler.Warp.FdCache</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-6"></span><span>    </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#withFdCache"><span class="hs-identifier">withFdCache</span></a></span><span>
+</span><span id="line-7"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">Fd</span></span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#Refresh"><span class="hs-identifier">Refresh</span></a></span><span class="hs-cpp">
+#ifndef WINDOWS
+</span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#openFile"><span class="hs-identifier">openFile</span></a></span><span>
+</span><span id="line-11"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#closeFile"><span class="hs-identifier">closeFile</span></a></span><span>
+</span><span id="line-12"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#setFileCloseOnExec"><span class="hs-identifier">setFileCloseOnExec</span></a></span><span class="hs-cpp">
+#endif
+</span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span class="hs-cpp">
+
+#ifndef WINDOWS
+</span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">UnliftIO.Exception</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">bracket</span></span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Reaper</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.IORef</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.MultiMap.html"><span class="hs-identifier">Network.Wai.Handler.Warp.MultiMap</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">MM</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.Posix.IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">openFd</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">OpenFileFlags</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">defaultFileFlags</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">OpenMode</span></span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ReadOnly</span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">closeFd</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">FdOption</span></span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">CloseOnExec</span></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">setFdOption</span></span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.Posix.Types</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Fd</span></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="annot"><span class="hs-comment">-- | An action to activate a Fd cache entry.</span></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">type</span><span> </span><span id="Refresh"><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#Refresh"><span class="hs-identifier hs-var">Refresh</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#getFdNothing"><span class="hs-identifier hs-type">getFdNothing</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Fd</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#Refresh"><span class="hs-identifier hs-type">Refresh</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span id="getFdNothing"><span class="annot"><span class="annottext">getFdNothing :: FilePath -&gt; IO (Maybe Fd, Refresh)
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#getFdNothing"><span class="hs-identifier hs-var hs-var">getFdNothing</span></a></span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Maybe Fd, Refresh) -&gt; IO (Maybe Fd, Refresh)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Maybe Fd
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">() -&gt; Refresh
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- | Creating 'MutableFdCache' and executing the action in the second</span><span>
+</span><span id="line-36"></span><span class="hs-comment">--   argument. The first argument is a cache duration in second.</span><span>
+</span><span id="line-37"></span><span id="local-6989586621679107619"><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#withFdCache"><span class="hs-identifier hs-type">withFdCache</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Fd</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#Refresh"><span class="hs-identifier hs-type">Refresh</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679107619"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679107619"><span class="hs-identifier hs-type">a</span></a></span></span><span class="hs-cpp">
+#ifdef WINDOWS
+</span><span class="hs-identifier">withFdCache</span><span> </span><span class="hs-identifier">_</span><span>        </span><span class="hs-identifier">action</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">action</span><span> </span><span class="hs-identifier">getFdNothing</span><span class="hs-cpp">
+#else
+</span><span id="withFdCache"><span class="annot"><span class="annottext">withFdCache :: forall a.
+Int -&gt; ((FilePath -&gt; IO (Maybe Fd, Refresh)) -&gt; IO a) -&gt; IO a
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#withFdCache"><span class="hs-identifier hs-var hs-var">withFdCache</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>        </span><span id="local-6989586621679107720"><span class="annot"><span class="annottext">(FilePath -&gt; IO (Maybe Fd, Refresh)) -&gt; IO a
+</span><a href="#local-6989586621679107720"><span class="hs-identifier hs-var">action</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(FilePath -&gt; IO (Maybe Fd, Refresh)) -&gt; IO a
+</span><a href="#local-6989586621679107720"><span class="hs-identifier hs-var">action</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IO (Maybe Fd, Refresh)
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#getFdNothing"><span class="hs-identifier hs-var">getFdNothing</span></a></span><span>
+</span><span id="line-42"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#withFdCache"><span class="hs-identifier hs-var">withFdCache</span></a></span><span> </span><span id="local-6989586621679107721"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679107721"><span class="hs-identifier hs-var">duration</span></a></span></span><span> </span><span id="local-6989586621679107722"><span class="annot"><span class="annottext">(FilePath -&gt; IO (Maybe Fd, Refresh)) -&gt; IO a
+</span><a href="#local-6989586621679107722"><span class="hs-identifier hs-var">action</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO MutableFdCache
+-&gt; (MutableFdCache -&gt; Refresh) -&gt; (MutableFdCache -&gt; IO a) -&gt; IO a
+forall (m :: * -&gt; *) a b c.
+MonadUnliftIO m =&gt;
+m a -&gt; (a -&gt; m b) -&gt; (a -&gt; m c) -&gt; m c
+</span><span class="hs-identifier hs-var">bracket</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; IO MutableFdCache
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#initialize"><span class="hs-identifier hs-var">initialize</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679107721"><span class="hs-identifier hs-var">duration</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span>                                      </span><span class="annot"><span class="annottext">MutableFdCache -&gt; Refresh
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#terminate"><span class="hs-identifier hs-var">terminate</span></a></span><span>
+</span><span id="line-44"></span><span>                                      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(FilePath -&gt; IO (Maybe Fd, Refresh)) -&gt; IO a
+</span><a href="#local-6989586621679107722"><span class="hs-identifier hs-var">action</span></a></span><span> </span><span class="annot"><span class="annottext">((FilePath -&gt; IO (Maybe Fd, Refresh)) -&gt; IO a)
+-&gt; (MutableFdCache -&gt; FilePath -&gt; IO (Maybe Fd, Refresh))
+-&gt; MutableFdCache
+-&gt; IO a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">MutableFdCache -&gt; FilePath -&gt; IO (Maybe Fd, Refresh)
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#getFd"><span class="hs-identifier hs-var">getFd</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span>
+</span><span id="line-46"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span class="hs-keyword">data</span><span> </span><span id="Status"><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#Status"><span class="hs-identifier hs-var">Status</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Active"><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#Active"><span class="hs-identifier hs-var">Active</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="Inactive"><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#Inactive"><span class="hs-identifier hs-var">Inactive</span></a></span></span><span>
+</span><span id="line-49"></span><span>
+</span><span id="line-50"></span><span class="hs-keyword">newtype</span><span> </span><span id="MutableStatus"><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableStatus"><span class="hs-identifier hs-var">MutableStatus</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="MutableStatus"><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableStatus"><span class="hs-identifier hs-var">MutableStatus</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">IORef</span></span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#Status"><span class="hs-identifier hs-type">Status</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-51"></span><span>
+</span><span id="line-52"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#status"><span class="hs-identifier hs-type">status</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableStatus"><span class="hs-identifier hs-type">MutableStatus</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#Status"><span class="hs-identifier hs-type">Status</span></a></span><span>
+</span><span id="line-53"></span><span id="status"><span class="annot"><span class="annottext">status :: MutableStatus -&gt; IO Status
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#status"><span class="hs-identifier hs-var hs-var">status</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableStatus"><span class="hs-identifier hs-type">MutableStatus</span></a></span><span> </span><span id="local-6989586621679107731"><span class="annot"><span class="annottext">IORef Status
+</span><a href="#local-6989586621679107731"><span class="hs-identifier hs-var">ref</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef Status -&gt; IO Status
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Status
+</span><a href="#local-6989586621679107731"><span class="hs-identifier hs-var">ref</span></a></span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#newActiveStatus"><span class="hs-identifier hs-type">newActiveStatus</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableStatus"><span class="hs-identifier hs-type">MutableStatus</span></a></span><span>
+</span><span id="line-56"></span><span id="newActiveStatus"><span class="annot"><span class="annottext">newActiveStatus :: IO MutableStatus
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#newActiveStatus"><span class="hs-identifier hs-var hs-var">newActiveStatus</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef Status -&gt; MutableStatus
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#MutableStatus"><span class="hs-identifier hs-var">MutableStatus</span></a></span><span> </span><span class="annot"><span class="annottext">(IORef Status -&gt; MutableStatus)
+-&gt; IO (IORef Status) -&gt; IO MutableStatus
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Status -&gt; IO (IORef Status)
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#Active"><span class="hs-identifier hs-var">Active</span></a></span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#refresh"><span class="hs-identifier hs-type">refresh</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableStatus"><span class="hs-identifier hs-type">MutableStatus</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#Refresh"><span class="hs-identifier hs-type">Refresh</span></a></span><span>
+</span><span id="line-59"></span><span id="refresh"><span class="annot"><span class="annottext">refresh :: MutableStatus -&gt; Refresh
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#refresh"><span class="hs-identifier hs-var hs-var">refresh</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableStatus"><span class="hs-identifier hs-type">MutableStatus</span></a></span><span> </span><span id="local-6989586621679107737"><span class="annot"><span class="annottext">IORef Status
+</span><a href="#local-6989586621679107737"><span class="hs-identifier hs-var">ref</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef Status -&gt; Status -&gt; Refresh
+forall a. IORef a -&gt; a -&gt; Refresh
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Status
+</span><a href="#local-6989586621679107737"><span class="hs-identifier hs-var">ref</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#Active"><span class="hs-identifier hs-var">Active</span></a></span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#inactive"><span class="hs-identifier hs-type">inactive</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableStatus"><span class="hs-identifier hs-type">MutableStatus</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span id="inactive"><span class="annot"><span class="annottext">inactive :: MutableStatus -&gt; Refresh
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#inactive"><span class="hs-identifier hs-var hs-var">inactive</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableStatus"><span class="hs-identifier hs-type">MutableStatus</span></a></span><span> </span><span id="local-6989586621679107740"><span class="annot"><span class="annottext">IORef Status
+</span><a href="#local-6989586621679107740"><span class="hs-identifier hs-var">ref</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef Status -&gt; Status -&gt; Refresh
+forall a. IORef a -&gt; a -&gt; Refresh
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Status
+</span><a href="#local-6989586621679107740"><span class="hs-identifier hs-var">ref</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#Inactive"><span class="hs-identifier hs-var">Inactive</span></a></span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-65"></span><span>
+</span><span id="line-66"></span><span class="hs-keyword">data</span><span> </span><span id="FdEntry"><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdEntry"><span class="hs-identifier hs-var">FdEntry</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="FdEntry"><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdEntry"><span class="hs-identifier hs-var">FdEntry</span></a></span></span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Fd</span></span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableStatus"><span class="hs-identifier hs-type">MutableStatus</span></a></span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#openFile"><span class="hs-identifier hs-type">openFile</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Fd</span></span><span>
+</span><span id="line-69"></span><span id="openFile"><span class="annot"><span class="annottext">openFile :: FilePath -&gt; IO Fd
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#openFile"><span class="hs-identifier hs-var hs-var">openFile</span></a></span></span><span> </span><span id="local-6989586621679107742"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679107742"><span class="hs-identifier hs-var">path</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span class="hs-cpp">
+#if MIN_VERSION_unix(2,8,0)
+</span><span>    </span><span id="local-6989586621679107743"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107743"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; OpenMode -&gt; OpenFileFlags -&gt; IO Fd
+</span><span class="hs-identifier hs-var">openFd</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679107742"><span class="hs-identifier hs-var">path</span></a></span><span> </span><span class="annot"><span class="annottext">OpenMode
+</span><span class="hs-identifier hs-var">ReadOnly</span></span><span> </span><span class="annot"><span class="annottext">OpenFileFlags
+</span><span class="hs-identifier hs-var">defaultFileFlags</span></span><span class="hs-special">{</span><span class="annot"><span class="hs-identifier hs-var">nonBlock</span></span><span class="hs-glyph">=</span><span class="annot"><span class="hs-identifier hs-type">False</span></span><span class="hs-special">}</span><span class="hs-cpp">
+#else
+</span><span>    </span><span class="hs-identifier">fd</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">openFd</span><span> </span><span class="hs-identifier">path</span><span> </span><span class="hs-identifier">ReadOnly</span><span> </span><span class="hs-identifier">Nothing</span><span> </span><span class="hs-identifier">defaultFileFlags</span><span class="hs-special">{</span><span class="hs-identifier">nonBlock</span><span class="hs-glyph">=</span><span class="hs-identifier">False</span><span class="hs-special">}</span><span class="hs-cpp">
+#endif
+</span><span>    </span><span class="annot"><span class="annottext">Fd -&gt; Refresh
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#setFileCloseOnExec"><span class="hs-identifier hs-var">setFileCloseOnExec</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107743"><span class="hs-identifier hs-var">fd</span></a></span><span>
+</span><span id="line-76"></span><span>    </span><span class="annot"><span class="annottext">Fd -&gt; IO Fd
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107743"><span class="hs-identifier hs-var">fd</span></a></span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#closeFile"><span class="hs-identifier hs-type">closeFile</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Fd</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-79"></span><span id="closeFile"><span class="annot"><span class="annottext">closeFile :: Fd -&gt; Refresh
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#closeFile"><span class="hs-identifier hs-var hs-var">closeFile</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Fd -&gt; Refresh
+</span><span class="hs-identifier hs-var">closeFd</span></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#newFdEntry"><span class="hs-identifier hs-type">newFdEntry</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdEntry"><span class="hs-identifier hs-type">FdEntry</span></a></span><span>
+</span><span id="line-82"></span><span id="newFdEntry"><span class="annot"><span class="annottext">newFdEntry :: FilePath -&gt; IO FdEntry
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#newFdEntry"><span class="hs-identifier hs-var hs-var">newFdEntry</span></a></span></span><span> </span><span id="local-6989586621679107746"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679107746"><span class="hs-identifier hs-var">path</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Fd -&gt; MutableStatus -&gt; FdEntry
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#FdEntry"><span class="hs-identifier hs-var">FdEntry</span></a></span><span> </span><span class="annot"><span class="annottext">(Fd -&gt; MutableStatus -&gt; FdEntry)
+-&gt; IO Fd -&gt; IO (MutableStatus -&gt; FdEntry)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IO Fd
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#openFile"><span class="hs-identifier hs-var">openFile</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679107746"><span class="hs-identifier hs-var">path</span></a></span><span> </span><span class="annot"><span class="annottext">IO (MutableStatus -&gt; FdEntry) -&gt; IO MutableStatus -&gt; IO FdEntry
+forall a b. IO (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;*&gt;</span></span><span> </span><span class="annot"><span class="annottext">IO MutableStatus
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#newActiveStatus"><span class="hs-identifier hs-var">newActiveStatus</span></a></span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#setFileCloseOnExec"><span class="hs-identifier hs-type">setFileCloseOnExec</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Fd</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-85"></span><span id="setFileCloseOnExec"><span class="annot"><span class="annottext">setFileCloseOnExec :: Fd -&gt; Refresh
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#setFileCloseOnExec"><span class="hs-identifier hs-var hs-var">setFileCloseOnExec</span></a></span></span><span> </span><span id="local-6989586621679107747"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107747"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Fd -&gt; FdOption -&gt; Bool -&gt; Refresh
+</span><span class="hs-identifier hs-var">setFdOption</span></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107747"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="annot"><span class="annottext">FdOption
+</span><span class="hs-identifier hs-var">CloseOnExec</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-86"></span><span>
+</span><span id="line-87"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-88"></span><span>
+</span><span id="line-89"></span><span class="hs-keyword">type</span><span> </span><span id="FdCache"><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdCache"><span class="hs-identifier hs-var">FdCache</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.MultiMap.html#MultiMap"><span class="hs-identifier hs-type">MultiMap</span></a></span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdEntry"><span class="hs-identifier hs-type">FdEntry</span></a></span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span class="annot"><span class="hs-comment">-- | Mutable Fd cacher.</span></span><span>
+</span><span id="line-92"></span><span class="hs-keyword">newtype</span><span> </span><span id="MutableFdCache"><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableFdCache"><span class="hs-identifier hs-var">MutableFdCache</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="MutableFdCache"><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableFdCache"><span class="hs-identifier hs-var">MutableFdCache</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Reaper</span></span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdCache"><span class="hs-identifier hs-type">FdCache</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span class="hs-special">,</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdEntry"><span class="hs-identifier hs-type">FdEntry</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#fdCache"><span class="hs-identifier hs-type">fdCache</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableFdCache"><span class="hs-identifier hs-type">MutableFdCache</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdCache"><span class="hs-identifier hs-type">FdCache</span></a></span><span>
+</span><span id="line-95"></span><span id="fdCache"><span class="annot"><span class="annottext">fdCache :: MutableFdCache -&gt; IO FdCache
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#fdCache"><span class="hs-identifier hs-var hs-var">fdCache</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableFdCache"><span class="hs-identifier hs-type">MutableFdCache</span></a></span><span> </span><span id="local-6989586621679107749"><span class="annot"><span class="annottext">Reaper FdCache (FilePath, FdEntry)
+</span><a href="#local-6989586621679107749"><span class="hs-identifier hs-var">reaper</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Reaper FdCache (FilePath, FdEntry) -&gt; IO FdCache
+forall workload item. Reaper workload item -&gt; IO workload
+</span><span class="hs-identifier hs-var">reaperRead</span></span><span> </span><span class="annot"><span class="annottext">Reaper FdCache (FilePath, FdEntry)
+</span><a href="#local-6989586621679107749"><span class="hs-identifier hs-var">reaper</span></a></span><span>
+</span><span id="line-96"></span><span>
+</span><span id="line-97"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#look"><span class="hs-identifier hs-type">look</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableFdCache"><span class="hs-identifier hs-type">MutableFdCache</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdEntry"><span class="hs-identifier hs-type">FdEntry</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span id="look"><span class="annot"><span class="annottext">look :: MutableFdCache -&gt; FilePath -&gt; IO (Maybe FdEntry)
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#look"><span class="hs-identifier hs-var hs-var">look</span></a></span></span><span> </span><span id="local-6989586621679107752"><span class="annot"><span class="annottext">MutableFdCache
+</span><a href="#local-6989586621679107752"><span class="hs-identifier hs-var">mfc</span></a></span></span><span> </span><span id="local-6989586621679107753"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679107753"><span class="hs-identifier hs-var">path</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; FdCache -&gt; Maybe FdEntry
+forall v. FilePath -&gt; MultiMap v -&gt; Maybe v
+</span><a href="Network.Wai.Handler.Warp.MultiMap.html#lookup"><span class="hs-identifier hs-var">MM.lookup</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679107753"><span class="hs-identifier hs-var">path</span></a></span><span> </span><span class="annot"><span class="annottext">(FdCache -&gt; Maybe FdEntry) -&gt; IO FdCache -&gt; IO (Maybe FdEntry)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">MutableFdCache -&gt; IO FdCache
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#fdCache"><span class="hs-identifier hs-var">fdCache</span></a></span><span> </span><span class="annot"><span class="annottext">MutableFdCache
+</span><a href="#local-6989586621679107752"><span class="hs-identifier hs-var">mfc</span></a></span><span>
+</span><span id="line-99"></span><span>
+</span><span id="line-100"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-101"></span><span>
+</span><span id="line-102"></span><span class="hs-comment">-- The first argument is a cache duration in second.</span><span>
+</span><span id="line-103"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#initialize"><span class="hs-identifier hs-type">initialize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableFdCache"><span class="hs-identifier hs-type">MutableFdCache</span></a></span><span>
+</span><span id="line-104"></span><span id="initialize"><span class="annot"><span class="annottext">initialize :: Int -&gt; IO MutableFdCache
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#initialize"><span class="hs-identifier hs-var hs-var">initialize</span></a></span></span><span> </span><span id="local-6989586621679107755"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679107755"><span class="hs-identifier hs-var">duration</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Reaper FdCache (FilePath, FdEntry) -&gt; MutableFdCache
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#MutableFdCache"><span class="hs-identifier hs-var">MutableFdCache</span></a></span><span> </span><span class="annot"><span class="annottext">(Reaper FdCache (FilePath, FdEntry) -&gt; MutableFdCache)
+-&gt; IO (Reaper FdCache (FilePath, FdEntry)) -&gt; IO MutableFdCache
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">ReaperSettings FdCache (FilePath, FdEntry)
+-&gt; IO (Reaper FdCache (FilePath, FdEntry))
+forall workload item.
+ReaperSettings workload item -&gt; IO (Reaper workload item)
+</span><span class="hs-identifier hs-var">mkReaper</span></span><span> </span><span class="annot"><span class="annottext">ReaperSettings FdCache (FilePath, FdEntry)
+</span><a href="#local-6989586621679107757"><span class="hs-identifier hs-var">settings</span></a></span><span>
+</span><span id="line-105"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-106"></span><span>    </span><span id="local-6989586621679107757"><span class="annot"><span class="annottext">settings :: ReaperSettings FdCache (FilePath, FdEntry)
+</span><a href="#local-6989586621679107757"><span class="hs-identifier hs-var hs-var">settings</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ReaperSettings [Any] Any
+forall item. ReaperSettings [item] item
+</span><span class="hs-identifier hs-var">defaultReaperSettings</span></span><span> </span><span class="hs-special">{</span><span>
+</span><span id="line-107"></span><span>        </span><span class="annot"><span class="hs-identifier hs-var">reaperAction</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#clean"><span class="hs-identifier hs-type">clean</span></a></span><span>
+</span><span id="line-108"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">reaperDelay</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621679107755"><span class="hs-identifier hs-type">duration</span></a></span><span>
+</span><span id="line-109"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">reaperCons</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">uncurry</span></span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.MultiMap.html#insert"><span class="hs-identifier hs-type">insert</span></a></span><span>
+</span><span id="line-110"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">reaperNull</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.MultiMap.html#isEmpty"><span class="hs-identifier hs-type">isEmpty</span></a></span><span>
+</span><span id="line-111"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-var">reaperEmpty</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.MultiMap.html#empty"><span class="hs-identifier hs-type">empty</span></a></span><span>
+</span><span id="line-112"></span><span>      </span><span class="hs-special">}</span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#clean"><span class="hs-identifier hs-type">clean</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdCache"><span class="hs-identifier hs-type">FdCache</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdCache"><span class="hs-identifier hs-type">FdCache</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdCache"><span class="hs-identifier hs-type">FdCache</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-115"></span><span id="clean"><span class="annot"><span class="annottext">clean :: FdCache -&gt; IO (FdCache -&gt; FdCache)
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#clean"><span class="hs-identifier hs-var hs-var">clean</span></a></span></span><span> </span><span id="local-6989586621679107769"><span class="annot"><span class="annottext">FdCache
+</span><a href="#local-6989586621679107769"><span class="hs-identifier hs-var">old</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-116"></span><span>    </span><span id="local-6989586621679107770"><span class="annot"><span class="annottext">FdCache
+</span><a href="#local-6989586621679107770"><span class="hs-identifier hs-var">new</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FdCache -&gt; ((FilePath, FdEntry) -&gt; IO Bool) -&gt; IO FdCache
+forall v.
+MultiMap v -&gt; ((FilePath, v) -&gt; IO Bool) -&gt; IO (MultiMap v)
+</span><a href="Network.Wai.Handler.Warp.MultiMap.html#pruneWith"><span class="hs-identifier hs-var">pruneWith</span></a></span><span> </span><span class="annot"><span class="annottext">FdCache
+</span><a href="#local-6989586621679107769"><span class="hs-identifier hs-var">old</span></a></span><span> </span><span class="annot"><span class="annottext">(FilePath, FdEntry) -&gt; IO Bool
+forall {a}. (a, FdEntry) -&gt; IO Bool
+</span><a href="#local-6989586621679107772"><span class="hs-identifier hs-var">prune</span></a></span><span>
+</span><span id="line-117"></span><span>    </span><span class="annot"><span class="annottext">(FdCache -&gt; FdCache) -&gt; IO (FdCache -&gt; FdCache)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">((FdCache -&gt; FdCache) -&gt; IO (FdCache -&gt; FdCache))
+-&gt; (FdCache -&gt; FdCache) -&gt; IO (FdCache -&gt; FdCache)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FdCache -&gt; FdCache -&gt; FdCache
+forall v. MultiMap v -&gt; MultiMap v -&gt; MultiMap v
+</span><a href="Network.Wai.Handler.Warp.MultiMap.html#merge"><span class="hs-identifier hs-var">merge</span></a></span><span> </span><span class="annot"><span class="annottext">FdCache
+</span><a href="#local-6989586621679107770"><span class="hs-identifier hs-var">new</span></a></span><span>
+</span><span id="line-118"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-119"></span><span>    </span><span id="local-6989586621679107772"><span class="annot"><span class="annottext">prune :: (a, FdEntry) -&gt; IO Bool
+</span><a href="#local-6989586621679107772"><span class="hs-identifier hs-var hs-var">prune</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdEntry"><span class="hs-identifier hs-type">FdEntry</span></a></span><span> </span><span id="local-6989586621679107775"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107775"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span id="local-6989586621679107776"><span class="annot"><span class="annottext">MutableStatus
+</span><a href="#local-6989586621679107776"><span class="hs-identifier hs-var">mst</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableStatus -&gt; IO Status
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#status"><span class="hs-identifier hs-var">status</span></a></span><span> </span><span class="annot"><span class="annottext">MutableStatus
+</span><a href="#local-6989586621679107776"><span class="hs-identifier hs-var">mst</span></a></span><span> </span><span class="annot"><span class="annottext">IO Status -&gt; (Status -&gt; IO Bool) -&gt; IO Bool
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Status -&gt; IO Bool
+</span><a href="#local-6989586621679107777"><span class="hs-identifier hs-var">act</span></a></span><span>
+</span><span id="line-120"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-121"></span><span>        </span><span id="local-6989586621679107777"><span class="annot"><span class="annottext">act :: Status -&gt; IO Bool
+</span><a href="#local-6989586621679107777"><span class="hs-identifier hs-var hs-var">act</span></a></span></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#Active"><span class="hs-identifier hs-var">Active</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableStatus -&gt; Refresh
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#inactive"><span class="hs-identifier hs-var">inactive</span></a></span><span> </span><span class="annot"><span class="annottext">MutableStatus
+</span><a href="#local-6989586621679107776"><span class="hs-identifier hs-var">mst</span></a></span><span> </span><span class="annot"><span class="annottext">Refresh -&gt; IO Bool -&gt; IO Bool
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; IO Bool
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-122"></span><span>        </span><span class="annot"><a href="#local-6989586621679107777"><span class="hs-identifier hs-var">act</span></a></span><span> </span><span class="annot"><span class="annottext">Status
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#Inactive"><span class="hs-identifier hs-var">Inactive</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Fd -&gt; Refresh
+</span><span class="hs-identifier hs-var">closeFd</span></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107775"><span class="hs-identifier hs-var">fd</span></a></span><span>   </span><span class="annot"><span class="annottext">Refresh -&gt; IO Bool -&gt; IO Bool
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; IO Bool
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-123"></span><span>
+</span><span id="line-124"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-125"></span><span>
+</span><span id="line-126"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#terminate"><span class="hs-identifier hs-type">terminate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableFdCache"><span class="hs-identifier hs-type">MutableFdCache</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-127"></span><span id="terminate"><span class="annot"><span class="annottext">terminate :: MutableFdCache -&gt; Refresh
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#terminate"><span class="hs-identifier hs-var hs-var">terminate</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableFdCache"><span class="hs-identifier hs-type">MutableFdCache</span></a></span><span> </span><span id="local-6989586621679107782"><span class="annot"><span class="annottext">Reaper FdCache (FilePath, FdEntry)
+</span><a href="#local-6989586621679107782"><span class="hs-identifier hs-var">reaper</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679107783"><span class="annot"><span class="annottext">FdCache
+</span><a href="#local-6989586621679107783"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Reaper FdCache (FilePath, FdEntry) -&gt; IO FdCache
+forall workload item. Reaper workload item -&gt; IO workload
+</span><span class="hs-identifier hs-var">reaperStop</span></span><span> </span><span class="annot"><span class="annottext">Reaper FdCache (FilePath, FdEntry)
+</span><a href="#local-6989586621679107782"><span class="hs-identifier hs-var">reaper</span></a></span><span>
+</span><span id="line-129"></span><span>    </span><span class="annot"><span class="annottext">((FilePath, FdEntry) -&gt; Refresh)
+-&gt; [(FilePath, FdEntry)] -&gt; Refresh
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FdEntry -&gt; Refresh
+</span><a href="#local-6989586621679107786"><span class="hs-identifier hs-var">closeIt</span></a></span><span> </span><span class="annot"><span class="annottext">(FdEntry -&gt; Refresh)
+-&gt; ((FilePath, FdEntry) -&gt; FdEntry)
+-&gt; (FilePath, FdEntry)
+-&gt; Refresh
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(FilePath, FdEntry) -&gt; FdEntry
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([(FilePath, FdEntry)] -&gt; Refresh)
+-&gt; [(FilePath, FdEntry)] -&gt; Refresh
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FdCache -&gt; [(FilePath, FdEntry)]
+forall v. MultiMap v -&gt; [(FilePath, v)]
+</span><a href="Network.Wai.Handler.Warp.MultiMap.html#toList"><span class="hs-identifier hs-var">toList</span></a></span><span> </span><span class="annot"><span class="annottext">FdCache
+</span><a href="#local-6989586621679107783"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-130"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-131"></span><span>    </span><span id="local-6989586621679107786"><span class="annot"><span class="annottext">closeIt :: FdEntry -&gt; Refresh
+</span><a href="#local-6989586621679107786"><span class="hs-identifier hs-var hs-var">closeIt</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdEntry"><span class="hs-identifier hs-type">FdEntry</span></a></span><span> </span><span id="local-6989586621679107789"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107789"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span class="annot"><span class="annottext">MutableStatus
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Fd -&gt; Refresh
+</span><span class="hs-identifier hs-var">closeFd</span></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107789"><span class="hs-identifier hs-var">fd</span></a></span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span class="hs-comment">----------------------------------------------------------------</span><span>
+</span><span id="line-134"></span><span>
+</span><span id="line-135"></span><span class="annot"><span class="hs-comment">-- | Getting 'Fd' and 'Refresh' from the mutable Fd cacher.</span></span><span>
+</span><span id="line-136"></span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#getFd"><span class="hs-identifier hs-type">getFd</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableFdCache"><span class="hs-identifier hs-type">MutableFdCache</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Fd</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#Refresh"><span class="hs-identifier hs-type">Refresh</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-137"></span><span id="getFd"><span class="annot"><span class="annottext">getFd :: MutableFdCache -&gt; FilePath -&gt; IO (Maybe Fd, Refresh)
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#getFd"><span class="hs-identifier hs-var hs-var">getFd</span></a></span></span><span> </span><span id="local-6989586621679107790"><span class="annot"><span class="annottext">mfc :: MutableFdCache
+</span><a href="#local-6989586621679107790"><span class="hs-identifier hs-var">mfc</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#MutableFdCache"><span class="hs-identifier hs-type">MutableFdCache</span></a></span><span> </span><span id="local-6989586621679107791"><span class="annot"><span class="annottext">Reaper FdCache (FilePath, FdEntry)
+</span><a href="#local-6989586621679107791"><span class="hs-identifier hs-var">reaper</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679107792"><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679107792"><span class="hs-identifier hs-var">path</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableFdCache -&gt; FilePath -&gt; IO (Maybe FdEntry)
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#look"><span class="hs-identifier hs-var">look</span></a></span><span> </span><span class="annot"><span class="annottext">MutableFdCache
+</span><a href="#local-6989586621679107790"><span class="hs-identifier hs-var">mfc</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679107792"><span class="hs-identifier hs-var">path</span></a></span><span> </span><span class="annot"><span class="annottext">IO (Maybe FdEntry)
+-&gt; (Maybe FdEntry -&gt; IO (Maybe Fd, Refresh))
+-&gt; IO (Maybe Fd, Refresh)
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Maybe FdEntry -&gt; IO (Maybe Fd, Refresh)
+</span><a href="#local-6989586621679107793"><span class="hs-identifier hs-var">get</span></a></span><span>
+</span><span id="line-138"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-139"></span><span>    </span><span id="local-6989586621679107793"><span class="annot"><span class="annottext">get :: Maybe FdEntry -&gt; IO (Maybe Fd, Refresh)
+</span><a href="#local-6989586621679107793"><span class="hs-identifier hs-var hs-var">get</span></a></span></span><span> </span><span class="annot"><span class="annottext">Maybe FdEntry
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-140"></span><span>        </span><span id="local-6989586621679107799"><span class="annot"><span class="annottext">ent :: FdEntry
+</span><a href="#local-6989586621679107799"><span class="hs-identifier hs-var">ent</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdEntry"><span class="hs-identifier hs-type">FdEntry</span></a></span><span> </span><span id="local-6989586621679107800"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107800"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span id="local-6989586621679107801"><span class="annot"><span class="annottext">MutableStatus
+</span><a href="#local-6989586621679107801"><span class="hs-identifier hs-var">mst</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IO FdEntry
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#newFdEntry"><span class="hs-identifier hs-var">newFdEntry</span></a></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679107792"><span class="hs-identifier hs-var">path</span></a></span><span>
+</span><span id="line-141"></span><span>        </span><span class="annot"><span class="annottext">Reaper FdCache (FilePath, FdEntry)
+-&gt; (FilePath, FdEntry) -&gt; Refresh
+forall workload item. Reaper workload item -&gt; item -&gt; Refresh
+</span><span class="hs-identifier hs-var">reaperAdd</span></span><span> </span><span class="annot"><span class="annottext">Reaper FdCache (FilePath, FdEntry)
+</span><a href="#local-6989586621679107791"><span class="hs-identifier hs-var">reaper</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FilePath
+</span><a href="#local-6989586621679107792"><span class="hs-identifier hs-var">path</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">FdEntry
+</span><a href="#local-6989586621679107799"><span class="hs-identifier hs-var">ent</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-142"></span><span>        </span><span class="annot"><span class="annottext">(Maybe Fd, Refresh) -&gt; IO (Maybe Fd, Refresh)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Fd -&gt; Maybe Fd
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107800"><span class="hs-identifier hs-var">fd</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">MutableStatus -&gt; Refresh
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#refresh"><span class="hs-identifier hs-var">refresh</span></a></span><span> </span><span class="annot"><span class="annottext">MutableStatus
+</span><a href="#local-6989586621679107801"><span class="hs-identifier hs-var">mst</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-143"></span><span>    </span><span class="annot"><a href="#local-6989586621679107793"><span class="hs-identifier hs-var">get</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.Wai.Handler.Warp.FdCache.html#FdEntry"><span class="hs-identifier hs-type">FdEntry</span></a></span><span> </span><span id="local-6989586621679107803"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107803"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span id="local-6989586621679107804"><span class="annot"><span class="annottext">MutableStatus
+</span><a href="#local-6989586621679107804"><span class="hs-identifier hs-var">mst</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-144"></span><span>        </span><span class="annot"><span class="annottext">MutableStatus -&gt; Refresh
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#refresh"><span class="hs-identifier hs-var">refresh</span></a></span><span> </span><span class="annot"><span class="annottext">MutableStatus
+</span><a href="#local-6989586621679107804"><span class="hs-identifier hs-var">mst</span></a></span><span>
+</span><span id="line-145"></span><span>        </span><span class="annot"><span class="annottext">(Maybe Fd, Refresh) -&gt; IO (Maybe Fd, Refresh)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Fd -&gt; Maybe Fd
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679107803"><span class="hs-identifier hs-var">fd</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">MutableStatus -&gt; Refresh
+</span><a href="Network.Wai.Handler.Warp.FdCache.html#refresh"><span class="hs-identifier hs-var">refresh</span></a></span><span> </span><span class="annot"><span class="annottext">MutableStatus
+</span><a href="#local-6989586621679107804"><span class="hs-identifier hs-var">mst</span></a></span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span></pre></body></html>

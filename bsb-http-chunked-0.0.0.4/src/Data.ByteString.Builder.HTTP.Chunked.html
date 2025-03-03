@@ -1,0 +1,584 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns, MagicHash, OverloadedStrings, ScopedTypeVariables #-}</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- | HTTP/1.1 chunked transfer encoding as defined</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- in [RFC 7230 Section 4.1](https://tools.ietf.org/html/rfc7230#section-4.1)</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Data.ByteString.Builder.HTTP.Chunked</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-6"></span><span>    </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#chunkedTransferEncoding"><span class="hs-identifier">chunkedTransferEncoding</span></a></span><span>
+</span><span id="line-7"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#chunkedTransferTerminator"><span class="hs-identifier">chunkedTransferTerminator</span></a></span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-9"></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>                         </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">void</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">when</span></span><span class="hs-special">)</span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign</span></span><span>                               </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Ptr</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">Word8</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">Word32</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-operator">(.&amp;.)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Foreign</span></span><span>                               </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">F</span></span><span>
+</span><span id="line-13"></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span>                       </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteString</span></span><span class="hs-special">)</span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span>                       </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">S</span></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.ByteString.Builder</span></span><span>               </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Builder</span></span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.ByteString.Builder.Internal</span></span><span>      </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">BufferRange</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">BuildSignal</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">BuildStep</span></span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Builder.Internal</span></span><span>      </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Builder.Prim</span></span><span>          </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">P</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Builder.Prim.Internal</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">P</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.ByteString.Char8</span></span><span>                 </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-comment">-- For the IsString instance</span><span>
+</span><span id="line-22"></span><span>
+</span><span id="line-23"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- CRLF utils</span><span>
+</span><span id="line-25"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeCRLF"><span class="hs-pragma hs-type">writeCRLF</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-28"></span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeCRLF"><span class="hs-identifier hs-type">writeCRLF</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span id="writeCRLF"><span class="annot"><span class="annottext">writeCRLF :: Ptr Word8 -&gt; IO (Ptr Word8)
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeCRLF"><span class="hs-identifier hs-var hs-var">writeCRLF</span></a></span></span><span> </span><span id="local-6989586621679026935"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026935"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-30"></span><span>    </span><span class="annot"><span class="annottext">FixedPrim (Char, Char) -&gt; (Char, Char) -&gt; Ptr Word8 -&gt; IO ()
+forall a. FixedPrim a -&gt; a -&gt; Ptr Word8 -&gt; IO ()
+</span><span class="hs-identifier hs-var">P.runF</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FixedPrim Char
+</span><span class="hs-identifier hs-var">P.char8</span></span><span> </span><span class="annot"><span class="annottext">FixedPrim Char -&gt; FixedPrim Char -&gt; FixedPrim (Char, Char)
+forall (f :: * -&gt; *) a b. Monoidal f =&gt; f a -&gt; f b -&gt; f (a, b)
+</span><span class="hs-operator hs-var">P.&gt;*&lt;</span></span><span> </span><span class="annot"><span class="annottext">FixedPrim Char
+</span><span class="hs-identifier hs-var">P.char8</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'\r'</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'\n'</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026935"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-31"></span><span>    </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO (Ptr Word8)
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Ptr Word8 -&gt; IO (Ptr Word8)) -&gt; Ptr Word8 -&gt; IO (Ptr Word8)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026935"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`F.plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfLength"><span class="hs-identifier hs-var">crlfLength</span></a></span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfBuilder"><span class="hs-pragma hs-type">crlfBuilder</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-34"></span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfBuilder"><span class="hs-identifier hs-type">crlfBuilder</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Builder</span></span><span>
+</span><span id="line-35"></span><span id="crlfBuilder"><span class="annot"><span class="annottext">crlfBuilder :: Builder
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfBuilder"><span class="hs-identifier hs-var hs-var">crlfBuilder</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FixedPrim (Char, Char) -&gt; (Char, Char) -&gt; Builder
+forall a. FixedPrim a -&gt; a -&gt; Builder
+</span><span class="hs-identifier hs-var">P.primFixed</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">FixedPrim Char
+</span><span class="hs-identifier hs-var">P.char8</span></span><span> </span><span class="annot"><span class="annottext">FixedPrim Char -&gt; FixedPrim Char -&gt; FixedPrim (Char, Char)
+forall (f :: * -&gt; *) a b. Monoidal f =&gt; f a -&gt; f b -&gt; f (a, b)
+</span><span class="hs-operator hs-var">P.&gt;*&lt;</span></span><span> </span><span class="annot"><span class="annottext">FixedPrim Char
+</span><span class="hs-identifier hs-var">P.char8</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'\r'</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Char
+</span><span class="hs-char">'\n'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span>
+</span><span id="line-37"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-38"></span><span class="hs-comment">-- Hex Encoding Infrastructure</span><span>
+</span><span id="line-39"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="annot"><span class="hs-comment">-- | Pad the chunk size with leading zeros?</span></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">data</span><span> </span><span id="Padding"><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#Padding"><span class="hs-identifier hs-var">Padding</span></a></span></span><span>
+</span><span id="line-43"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span id="NoPadding"><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#NoPadding"><span class="hs-identifier hs-var">NoPadding</span></a></span></span><span>
+</span><span id="line-44"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span id="PadTo"><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#PadTo"><span class="hs-identifier hs-var">PadTo</span></a></span></span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-45"></span><span>
+</span><span id="line-46"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeWord32Hex"><span class="hs-pragma hs-type">writeWord32Hex</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-47"></span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeWord32Hex"><span class="hs-identifier hs-type">writeWord32Hex</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#Padding"><span class="hs-identifier hs-type">Padding</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span id="writeWord32Hex"><span class="annot"><span class="annottext">writeWord32Hex :: Padding -&gt; Word32 -&gt; Ptr Word8 -&gt; IO (Ptr Word8)
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeWord32Hex"><span class="hs-identifier hs-var hs-var">writeWord32Hex</span></a></span></span><span> </span><span class="annot"><span class="annottext">Padding
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#NoPadding"><span class="hs-identifier hs-var">NoPadding</span></a></span><span> </span><span id="local-6989586621679026946"><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679026946"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621679026947"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026947"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word32 -&gt; Ptr Word8 -&gt; IO (Ptr Word8)
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeWord32Hex%27"><span class="hs-identifier hs-var">writeWord32Hex'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word32 -&gt; Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#word32HexLength"><span class="hs-identifier hs-var">word32HexLength</span></a></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679026946"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679026946"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026947"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-49"></span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeWord32Hex"><span class="hs-identifier hs-var">writeWord32Hex</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#PadTo"><span class="hs-identifier hs-type">PadTo</span></a></span><span> </span><span id="local-6989586621679026950"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679026950"><span class="hs-identifier hs-var">len</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679026951"><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679026951"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span id="local-6989586621679026952"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026952"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word32 -&gt; Ptr Word8 -&gt; IO (Ptr Word8)
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeWord32Hex%27"><span class="hs-identifier hs-var">writeWord32Hex'</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679026950"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679026951"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026952"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-50"></span><span>
+</span><span id="line-51"></span><span class="hs-comment">-- | @writeWord32Hex' len w op@ writes the hex encoding of @w@ to @op@ and </span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- returns @op `'F.plusPtr'` len@.</span><span>
+</span><span id="line-53"></span><span class="hs-comment">--</span><span>
+</span><span id="line-54"></span><span class="hs-comment">-- If writing @w@ doesn't consume all @len@ bytes, leading zeros are added. </span><span>
+</span><span id="line-55"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeWord32Hex%27"><span class="hs-pragma hs-type">writeWord32Hex'</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-56"></span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeWord32Hex%27"><span class="hs-identifier hs-type">writeWord32Hex'</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span class="hs-special">)</span><span>
+</span><span id="line-57"></span><span id="writeWord32Hex%27"><span class="annot"><span class="annottext">writeWord32Hex' :: Int -&gt; Word32 -&gt; Ptr Word8 -&gt; IO (Ptr Word8)
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeWord32Hex%27"><span class="hs-identifier hs-var hs-var">writeWord32Hex'</span></a></span></span><span> </span><span id="local-6989586621679026953"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679026953"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span id="local-6989586621679026954"><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679026954"><span class="hs-identifier hs-var">w0</span></a></span></span><span> </span><span id="local-6989586621679026955"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026955"><span class="hs-identifier hs-var">op0</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-58"></span><span>    </span><span class="annot"><span class="annottext">Word32 -&gt; Ptr Word8 -&gt; IO ()
+forall {t}. (Integral t, Bits t) =&gt; t -&gt; Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679026956"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679026954"><span class="hs-identifier hs-var">w0</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026955"><span class="hs-identifier hs-var">op0</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`F.plusPtr`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679026953"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-59"></span><span>    </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO (Ptr Word8)
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(Ptr Word8 -&gt; IO (Ptr Word8)) -&gt; Ptr Word8 -&gt; IO (Ptr Word8)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026955"><span class="hs-identifier hs-var">op0</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`F.plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679026953"><span class="hs-identifier hs-var">len</span></a></span><span>
+</span><span id="line-60"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-61"></span><span>    </span><span id="local-6989586621679026956"><span class="annot"><span class="annottext">go :: t -&gt; Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679026956"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679026990"><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679026990"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679026991"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026991"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-62"></span><span>        </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026991"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026955"><span class="hs-identifier hs-var">op0</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-63"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span class="annot"><a href="#local-6989586621679026992"><span class="hs-identifier hs-type">nibble</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span>
+</span><span id="line-64"></span><span>              </span><span id="local-6989586621679026992"><span class="annot"><span class="annottext">nibble :: Word8
+</span><a href="#local-6989586621679026992"><span class="hs-identifier hs-var hs-var">nibble</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">t -&gt; Word8
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679026990"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Word8
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0xF</span></span><span>
+</span><span id="line-65"></span><span>              </span><span id="local-6989586621679027000"><span class="annot"><span class="annottext">hex :: Word8
+</span><a href="#local-6989586621679027000"><span class="hs-identifier hs-var hs-var">hex</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679026992"><span class="hs-identifier hs-var">nibble</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">10</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">48</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Word8
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679026992"><span class="hs-identifier hs-var">nibble</span></a></span><span>
+</span><span id="line-66"></span><span>                  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">55</span></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Word8
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679026992"><span class="hs-identifier hs-var">nibble</span></a></span><span>
+</span><span id="line-67"></span><span>          </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">F.poke</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026991"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679027000"><span class="hs-identifier hs-var">hex</span></a></span><span>
+</span><span id="line-68"></span><span>          </span><span class="annot"><span class="annottext">t -&gt; Ptr Word8 -&gt; IO ()
+</span><a href="#local-6989586621679026956"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">t
+</span><a href="#local-6989586621679026990"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">t -&gt; Int -&gt; t
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`F.unsafeShiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679026991"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`F.plusPtr`</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span class="annot"><span class="hs-comment">-- | Length of the hex-string required to encode the given 'Word32'.</span></span><span>
+</span><span id="line-71"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#word32HexLength"><span class="hs-pragma hs-type">word32HexLength</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-72"></span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#word32HexLength"><span class="hs-identifier hs-type">word32HexLength</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-73"></span><span id="word32HexLength"><span class="annot"><span class="annottext">word32HexLength :: Word32 -&gt; Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#word32HexLength"><span class="hs-identifier hs-var hs-var">word32HexLength</span></a></span></span><span> </span><span id="local-6989586621679027005"><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679027005"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxW32HexLength"><span class="hs-identifier hs-var">maxW32HexLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word32 -&gt; Int
+forall b. FiniteBits b =&gt; b -&gt; Int
+</span><span class="hs-identifier hs-var">F.countLeadingZeros</span></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679027005"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`F.unsafeShiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span class="hs-special">)</span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-76"></span><span class="hs-comment">-- Constants</span><span>
+</span><span id="line-77"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-78"></span><span>
+</span><span id="line-79"></span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfLength"><span class="hs-identifier hs-type">crlfLength</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxW32HexLength"><span class="hs-identifier hs-type">maxW32HexLength</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#minimalChunkSize"><span class="hs-identifier hs-type">minimalChunkSize</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxBeforeBufferOverhead"><span class="hs-identifier hs-type">maxBeforeBufferOverhead</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-80"></span><span>  </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxAfterBufferOverhead"><span class="hs-identifier hs-type">maxAfterBufferOverhead</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxEncodingOverhead"><span class="hs-identifier hs-type">maxEncodingOverhead</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#minimalBufferSize"><span class="hs-identifier hs-type">minimalBufferSize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-81"></span><span id="crlfLength"><span class="annot"><span class="annottext">crlfLength :: Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfLength"><span class="hs-identifier hs-var hs-var">crlfLength</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-82"></span><span id="maxW32HexLength"><span class="annot"><span class="annottext">maxW32HexLength :: Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxW32HexLength"><span class="hs-identifier hs-var hs-var">maxW32HexLength</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span> </span><span class="hs-comment">-- 4 bytes, 2 hex digits per byte</span><span>
+</span><span id="line-83"></span><span id="minimalChunkSize"><span class="annot"><span class="annottext">minimalChunkSize :: Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#minimalChunkSize"><span class="hs-identifier hs-var hs-var">minimalChunkSize</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-84"></span><span id="maxBeforeBufferOverhead"><span class="annot"><span class="annottext">maxBeforeBufferOverhead :: Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxBeforeBufferOverhead"><span class="hs-identifier hs-var hs-var">maxBeforeBufferOverhead</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxW32HexLength"><span class="hs-identifier hs-var">maxW32HexLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfLength"><span class="hs-identifier hs-var">crlfLength</span></a></span><span>
+</span><span id="line-85"></span><span id="maxAfterBufferOverhead"><span class="annot"><span class="annottext">maxAfterBufferOverhead :: Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxAfterBufferOverhead"><span class="hs-identifier hs-var hs-var">maxAfterBufferOverhead</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfLength"><span class="hs-identifier hs-var">crlfLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxW32HexLength"><span class="hs-identifier hs-var">maxW32HexLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfLength"><span class="hs-identifier hs-var">crlfLength</span></a></span><span>
+</span><span id="line-86"></span><span id="maxEncodingOverhead"><span class="annot"><span class="annottext">maxEncodingOverhead :: Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxEncodingOverhead"><span class="hs-identifier hs-var hs-var">maxEncodingOverhead</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxBeforeBufferOverhead"><span class="hs-identifier hs-var">maxBeforeBufferOverhead</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxAfterBufferOverhead"><span class="hs-identifier hs-var">maxAfterBufferOverhead</span></a></span><span>
+</span><span id="line-87"></span><span id="minimalBufferSize"><span class="annot"><span class="annottext">minimalBufferSize :: Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#minimalBufferSize"><span class="hs-identifier hs-var hs-var">minimalBufferSize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#minimalChunkSize"><span class="hs-identifier hs-var">minimalChunkSize</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxEncodingOverhead"><span class="hs-identifier hs-var">maxEncodingOverhead</span></a></span><span>
+</span><span id="line-88"></span><span>
+</span><span id="line-89"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-90"></span><span class="hs-comment">-- Chunked transfer encoding</span><span>
+</span><span id="line-91"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-92"></span><span>
+</span><span id="line-93"></span><span class="hs-comment">-- | Transform a builder such that it uses chunked HTTP transfer encoding.</span><span>
+</span><span id="line-94"></span><span class="hs-comment">--</span><span>
+</span><span id="line-95"></span><span class="hs-comment">-- &gt;&gt;&gt; :set -XOverloadedStrings</span><span>
+</span><span id="line-96"></span><span class="hs-comment">-- &gt;&gt;&gt; import Data.ByteString.Builder as B</span><span>
+</span><span id="line-97"></span><span class="hs-comment">-- &gt;&gt;&gt; let f = B.toLazyByteString . chunkedTransferEncoding . B.lazyByteString</span><span>
+</span><span id="line-98"></span><span class="hs-comment">-- &gt;&gt;&gt; f &quot;data&quot;</span><span>
+</span><span id="line-99"></span><span class="hs-comment">-- &quot;004\r\ndata\r\n&quot;</span><span>
+</span><span id="line-100"></span><span class="hs-comment">--</span><span>
+</span><span id="line-101"></span><span class="hs-comment">-- &gt;&gt;&gt; f &quot;&quot;</span><span>
+</span><span id="line-102"></span><span class="hs-comment">-- &quot;&quot;</span><span>
+</span><span id="line-103"></span><span class="hs-comment">--</span><span>
+</span><span id="line-104"></span><span class="hs-comment">-- /Note/: While for many inputs, the bytestring chunks that can be obtained from the output</span><span>
+</span><span id="line-105"></span><span class="hs-comment">-- via @'Data.ByteString.Lazy.toChunks' . 'Data.ByteString.Builder.toLazyByteString'@</span><span>
+</span><span id="line-106"></span><span class="hs-comment">-- each form a chunk in the sense</span><span>
+</span><span id="line-107"></span><span class="hs-comment">-- of [RFC 7230 Section 4.1](https://tools.ietf.org/html/rfc7230#section-4.1),</span><span>
+</span><span id="line-108"></span><span class="hs-comment">-- this correspondence doesn't hold in general.</span><span>
+</span><span id="line-109"></span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#chunkedTransferEncoding"><span class="hs-identifier hs-type">chunkedTransferEncoding</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Builder</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Builder</span></span><span>
+</span><span id="line-110"></span><span id="chunkedTransferEncoding"><span class="annot"><span class="annottext">chunkedTransferEncoding :: Builder -&gt; Builder
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#chunkedTransferEncoding"><span class="hs-identifier hs-var hs-var">chunkedTransferEncoding</span></a></span></span><span> </span><span id="local-6989586621679027013"><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679027013"><span class="hs-identifier hs-var">innerBuilder</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-111"></span><span>    </span><span class="annot"><span class="annottext">(forall r. BuildStep r -&gt; BuildStep r) -&gt; Builder
+</span><span class="hs-identifier hs-var">B.builder</span></span><span> </span><span class="annot"><span class="annottext">BuildStep r -&gt; BuildStep r
+forall r. BuildStep r -&gt; BuildStep r
+</span><a href="#local-6989586621679027015"><span class="hs-identifier hs-var">transferEncodingStep</span></a></span><span>
+</span><span id="line-112"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-113"></span><span>    </span><span class="annot"><a href="#local-6989586621679027015"><span class="hs-identifier hs-type">transferEncodingStep</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679027016"><span class="annot"><a href="#local-6989586621679027016"><span class="hs-identifier hs-type">a</span></a></span></span><span class="hs-operator">.</span><span>  </span><span class="annot"><span class="hs-identifier hs-type">BuildStep</span></span><span> </span><span class="annot"><a href="#local-6989586621679027016"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BuildStep</span></span><span> </span><span class="annot"><a href="#local-6989586621679027016"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-114"></span><span>    </span><span id="local-6989586621679027015"><span class="annot"><span class="annottext">transferEncodingStep :: forall r. BuildStep r -&gt; BuildStep r
+</span><a href="#local-6989586621679027015"><span class="hs-identifier hs-var hs-var">transferEncodingStep</span></a></span></span><span> </span><span id="local-6989586621679027017"><span class="annot"><span class="annottext">BuildStep a
+</span><a href="#local-6989586621679027017"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-115"></span><span>        </span><span class="annot"><span class="annottext">(BufferRange -&gt; IO (BuildSignal ())) -&gt; BuildStep a
+forall _x. (BufferRange -&gt; IO (BuildSignal _x)) -&gt; BuildStep a
+</span><a href="#local-6989586621679027018"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Builder -&gt; BufferRange -&gt; IO (BuildSignal ())
+</span><span class="hs-identifier hs-var">B.runBuilder</span></span><span> </span><span class="annot"><span class="annottext">Builder
+</span><a href="#local-6989586621679027013"><span class="hs-identifier hs-var">innerBuilder</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-117"></span><span>        </span><span id="local-6989586621679026882"><span class="annot"><a href="#local-6989586621679027018"><span class="hs-identifier hs-type">go</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BufferRange</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BuildSignal</span></span><span> </span><span class="annot"><a href="#local-6989586621679026882"><span class="hs-identifier hs-type">_x</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BuildStep</span></span><span> </span><span class="annot"><a href="#local-6989586621679027016"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-118"></span><span>        </span><span id="local-6989586621679027018"><span class="annot"><span class="annottext">go :: forall _x. (BufferRange -&gt; IO (BuildSignal _x)) -&gt; BuildStep a
+</span><a href="#local-6989586621679027018"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679027033"><span class="annot"><span class="annottext">BufferRange -&gt; IO (BuildSignal _x)
+</span><a href="#local-6989586621679027033"><span class="hs-identifier hs-var">innerStep</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BufferRange</span></span><span> </span><span id="local-6989586621679027035"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027035"><span class="hs-identifier hs-var">op</span></a></span></span><span> </span><span id="local-6989586621679027036"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027036"><span class="hs-identifier hs-var">ope</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-119"></span><span>          </span><span class="hs-comment">-- FIXME: Assert that outRemaining &lt; maxBound :: Word32</span><span>
+</span><span id="line-120"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679027037"><span class="hs-identifier hs-var">outRemaining</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#minimalBufferSize"><span class="hs-identifier hs-var">minimalBufferSize</span></a></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-121"></span><span>              </span><span class="annot"><span class="annottext">BuildSignal a -&gt; IO (BuildSignal a)
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(BuildSignal a -&gt; IO (BuildSignal a))
+-&gt; BuildSignal a -&gt; IO (BuildSignal a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Ptr Word8 -&gt; BuildStep a -&gt; BuildSignal a
+forall a. Int -&gt; Ptr Word8 -&gt; BuildStep a -&gt; BuildSignal a
+</span><span class="hs-identifier hs-var">B.bufferFull</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#minimalBufferSize"><span class="hs-identifier hs-var">minimalBufferSize</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027035"><span class="hs-identifier hs-var">op</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(BufferRange -&gt; IO (BuildSignal _x)) -&gt; BuildStep a
+forall _x. (BufferRange -&gt; IO (BuildSignal _x)) -&gt; BuildStep a
+</span><a href="#local-6989586621679027018"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">BufferRange -&gt; IO (BuildSignal _x)
+</span><a href="#local-6989586621679027033"><span class="hs-identifier hs-var">innerStep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-122"></span><span>          </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-123"></span><span>              </span><span class="hs-comment">-- execute inner builder with reduced boundaries</span><span>
+</span><span id="line-124"></span><span>              </span><span class="annot"><span class="annottext">(BufferRange -&gt; IO (BuildSignal _x))
+-&gt; (Ptr Word8 -&gt; _x -&gt; IO (BuildSignal a))
+-&gt; (Ptr Word8
+    -&gt; Int
+    -&gt; (BufferRange -&gt; IO (BuildSignal _x))
+    -&gt; IO (BuildSignal a))
+-&gt; (Ptr Word8
+    -&gt; ByteString
+    -&gt; (BufferRange -&gt; IO (BuildSignal _x))
+    -&gt; IO (BuildSignal a))
+-&gt; BuildStep a
+forall a b.
+BuildStep a
+-&gt; (Ptr Word8 -&gt; a -&gt; IO b)
+-&gt; (Ptr Word8 -&gt; Int -&gt; BuildStep a -&gt; IO b)
+-&gt; (Ptr Word8 -&gt; ByteString -&gt; BuildStep a -&gt; IO b)
+-&gt; BufferRange
+-&gt; IO b
+</span><span class="hs-identifier hs-var">B.fillWithBuildStep</span></span><span> </span><span class="annot"><span class="annottext">BufferRange -&gt; IO (BuildSignal _x)
+</span><a href="#local-6989586621679027033"><span class="hs-identifier hs-var">innerStep</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; _x -&gt; IO (BuildSignal a)
+forall _x. Ptr Word8 -&gt; _x -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027040"><span class="hs-identifier hs-var">doneH</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+-&gt; Int
+-&gt; (BufferRange -&gt; IO (BuildSignal _x))
+-&gt; IO (BuildSignal a)
+forall _x. Ptr Word8 -&gt; Int -&gt; BuildStep _x -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027041"><span class="hs-identifier hs-var">fullH</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+-&gt; ByteString
+-&gt; (BufferRange -&gt; IO (BuildSignal _x))
+-&gt; IO (BuildSignal a)
+forall _x.
+Ptr Word8 -&gt; ByteString -&gt; BuildStep _x -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027042"><span class="hs-identifier hs-var">insertChunkH</span></a></span><span> </span><span class="annot"><span class="annottext">BufferRange
+</span><a href="#local-6989586621679027043"><span class="hs-identifier hs-var">brInner</span></a></span><span>
+</span><span id="line-125"></span><span>          </span><span class="hs-keyword">where</span><span>
+</span><span id="line-126"></span><span>            </span><span id="local-6989586621679027037"><span class="annot"><span class="annottext">outRemaining :: Int
+</span><a href="#local-6989586621679027037"><span class="hs-identifier hs-var hs-var">outRemaining</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027036"><span class="hs-identifier hs-var">ope</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int
+forall a b. Ptr a -&gt; Ptr b -&gt; Int
+</span><span class="hs-operator hs-var">`F.minusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027035"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-127"></span><span>            </span><span id="local-6989586621679027049"><span class="annot"><span class="annottext">maxChunkSizeLength :: Int
+</span><a href="#local-6989586621679027049"><span class="hs-identifier hs-var hs-var">maxChunkSizeLength</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#word32HexLength"><span class="hs-identifier hs-var">word32HexLength</span></a></span><span> </span><span class="annot"><span class="annottext">(Word32 -&gt; Int) -&gt; Word32 -&gt; Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679027037"><span class="hs-identifier hs-var">outRemaining</span></a></span><span>
+</span><span id="line-128"></span><span>
+</span><span id="line-129"></span><span>            </span><span class="hs-glyph">!</span><span id="local-6989586621679027043"><span class="annot"><span class="annottext">brInner :: BufferRange
+</span><a href="#local-6989586621679027043"><span class="hs-identifier hs-var">brInner</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BufferRange</span></span><span> </span><span id="local-6989586621679027052"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027052"><span class="hs-identifier hs-var">opInner</span></a></span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; BufferRange
+</span><span class="hs-identifier hs-var">BufferRange</span></span><span>
+</span><span id="line-130"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027035"><span class="hs-identifier hs-var">op</span></a></span><span>  </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`F.plusPtr`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679027049"><span class="hs-identifier hs-var">maxChunkSizeLength</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfLength"><span class="hs-identifier hs-var">crlfLength</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-comment">-- leave space for chunk header</span><span>
+</span><span id="line-131"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027036"><span class="hs-identifier hs-var">ope</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`F.plusPtr`</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxAfterBufferOverhead"><span class="hs-identifier hs-var">maxAfterBufferOverhead</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>         </span><span class="hs-comment">-- leave space at end of data</span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span>            </span><span id="local-6989586621679026888"><span class="annot"><a href="#local-6989586621679027040"><span class="hs-identifier hs-type">doneH</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679026888"><span class="hs-identifier hs-type">_x</span></a></span><span>
+</span><span id="line-134"></span><span>                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BuildSignal</span></span><span> </span><span class="annot"><a href="#local-6989586621679027016"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-135"></span><span>            </span><span id="local-6989586621679027040"><span class="annot"><span class="annottext">doneH :: forall _x. Ptr Word8 -&gt; _x -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027040"><span class="hs-identifier hs-var hs-var">doneH</span></a></span></span><span> </span><span id="local-6989586621679027053"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027053"><span class="hs-identifier hs-var">opInner'</span></a></span></span><span> </span><span class="annot"><span class="annottext">_x
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-136"></span><span>                </span><span class="annot"><span class="annottext">Ptr Word8
+-&gt; (Ptr Word8 -&gt; IO (BuildSignal a)) -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027054"><span class="hs-identifier hs-var">wrapChunk</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027053"><span class="hs-identifier hs-var">opInner'</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO (BuildSignal a)) -&gt; IO (BuildSignal a))
+-&gt; (Ptr Word8 -&gt; IO (BuildSignal a)) -&gt; IO (BuildSignal a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679027055"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027055"><span class="hs-identifier hs-var">op'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-137"></span><span>                  </span><span class="annot"><span class="annottext">BuildStep a
+</span><a href="#local-6989586621679027017"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">BuildStep a -&gt; BuildStep a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; BufferRange
+</span><span class="hs-identifier hs-var">BufferRange</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027055"><span class="hs-identifier hs-var">op'</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027036"><span class="hs-identifier hs-var">ope</span></a></span><span>
+</span><span id="line-138"></span><span>
+</span><span id="line-139"></span><span>            </span><span id="local-6989586621679026889"><span class="annot"><a href="#local-6989586621679027041"><span class="hs-identifier hs-type">fullH</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BuildStep</span></span><span> </span><span class="annot"><a href="#local-6989586621679026889"><span class="hs-identifier hs-type">_x</span></a></span><span>
+</span><span id="line-140"></span><span>                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BuildSignal</span></span><span> </span><span class="annot"><a href="#local-6989586621679027016"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-141"></span><span>            </span><span id="local-6989586621679027041"><span class="annot"><span class="annottext">fullH :: forall _x. Ptr Word8 -&gt; Int -&gt; BuildStep _x -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027041"><span class="hs-identifier hs-var hs-var">fullH</span></a></span></span><span> </span><span id="local-6989586621679027059"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027059"><span class="hs-identifier hs-var">opInner'</span></a></span></span><span> </span><span id="local-6989586621679027060"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679027060"><span class="hs-identifier hs-var">minRequiredSize</span></a></span></span><span> </span><span id="local-6989586621679027061"><span class="annot"><span class="annottext">BuildStep _x
+</span><a href="#local-6989586621679027061"><span class="hs-identifier hs-var">nextInnerStep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-142"></span><span>                </span><span class="annot"><span class="annottext">Ptr Word8
+-&gt; (Ptr Word8 -&gt; IO (BuildSignal a)) -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027054"><span class="hs-identifier hs-var">wrapChunk</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027059"><span class="hs-identifier hs-var">opInner'</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO (BuildSignal a)) -&gt; IO (BuildSignal a))
+-&gt; (Ptr Word8 -&gt; IO (BuildSignal a)) -&gt; IO (BuildSignal a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679027062"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027062"><span class="hs-identifier hs-var">op'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-143"></span><span>                  </span><span class="annot"><span class="annottext">BuildSignal a -&gt; IO (BuildSignal a)
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(BuildSignal a -&gt; IO (BuildSignal a))
+-&gt; BuildSignal a -&gt; IO (BuildSignal a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Ptr Word8 -&gt; BuildStep a -&gt; BuildSignal a
+forall a. Int -&gt; Ptr Word8 -&gt; BuildStep a -&gt; BuildSignal a
+</span><span class="hs-identifier hs-var">B.bufferFull</span></span><span>
+</span><span id="line-144"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679027060"><span class="hs-identifier hs-var">minRequiredSize</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#maxEncodingOverhead"><span class="hs-identifier hs-var">maxEncodingOverhead</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-145"></span><span>                    </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027062"><span class="hs-identifier hs-var">op'</span></a></span><span>
+</span><span id="line-146"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BuildStep _x -&gt; BuildStep a
+forall _x. (BufferRange -&gt; IO (BuildSignal _x)) -&gt; BuildStep a
+</span><a href="#local-6989586621679027018"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">BuildStep _x
+</span><a href="#local-6989586621679027061"><span class="hs-identifier hs-var">nextInnerStep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-147"></span><span>
+</span><span id="line-148"></span><span>            </span><span id="local-6989586621679026890"><span class="annot"><a href="#local-6989586621679027042"><span class="hs-identifier hs-type">insertChunkH</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BuildStep</span></span><span> </span><span class="annot"><a href="#local-6989586621679026890"><span class="hs-identifier hs-type">_x</span></a></span><span>
+</span><span id="line-149"></span><span>                         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BuildSignal</span></span><span> </span><span class="annot"><a href="#local-6989586621679027016"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-150"></span><span>            </span><span id="local-6989586621679027042"><span class="annot"><span class="annottext">insertChunkH :: forall _x.
+Ptr Word8 -&gt; ByteString -&gt; BuildStep _x -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027042"><span class="hs-identifier hs-var hs-var">insertChunkH</span></a></span></span><span> </span><span id="local-6989586621679027067"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027067"><span class="hs-identifier hs-var">opInner'</span></a></span></span><span> </span><span id="local-6989586621679027068"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679027068"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span id="local-6989586621679027069"><span class="annot"><span class="annottext">BuildStep _x
+</span><a href="#local-6989586621679027069"><span class="hs-identifier hs-var">nextInnerStep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-151"></span><span>                </span><span class="annot"><span class="annottext">Ptr Word8
+-&gt; (Ptr Word8 -&gt; IO (BuildSignal a)) -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027054"><span class="hs-identifier hs-var">wrapChunk</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027067"><span class="hs-identifier hs-var">opInner'</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO (BuildSignal a)) -&gt; IO (BuildSignal a))
+-&gt; (Ptr Word8 -&gt; IO (BuildSignal a)) -&gt; IO (BuildSignal a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679027070"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027070"><span class="hs-identifier hs-var">op'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-152"></span><span>                  </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Bool
+</span><span class="hs-identifier hs-var">S.null</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679027068"><span class="hs-identifier hs-var">bs</span></a></span><span>                      </span><span class="hs-comment">-- flush</span><span>
+</span><span id="line-153"></span><span>                  </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">BuildSignal a -&gt; IO (BuildSignal a)
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(BuildSignal a -&gt; IO (BuildSignal a))
+-&gt; BuildSignal a -&gt; IO (BuildSignal a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; ByteString -&gt; BuildStep a -&gt; BuildSignal a
+forall a. Ptr Word8 -&gt; ByteString -&gt; BuildStep a -&gt; BuildSignal a
+</span><span class="hs-identifier hs-var">B.insertChunk</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027070"><span class="hs-identifier hs-var">op'</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-identifier hs-var">S.empty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BuildStep _x -&gt; BuildStep a
+forall _x. (BufferRange -&gt; IO (BuildSignal _x)) -&gt; BuildStep a
+</span><a href="#local-6989586621679027018"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">BuildStep _x
+</span><a href="#local-6989586621679027069"><span class="hs-identifier hs-var">nextInnerStep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-154"></span><span>                  </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>                           </span><span class="hs-comment">-- insert non-empty bytestring</span><span>
+</span><span id="line-155"></span><span>                    </span><span class="hs-comment">-- add header for inserted bytestring</span><span>
+</span><span id="line-156"></span><span>                    </span><span class="hs-comment">-- FIXME: assert(S.length bs &lt; maxBound :: Word32)</span><span>
+</span><span id="line-157"></span><span>                    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679027076"><span class="annot"><span class="annottext">chunkSize :: Word32
+</span><a href="#local-6989586621679027076"><span class="hs-identifier hs-var hs-var">chunkSize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Word32) -&gt; Int -&gt; Word32
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Int
+</span><span class="hs-identifier hs-var">S.length</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679027068"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-158"></span><span>                    </span><span class="hs-glyph">!</span><span id="local-6989586621679027078"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027078"><span class="hs-identifier hs-var">op''</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Padding -&gt; Word32 -&gt; Ptr Word8 -&gt; IO (Ptr Word8)
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeWord32Hex"><span class="hs-identifier hs-var">writeWord32Hex</span></a></span><span> </span><span class="annot"><span class="annottext">Padding
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#NoPadding"><span class="hs-identifier hs-var">NoPadding</span></a></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679027076"><span class="hs-identifier hs-var">chunkSize</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027070"><span class="hs-identifier hs-var">op'</span></a></span><span>
+</span><span id="line-159"></span><span>                    </span><span class="hs-glyph">!</span><span id="local-6989586621679027079"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027079"><span class="hs-identifier hs-var">op'''</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO (Ptr Word8)
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeCRLF"><span class="hs-identifier hs-var">writeCRLF</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027078"><span class="hs-identifier hs-var">op''</span></a></span><span>
+</span><span id="line-160"></span><span>                    </span><span class="hs-comment">-- insert bytestring and write CRLF in next buildstep</span><span>
+</span><span id="line-161"></span><span>                    </span><span class="annot"><span class="annottext">BuildSignal a -&gt; IO (BuildSignal a)
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(BuildSignal a -&gt; IO (BuildSignal a))
+-&gt; BuildSignal a -&gt; IO (BuildSignal a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; ByteString -&gt; BuildStep a -&gt; BuildSignal a
+forall a. Ptr Word8 -&gt; ByteString -&gt; BuildStep a -&gt; BuildSignal a
+</span><span class="hs-identifier hs-var">B.insertChunk</span></span><span>
+</span><span id="line-162"></span><span>                      </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027079"><span class="hs-identifier hs-var">op'''</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679027068"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-163"></span><span>                      </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Builder -&gt; BuildStep a -&gt; BuildStep a
+forall a. Builder -&gt; BuildStep a -&gt; BuildStep a
+</span><span class="hs-identifier hs-var">B.runBuilderWith</span></span><span> </span><span class="annot"><span class="annottext">Builder
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfBuilder"><span class="hs-identifier hs-var">crlfBuilder</span></a></span><span> </span><span class="annot"><span class="annottext">(BuildStep a -&gt; BuildStep a) -&gt; BuildStep a -&gt; BuildStep a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">BuildStep _x -&gt; BuildStep a
+forall _x. (BufferRange -&gt; IO (BuildSignal _x)) -&gt; BuildStep a
+</span><a href="#local-6989586621679027018"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">BuildStep _x
+</span><a href="#local-6989586621679027069"><span class="hs-identifier hs-var">nextInnerStep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-164"></span><span>
+</span><span id="line-165"></span><span>            </span><span class="hs-comment">-- wraps the chunk, if it is non-empty, and returns the</span><span>
+</span><span id="line-166"></span><span>            </span><span class="hs-comment">-- signal constructed with the correct end-of-data pointer</span><span>
+</span><span id="line-167"></span><span>            </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="#local-6989586621679027054"><span class="hs-pragma hs-type">wrapChunk</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-168"></span><span>            </span><span class="annot"><a href="#local-6989586621679027054"><span class="hs-identifier hs-type">wrapChunk</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BuildSignal</span></span><span> </span><span class="annot"><a href="#local-6989586621679027016"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-169"></span><span>                      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BuildSignal</span></span><span> </span><span class="annot"><a href="#local-6989586621679027016"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-170"></span><span>            </span><span id="local-6989586621679027054"><span class="annot"><span class="annottext">wrapChunk :: Ptr Word8
+-&gt; (Ptr Word8 -&gt; IO (BuildSignal a)) -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027054"><span class="hs-identifier hs-var hs-var">wrapChunk</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679027081"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027081"><span class="hs-identifier hs-var">chunkDataEnd</span></a></span></span><span> </span><span id="local-6989586621679027082"><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027082"><span class="hs-identifier hs-var">mkSignal</span></a></span></span><span>
+</span><span id="line-171"></span><span>              </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027081"><span class="hs-identifier hs-var">chunkDataEnd</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027052"><span class="hs-identifier hs-var">opInner</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027082"><span class="hs-identifier hs-var">mkSignal</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027035"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-172"></span><span>              </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-173"></span><span>                  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679027085"><span class="annot"><span class="annottext">chunkSize :: Word32
+</span><a href="#local-6989586621679027085"><span class="hs-identifier hs-var hs-var">chunkSize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Word32) -&gt; Int -&gt; Word32
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027081"><span class="hs-identifier hs-var">chunkDataEnd</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int
+forall a b. Ptr a -&gt; Ptr b -&gt; Int
+</span><span class="hs-operator hs-var">`F.minusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027052"><span class="hs-identifier hs-var">opInner</span></a></span><span>
+</span><span id="line-174"></span><span>                  </span><span class="annot"><span class="annottext">IO (Ptr Word8) -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO (Ptr Word8) -&gt; IO ()) -&gt; IO (Ptr Word8) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Padding -&gt; Word32 -&gt; Ptr Word8 -&gt; IO (Ptr Word8)
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeWord32Hex"><span class="hs-identifier hs-var">writeWord32Hex</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Padding
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#PadTo"><span class="hs-identifier hs-var">PadTo</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679027049"><span class="hs-identifier hs-var">maxChunkSizeLength</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679027085"><span class="hs-identifier hs-var">chunkSize</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027035"><span class="hs-identifier hs-var">op</span></a></span><span>
+</span><span id="line-175"></span><span>                  </span><span class="annot"><span class="annottext">IO (Ptr Word8) -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO (Ptr Word8) -&gt; IO ()) -&gt; IO (Ptr Word8) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO (Ptr Word8)
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeCRLF"><span class="hs-identifier hs-var">writeCRLF</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027052"><span class="hs-identifier hs-var">opInner</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`F.plusPtr`</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">-</span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfLength"><span class="hs-identifier hs-var">crlfLength</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-176"></span><span>                  </span><span class="annot"><span class="annottext">IO (Ptr Word8) -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO (Ptr Word8) -&gt; IO ()) -&gt; IO (Ptr Word8) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO (Ptr Word8)
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#writeCRLF"><span class="hs-identifier hs-var">writeCRLF</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027081"><span class="hs-identifier hs-var">chunkDataEnd</span></a></span><span>
+</span><span id="line-177"></span><span>                  </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; IO (BuildSignal a)
+</span><a href="#local-6989586621679027082"><span class="hs-identifier hs-var">mkSignal</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679027081"><span class="hs-identifier hs-var">chunkDataEnd</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`F.plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#crlfLength"><span class="hs-identifier hs-var">crlfLength</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-178"></span><span>
+</span><span id="line-179"></span><span>
+</span><span id="line-180"></span><span class="annot"><span class="hs-comment">-- | The zero-length chunk @0\\r\\n\\r\\n@ signalling the termination of the data transfer.</span></span><span>
+</span><span id="line-181"></span><span class="annot"><a href="Data.ByteString.Builder.HTTP.Chunked.html#chunkedTransferTerminator"><span class="hs-identifier hs-type">chunkedTransferTerminator</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Builder</span></span><span>
+</span><span id="line-182"></span><span id="chunkedTransferTerminator"><span class="annot"><span class="annottext">chunkedTransferTerminator :: Builder
+</span><a href="Data.ByteString.Builder.HTTP.Chunked.html#chunkedTransferTerminator"><span class="hs-identifier hs-var hs-var">chunkedTransferTerminator</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; Builder
+</span><span class="hs-identifier hs-var">B.byteStringCopy</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><span class="hs-string">&quot;0\r\n\r\n&quot;</span></span><span>
+</span><span id="line-183"></span></pre></body></html>

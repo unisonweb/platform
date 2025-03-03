@@ -1,0 +1,724 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- |</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- Module      : Crypto.Cipher.AESGCMSIV</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- License     : BSD-style</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Maintainer  : Olivier Ch&#233;ron &lt;olivier.cheron@gmail.com&gt;</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Stability   : experimental</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Portability : unknown</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Implementation of AES-GCM-SIV, an AEAD scheme with nonce misuse resistance</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- defined in &lt;https://tools.ietf.org/html/rfc8452 RFC 8452&gt;.</span><span>
+</span><span id="line-10"></span><span class="hs-comment">--</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- To achieve the nonce misuse-resistance property, encryption requires two</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- passes on the plaintext, hence no streaming API is provided.  This AEAD</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- operates on complete inputs held in memory.  For simplicity, the</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- implementation of decryption uses a similar pattern, with performance</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- penalty compared to an implementation which is able to merge both passes.</span><span>
+</span><span id="line-16"></span><span class="hs-comment">--</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- The specification allows inputs up to 2^36 bytes but this implementation</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- requires AAD and plaintext/ciphertext to be both smaller than 2^32 bytes.</span><span>
+</span><span id="line-19"></span><span class="hs-pragma">{-# LANGUAGE ForeignFunctionInterface #-}</span><span>
+</span><span id="line-20"></span><span class="hs-pragma">{-# LANGUAGE GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Crypto.Cipher.AESGCMSIV</span><span>
+</span><span id="line-22"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier">Nonce</span></a></span><span>
+</span><span id="line-23"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#nonce"><span class="hs-identifier">nonce</span></a></span><span>
+</span><span id="line-24"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#generateNonce"><span class="hs-identifier">generateNonce</span></a></span><span>
+</span><span id="line-25"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#encrypt"><span class="hs-identifier">encrypt</span></a></span><span>
+</span><span id="line-26"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#decrypt"><span class="hs-identifier">decrypt</span></a></span><span>
+</span><span id="line-27"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-28"></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bits</span></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span>
+</span><span id="line-31"></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.C.Types</span></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.C.String</span></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Ptr</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">plusPtr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Storable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">peekElemOff</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">poke</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">pokeElemOff</span></span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.ByteArray</span></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteArray</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Memory.Endian</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">toLE</span></span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Memory.PtrMethods</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">memXor</span></span><span class="hs-special">)</span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Crypto.Cipher.AES.Primitive.html"><span class="hs-identifier">Crypto.Cipher.AES.Primitive</span></a></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Crypto.Cipher.Types.html"><span class="hs-identifier">Crypto.Cipher.Types</span></a></span><span>
+</span><span id="line-44"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Crypto.Error.html"><span class="hs-identifier">Crypto.Error</span></a></span><span>
+</span><span id="line-45"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Crypto.Internal.Compat.html"><span class="hs-identifier">Crypto.Internal.Compat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier">unsafeDoIO</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-46"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Crypto.Random.html"><span class="hs-identifier">Crypto.Random</span></a></span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- 12-byte nonces</span><span>
+</span><span id="line-50"></span><span>
+</span><span id="line-51"></span><span class="annot"><span class="hs-comment">-- | Nonce value for AES-GCM-SIV, always 12 bytes.</span></span><span>
+</span><span id="line-52"></span><span class="hs-keyword">newtype</span><span> </span><span id="Nonce"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-var">Nonce</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Nonce"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-var">Nonce</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span> </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679242857"><span id="local-6989586621679242863"><span id="local-6989586621679242867"><span class="annot"><span class="annottext">Int -&gt; Nonce -&gt; ShowS
+[Nonce] -&gt; ShowS
+Nonce -&gt; String
+(Int -&gt; Nonce -&gt; ShowS)
+-&gt; (Nonce -&gt; String) -&gt; ([Nonce] -&gt; ShowS) -&gt; Show Nonce
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; Nonce -&gt; ShowS
+showsPrec :: Int -&gt; Nonce -&gt; ShowS
+$cshow :: Nonce -&gt; String
+show :: Nonce -&gt; String
+$cshowList :: [Nonce] -&gt; ShowS
+showList :: [Nonce] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679242871"><span id="local-6989586621679242876"><span class="annot"><span class="annottext">Nonce -&gt; Nonce -&gt; Bool
+(Nonce -&gt; Nonce -&gt; Bool) -&gt; (Nonce -&gt; Nonce -&gt; Bool) -&gt; Eq Nonce
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: Nonce -&gt; Nonce -&gt; Bool
+== :: Nonce -&gt; Nonce -&gt; Bool
+$c/= :: Nonce -&gt; Nonce -&gt; Bool
+/= :: Nonce -&gt; Nonce -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679242882"><span id="local-6989586621679242886"><span id="local-6989586621679242890"><span class="annot"><span class="annottext">Nonce -&gt; Int
+(Nonce -&gt; Int)
+-&gt; (forall p a. Nonce -&gt; (Ptr p -&gt; IO a) -&gt; IO a)
+-&gt; (forall p. Nonce -&gt; Ptr p -&gt; IO ())
+-&gt; ByteArrayAccess Nonce
+forall p. Nonce -&gt; Ptr p -&gt; IO ()
+forall ba.
+(ba -&gt; Int)
+-&gt; (forall p a. ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a)
+-&gt; (forall p. ba -&gt; Ptr p -&gt; IO ())
+-&gt; ByteArrayAccess ba
+forall p a. Nonce -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+$clength :: Nonce -&gt; Int
+length :: Nonce -&gt; Int
+$cwithByteArray :: forall p a. Nonce -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+withByteArray :: forall p a. Nonce -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+$ccopyByteArrayToPtr :: forall p. Nonce -&gt; Ptr p -&gt; IO ()
+copyByteArrayToPtr :: forall p. Nonce -&gt; Ptr p -&gt; IO ()
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">ByteArrayAccess</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-53"></span><span>
+</span><span id="line-54"></span><span class="annot"><span class="hs-comment">-- | Nonce smart constructor.  Accepts only 12-byte inputs.</span></span><span>
+</span><span id="line-55"></span><span id="local-6989586621679242702"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#nonce"><span class="hs-identifier hs-type">nonce</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679242702"><span class="hs-identifier hs-type">iv</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242702"><span class="hs-identifier hs-type">iv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Error.Types.html#CryptoFailable"><span class="hs-identifier hs-type">CryptoFailable</span></a></span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span></span><span>
+</span><span id="line-56"></span><span id="nonce"><span class="annot"><span class="annottext">nonce :: forall iv. ByteArrayAccess iv =&gt; iv -&gt; CryptoFailable Nonce
+</span><a href="Crypto.Cipher.AESGCMSIV.html#nonce"><span class="hs-identifier hs-var hs-var">nonce</span></a></span></span><span> </span><span id="local-6989586621679242903"><span class="annot"><span class="annottext">iv
+</span><a href="#local-6989586621679242903"><span class="hs-identifier hs-var">iv</span></a></span></span><span>
+</span><span id="line-57"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">iv -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">iv
+</span><a href="#local-6989586621679242903"><span class="hs-identifier hs-var">iv</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">12</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Nonce -&gt; CryptoFailable Nonce
+forall a. a -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoPassed"><span class="hs-identifier hs-var">CryptoPassed</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bytes -&gt; Nonce
+</span><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-var">Nonce</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Nonce) -&gt; Bytes -&gt; Nonce
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">iv -&gt; Bytes
+forall bin bout.
+(ByteArrayAccess bin, ByteArray bout) =&gt;
+bin -&gt; bout
+</span><span class="hs-identifier hs-var">B.convert</span></span><span> </span><span class="annot"><span class="annottext">iv
+</span><a href="#local-6989586621679242903"><span class="hs-identifier hs-var">iv</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-58"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CryptoError -&gt; CryptoFailable Nonce
+forall a. CryptoError -&gt; CryptoFailable a
+</span><a href="Crypto.Error.Types.html#CryptoFailed"><span class="hs-identifier hs-var">CryptoFailed</span></a></span><span> </span><span class="annot"><span class="annottext">CryptoError
+</span><a href="Crypto.Error.Types.html#CryptoError_IvSizeInvalid"><span class="hs-identifier hs-var">CryptoError_IvSizeInvalid</span></a></span><span>
+</span><span id="line-59"></span><span>
+</span><span id="line-60"></span><span class="annot"><span class="hs-comment">-- | Generate a random nonce for use with AES-GCM-SIV.</span></span><span>
+</span><span id="line-61"></span><span id="local-6989586621679242712"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#generateNonce"><span class="hs-identifier hs-type">generateNonce</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Random.Types.html#MonadRandom"><span class="hs-identifier hs-type">MonadRandom</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679242712"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242712"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span></span><span>
+</span><span id="line-62"></span><span id="generateNonce"><span class="annot"><span class="annottext">generateNonce :: forall (m :: * -&gt; *). MonadRandom m =&gt; m Nonce
+</span><a href="Crypto.Cipher.AESGCMSIV.html#generateNonce"><span class="hs-identifier hs-var hs-var">generateNonce</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Nonce
+</span><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-var">Nonce</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Nonce) -&gt; m Bytes -&gt; m Nonce
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; m Bytes
+forall byteArray. ByteArray byteArray =&gt; Int -&gt; m byteArray
+forall (m :: * -&gt; *) byteArray.
+(MonadRandom m, ByteArray byteArray) =&gt;
+Int -&gt; m byteArray
+</span><a href="Crypto.Random.Types.html#getRandomBytes"><span class="hs-identifier hs-var">getRandomBytes</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">12</span></span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- POLYVAL (mutable context)</span><span>
+</span><span id="line-66"></span><span>
+</span><span id="line-67"></span><span class="hs-keyword">newtype</span><span> </span><span id="Polyval"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Polyval"><span class="hs-identifier hs-var">Polyval</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Polyval"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Polyval"><span class="hs-identifier hs-var">Polyval</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span>
+</span><span id="line-68"></span><span>
+</span><span id="line-69"></span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#polyvalInit"><span class="hs-identifier hs-type">polyvalInit</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ScrubbedBytes</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Polyval"><span class="hs-identifier hs-type">Polyval</span></a></span><span>
+</span><span id="line-70"></span><span id="polyvalInit"><span class="annot"><span class="annottext">polyvalInit :: ScrubbedBytes -&gt; IO Polyval
+</span><a href="Crypto.Cipher.AESGCMSIV.html#polyvalInit"><span class="hs-identifier hs-var hs-var">polyvalInit</span></a></span></span><span> </span><span id="local-6989586621679242923"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242923"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Polyval
+</span><a href="Crypto.Cipher.AESGCMSIV.html#Polyval"><span class="hs-identifier hs-var">Polyval</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; Polyval) -&gt; IO Bytes -&gt; IO Polyval
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">IO Bytes
+</span><a href="#local-6989586621679242924"><span class="hs-identifier hs-var">doInit</span></a></span><span>
+</span><span id="line-71"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679242924"><span class="annot"><span class="annottext">doInit :: IO Bytes
+</span><a href="#local-6989586621679242924"><span class="hs-identifier hs-var hs-var">doInit</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Polyval -&gt; IO ()) -&gt; IO Bytes
+forall ba p. ByteArray ba =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; IO ba
+</span><span class="hs-identifier hs-var">B.alloc</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">272</span></span><span> </span><span class="annot"><span class="annottext">((Ptr Polyval -&gt; IO ()) -&gt; IO Bytes)
+-&gt; (Ptr Polyval -&gt; IO ()) -&gt; IO Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242937"><span class="annot"><span class="annottext">Ptr Polyval
+</span><a href="#local-6989586621679242937"><span class="hs-identifier hs-var">pctx</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr CChar -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242923"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr CChar -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr CChar -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242939"><span class="annot"><span class="annottext">Ptr CChar
+</span><a href="#local-6989586621679242939"><span class="hs-identifier hs-var">ph</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-72"></span><span>            </span><span class="annot"><span class="annottext">Ptr Polyval -&gt; Ptr CChar -&gt; IO ()
+</span><a href="Crypto.Cipher.AESGCMSIV.html#c_aes_polyval_init"><span class="hs-identifier hs-var">c_aes_polyval_init</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Polyval
+</span><a href="#local-6989586621679242937"><span class="hs-identifier hs-var">pctx</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CChar
+</span><a href="#local-6989586621679242939"><span class="hs-identifier hs-var">ph</span></a></span><span>
+</span><span id="line-73"></span><span>
+</span><span id="line-74"></span><span id="local-6989586621679242726"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#polyvalUpdate"><span class="hs-identifier hs-type">polyvalUpdate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679242726"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Polyval"><span class="hs-identifier hs-type">Polyval</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242726"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-75"></span><span id="polyvalUpdate"><span class="annot"><span class="annottext">polyvalUpdate :: forall ba. ByteArrayAccess ba =&gt; Polyval -&gt; ba -&gt; IO ()
+</span><a href="Crypto.Cipher.AESGCMSIV.html#polyvalUpdate"><span class="hs-identifier hs-var hs-var">polyvalUpdate</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Polyval"><span class="hs-identifier hs-type">Polyval</span></a></span><span> </span><span id="local-6989586621679242945"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242945"><span class="hs-identifier hs-var">ctx</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679242946"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242946"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Polyval -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242945"><span class="hs-identifier hs-var">ctx</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Polyval -&gt; IO ()) -&gt; IO ())
+-&gt; (Ptr Polyval -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242947"><span class="annot"><span class="annottext">Ptr Polyval
+</span><a href="#local-6989586621679242947"><span class="hs-identifier hs-var">pctx</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-76"></span><span>    </span><span class="annot"><span class="annottext">ba -&gt; (Ptr CChar -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242946"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr CChar -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr CChar -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242948"><span class="annot"><span class="annottext">Ptr CChar
+</span><a href="#local-6989586621679242948"><span class="hs-identifier hs-var">pbs</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Polyval -&gt; Ptr CChar -&gt; CUInt -&gt; IO ()
+</span><a href="Crypto.Cipher.AESGCMSIV.html#c_aes_polyval_update"><span class="hs-identifier hs-var">c_aes_polyval_update</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Polyval
+</span><a href="#local-6989586621679242947"><span class="hs-identifier hs-var">pctx</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CChar
+</span><a href="#local-6989586621679242948"><span class="hs-identifier hs-var">pbs</span></a></span><span> </span><span class="annot"><span class="annottext">CUInt
+</span><a href="#local-6989586621679242950"><span class="hs-identifier hs-var">sz</span></a></span><span>
+</span><span id="line-77"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679242950"><span class="annot"><span class="annottext">sz :: CUInt
+</span><a href="#local-6989586621679242950"><span class="hs-identifier hs-var hs-var">sz</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; CUInt
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679242946"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-78"></span><span>
+</span><span id="line-79"></span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#polyvalFinalize"><span class="hs-identifier hs-type">polyvalFinalize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Polyval"><span class="hs-identifier hs-type">Polyval</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ScrubbedBytes</span></span><span>
+</span><span id="line-80"></span><span id="polyvalFinalize"><span class="annot"><span class="annottext">polyvalFinalize :: Polyval -&gt; IO ScrubbedBytes
+</span><a href="Crypto.Cipher.AESGCMSIV.html#polyvalFinalize"><span class="hs-identifier hs-var hs-var">polyvalFinalize</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Polyval"><span class="hs-identifier hs-type">Polyval</span></a></span><span> </span><span id="local-6989586621679242957"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242957"><span class="hs-identifier hs-var">ctx</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr CChar -&gt; IO ()) -&gt; IO ScrubbedBytes
+forall ba p. ByteArray ba =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; IO ba
+</span><span class="hs-identifier hs-var">B.alloc</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span> </span><span class="annot"><span class="annottext">((Ptr CChar -&gt; IO ()) -&gt; IO ScrubbedBytes)
+-&gt; (Ptr CChar -&gt; IO ()) -&gt; IO ScrubbedBytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242958"><span class="annot"><span class="annottext">Ptr CChar
+</span><a href="#local-6989586621679242958"><span class="hs-identifier hs-var">dst</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-81"></span><span>    </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Polyval -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242957"><span class="hs-identifier hs-var">ctx</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Polyval -&gt; IO ()) -&gt; IO ())
+-&gt; (Ptr Polyval -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242959"><span class="annot"><span class="annottext">Ptr Polyval
+</span><a href="#local-6989586621679242959"><span class="hs-identifier hs-var">pctx</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Polyval -&gt; Ptr CChar -&gt; IO ()
+</span><a href="Crypto.Cipher.AESGCMSIV.html#c_aes_polyval_finalize"><span class="hs-identifier hs-var">c_aes_polyval_finalize</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Polyval
+</span><a href="#local-6989586621679242959"><span class="hs-identifier hs-var">pctx</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CChar
+</span><a href="#local-6989586621679242958"><span class="hs-identifier hs-var">dst</span></a></span><span>
+</span><span id="line-82"></span><span>
+</span><span id="line-83"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_aes.h crypton_aes_polyval_init&quot;</span></span><span>
+</span><span id="line-84"></span><span>    </span><span id="c_aes_polyval_init"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#c_aes_polyval_init"><span class="hs-identifier hs-var">c_aes_polyval_init</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Polyval"><span class="hs-identifier hs-type">Polyval</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">CString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-85"></span><span>
+</span><span id="line-86"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_aes.h crypton_aes_polyval_update&quot;</span></span><span>
+</span><span id="line-87"></span><span>    </span><span id="c_aes_polyval_update"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#c_aes_polyval_update"><span class="hs-identifier hs-var">c_aes_polyval_update</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Polyval"><span class="hs-identifier hs-type">Polyval</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">CString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">CUInt</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-88"></span><span>
+</span><span id="line-89"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_aes.h crypton_aes_polyval_finalize&quot;</span></span><span>
+</span><span id="line-90"></span><span>    </span><span id="c_aes_polyval_finalize"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#c_aes_polyval_finalize"><span class="hs-identifier hs-var">c_aes_polyval_finalize</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Polyval"><span class="hs-identifier hs-type">Polyval</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">CString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-91"></span><span>
+</span><span id="line-92"></span><span>
+</span><span id="line-93"></span><span class="hs-comment">-- Key Generation</span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#le32iv"><span class="hs-identifier hs-type">le32iv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span>
+</span><span id="line-96"></span><span id="le32iv"><span class="annot"><span class="annottext">le32iv :: Word32 -&gt; Nonce -&gt; Bytes
+</span><a href="Crypto.Cipher.AESGCMSIV.html#le32iv"><span class="hs-identifier hs-var hs-var">le32iv</span></a></span></span><span> </span><span id="local-6989586621679242963"><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679242963"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span><span> </span><span id="local-6989586621679242964"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242964"><span class="hs-identifier hs-var">iv</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr (LE Word32) -&gt; IO ()) -&gt; Bytes
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span> </span><span class="annot"><span class="annottext">((Ptr (LE Word32) -&gt; IO ()) -&gt; Bytes)
+-&gt; (Ptr (LE Word32) -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679242966"><span class="annot"><span class="annottext">Ptr (LE Word32)
+</span><a href="#local-6989586621679242966"><span class="hs-identifier hs-var">ptr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-97"></span><span>    </span><span class="annot"><span class="annottext">Ptr (LE Word32) -&gt; LE Word32 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">poke</span></span><span> </span><span class="annot"><span class="annottext">Ptr (LE Word32)
+</span><a href="#local-6989586621679242966"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word32 -&gt; LE Word32
+forall a. ByteSwap a =&gt; a -&gt; LE a
+</span><span class="hs-identifier hs-var">toLE</span></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679242963"><span class="hs-identifier hs-var">n</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span>    </span><span class="annot"><span class="annottext">Bytes -&gt; Ptr Any -&gt; IO ()
+forall ba p. ByteArrayAccess ba =&gt; ba -&gt; Ptr p -&gt; IO ()
+forall p. Bytes -&gt; Ptr p -&gt; IO ()
+</span><span class="hs-identifier hs-var">copyByteArrayToPtr</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679242964"><span class="hs-identifier hs-var">iv</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr (LE Word32)
+</span><a href="#local-6989586621679242966"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr (LE Word32) -&gt; Int -&gt; Ptr Any
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span class="hs-special">)</span><span>
+</span><span id="line-99"></span><span>
+</span><span id="line-100"></span><span id="local-6989586621679242737"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#deriveKeys"><span class="hs-identifier hs-type">deriveKeys</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Cipher.Types.Block.html#BlockCipher128"><span class="hs-identifier hs-type">BlockCipher128</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679242737"><span class="hs-identifier hs-type">aes</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242737"><span class="hs-identifier hs-type">aes</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ScrubbedBytes</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.AES.Primitive.html#AES"><span class="hs-identifier hs-type">AES</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-101"></span><span id="deriveKeys"><span class="annot"><span class="annottext">deriveKeys :: forall aes.
+BlockCipher128 aes =&gt;
+aes -&gt; Nonce -&gt; (ScrubbedBytes, AES)
+</span><a href="Crypto.Cipher.AESGCMSIV.html#deriveKeys"><span class="hs-identifier hs-var hs-var">deriveKeys</span></a></span></span><span> </span><span id="local-6989586621679242981"><span class="annot"><span class="annottext">aes
+</span><a href="#local-6989586621679242981"><span class="hs-identifier hs-var">aes</span></a></span></span><span> </span><span id="local-6989586621679242982"><span class="annot"><span class="annottext">Nonce
+</span><a href="#local-6989586621679242982"><span class="hs-identifier hs-var">iv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-102"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">aes -&gt; KeySizeSpecifier
+forall cipher. Cipher cipher =&gt; cipher -&gt; KeySizeSpecifier
+</span><a href="Crypto.Cipher.Types.Base.html#cipherKeySize"><span class="hs-identifier hs-var">cipherKeySize</span></a></span><span> </span><span class="annot"><span class="annottext">aes
+</span><a href="#local-6989586621679242981"><span class="hs-identifier hs-var">aes</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-103"></span><span>        </span><span class="annot"><a href="Crypto.Cipher.Types.Base.html#KeySizeFixed"><span class="hs-identifier hs-type">KeySizeFixed</span></a></span><span> </span><span id="local-6989586621679242985"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242985"><span class="hs-identifier hs-var">sz</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242985"><span class="hs-identifier hs-var">sz</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`mod`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-104"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679242992"><span class="annot"><span class="annottext">mak :: ScrubbedBytes
+</span><a href="#local-6989586621679242992"><span class="hs-identifier hs-var hs-var">mak</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Word32] -&gt; ScrubbedBytes
+</span><a href="#local-6989586621679242993"><span class="hs-identifier hs-var">buildKey</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Word32
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">..</span><span> </span><span class="annot"><span class="annottext">Word32
+</span><span class="hs-number">1</span></span><span class="hs-special">]</span><span>
+</span><span id="line-105"></span><span>                </span><span id="local-6989586621679243002"><span class="annot"><span class="annottext">key :: ScrubbedBytes
+</span><a href="#local-6989586621679243002"><span class="hs-identifier hs-var hs-var">key</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Word32] -&gt; ScrubbedBytes
+</span><a href="#local-6989586621679242993"><span class="hs-identifier hs-var">buildKey</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Word32
+</span><span class="hs-number">2</span></span><span> </span><span class="hs-glyph">..</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Word32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679242985"><span class="hs-identifier hs-var">sz</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`div`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Word32 -&gt; Word32
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><span class="hs-number">1</span></span><span class="hs-special">]</span><span>
+</span><span id="line-106"></span><span>                </span><span id="local-6989586621679243018"><span class="annot"><span class="annottext">mek :: AES
+</span><a href="#local-6989586621679243018"><span class="hs-identifier hs-var hs-var">mek</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CryptoFailable AES -&gt; AES
+forall a. CryptoFailable a -&gt; a
+</span><a href="Crypto.Error.Types.html#throwCryptoError"><span class="hs-identifier hs-var">throwCryptoError</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; CryptoFailable AES
+forall key. ByteArray key =&gt; key -&gt; CryptoFailable AES
+forall cipher key.
+(Cipher cipher, ByteArray key) =&gt;
+key -&gt; CryptoFailable cipher
+</span><a href="Crypto.Cipher.Types.Base.html#cipherInit"><span class="hs-identifier hs-var">cipherInit</span></a></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243002"><span class="hs-identifier hs-var">key</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span>             </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679242992"><span class="hs-identifier hs-var">mak</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">AES
+</span><a href="#local-6989586621679243018"><span class="hs-identifier hs-var">mek</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-108"></span><span>        </span><span class="annot"><span class="annottext">KeySizeSpecifier
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; (ScrubbedBytes, AES)
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;AESGCMSIV: invalid cipher&quot;</span></span><span>
+</span><span id="line-109"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-110"></span><span>    </span><span id="local-6989586621679243026"><span class="annot"><span class="annottext">idx :: Word32 -&gt; View Bytes
+</span><a href="#local-6989586621679243026"><span class="hs-identifier hs-var hs-var">idx</span></a></span></span><span> </span><span id="local-6989586621679243027"><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679243027"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">aes -&gt; Bytes -&gt; Bytes
+forall ba. ByteArray ba =&gt; aes -&gt; ba -&gt; ba
+forall cipher ba.
+(BlockCipher cipher, ByteArray ba) =&gt;
+cipher -&gt; ba -&gt; ba
+</span><a href="Crypto.Cipher.Types.Block.html#ecbEncrypt"><span class="hs-identifier hs-var">ecbEncrypt</span></a></span><span> </span><span class="annot"><span class="annottext">aes
+</span><a href="#local-6989586621679242981"><span class="hs-identifier hs-var">aes</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word32 -&gt; Nonce -&gt; Bytes
+</span><a href="Crypto.Cipher.AESGCMSIV.html#le32iv"><span class="hs-identifier hs-var">le32iv</span></a></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679243027"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Nonce
+</span><a href="#local-6989586621679242982"><span class="hs-identifier hs-var">iv</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Int -&gt; View Bytes
+forall bytes. ByteArrayAccess bytes =&gt; bytes -&gt; Int -&gt; View bytes
+</span><span class="hs-operator hs-var">`takeView`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span>
+</span><span id="line-111"></span><span>    </span><span id="local-6989586621679242993"><span class="annot"><span class="annottext">buildKey :: [Word32] -&gt; ScrubbedBytes
+</span><a href="#local-6989586621679242993"><span class="hs-identifier hs-var hs-var">buildKey</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[View Bytes] -&gt; ScrubbedBytes
+forall bin bout.
+(ByteArrayAccess bin, ByteArray bout) =&gt;
+[bin] -&gt; bout
+</span><span class="hs-identifier hs-var">B.concat</span></span><span> </span><span class="annot"><span class="annottext">([View Bytes] -&gt; ScrubbedBytes)
+-&gt; ([Word32] -&gt; [View Bytes]) -&gt; [Word32] -&gt; ScrubbedBytes
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Word32 -&gt; View Bytes) -&gt; [Word32] -&gt; [View Bytes]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; View Bytes
+</span><a href="#local-6989586621679243026"><span class="hs-identifier hs-var">idx</span></a></span><span>
+</span><span id="line-112"></span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span class="hs-comment">-- Encryption and decryption</span><span>
+</span><span id="line-115"></span><span>
+</span><span id="line-116"></span><span id="local-6989586621679242763"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#lengthInvalid"><span class="hs-identifier hs-type">lengthInvalid</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679242763"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242763"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span></span><span>
+</span><span id="line-117"></span><span id="lengthInvalid"><span class="annot"><span class="annottext">lengthInvalid :: forall ba. ByteArrayAccess ba =&gt; ba -&gt; Bool
+</span><a href="Crypto.Cipher.AESGCMSIV.html#lengthInvalid"><span class="hs-identifier hs-var hs-var">lengthInvalid</span></a></span></span><span> </span><span id="local-6989586621679243052"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243052"><span class="hs-identifier hs-var">bs</span></a></span></span><span>
+</span><span id="line-118"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int
+forall b. FiniteBits b =&gt; b -&gt; Int
+</span><span class="hs-identifier hs-var">finiteBitSize</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679243054"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679243054"><span class="hs-identifier hs-var">len</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`unsafeShiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span>
+</span><span id="line-119"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>              </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-120"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679243054"><span class="annot"><span class="annottext">len :: Int
+</span><a href="#local-6989586621679243054"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243052"><span class="hs-identifier hs-var">bs</span></a></span><span>
+</span><span id="line-121"></span><span>
+</span><span id="line-122"></span><span class="hs-comment">-- | AEAD encryption with the specified key and nonce.  The key must be given</span><span>
+</span><span id="line-123"></span><span class="hs-comment">-- as an initialized 'Crypto.Cipher.AES.AES128' or 'Crypto.Cipher.AES.AES256'</span><span>
+</span><span id="line-124"></span><span class="hs-comment">-- cipher.</span><span>
+</span><span id="line-125"></span><span class="hs-comment">--</span><span>
+</span><span id="line-126"></span><span class="hs-comment">-- Lengths of additional data and plaintext must be less than 2^32 bytes,</span><span>
+</span><span id="line-127"></span><span class="hs-comment">-- otherwise an exception is thrown.</span><span>
+</span><span id="line-128"></span><span id="local-6989586621679242769"><span id="local-6989586621679242770"><span id="local-6989586621679242771"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#encrypt"><span class="hs-identifier hs-type">encrypt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.Types.Block.html#BlockCipher128"><span class="hs-identifier hs-type">BlockCipher128</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679242769"><span class="hs-identifier hs-type">aes</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679242770"><span class="hs-identifier hs-type">aad</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679242771"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-129"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242769"><span class="hs-identifier hs-type">aes</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242770"><span class="hs-identifier hs-type">aad</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242771"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.Types.Base.html#AuthTag"><span class="hs-identifier hs-type">AuthTag</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621679242771"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-130"></span><span id="encrypt"><span class="annot"><span class="annottext">encrypt :: forall aes aad ba.
+(BlockCipher128 aes, ByteArrayAccess aad, ByteArray ba) =&gt;
+aes -&gt; Nonce -&gt; aad -&gt; ba -&gt; (AuthTag, ba)
+</span><a href="Crypto.Cipher.AESGCMSIV.html#encrypt"><span class="hs-identifier hs-var hs-var">encrypt</span></a></span></span><span> </span><span id="local-6989586621679243079"><span class="annot"><span class="annottext">aes
+</span><a href="#local-6989586621679243079"><span class="hs-identifier hs-var">aes</span></a></span></span><span> </span><span id="local-6989586621679243080"><span class="annot"><span class="annottext">Nonce
+</span><a href="#local-6989586621679243080"><span class="hs-identifier hs-var">iv</span></a></span></span><span> </span><span id="local-6989586621679243081"><span class="annot"><span class="annottext">aad
+</span><a href="#local-6989586621679243081"><span class="hs-identifier hs-var">aad</span></a></span></span><span> </span><span id="local-6989586621679243082"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243082"><span class="hs-identifier hs-var">plaintext</span></a></span></span><span>
+</span><span id="line-131"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">aad -&gt; Bool
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Bool
+</span><a href="Crypto.Cipher.AESGCMSIV.html#lengthInvalid"><span class="hs-identifier hs-var">lengthInvalid</span></a></span><span> </span><span class="annot"><span class="annottext">aad
+</span><a href="#local-6989586621679243081"><span class="hs-identifier hs-var">aad</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; (AuthTag, ba)
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;AESGCMSIV: aad is too large&quot;</span></span><span>
+</span><span id="line-132"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ba -&gt; Bool
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Bool
+</span><a href="Crypto.Cipher.AESGCMSIV.html#lengthInvalid"><span class="hs-identifier hs-var">lengthInvalid</span></a></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243082"><span class="hs-identifier hs-var">plaintext</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; (AuthTag, ba)
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;AESGCMSIV: plaintext is too large&quot;</span></span><span>
+</span><span id="line-133"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bytes -&gt; AuthTag
+</span><a href="Crypto.Cipher.Types.Base.html#AuthTag"><span class="hs-identifier hs-var">AuthTag</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679243084"><span class="hs-identifier hs-var">tag</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243085"><span class="hs-identifier hs-var">ciphertext</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-134"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-135"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621679243089"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243089"><span class="hs-identifier hs-var">mak</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679243090"><span class="annot"><span class="annottext">AES
+</span><a href="#local-6989586621679243090"><span class="hs-identifier hs-var">mek</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">aes -&gt; Nonce -&gt; (ScrubbedBytes, AES)
+forall aes.
+BlockCipher128 aes =&gt;
+aes -&gt; Nonce -&gt; (ScrubbedBytes, AES)
+</span><a href="Crypto.Cipher.AESGCMSIV.html#deriveKeys"><span class="hs-identifier hs-var">deriveKeys</span></a></span><span> </span><span class="annot"><span class="annottext">aes
+</span><a href="#local-6989586621679243079"><span class="hs-identifier hs-var">aes</span></a></span><span> </span><span class="annot"><span class="annottext">Nonce
+</span><a href="#local-6989586621679243080"><span class="hs-identifier hs-var">iv</span></a></span><span>
+</span><span id="line-136"></span><span>    </span><span id="local-6989586621679243093"><span class="annot"><span class="annottext">ss :: ScrubbedBytes
+</span><a href="#local-6989586621679243093"><span class="hs-identifier hs-var hs-var">ss</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; aad -&gt; ba -&gt; ScrubbedBytes
+forall aad ba.
+(ByteArrayAccess aad, ByteArrayAccess ba) =&gt;
+ScrubbedBytes -&gt; aad -&gt; ba -&gt; ScrubbedBytes
+</span><a href="Crypto.Cipher.AESGCMSIV.html#getSs"><span class="hs-identifier hs-var">getSs</span></a></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243089"><span class="hs-identifier hs-var">mak</span></a></span><span> </span><span class="annot"><span class="annottext">aad
+</span><a href="#local-6989586621679243081"><span class="hs-identifier hs-var">aad</span></a></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243082"><span class="hs-identifier hs-var">plaintext</span></a></span><span>
+</span><span id="line-137"></span><span>    </span><span id="local-6989586621679243084"><span class="annot"><span class="annottext">tag :: Bytes
+</span><a href="#local-6989586621679243084"><span class="hs-identifier hs-var hs-var">tag</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AES -&gt; ScrubbedBytes -&gt; Nonce -&gt; Bytes
+forall aes.
+BlockCipher128 aes =&gt;
+aes -&gt; ScrubbedBytes -&gt; Nonce -&gt; Bytes
+</span><a href="Crypto.Cipher.AESGCMSIV.html#buildTag"><span class="hs-identifier hs-var">buildTag</span></a></span><span> </span><span class="annot"><span class="annottext">AES
+</span><a href="#local-6989586621679243090"><span class="hs-identifier hs-var">mek</span></a></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243093"><span class="hs-identifier hs-var">ss</span></a></span><span> </span><span class="annot"><span class="annottext">Nonce
+</span><a href="#local-6989586621679243080"><span class="hs-identifier hs-var">iv</span></a></span><span>
+</span><span id="line-138"></span><span>    </span><span id="local-6989586621679243085"><span class="annot"><span class="annottext">ciphertext :: ba
+</span><a href="#local-6989586621679243085"><span class="hs-identifier hs-var hs-var">ciphertext</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AES -&gt; IV AES -&gt; ba -&gt; ba
+forall ba. ByteArray ba =&gt; AES -&gt; IV AES -&gt; ba -&gt; ba
+</span><a href="Crypto.Cipher.AES.Primitive.html#combineC32"><span class="hs-identifier hs-var">combineC32</span></a></span><span> </span><span class="annot"><span class="annottext">AES
+</span><a href="#local-6989586621679243090"><span class="hs-identifier hs-var">mek</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bytes -&gt; IV AES
+</span><a href="Crypto.Cipher.AESGCMSIV.html#transformTag"><span class="hs-identifier hs-var">transformTag</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679243084"><span class="hs-identifier hs-var">tag</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243082"><span class="hs-identifier hs-var">plaintext</span></a></span><span>
+</span><span id="line-139"></span><span>
+</span><span id="line-140"></span><span class="hs-comment">-- | AEAD decryption with the specified key and nonce.  The key must be given</span><span>
+</span><span id="line-141"></span><span class="hs-comment">-- as an initialized 'Crypto.Cipher.AES.AES128' or 'Crypto.Cipher.AES.AES256'</span><span>
+</span><span id="line-142"></span><span class="hs-comment">-- cipher.</span><span>
+</span><span id="line-143"></span><span class="hs-comment">--</span><span>
+</span><span id="line-144"></span><span class="hs-comment">-- Lengths of additional data and ciphertext must be less than 2^32 bytes,</span><span>
+</span><span id="line-145"></span><span class="hs-comment">-- otherwise an exception is thrown.</span><span>
+</span><span id="line-146"></span><span id="local-6989586621679242783"><span id="local-6989586621679242784"><span id="local-6989586621679242785"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#decrypt"><span class="hs-identifier hs-type">decrypt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.Types.Block.html#BlockCipher128"><span class="hs-identifier hs-type">BlockCipher128</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679242783"><span class="hs-identifier hs-type">aes</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679242784"><span class="hs-identifier hs-type">aad</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679242785"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-147"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242783"><span class="hs-identifier hs-type">aes</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242784"><span class="hs-identifier hs-type">aad</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242785"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.Types.Base.html#AuthTag"><span class="hs-identifier hs-type">AuthTag</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="#local-6989586621679242785"><span class="hs-identifier hs-type">ba</span></a></span></span></span></span><span>
+</span><span id="line-148"></span><span id="decrypt"><span class="annot"><span class="annottext">decrypt :: forall aes aad ba.
+(BlockCipher128 aes, ByteArrayAccess aad, ByteArray ba) =&gt;
+aes -&gt; Nonce -&gt; aad -&gt; ba -&gt; AuthTag -&gt; Maybe ba
+</span><a href="Crypto.Cipher.AESGCMSIV.html#decrypt"><span class="hs-identifier hs-var hs-var">decrypt</span></a></span></span><span> </span><span id="local-6989586621679243126"><span class="annot"><span class="annottext">aes
+</span><a href="#local-6989586621679243126"><span class="hs-identifier hs-var">aes</span></a></span></span><span> </span><span id="local-6989586621679243127"><span class="annot"><span class="annottext">Nonce
+</span><a href="#local-6989586621679243127"><span class="hs-identifier hs-var">iv</span></a></span></span><span> </span><span id="local-6989586621679243128"><span class="annot"><span class="annottext">aad
+</span><a href="#local-6989586621679243128"><span class="hs-identifier hs-var">aad</span></a></span></span><span> </span><span id="local-6989586621679243129"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243129"><span class="hs-identifier hs-var">ciphertext</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.Types.Base.html#AuthTag"><span class="hs-identifier hs-type">AuthTag</span></a></span><span> </span><span id="local-6989586621679243130"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679243130"><span class="hs-identifier hs-var">tag</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-149"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">aad -&gt; Bool
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Bool
+</span><a href="Crypto.Cipher.AESGCMSIV.html#lengthInvalid"><span class="hs-identifier hs-var">lengthInvalid</span></a></span><span> </span><span class="annot"><span class="annottext">aad
+</span><a href="#local-6989586621679243128"><span class="hs-identifier hs-var">aad</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Maybe ba
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;AESGCMSIV: aad is too large&quot;</span></span><span>
+</span><span id="line-150"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">ba -&gt; Bool
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Bool
+</span><a href="Crypto.Cipher.AESGCMSIV.html#lengthInvalid"><span class="hs-identifier hs-var">lengthInvalid</span></a></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243129"><span class="hs-identifier hs-var">ciphertext</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Maybe ba
+forall a. HasCallStack =&gt; String -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;AESGCMSIV: ciphertext is too large&quot;</span></span><span>
+</span><span id="line-151"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679243130"><span class="hs-identifier hs-var">tag</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Bytes -&gt; Bool
+forall bs1 bs2.
+(ByteArrayAccess bs1, ByteArrayAccess bs2) =&gt;
+bs1 -&gt; bs2 -&gt; Bool
+</span><span class="hs-operator hs-var">`constEq`</span></span><span> </span><span class="annot"><span class="annottext">AES -&gt; ScrubbedBytes -&gt; Nonce -&gt; Bytes
+forall aes.
+BlockCipher128 aes =&gt;
+aes -&gt; ScrubbedBytes -&gt; Nonce -&gt; Bytes
+</span><a href="Crypto.Cipher.AESGCMSIV.html#buildTag"><span class="hs-identifier hs-var">buildTag</span></a></span><span> </span><span class="annot"><span class="annottext">AES
+</span><a href="#local-6989586621679243132"><span class="hs-identifier hs-var">mek</span></a></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243133"><span class="hs-identifier hs-var">ss</span></a></span><span> </span><span class="annot"><span class="annottext">Nonce
+</span><a href="#local-6989586621679243127"><span class="hs-identifier hs-var">iv</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ba -&gt; Maybe ba
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243134"><span class="hs-identifier hs-var">plaintext</span></a></span><span>
+</span><span id="line-152"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe ba
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-153"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-154"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621679243138"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243138"><span class="hs-identifier hs-var">mak</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679243132"><span class="annot"><span class="annottext">AES
+</span><a href="#local-6989586621679243132"><span class="hs-identifier hs-var">mek</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">aes -&gt; Nonce -&gt; (ScrubbedBytes, AES)
+forall aes.
+BlockCipher128 aes =&gt;
+aes -&gt; Nonce -&gt; (ScrubbedBytes, AES)
+</span><a href="Crypto.Cipher.AESGCMSIV.html#deriveKeys"><span class="hs-identifier hs-var">deriveKeys</span></a></span><span> </span><span class="annot"><span class="annottext">aes
+</span><a href="#local-6989586621679243126"><span class="hs-identifier hs-var">aes</span></a></span><span> </span><span class="annot"><span class="annottext">Nonce
+</span><a href="#local-6989586621679243127"><span class="hs-identifier hs-var">iv</span></a></span><span>
+</span><span id="line-155"></span><span>    </span><span id="local-6989586621679243133"><span class="annot"><span class="annottext">ss :: ScrubbedBytes
+</span><a href="#local-6989586621679243133"><span class="hs-identifier hs-var hs-var">ss</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; aad -&gt; ba -&gt; ScrubbedBytes
+forall aad ba.
+(ByteArrayAccess aad, ByteArrayAccess ba) =&gt;
+ScrubbedBytes -&gt; aad -&gt; ba -&gt; ScrubbedBytes
+</span><a href="Crypto.Cipher.AESGCMSIV.html#getSs"><span class="hs-identifier hs-var">getSs</span></a></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243138"><span class="hs-identifier hs-var">mak</span></a></span><span> </span><span class="annot"><span class="annottext">aad
+</span><a href="#local-6989586621679243128"><span class="hs-identifier hs-var">aad</span></a></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243134"><span class="hs-identifier hs-var">plaintext</span></a></span><span>
+</span><span id="line-156"></span><span>    </span><span id="local-6989586621679243134"><span class="annot"><span class="annottext">plaintext :: ba
+</span><a href="#local-6989586621679243134"><span class="hs-identifier hs-var hs-var">plaintext</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AES -&gt; IV AES -&gt; ba -&gt; ba
+forall ba. ByteArray ba =&gt; AES -&gt; IV AES -&gt; ba -&gt; ba
+</span><a href="Crypto.Cipher.AES.Primitive.html#combineC32"><span class="hs-identifier hs-var">combineC32</span></a></span><span> </span><span class="annot"><span class="annottext">AES
+</span><a href="#local-6989586621679243132"><span class="hs-identifier hs-var">mek</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bytes -&gt; IV AES
+</span><a href="Crypto.Cipher.AESGCMSIV.html#transformTag"><span class="hs-identifier hs-var">transformTag</span></a></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679243130"><span class="hs-identifier hs-var">tag</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243129"><span class="hs-identifier hs-var">ciphertext</span></a></span><span>
+</span><span id="line-157"></span><span>
+</span><span id="line-158"></span><span class="hs-comment">-- Calculate S_s = POLYVAL(mak, X_1, X_2, ...).</span><span>
+</span><span id="line-159"></span><span id="local-6989586621679242778"><span id="local-6989586621679242779"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#getSs"><span class="hs-identifier hs-type">getSs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679242778"><span class="hs-identifier hs-type">aad</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679242779"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-160"></span><span>      </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ScrubbedBytes</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242778"><span class="hs-identifier hs-type">aad</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242779"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ScrubbedBytes</span></span></span></span><span>
+</span><span id="line-161"></span><span id="getSs"><span class="annot"><span class="annottext">getSs :: forall aad ba.
+(ByteArrayAccess aad, ByteArrayAccess ba) =&gt;
+ScrubbedBytes -&gt; aad -&gt; ba -&gt; ScrubbedBytes
+</span><a href="Crypto.Cipher.AESGCMSIV.html#getSs"><span class="hs-identifier hs-var hs-var">getSs</span></a></span></span><span> </span><span id="local-6989586621679243157"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243157"><span class="hs-identifier hs-var">mak</span></a></span></span><span> </span><span id="local-6989586621679243158"><span class="annot"><span class="annottext">aad
+</span><a href="#local-6989586621679243158"><span class="hs-identifier hs-var">aad</span></a></span></span><span> </span><span id="local-6989586621679243159"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243159"><span class="hs-identifier hs-var">plaintext</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO ScrubbedBytes -&gt; ScrubbedBytes
+forall a. IO a -&gt; a
+</span><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier hs-var">unsafeDoIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO ScrubbedBytes -&gt; ScrubbedBytes)
+-&gt; IO ScrubbedBytes -&gt; ScrubbedBytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-162"></span><span>    </span><span id="local-6989586621679243160"><span class="annot"><span class="annottext">Polyval
+</span><a href="#local-6989586621679243160"><span class="hs-identifier hs-var">ctx</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; IO Polyval
+</span><a href="Crypto.Cipher.AESGCMSIV.html#polyvalInit"><span class="hs-identifier hs-var">polyvalInit</span></a></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243157"><span class="hs-identifier hs-var">mak</span></a></span><span>
+</span><span id="line-163"></span><span>    </span><span class="annot"><span class="annottext">Polyval -&gt; aad -&gt; IO ()
+forall ba. ByteArrayAccess ba =&gt; Polyval -&gt; ba -&gt; IO ()
+</span><a href="Crypto.Cipher.AESGCMSIV.html#polyvalUpdate"><span class="hs-identifier hs-var">polyvalUpdate</span></a></span><span> </span><span class="annot"><span class="annottext">Polyval
+</span><a href="#local-6989586621679243160"><span class="hs-identifier hs-var">ctx</span></a></span><span> </span><span class="annot"><span class="annottext">aad
+</span><a href="#local-6989586621679243158"><span class="hs-identifier hs-var">aad</span></a></span><span>
+</span><span id="line-164"></span><span>    </span><span class="annot"><span class="annottext">Polyval -&gt; ba -&gt; IO ()
+forall ba. ByteArrayAccess ba =&gt; Polyval -&gt; ba -&gt; IO ()
+</span><a href="Crypto.Cipher.AESGCMSIV.html#polyvalUpdate"><span class="hs-identifier hs-var">polyvalUpdate</span></a></span><span> </span><span class="annot"><span class="annottext">Polyval
+</span><a href="#local-6989586621679243160"><span class="hs-identifier hs-var">ctx</span></a></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243159"><span class="hs-identifier hs-var">plaintext</span></a></span><span>
+</span><span id="line-165"></span><span>    </span><span class="annot"><span class="annottext">Polyval -&gt; Bytes -&gt; IO ()
+forall ba. ByteArrayAccess ba =&gt; Polyval -&gt; ba -&gt; IO ()
+</span><a href="Crypto.Cipher.AESGCMSIV.html#polyvalUpdate"><span class="hs-identifier hs-var">polyvalUpdate</span></a></span><span> </span><span class="annot"><span class="annottext">Polyval
+</span><a href="#local-6989586621679243160"><span class="hs-identifier hs-var">ctx</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679243161"><span class="hs-identifier hs-var">lb</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span class="hs-special">)</span><span>  </span><span class="hs-comment">-- the &quot;length block&quot;</span><span>
+</span><span id="line-166"></span><span>    </span><span class="annot"><span class="annottext">Polyval -&gt; IO ScrubbedBytes
+</span><a href="Crypto.Cipher.AESGCMSIV.html#polyvalFinalize"><span class="hs-identifier hs-var">polyvalFinalize</span></a></span><span> </span><span class="annot"><span class="annottext">Polyval
+</span><a href="#local-6989586621679243160"><span class="hs-identifier hs-var">ctx</span></a></span><span>
+</span><span id="line-167"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-168"></span><span>    </span><span id="local-6989586621679243161"><span class="annot"><span class="annottext">lb :: Bytes
+</span><a href="#local-6989586621679243161"><span class="hs-identifier hs-var hs-var">lb</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr (LE Word64) -&gt; IO ()) -&gt; Bytes
+forall a p. ByteArray a =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; a
+</span><span class="hs-identifier hs-var">B.allocAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span> </span><span class="annot"><span class="annottext">((Ptr (LE Word64) -&gt; IO ()) -&gt; Bytes)
+-&gt; (Ptr (LE Word64) -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679243178"><span class="annot"><span class="annottext">Ptr (LE Word64)
+</span><a href="#local-6989586621679243178"><span class="hs-identifier hs-var">ptr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-169"></span><span>            </span><span class="annot"><span class="annottext">Ptr (LE Word64) -&gt; Int -&gt; LE Word64 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; Int -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">pokeElemOff</span></span><span> </span><span class="annot"><span class="annottext">Ptr (LE Word64)
+</span><a href="#local-6989586621679243178"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; LE Word64
+forall {a}. Integral a =&gt; a -&gt; LE Word64
+</span><a href="#local-6989586621679243179"><span class="hs-identifier hs-var">toLE64</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; LE Word64) -&gt; Int -&gt; LE Word64
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">aad -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">aad
+</span><a href="#local-6989586621679243158"><span class="hs-identifier hs-var">aad</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-170"></span><span>            </span><span class="annot"><span class="annottext">Ptr (LE Word64) -&gt; Int -&gt; LE Word64 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; Int -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">pokeElemOff</span></span><span> </span><span class="annot"><span class="annottext">Ptr (LE Word64)
+</span><a href="#local-6989586621679243178"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; LE Word64
+forall {a}. Integral a =&gt; a -&gt; LE Word64
+</span><a href="#local-6989586621679243179"><span class="hs-identifier hs-var">toLE64</span></a></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; LE Word64) -&gt; Int -&gt; LE Word64
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679243159"><span class="hs-identifier hs-var">plaintext</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-171"></span><span>    </span><span id="local-6989586621679243179"><span class="annot"><span class="annottext">toLE64 :: a -&gt; LE Word64
+</span><a href="#local-6989586621679243179"><span class="hs-identifier hs-var hs-var">toLE64</span></a></span></span><span> </span><span id="local-6989586621679243203"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679243203"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; LE Word64
+forall a. ByteSwap a =&gt; a -&gt; LE a
+</span><span class="hs-identifier hs-var">toLE</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Word64
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679243203"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">8</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span class="hs-special">)</span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span class="hs-comment">-- XOR the first 12 bytes of S_s with the nonce and clear the most significant</span><span>
+</span><span id="line-174"></span><span class="hs-comment">-- bit of the last byte.</span><span>
+</span><span id="line-175"></span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#tagInput"><span class="hs-identifier hs-type">tagInput</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ScrubbedBytes</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span>
+</span><span id="line-176"></span><span id="tagInput"><span class="annot"><span class="annottext">tagInput :: ScrubbedBytes -&gt; Nonce -&gt; Bytes
+</span><a href="Crypto.Cipher.AESGCMSIV.html#tagInput"><span class="hs-identifier hs-var hs-var">tagInput</span></a></span></span><span> </span><span id="local-6989586621679243206"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243206"><span class="hs-identifier hs-var">ss</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span><span> </span><span id="local-6989586621679243207"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679243207"><span class="hs-identifier hs-var">iv</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-177"></span><span>    </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Bytes
+forall bs1 bs2 p.
+(ByteArrayAccess bs1, ByteArray bs2) =&gt;
+bs1 -&gt; (Ptr p -&gt; IO ()) -&gt; bs2
+</span><span class="hs-identifier hs-var">B.copyAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243206"><span class="hs-identifier hs-var">ss</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; Bytes) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679243209"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679243209"><span class="hs-identifier hs-var">ptr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-178"></span><span>    </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. Bytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679243207"><span class="hs-identifier hs-var">iv</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679243210"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679243210"><span class="hs-identifier hs-var">ivPtr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-179"></span><span>        </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">memXor</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679243209"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679243209"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679243210"><span class="hs-identifier hs-var">ivPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">12</span></span><span>
+</span><span id="line-180"></span><span>        </span><span id="local-6989586621679243211"><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679243211"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; IO Word8
+forall a. Storable a =&gt; Ptr a -&gt; Int -&gt; IO a
+</span><span class="hs-identifier hs-var">peekElemOff</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679243209"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">15</span></span><span>
+</span><span id="line-181"></span><span>        </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; Int -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">pokeElemOff</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679243209"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">15</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8
+</span><a href="#local-6989586621679243211"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Word8
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0x7f</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-182"></span><span>
+</span><span id="line-183"></span><span class="hs-comment">-- Encrypt the result with AES using the message-encryption key to produce the</span><span>
+</span><span id="line-184"></span><span class="hs-comment">-- tag.</span><span>
+</span><span id="line-185"></span><span id="local-6989586621679242780"><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#buildTag"><span class="hs-identifier hs-type">buildTag</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Crypto.Cipher.Types.Block.html#BlockCipher128"><span class="hs-identifier hs-type">BlockCipher128</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679242780"><span class="hs-identifier hs-type">aes</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679242780"><span class="hs-identifier hs-type">aes</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ScrubbedBytes</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#Nonce"><span class="hs-identifier hs-type">Nonce</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span></span><span>
+</span><span id="line-186"></span><span id="buildTag"><span class="annot"><span class="annottext">buildTag :: forall aes.
+BlockCipher128 aes =&gt;
+aes -&gt; ScrubbedBytes -&gt; Nonce -&gt; Bytes
+</span><a href="Crypto.Cipher.AESGCMSIV.html#buildTag"><span class="hs-identifier hs-var hs-var">buildTag</span></a></span></span><span> </span><span id="local-6989586621679243217"><span class="annot"><span class="annottext">aes
+</span><a href="#local-6989586621679243217"><span class="hs-identifier hs-var">mek</span></a></span></span><span> </span><span id="local-6989586621679243218"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243218"><span class="hs-identifier hs-var">ss</span></a></span></span><span> </span><span id="local-6989586621679243219"><span class="annot"><span class="annottext">Nonce
+</span><a href="#local-6989586621679243219"><span class="hs-identifier hs-var">iv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">aes -&gt; Bytes -&gt; Bytes
+forall ba. ByteArray ba =&gt; aes -&gt; ba -&gt; ba
+forall cipher ba.
+(BlockCipher cipher, ByteArray ba) =&gt;
+cipher -&gt; ba -&gt; ba
+</span><a href="Crypto.Cipher.Types.Block.html#ecbEncrypt"><span class="hs-identifier hs-var">ecbEncrypt</span></a></span><span> </span><span class="annot"><span class="annottext">aes
+</span><a href="#local-6989586621679243217"><span class="hs-identifier hs-var">mek</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; Nonce -&gt; Bytes
+</span><a href="Crypto.Cipher.AESGCMSIV.html#tagInput"><span class="hs-identifier hs-var">tagInput</span></a></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679243218"><span class="hs-identifier hs-var">ss</span></a></span><span> </span><span class="annot"><span class="annottext">Nonce
+</span><a href="#local-6989586621679243219"><span class="hs-identifier hs-var">iv</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-187"></span><span>
+</span><span id="line-188"></span><span class="hs-comment">-- The initial counter block is the tag with the most significant bit of the</span><span>
+</span><span id="line-189"></span><span class="hs-comment">-- last byte set to one.</span><span>
+</span><span id="line-190"></span><span class="annot"><a href="Crypto.Cipher.AESGCMSIV.html#transformTag"><span class="hs-identifier hs-type">transformTag</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.Types.Block.html#IV"><span class="hs-identifier hs-type">IV</span></a></span><span> </span><span class="annot"><a href="Crypto.Cipher.AES.Primitive.html#AES"><span class="hs-identifier hs-type">AES</span></a></span><span>
+</span><span id="line-191"></span><span id="transformTag"><span class="annot"><span class="annottext">transformTag :: Bytes -&gt; IV AES
+</span><a href="Crypto.Cipher.AESGCMSIV.html#transformTag"><span class="hs-identifier hs-var hs-var">transformTag</span></a></span></span><span> </span><span id="local-6989586621679243220"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679243220"><span class="hs-identifier hs-var">tag</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; IV AES
+forall {c}. BlockCipher c =&gt; Bytes -&gt; IV c
+</span><a href="#local-6989586621679243221"><span class="hs-identifier hs-var">toIV</span></a></span><span> </span><span class="annot"><span class="annottext">(Bytes -&gt; IV AES) -&gt; Bytes -&gt; IV AES
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Bytes
+forall bs1 bs2 p.
+(ByteArrayAccess bs1, ByteArray bs2) =&gt;
+bs1 -&gt; (Ptr p -&gt; IO ()) -&gt; bs2
+</span><span class="hs-identifier hs-var">B.copyAndFreeze</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679243220"><span class="hs-identifier hs-var">tag</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; Bytes) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679243222"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679243222"><span class="hs-identifier hs-var">ptr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-192"></span><span>    </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; IO Word8
+forall a. Storable a =&gt; Ptr a -&gt; Int -&gt; IO a
+</span><span class="hs-identifier hs-var">peekElemOff</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679243222"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">15</span></span><span> </span><span class="annot"><span class="annottext">IO Word8 -&gt; (Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Word8 -&gt; IO ()
+forall a. Storable a =&gt; Ptr a -&gt; Int -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">pokeElemOff</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679243222"><span class="hs-identifier hs-var">ptr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">15</span></span><span> </span><span class="annot"><span class="annottext">(Word8 -&gt; IO ()) -&gt; (Word8 -&gt; Word8) -&gt; Word8 -&gt; IO ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8 -&gt; Word8 -&gt; Word8
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.|.</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0x80</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-193"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679243221"><span class="annot"><span class="annottext">toIV :: Bytes -&gt; IV c
+</span><a href="#local-6989586621679243221"><span class="hs-identifier hs-var hs-var">toIV</span></a></span></span><span> </span><span id="local-6989586621679243226"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679243226"><span class="hs-identifier hs-var">bs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679243230"><span class="annot"><span class="annottext">IV c
+</span><a href="#local-6989586621679243230"><span class="hs-identifier hs-var">iv</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; Maybe (IV c)
+forall b c. (ByteArrayAccess b, BlockCipher c) =&gt; b -&gt; Maybe (IV c)
+</span><a href="Crypto.Cipher.Types.Block.html#makeIV"><span class="hs-identifier hs-var">makeIV</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679243226"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bytes</span></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">IV c
+</span><a href="#local-6989586621679243230"><span class="hs-identifier hs-var">iv</span></a></span><span>
+</span><span id="line-194"></span></pre></body></html>

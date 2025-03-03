@@ -1,0 +1,223 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- |</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- Module      : Crypto.KDF.Scrypt</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- License     : BSD-style</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Maintainer  : Vincent Hanquez &lt;vincent@snarc.org&gt;</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Stability   : experimental</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Portability : unknown</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Scrypt key derivation function as defined in Colin Percival's paper</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- &quot;Stronger Key Derivation via Sequential Memory-Hard Functions&quot;</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- &lt;http://www.tarsnap.com/scrypt/scrypt.pdf&gt;.</span><span>
+</span><span id="line-11"></span><span class="hs-comment">--</span><span>
+</span><span id="line-12"></span><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-13"></span><span class="hs-pragma">{-# LANGUAGE ForeignFunctionInterface #-}</span><span>
+</span><span id="line-14"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Crypto.KDF.Scrypt</span><span>
+</span><span id="line-15"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Crypto.KDF.Scrypt.html#Parameters"><span class="hs-identifier">Parameters</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.KDF.Scrypt.html#generate"><span class="hs-identifier">generate</span></a></span><span>
+</span><span id="line-17"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign.Marshal.Alloc</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Ptr</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">plusPtr</span></span><span class="hs-special">)</span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">forM_</span></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Hash.html"><span class="hs-identifier">Crypto.Hash</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Hash.SHA256.html#SHA256"><span class="hs-identifier">SHA256</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Crypto.KDF.PBKDF2.html"><span class="hs-identifier">Crypto.KDF.PBKDF2</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">PBKDF2</span></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.Compat.html"><span class="hs-identifier">Crypto.Internal.Compat</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">popCount</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier">unsafeDoIO</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.ByteArray.html"><span class="hs-identifier">Crypto.Internal.ByteArray</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ByteArray</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">ByteArrayAccess</span></span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Crypto.Internal.ByteArray.html"><span class="hs-identifier">Crypto.Internal.ByteArray</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span class="annot"><span class="hs-comment">-- | Parameters for Scrypt</span></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">data</span><span> </span><span id="Parameters"><span class="annot"><a href="Crypto.KDF.Scrypt.html#Parameters"><span class="hs-identifier hs-var">Parameters</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Parameters"><span class="annot"><a href="Crypto.KDF.Scrypt.html#Parameters"><span class="hs-identifier hs-var">Parameters</span></a></span></span><span>
+</span><span id="line-32"></span><span>    </span><span class="hs-special">{</span><span> </span><span id="n"><span class="annot"><span class="annottext">Parameters -&gt; Word64
+</span><a href="Crypto.KDF.Scrypt.html#n"><span class="hs-identifier hs-var hs-var">n</span></a></span></span><span>            </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ Cpu/Memory cost ratio. must be a power of 2 greater than 1. also known as N.</span></span><span>
+</span><span id="line-33"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="r"><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#r"><span class="hs-identifier hs-var hs-var">r</span></a></span></span><span>            </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ Must satisfy r * p &lt; 2^30</span></span><span>
+</span><span id="line-34"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="p"><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#p"><span class="hs-identifier hs-var hs-var">p</span></a></span></span><span>            </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ Must satisfy r * p &lt; 2^30</span></span><span>
+</span><span id="line-35"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="outputLength"><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#outputLength"><span class="hs-identifier hs-var hs-var">outputLength</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ the number of bytes to generate out of Scrypt</span></span><span>
+</span><span id="line-36"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_scrypt_smix&quot;</span></span><span>
+</span><span id="line-39"></span><span>    </span><span id="ccrypton_scrypt_smix"><span class="annot"><a href="Crypto.KDF.Scrypt.html#ccrypton_scrypt_smix"><span class="hs-identifier hs-var">ccrypton_scrypt_smix</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="annot"><span class="hs-comment">-- | Generate the scrypt key derivation data</span></span><span>
+</span><span id="line-42"></span><span id="local-6989586621679231163"><span id="local-6989586621679231165"><span id="local-6989586621679231166"><span class="annot"><a href="Crypto.KDF.Scrypt.html#generate"><span class="hs-identifier hs-type">generate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679231163"><span class="hs-identifier hs-type">password</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679231165"><span class="hs-identifier hs-type">salt</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679231166"><span class="hs-identifier hs-type">output</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-43"></span><span>         </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Crypto.KDF.Scrypt.html#Parameters"><span class="hs-identifier hs-type">Parameters</span></a></span><span>
+</span><span id="line-44"></span><span>         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679231163"><span class="hs-identifier hs-type">password</span></a></span><span>
+</span><span id="line-45"></span><span>         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679231165"><span class="hs-identifier hs-type">salt</span></a></span><span>
+</span><span id="line-46"></span><span>         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679231166"><span class="hs-identifier hs-type">output</span></a></span></span></span></span><span>
+</span><span id="line-47"></span><span id="generate"><span class="annot"><span class="annottext">generate :: forall password salt output.
+(ByteArrayAccess password, ByteArrayAccess salt,
+ ByteArray output) =&gt;
+Parameters -&gt; password -&gt; salt -&gt; output
+</span><a href="Crypto.KDF.Scrypt.html#generate"><span class="hs-identifier hs-var hs-var">generate</span></a></span></span><span> </span><span id="local-6989586621679231271"><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span></span><span> </span><span id="local-6989586621679231272"><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679231272"><span class="hs-identifier hs-var">password</span></a></span></span><span> </span><span id="local-6989586621679231273"><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679231273"><span class="hs-identifier hs-var">salt</span></a></span></span><span>
+</span><span id="line-48"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#r"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#p"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0x40000000</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-49"></span><span>        </span><span class="annot"><span class="annottext">[Char] -&gt; output
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Scrypt: invalid parameters: r and p constraint&quot;</span></span><span>
+</span><span id="line-50"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int
+</span><span class="hs-identifier hs-var">popCount</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Parameters -&gt; Word64
+</span><a href="Crypto.KDF.Scrypt.html#n"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">/=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-51"></span><span>        </span><span class="annot"><span class="annottext">[Char] -&gt; output
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Scrypt: invalid parameters: n not a power of 2&quot;</span></span><span>
+</span><span id="line-52"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO output -&gt; output
+forall a. IO a -&gt; a
+</span><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier hs-var">unsafeDoIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO output -&gt; output) -&gt; IO output -&gt; output
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-53"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679231280"><span class="annot"><span class="annottext">b :: Bytes
+</span><a href="#local-6989586621679231280"><span class="hs-identifier hs-var hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PRF password -&gt; Parameters -&gt; password -&gt; salt -&gt; Bytes
+forall password salt ba.
+(ByteArrayAccess password, ByteArrayAccess salt, ByteArray ba) =&gt;
+PRF password -&gt; Parameters -&gt; password -&gt; salt -&gt; ba
+</span><a href="Crypto.KDF.PBKDF2.html#generate"><span class="hs-identifier hs-var">PBKDF2.generate</span></a></span><span> </span><span class="annot"><span class="annottext">PRF password
+</span><a href="#local-6989586621679231282"><span class="hs-identifier hs-var">prf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Parameters
+</span><a href="Crypto.KDF.PBKDF2.html#Parameters"><span class="hs-identifier hs-var">PBKDF2.Parameters</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679231284"><span class="hs-identifier hs-var">intLen</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679231272"><span class="hs-identifier hs-var">password</span></a></span><span> </span><span class="annot"><span class="annottext">salt
+</span><a href="#local-6989586621679231273"><span class="hs-identifier hs-var">salt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.Bytes</span></span><span>
+</span><span id="line-54"></span><span>        </span><span id="local-6989586621679231285"><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679231285"><span class="hs-identifier hs-var">newSalt</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Bytes -&gt; (Ptr Any -&gt; IO ()) -&gt; IO Bytes
+forall bs1 bs2 p.
+(ByteArrayAccess bs1, ByteArray bs2) =&gt;
+bs1 -&gt; (Ptr p -&gt; IO ()) -&gt; IO bs2
+</span><span class="hs-identifier hs-var">B.copy</span></span><span> </span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679231280"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Any -&gt; IO ()) -&gt; IO Bytes) -&gt; (Ptr Any -&gt; IO ()) -&gt; IO Bytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679231287"><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679231287"><span class="hs-identifier hs-var">bPtr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-55"></span><span>            </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. Int -&gt; Int -&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><span class="hs-identifier hs-var">allocaBytesAligned</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">128</span></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">(Word64 -&gt; Int) -&gt; Word64 -&gt; Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Parameters -&gt; Word64
+</span><a href="Crypto.KDF.Scrypt.html#n"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span class="hs-special">)</span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span class="hs-special">(</span><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#r"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679231289"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679231289"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-56"></span><span>            </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. Int -&gt; Int -&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><span class="hs-identifier hs-var">allocaBytesAligned</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">256</span></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#r"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">64</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679231291"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679231291"><span class="hs-identifier hs-var">xy</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-57"></span><span>                </span><span class="annot"><span class="annottext">[Int] -&gt; (Int -&gt; IO ()) -&gt; IO ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m ()
+</span><span class="hs-identifier hs-var">forM_</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-glyph">..</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#p"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">((Int -&gt; IO ()) -&gt; IO ()) -&gt; (Int -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679231292"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679231292"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-58"></span><span>                    </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word32 -&gt; Word64 -&gt; Ptr Word8 -&gt; Ptr Word8 -&gt; IO ()
+</span><a href="Crypto.KDF.Scrypt.html#ccrypton_scrypt_smix"><span class="hs-identifier hs-var">ccrypton_scrypt_smix</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679231287"><span class="hs-identifier hs-var">bPtr</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Any -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679231292"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">128</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#r"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-59"></span><span>                                            </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Word32) -&gt; Int -&gt; Word32
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#r"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Parameters -&gt; Word64
+</span><a href="Crypto.KDF.Scrypt.html#n"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679231289"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679231291"><span class="hs-identifier hs-var">xy</span></a></span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span>        </span><span class="annot"><span class="annottext">output -&gt; IO output
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(output -&gt; IO output) -&gt; output -&gt; IO output
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PRF password -&gt; Parameters -&gt; password -&gt; Bytes -&gt; output
+forall password salt ba.
+(ByteArrayAccess password, ByteArrayAccess salt, ByteArray ba) =&gt;
+PRF password -&gt; Parameters -&gt; password -&gt; salt -&gt; ba
+</span><a href="Crypto.KDF.PBKDF2.html#generate"><span class="hs-identifier hs-var">PBKDF2.generate</span></a></span><span> </span><span class="annot"><span class="annottext">PRF password
+</span><a href="#local-6989586621679231282"><span class="hs-identifier hs-var">prf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Parameters
+</span><a href="Crypto.KDF.PBKDF2.html#Parameters"><span class="hs-identifier hs-var">PBKDF2.Parameters</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#outputLength"><span class="hs-identifier hs-var">outputLength</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">password
+</span><a href="#local-6989586621679231272"><span class="hs-identifier hs-var">password</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bytes
+</span><a href="#local-6989586621679231285"><span class="hs-identifier hs-var">newSalt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.Bytes</span></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679231282"><span class="annot"><span class="annottext">prf :: PRF password
+</span><a href="#local-6989586621679231282"><span class="hs-identifier hs-var hs-var">prf</span></a></span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SHA256 -&gt; PRF password
+forall a password.
+(HashAlgorithm a, ByteArrayAccess password) =&gt;
+a -&gt; PRF password
+</span><a href="Crypto.KDF.PBKDF2.html#prfHMAC"><span class="hs-identifier hs-var">PBKDF2.prfHMAC</span></a></span><span> </span><span class="annot"><span class="annottext">SHA256
+</span><a href="Crypto.Hash.SHA256.html#SHA256"><span class="hs-identifier hs-var">SHA256</span></a></span><span>
+</span><span id="line-63"></span><span>        </span><span id="local-6989586621679231284"><span class="annot"><span class="annottext">intLen :: Int
+</span><a href="#local-6989586621679231284"><span class="hs-identifier hs-var hs-var">intLen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#p"><span class="hs-identifier hs-var">p</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">128</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Parameters -&gt; Int
+</span><a href="Crypto.KDF.Scrypt.html#r"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Parameters
+</span><a href="#local-6989586621679231271"><span class="hs-identifier hs-var">params</span></a></span><span>
+</span><span id="line-64"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="Crypto.KDF.Scrypt.html#generate"><span class="hs-pragma hs-type">generate</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-65"></span></pre></body></html>

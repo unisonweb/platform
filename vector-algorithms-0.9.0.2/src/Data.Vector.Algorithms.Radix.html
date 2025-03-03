@@ -1,0 +1,1068 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE TypeFamilies #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE TypeOperators #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE ScopedTypeVariables #-}</span><span>
+</span><span id="line-5"></span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- ---------------------------------------------------------------------------</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Module      : Data.Vector.Algorithms.Radix</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- Copyright   : (c) 2008-2011 Dan Doel</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- Maintainer  : Dan Doel &lt;dan.doel@gmail.com&gt;</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- Stability   : Experimental</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- Portability : Non-portable (scoped type variables, bang patterns)</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- This module provides a radix sort for a subclass of unboxed arrays. The</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- radix class gives information on</span><span>
+</span><span id="line-16"></span><span class="hs-comment">--   * the number of passes needed for the data type</span><span>
+</span><span id="line-17"></span><span class="hs-comment">--</span><span>
+</span><span id="line-18"></span><span class="hs-comment">--   * the size of the auxiliary arrays</span><span>
+</span><span id="line-19"></span><span class="hs-comment">--</span><span>
+</span><span id="line-20"></span><span class="hs-comment">--   * how to compute the pass-k radix of a value</span><span>
+</span><span id="line-21"></span><span class="hs-comment">--</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- Radix sort is not a comparison sort, so it is able to achieve O(n) run</span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- time, though it also uses O(n) auxiliary space. In addition, there is a</span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- constant space overhead of 2*size*sizeOf(Int) for the sort, so it is not</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- advisable to use this sort for large numbers of very small arrays.</span><span>
+</span><span id="line-26"></span><span class="hs-comment">--</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- A standard example (upon which one could base their own Radix instance)</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- is Word32:</span><span>
+</span><span id="line-29"></span><span class="hs-comment">--</span><span>
+</span><span id="line-30"></span><span class="hs-comment">--   * We choose to sort on r = 8 bits at a time</span><span>
+</span><span id="line-31"></span><span class="hs-comment">--</span><span>
+</span><span id="line-32"></span><span class="hs-comment">--   * A Word32 has b = 32 bits total</span><span>
+</span><span id="line-33"></span><span class="hs-comment">--</span><span>
+</span><span id="line-34"></span><span class="hs-comment">--   Thus, b/r = 4 passes are required, 2^r = 256 elements are needed in an</span><span>
+</span><span id="line-35"></span><span class="hs-comment">--   auxiliary array, and the radix function is:</span><span>
+</span><span id="line-36"></span><span class="hs-comment">--</span><span>
+</span><span id="line-37"></span><span class="hs-comment">--    &gt; radix k e = (e `shiftR` (k*8)) .&amp;. 255</span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Data.Vector.Algorithms.Radix</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#sort"><span class="hs-identifier">sort</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#sortBy"><span class="hs-identifier">sortBy</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier">Radix</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">read</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">length</span></span><span class="hs-special">)</span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span>
+</span><span id="line-44"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.Primitive</span></span><span>
+</span><span id="line-45"></span><span>
+</span><span id="line-46"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Vector.Primitive.Mutable</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">PV</span></span><span>
+</span><span id="line-47"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Vector.Generic.Mutable</span></span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Common.html"><span class="hs-identifier">Data.Vector.Algorithms.Common</span></a></span><span>
+</span><span id="line-50"></span><span>
+</span><span id="line-51"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bits</span></span><span>
+</span><span id="line-52"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Int</span></span><span>
+</span><span id="line-53"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span>
+</span><span id="line-56"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Storable</span></span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span class="hs-keyword">class</span><span> </span><span id="Radix"><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-var">Radix</span></a></span></span><span> </span><span id="local-6989586621679072421"><span class="annot"><a href="#local-6989586621679072421"><span class="hs-identifier hs-type">e</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-comment">-- | The number of passes necessary to sort an array of es</span><span>
+</span><span id="line-60"></span><span>  </span><span id="passes"><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-type">passes</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679072421"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-61"></span><span>  </span><span class="hs-comment">-- | The size of an auxiliary array</span><span>
+</span><span id="line-62"></span><span>  </span><span id="size"><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-type">size</span></a></span></span><span>   </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679072421"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-63"></span><span>  </span><span class="hs-comment">-- | The radix function parameterized by the current pass</span><span>
+</span><span id="line-64"></span><span>  </span><span id="radix"><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-type">radix</span></a></span></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072421"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-65"></span><span>
+</span><span id="line-66"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-67"></span><span>  </span><span id="local-6989586621679072517"><span class="annot"><span class="annottext">passes :: Int -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var hs-var hs-var hs-var">passes</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int
+forall a. Storable a =&gt; a -&gt; Int
+</span><span class="hs-identifier hs-var">sizeOf</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+forall a. HasCallStack =&gt; a
+</span><span class="hs-identifier hs-var">undefined</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-pragma hs-type">passes</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-69"></span><span>  </span><span id="local-6989586621679072520"><span class="annot"><span class="annottext">size :: Int -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var hs-var hs-var hs-var">size</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">256</span></span><span>
+</span><span id="line-70"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-pragma hs-type">size</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-71"></span><span>  </span><span id="local-6989586621679072539"><span class="annot"><span class="annottext">radix :: Int -&gt; Int -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var hs-var hs-var hs-var">radix</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span id="local-6989586621679072540"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072540"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072540"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">255</span></span><span>
+</span><span id="line-72"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span id="local-6989586621679072542"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072542"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621679072543"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072543"><span class="hs-identifier hs-var">e</span></a></span></span><span>
+</span><span id="line-73"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072542"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int
+forall e. Radix e =&gt; e -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var">passes</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072543"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int
+</span><a href="#local-6989586621679072544"><span class="hs-identifier hs-var">radix'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072543"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`xor`</span></span><span> </span><span class="annot"><span class="annottext">Int
+forall a. Bounded a =&gt; a
+</span><span class="hs-identifier hs-var">minBound</span></span><span class="hs-special">)</span><span>
+</span><span id="line-74"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int
+</span><a href="#local-6989586621679072544"><span class="hs-identifier hs-var">radix'</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072543"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-75"></span><span>   </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679072544"><span class="annot"><span class="annottext">radix' :: Int -&gt; Int
+</span><a href="#local-6989586621679072544"><span class="hs-identifier hs-var hs-var">radix'</span></a></span></span><span> </span><span id="local-6989586621679072547"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072547"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072547"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072542"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">255</span></span><span>
+</span><span id="line-76"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-pragma hs-type">radix</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int8</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-79"></span><span>  </span><span id="local-6989586621679072553"><span class="annot"><span class="annottext">passes :: Int8 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var hs-var hs-var hs-var">passes</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-80"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-pragma hs-type">passes</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-81"></span><span>  </span><span id="local-6989586621679072554"><span class="annot"><span class="annottext">size :: Int8 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var hs-var hs-var hs-var">size</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">256</span></span><span>
+</span><span id="line-82"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-pragma hs-type">size</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-83"></span><span>  </span><span id="local-6989586621679072562"><span class="annot"><span class="annottext">radix :: Int -&gt; Int8 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var hs-var hs-var hs-var">radix</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679072563"><span class="annot"><span class="annottext">Int8
+</span><a href="#local-6989586621679072563"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">255</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int8
+</span><a href="#local-6989586621679072563"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`xor`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">128</span></span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-pragma hs-type">radix</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-85"></span><span>
+</span><span id="line-86"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int16</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-87"></span><span>  </span><span id="local-6989586621679072568"><span class="annot"><span class="annottext">passes :: Int16 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var hs-var hs-var hs-var">passes</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int16
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-88"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-pragma hs-type">passes</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-89"></span><span>  </span><span id="local-6989586621679072569"><span class="annot"><span class="annottext">size :: Int16 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var hs-var hs-var hs-var">size</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int16
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">256</span></span><span>
+</span><span id="line-90"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-pragma hs-type">size</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-91"></span><span>  </span><span id="local-6989586621679072589"><span class="annot"><span class="annottext">radix :: Int -&gt; Int16 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var hs-var hs-var hs-var">radix</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span id="local-6989586621679072590"><span class="annot"><span class="annottext">Int16
+</span><a href="#local-6989586621679072590"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int16 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int16
+</span><a href="#local-6989586621679072590"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int16 -&gt; Int16 -&gt; Int16
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int16
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-92"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span id="local-6989586621679072591"><span class="annot"><span class="annottext">Int16
+</span><a href="#local-6989586621679072591"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int16 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int16
+</span><a href="#local-6989586621679072591"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int16 -&gt; Int16 -&gt; Int16
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`xor`</span></span><span> </span><span class="annot"><span class="annottext">Int16
+forall a. Bounded a =&gt; a
+</span><span class="hs-identifier hs-var">minBound</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int16 -&gt; Int -&gt; Int16
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int16 -&gt; Int16 -&gt; Int16
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int16
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-pragma hs-type">radix</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int32</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-96"></span><span>  </span><span id="local-6989586621679072596"><span class="annot"><span class="annottext">passes :: Int32 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var hs-var hs-var hs-var">passes</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int32
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span>
+</span><span id="line-97"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-pragma hs-type">passes</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-98"></span><span>  </span><span id="local-6989586621679072597"><span class="annot"><span class="annottext">size :: Int32 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var hs-var hs-var hs-var">size</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int32
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">256</span></span><span>
+</span><span id="line-99"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-pragma hs-type">size</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-100"></span><span>  </span><span id="local-6989586621679072631"><span class="annot"><span class="annottext">radix :: Int -&gt; Int32 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var hs-var hs-var hs-var">radix</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span id="local-6989586621679072632"><span class="annot"><span class="annottext">Int32
+</span><a href="#local-6989586621679072632"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int32
+</span><a href="#local-6989586621679072632"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int32 -&gt; Int32
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int32
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-101"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span id="local-6989586621679072633"><span class="annot"><span class="annottext">Int32
+</span><a href="#local-6989586621679072633"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int32
+</span><a href="#local-6989586621679072633"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int -&gt; Int32
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int32 -&gt; Int32
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int32
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-102"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span id="local-6989586621679072634"><span class="annot"><span class="annottext">Int32
+</span><a href="#local-6989586621679072634"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int32
+</span><a href="#local-6989586621679072634"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int -&gt; Int32
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int32 -&gt; Int32
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int32
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-103"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span id="local-6989586621679072635"><span class="annot"><span class="annottext">Int32
+</span><a href="#local-6989586621679072635"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int32
+</span><a href="#local-6989586621679072635"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int32 -&gt; Int32
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`xor`</span></span><span> </span><span class="annot"><span class="annottext">Int32
+forall a. Bounded a =&gt; a
+</span><span class="hs-identifier hs-var">minBound</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int -&gt; Int32
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">24</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int32 -&gt; Int32 -&gt; Int32
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int32
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-104"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-pragma hs-type">radix</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-105"></span><span>
+</span><span id="line-106"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int64</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-107"></span><span>  </span><span id="local-6989586621679072640"><span class="annot"><span class="annottext">passes :: Int64 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var hs-var hs-var hs-var">passes</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span>
+</span><span id="line-108"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-pragma hs-type">passes</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-109"></span><span>  </span><span id="local-6989586621679072641"><span class="annot"><span class="annottext">size :: Int64 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var hs-var hs-var hs-var">size</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">256</span></span><span>
+</span><span id="line-110"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-pragma hs-type">size</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-111"></span><span>  </span><span id="local-6989586621679072703"><span class="annot"><span class="annottext">radix :: Int -&gt; Int64 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var hs-var hs-var hs-var">radix</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span id="local-6989586621679072704"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072704"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072704"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int64 -&gt; Int64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-112"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span id="local-6989586621679072705"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072705"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072705"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int -&gt; Int64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int64 -&gt; Int64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-113"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span id="local-6989586621679072706"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072706"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072706"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int -&gt; Int64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int64 -&gt; Int64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span id="local-6989586621679072707"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072707"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072707"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int -&gt; Int64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">24</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int64 -&gt; Int64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-115"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span id="local-6989586621679072708"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072708"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072708"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int -&gt; Int64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int64 -&gt; Int64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">5</span></span><span> </span><span id="local-6989586621679072709"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072709"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072709"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int -&gt; Int64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">40</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int64 -&gt; Int64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-117"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span> </span><span id="local-6989586621679072710"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072710"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072710"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int -&gt; Int64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">48</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int64 -&gt; Int64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-118"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">7</span></span><span> </span><span id="local-6989586621679072711"><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072711"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int64
+</span><a href="#local-6989586621679072711"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int64 -&gt; Int64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`xor`</span></span><span> </span><span class="annot"><span class="annottext">Int64
+forall a. Bounded a =&gt; a
+</span><span class="hs-identifier hs-var">minBound</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int -&gt; Int64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">56</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int64 -&gt; Int64 -&gt; Int64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Int64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-119"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-pragma hs-type">radix</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-120"></span><span>
+</span><span id="line-121"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-122"></span><span>  </span><span id="local-6989586621679072720"><span class="annot"><span class="annottext">passes :: Word -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var hs-var hs-var hs-var">passes</span></a></span></span><span> </span><span class="annot"><span class="annottext">Word
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word -&gt; Int
+forall a. Storable a =&gt; a -&gt; Int
+</span><span class="hs-identifier hs-var">sizeOf</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word
+forall a. HasCallStack =&gt; a
+</span><span class="hs-identifier hs-var">undefined</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word</span></span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-pragma hs-type">passes</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-124"></span><span>  </span><span id="local-6989586621679072721"><span class="annot"><span class="annottext">size :: Word -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var hs-var hs-var hs-var">size</span></a></span></span><span> </span><span class="annot"><span class="annottext">Word
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">256</span></span><span>
+</span><span id="line-125"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-pragma hs-type">size</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-126"></span><span>  </span><span id="local-6989586621679072737"><span class="annot"><span class="annottext">radix :: Int -&gt; Word -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var hs-var hs-var hs-var">radix</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span id="local-6989586621679072738"><span class="annot"><span class="annottext">Word
+</span><a href="#local-6989586621679072738"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word
+</span><a href="#local-6989586621679072738"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word -&gt; Word -&gt; Word
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-127"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span id="local-6989586621679072739"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072739"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621679072740"><span class="annot"><span class="annottext">Word
+</span><a href="#local-6989586621679072740"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word
+</span><a href="#local-6989586621679072740"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word -&gt; Int -&gt; Word
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072739"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftL`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word -&gt; Word -&gt; Word
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-128"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-pragma hs-type">radix</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-129"></span><span>
+</span><span id="line-130"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-131"></span><span>  </span><span id="local-6989586621679072745"><span class="annot"><span class="annottext">passes :: Word8 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var hs-var hs-var hs-var">passes</span></a></span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-132"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-pragma hs-type">passes</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-133"></span><span>  </span><span id="local-6989586621679072746"><span class="annot"><span class="annottext">size :: Word8 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var hs-var hs-var hs-var">size</span></a></span></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">256</span></span><span>
+</span><span id="line-134"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-pragma hs-type">size</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-135"></span><span>  </span><span id="local-6989586621679072750"><span class="annot"><span class="annottext">radix :: Int -&gt; Word8 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var hs-var hs-var hs-var">radix</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word8 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span>
+</span><span id="line-136"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-pragma hs-type">radix</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-137"></span><span>
+</span><span id="line-138"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word16</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-139"></span><span>  </span><span id="local-6989586621679072755"><span class="annot"><span class="annottext">passes :: Word16 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var hs-var hs-var hs-var">passes</span></a></span></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span>
+</span><span id="line-140"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-pragma hs-type">passes</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-141"></span><span>  </span><span id="local-6989586621679072756"><span class="annot"><span class="annottext">size :: Word16 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var hs-var hs-var hs-var">size</span></a></span></span><span>   </span><span class="annot"><span class="annottext">Word16
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">256</span></span><span>
+</span><span id="line-142"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-pragma hs-type">size</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-143"></span><span>  </span><span id="local-6989586621679072773"><span class="annot"><span class="annottext">radix :: Int -&gt; Word16 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var hs-var hs-var hs-var">radix</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span id="local-6989586621679072774"><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679072774"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word16 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679072774"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word16 -&gt; Word16 -&gt; Word16
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-144"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span id="local-6989586621679072775"><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679072775"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word16 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word16
+</span><a href="#local-6989586621679072775"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word16 -&gt; Int -&gt; Word16
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word16 -&gt; Word16 -&gt; Word16
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word16
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-145"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-pragma hs-type">radix</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-146"></span><span>
+</span><span id="line-147"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word32</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-148"></span><span>  </span><span id="local-6989586621679072780"><span class="annot"><span class="annottext">passes :: Word32 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var hs-var hs-var hs-var">passes</span></a></span></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span>
+</span><span id="line-149"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-pragma hs-type">passes</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-150"></span><span>  </span><span id="local-6989586621679072781"><span class="annot"><span class="annottext">size :: Word32 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var hs-var hs-var hs-var">size</span></a></span></span><span>   </span><span class="annot"><span class="annottext">Word32
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">256</span></span><span>
+</span><span id="line-151"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-pragma hs-type">size</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-152"></span><span>  </span><span id="local-6989586621679072812"><span class="annot"><span class="annottext">radix :: Int -&gt; Word32 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var hs-var hs-var hs-var">radix</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span id="local-6989586621679072813"><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679072813"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679072813"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Word32 -&gt; Word32
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-153"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span id="local-6989586621679072814"><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679072814"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679072814"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Int -&gt; Word32
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Word32 -&gt; Word32
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-154"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span id="local-6989586621679072815"><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679072815"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679072815"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Int -&gt; Word32
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Word32 -&gt; Word32
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-155"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span id="local-6989586621679072816"><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679072816"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word32
+</span><a href="#local-6989586621679072816"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Int -&gt; Word32
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">24</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word32 -&gt; Word32 -&gt; Word32
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word32
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-156"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-pragma hs-type">radix</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-157"></span><span>
+</span><span id="line-158"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word64</span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-159"></span><span>  </span><span id="local-6989586621679072821"><span class="annot"><span class="annottext">passes :: Word64 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var hs-var hs-var hs-var">passes</span></a></span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span>
+</span><span id="line-160"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-pragma hs-type">passes</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-161"></span><span>  </span><span id="local-6989586621679072822"><span class="annot"><span class="annottext">size :: Word64 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var hs-var hs-var hs-var">size</span></a></span></span><span>   </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">256</span></span><span>
+</span><span id="line-162"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-pragma hs-type">size</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-163"></span><span>  </span><span id="local-6989586621679072881"><span class="annot"><span class="annottext">radix :: Int -&gt; Word64 -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var hs-var hs-var hs-var">radix</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span id="local-6989586621679072882"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072882"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072882"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-164"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span id="local-6989586621679072883"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072883"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072883"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int -&gt; Word64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-165"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span id="local-6989586621679072884"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072884"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072884"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int -&gt; Word64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">16</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-166"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">3</span></span><span> </span><span id="local-6989586621679072885"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072885"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072885"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int -&gt; Word64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">24</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-167"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span id="local-6989586621679072886"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072886"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072886"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int -&gt; Word64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">32</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-168"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">5</span></span><span> </span><span id="local-6989586621679072887"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072887"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072887"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int -&gt; Word64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">40</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-169"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">6</span></span><span> </span><span id="local-6989586621679072888"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072888"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072888"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int -&gt; Word64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">48</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-170"></span><span>  </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">7</span></span><span> </span><span id="local-6989586621679072889"><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072889"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word64
+</span><a href="#local-6989586621679072889"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Int -&gt; Word64
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`shiftR`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">56</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Word64 -&gt; Word64 -&gt; Word64
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">Word64
+</span><span class="hs-number">255</span></span><span class="hs-special">)</span><span>
+</span><span id="line-171"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-pragma hs-type">radix</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679072436"><span id="local-6989586621679072437"><span class="hs-special">(</span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679072436"><span class="hs-identifier hs-type">i</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679072437"><span class="hs-identifier hs-type">j</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679072436"><span class="hs-identifier hs-type">i</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621679072437"><span class="hs-identifier hs-type">j</span></a></span><span class="hs-special">)</span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-174"></span><span>  </span><span id="local-6989586621679072899"><span class="annot"><span class="annottext">passes :: (i, j) -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var hs-var hs-var hs-var">passes</span></a></span></span><span> </span><span class="hs-glyph">~</span><span class="hs-special">(</span><span id="local-6989586621679072900"><span class="annot"><span class="annottext">i
+</span><a href="#local-6989586621679072900"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679072901"><span class="annot"><span class="annottext">j
+</span><a href="#local-6989586621679072901"><span class="hs-identifier hs-var">j</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">i -&gt; Int
+forall e. Radix e =&gt; e -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var">passes</span></a></span><span> </span><span class="annot"><span class="annottext">i
+</span><a href="#local-6989586621679072900"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">j -&gt; Int
+forall e. Radix e =&gt; e -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var">passes</span></a></span><span> </span><span class="annot"><span class="annottext">j
+</span><a href="#local-6989586621679072901"><span class="hs-identifier hs-var">j</span></a></span><span>
+</span><span id="line-175"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-pragma hs-type">passes</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-176"></span><span>  </span><span id="local-6989586621679072907"><span class="annot"><span class="annottext">size :: (i, j) -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var hs-var hs-var hs-var">size</span></a></span></span><span>   </span><span class="hs-glyph">~</span><span class="hs-special">(</span><span id="local-6989586621679072908"><span class="annot"><span class="annottext">i
+</span><a href="#local-6989586621679072908"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679072909"><span class="annot"><span class="annottext">j
+</span><a href="#local-6989586621679072909"><span class="hs-identifier hs-var">j</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">i -&gt; Int
+forall e. Radix e =&gt; e -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var">size</span></a></span><span> </span><span class="annot"><span class="annottext">i
+</span><a href="#local-6989586621679072908"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Ord a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`max`</span></span><span> </span><span class="annot"><span class="annottext">j -&gt; Int
+forall e. Radix e =&gt; e -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var">size</span></a></span><span> </span><span class="annot"><span class="annottext">j
+</span><a href="#local-6989586621679072909"><span class="hs-identifier hs-var">j</span></a></span><span>
+</span><span id="line-177"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-pragma hs-type">size</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-178"></span><span>  </span><span id="local-6989586621679072917"><span class="annot"><span class="annottext">radix :: Int -&gt; (i, j) -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var hs-var hs-var hs-var">radix</span></a></span></span><span> </span><span id="local-6989586621679072918"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072918"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">~</span><span class="hs-special">(</span><span id="local-6989586621679072919"><span class="annot"><span class="annottext">i
+</span><a href="#local-6989586621679072919"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679072920"><span class="annot"><span class="annottext">j
+</span><a href="#local-6989586621679072920"><span class="hs-identifier hs-var">j</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072918"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">j -&gt; Int
+forall e. Radix e =&gt; e -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var">passes</span></a></span><span> </span><span class="annot"><span class="annottext">j
+</span><a href="#local-6989586621679072920"><span class="hs-identifier hs-var">j</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; j -&gt; Int
+forall e. Radix e =&gt; Int -&gt; e -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072918"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">j
+</span><a href="#local-6989586621679072920"><span class="hs-identifier hs-var">j</span></a></span><span>
+</span><span id="line-179"></span><span>                     </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; i -&gt; Int
+forall e. Radix e =&gt; Int -&gt; e -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072918"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">j -&gt; Int
+forall e. Radix e =&gt; e -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var">passes</span></a></span><span> </span><span class="annot"><span class="annottext">j
+</span><a href="#local-6989586621679072920"><span class="hs-identifier hs-var">j</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">i
+</span><a href="#local-6989586621679072919"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-180"></span><span>  </span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-pragma hs-type">radix</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-181"></span><span>
+</span><span id="line-182"></span><span class="annot"><span class="hs-comment">-- | Sorts an array based on the Radix instance.</span></span><span>
+</span><span id="line-183"></span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#sort"><span class="hs-identifier hs-type">sort</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679072442"><span class="annot"><a href="#local-6989586621679072442"><span class="hs-identifier hs-type">e</span></a></span></span><span> </span><span id="local-6989586621679072439"><span class="annot"><a href="#local-6989586621679072439"><span class="hs-identifier hs-type">m</span></a></span></span><span> </span><span id="local-6989586621679072441"><span class="annot"><a href="#local-6989586621679072441"><span class="hs-identifier hs-type">v</span></a></span></span><span class="hs-operator">.</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimMonad</span></span><span> </span><span class="annot"><a href="#local-6989586621679072439"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MVector</span></span><span> </span><span class="annot"><a href="#local-6989586621679072441"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679072442"><span class="hs-identifier hs-type">e</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#Radix"><span class="hs-identifier hs-type">Radix</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679072442"><span class="hs-identifier hs-type">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-184"></span><span>     </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072441"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimState</span></span><span> </span><span class="annot"><a href="#local-6989586621679072439"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679072442"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072439"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-185"></span><span id="sort"><span class="annot"><span class="annottext">sort :: forall e (m :: * -&gt; *) (v :: * -&gt; * -&gt; *).
+(PrimMonad m, MVector v e, Radix e) =&gt;
+v (PrimState m) e -&gt; m ()
+</span><a href="Data.Vector.Algorithms.Radix.html#sort"><span class="hs-identifier hs-var hs-var">sort</span></a></span></span><span> </span><span id="local-6989586621679072932"><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072932"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; (Int -&gt; e -&gt; Int) -&gt; v (PrimState m) e -&gt; m ()
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) e.
+(PrimMonad m, MVector v e) =&gt;
+Int -&gt; Int -&gt; (Int -&gt; e -&gt; Int) -&gt; v (PrimState m) e -&gt; m ()
+</span><a href="Data.Vector.Algorithms.Radix.html#sortBy"><span class="hs-identifier hs-var">sortBy</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">e -&gt; Int
+forall e. Radix e =&gt; e -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#passes"><span class="hs-identifier hs-var">passes</span></a></span><span> </span><span class="annot"><span class="annottext">e
+</span><a href="#local-6989586621679072933"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">e -&gt; Int
+forall e. Radix e =&gt; e -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#size"><span class="hs-identifier hs-var">size</span></a></span><span> </span><span class="annot"><span class="annottext">e
+</span><a href="#local-6989586621679072933"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; e -&gt; Int
+forall e. Radix e =&gt; Int -&gt; e -&gt; Int
+</span><a href="Data.Vector.Algorithms.Radix.html#radix"><span class="hs-identifier hs-var">radix</span></a></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072932"><span class="hs-identifier hs-var">arr</span></a></span><span>
+</span><span id="line-186"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-187"></span><span> </span><span class="annot"><a href="#local-6989586621679072933"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679072442"><span class="hs-identifier hs-type">e</span></a></span><span>
+</span><span id="line-188"></span><span> </span><span id="local-6989586621679072933"><span class="annot"><span class="annottext">e :: e
+</span><a href="#local-6989586621679072933"><span class="hs-identifier hs-var hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">e
+forall a. HasCallStack =&gt; a
+</span><span class="hs-identifier hs-var">undefined</span></span><span>
+</span><span id="line-189"></span><span class="hs-pragma">{-# INLINABLE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#sort"><span class="hs-pragma hs-type">sort</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-190"></span><span>
+</span><span id="line-191"></span><span class="hs-comment">-- | Radix sorts an array using custom radix information</span><span>
+</span><span id="line-192"></span><span class="hs-comment">-- requires the number of passes to fully sort the array,</span><span>
+</span><span id="line-193"></span><span class="hs-comment">-- the size of of auxiliary arrays necessary (should be</span><span>
+</span><span id="line-194"></span><span class="hs-comment">-- one greater than the maximum value returned by the radix</span><span>
+</span><span id="line-195"></span><span class="hs-comment">-- function), and a radix function, which takes the pass</span><span>
+</span><span id="line-196"></span><span class="hs-comment">-- and an element, and returns the relevant radix.</span><span>
+</span><span id="line-197"></span><span id="local-6989586621679072448"><span id="local-6989586621679072449"><span id="local-6989586621679072450"><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#sortBy"><span class="hs-identifier hs-type">sortBy</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimMonad</span></span><span> </span><span class="annot"><a href="#local-6989586621679072448"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MVector</span></span><span> </span><span class="annot"><a href="#local-6989586621679072449"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679072450"><span class="hs-identifier hs-type">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-198"></span><span>       </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>               </span><span class="annot"><span class="hs-comment">-- ^ the number of passes</span></span><span>
+</span><span id="line-199"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>               </span><span class="annot"><span class="hs-comment">-- ^ the size of auxiliary arrays</span></span><span>
+</span><span id="line-200"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072450"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-comment">-- ^ the radix function</span></span><span>
+</span><span id="line-201"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072449"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimState</span></span><span> </span><span class="annot"><a href="#local-6989586621679072448"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679072450"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="annot"><span class="hs-comment">-- ^ the array to be sorted</span></span><span>
+</span><span id="line-202"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072448"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-203"></span><span id="sortBy"><span class="annot"><span class="annottext">sortBy :: forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) e.
+(PrimMonad m, MVector v e) =&gt;
+Int -&gt; Int -&gt; (Int -&gt; e -&gt; Int) -&gt; v (PrimState m) e -&gt; m ()
+</span><a href="Data.Vector.Algorithms.Radix.html#sortBy"><span class="hs-identifier hs-var hs-var">sortBy</span></a></span></span><span> </span><span id="local-6989586621679072954"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072954"><span class="hs-identifier hs-var">passes</span></a></span></span><span> </span><span id="local-6989586621679072955"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072955"><span class="hs-identifier hs-var">size</span></a></span></span><span> </span><span id="local-6989586621679072956"><span class="annot"><span class="annottext">Int -&gt; e -&gt; Int
+</span><a href="#local-6989586621679072956"><span class="hs-identifier hs-var">rdx</span></a></span></span><span> </span><span id="local-6989586621679072957"><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072957"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-204"></span><span>  </span><span id="local-6989586621679072958"><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072958"><span class="hs-identifier hs-var">tmp</span></a></span></span><span>    </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; m (v (PrimState m) e)
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) a.
+(HasCallStack, PrimMonad m, MVector v a) =&gt;
+Int -&gt; m (v (PrimState m) a)
+</span><span class="hs-identifier hs-var">new</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">v (PrimState m) e -&gt; Int
+forall (v :: * -&gt; * -&gt; *) a s. MVector v a =&gt; v s a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072957"><span class="hs-identifier hs-var">arr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-205"></span><span>  </span><span id="local-6989586621679072961"><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679072961"><span class="hs-identifier hs-var">count</span></a></span></span><span>  </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; m (MVector (PrimState m) Int)
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) a.
+(HasCallStack, PrimMonad m, MVector v a) =&gt;
+Int -&gt; m (v (PrimState m) a)
+</span><span class="hs-identifier hs-var">new</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072955"><span class="hs-identifier hs-var">size</span></a></span><span>
+</span><span id="line-206"></span><span>  </span><span class="annot"><span class="annottext">Int
+-&gt; (Int -&gt; e -&gt; Int)
+-&gt; v (PrimState m) e
+-&gt; v (PrimState m) e
+-&gt; MVector (PrimState m) Int
+-&gt; m ()
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) e.
+(PrimMonad m, MVector v e) =&gt;
+Int
+-&gt; (Int -&gt; e -&gt; Int)
+-&gt; v (PrimState m) e
+-&gt; v (PrimState m) e
+-&gt; MVector (PrimState m) Int
+-&gt; m ()
+</span><a href="Data.Vector.Algorithms.Radix.html#radixLoop"><span class="hs-identifier hs-var">radixLoop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072954"><span class="hs-identifier hs-var">passes</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; e -&gt; Int
+</span><a href="#local-6989586621679072956"><span class="hs-identifier hs-var">rdx</span></a></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072957"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072958"><span class="hs-identifier hs-var">tmp</span></a></span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679072961"><span class="hs-identifier hs-var">count</span></a></span><span>
+</span><span id="line-207"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#sortBy"><span class="hs-pragma hs-type">sortBy</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-208"></span><span>
+</span><span id="line-209"></span><span id="local-6989586621679072464"><span id="local-6989586621679072465"><span id="local-6989586621679072466"><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radixLoop"><span class="hs-identifier hs-type">radixLoop</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimMonad</span></span><span> </span><span class="annot"><a href="#local-6989586621679072464"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MVector</span></span><span> </span><span class="annot"><a href="#local-6989586621679072465"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679072466"><span class="hs-identifier hs-type">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-210"></span><span>          </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>                          </span><span class="hs-comment">-- passes</span><span>
+</span><span id="line-211"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072466"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span>            </span><span class="hs-comment">-- radix function</span><span>
+</span><span id="line-212"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072465"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimState</span></span><span> </span><span class="annot"><a href="#local-6989586621679072464"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679072466"><span class="hs-identifier hs-type">e</span></a></span><span>            </span><span class="hs-comment">-- array to sort</span><span>
+</span><span id="line-213"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072465"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimState</span></span><span> </span><span class="annot"><a href="#local-6989586621679072464"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679072466"><span class="hs-identifier hs-type">e</span></a></span><span>            </span><span class="hs-comment">-- temporary array</span><span>
+</span><span id="line-214"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">PV.MVector</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimState</span></span><span> </span><span class="annot"><a href="#local-6989586621679072464"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-comment">-- radix count array</span><span>
+</span><span id="line-215"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072464"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-216"></span><span id="radixLoop"><span class="annot"><span class="annottext">radixLoop :: forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) e.
+(PrimMonad m, MVector v e) =&gt;
+Int
+-&gt; (Int -&gt; e -&gt; Int)
+-&gt; v (PrimState m) e
+-&gt; v (PrimState m) e
+-&gt; MVector (PrimState m) Int
+-&gt; m ()
+</span><a href="Data.Vector.Algorithms.Radix.html#radixLoop"><span class="hs-identifier hs-var hs-var">radixLoop</span></a></span></span><span> </span><span id="local-6989586621679072984"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072984"><span class="hs-identifier hs-var">passes</span></a></span></span><span> </span><span id="local-6989586621679072985"><span class="annot"><span class="annottext">Int -&gt; e -&gt; Int
+</span><a href="#local-6989586621679072985"><span class="hs-identifier hs-var">rdx</span></a></span></span><span> </span><span id="local-6989586621679072986"><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072986"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span id="local-6989586621679072987"><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072987"><span class="hs-identifier hs-var">dst</span></a></span></span><span> </span><span id="local-6989586621679072988"><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679072988"><span class="hs-identifier hs-var">count</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Int -&gt; m ()
+</span><a href="#local-6989586621679072989"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-217"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-218"></span><span> </span><span id="local-6989586621679072990"><span class="annot"><span class="annottext">len :: Int
+</span><a href="#local-6989586621679072990"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e -&gt; Int
+forall (v :: * -&gt; * -&gt; *) a s. MVector v a =&gt; v s a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072986"><span class="hs-identifier hs-var">src</span></a></span><span>
+</span><span id="line-219"></span><span> </span><span id="local-6989586621679072989"><span class="annot"><span class="annottext">go :: Bool -&gt; Int -&gt; m ()
+</span><a href="#local-6989586621679072989"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679072991"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679072991"><span class="hs-identifier hs-var">swap</span></a></span></span><span> </span><span id="local-6989586621679072992"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072992"><span class="hs-identifier hs-var">k</span></a></span></span><span>
+</span><span id="line-220"></span><span>   </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072992"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072984"><span class="hs-identifier hs-var">passes</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679072991"><span class="hs-identifier hs-var">swap</span></a></span><span>
+</span><span id="line-221"></span><span>                    </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">(Int -&gt; e -&gt; Int)
+-&gt; v (PrimState m) e
+-&gt; v (PrimState m) e
+-&gt; MVector (PrimState m) Int
+-&gt; Int
+-&gt; m ()
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) e.
+(PrimMonad m, MVector v e) =&gt;
+(Int -&gt; e -&gt; Int)
+-&gt; v (PrimState m) e
+-&gt; v (PrimState m) e
+-&gt; MVector (PrimState m) Int
+-&gt; Int
+-&gt; m ()
+</span><a href="Data.Vector.Algorithms.Radix.html#body"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; e -&gt; Int
+</span><a href="#local-6989586621679072985"><span class="hs-identifier hs-var">rdx</span></a></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072987"><span class="hs-identifier hs-var">dst</span></a></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072986"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679072988"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072992"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">m () -&gt; m () -&gt; m ()
+forall a b. m a -&gt; m b -&gt; m b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Int -&gt; m ()
+</span><a href="#local-6989586621679072989"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679072991"><span class="hs-identifier hs-var">swap</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072992"><span class="hs-identifier hs-var">k</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-222"></span><span>                    </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">(Int -&gt; e -&gt; Int)
+-&gt; v (PrimState m) e
+-&gt; v (PrimState m) e
+-&gt; MVector (PrimState m) Int
+-&gt; Int
+-&gt; m ()
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) e.
+(PrimMonad m, MVector v e) =&gt;
+(Int -&gt; e -&gt; Int)
+-&gt; v (PrimState m) e
+-&gt; v (PrimState m) e
+-&gt; MVector (PrimState m) Int
+-&gt; Int
+-&gt; m ()
+</span><a href="Data.Vector.Algorithms.Radix.html#body"><span class="hs-identifier hs-var">body</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; e -&gt; Int
+</span><a href="#local-6989586621679072985"><span class="hs-identifier hs-var">rdx</span></a></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072986"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072987"><span class="hs-identifier hs-var">dst</span></a></span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679072988"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072992"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">m () -&gt; m () -&gt; m ()
+forall a b. m a -&gt; m b -&gt; m b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Int -&gt; m ()
+</span><a href="#local-6989586621679072989"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679072991"><span class="hs-identifier hs-var">swap</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679072992"><span class="hs-identifier hs-var">k</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-223"></span><span>   </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; m () -&gt; m ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679072991"><span class="hs-identifier hs-var">swap</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">v (PrimState m) e -&gt; v (PrimState m) e -&gt; m ()
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) a.
+(PrimMonad m, MVector v a) =&gt;
+v (PrimState m) a -&gt; v (PrimState m) a -&gt; m ()
+</span><span class="hs-identifier hs-var">unsafeCopy</span></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072986"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679072987"><span class="hs-identifier hs-var">dst</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-224"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#radixLoop"><span class="hs-pragma hs-type">radixLoop</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-225"></span><span>
+</span><span id="line-226"></span><span id="local-6989586621679072471"><span id="local-6989586621679072472"><span id="local-6989586621679072473"><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#body"><span class="hs-identifier hs-type">body</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimMonad</span></span><span> </span><span class="annot"><a href="#local-6989586621679072471"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MVector</span></span><span> </span><span class="annot"><a href="#local-6989586621679072472"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679072473"><span class="hs-identifier hs-type">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-227"></span><span>     </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072473"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span>            </span><span class="hs-comment">-- radix function</span><span>
+</span><span id="line-228"></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072472"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimState</span></span><span> </span><span class="annot"><a href="#local-6989586621679072471"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679072473"><span class="hs-identifier hs-type">e</span></a></span><span>            </span><span class="hs-comment">-- source array</span><span>
+</span><span id="line-229"></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072472"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimState</span></span><span> </span><span class="annot"><a href="#local-6989586621679072471"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679072473"><span class="hs-identifier hs-type">e</span></a></span><span>            </span><span class="hs-comment">-- destination array</span><span>
+</span><span id="line-230"></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">PV.MVector</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimState</span></span><span> </span><span class="annot"><a href="#local-6989586621679072471"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-comment">-- radix count</span><span>
+</span><span id="line-231"></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>                          </span><span class="hs-comment">-- current pass</span><span>
+</span><span id="line-232"></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072471"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-233"></span><span id="body"><span class="annot"><span class="annottext">body :: forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) e.
+(PrimMonad m, MVector v e) =&gt;
+(Int -&gt; e -&gt; Int)
+-&gt; v (PrimState m) e
+-&gt; v (PrimState m) e
+-&gt; MVector (PrimState m) Int
+-&gt; Int
+-&gt; m ()
+</span><a href="Data.Vector.Algorithms.Radix.html#body"><span class="hs-identifier hs-var hs-var">body</span></a></span></span><span> </span><span id="local-6989586621679073007"><span class="annot"><span class="annottext">Int -&gt; e -&gt; Int
+</span><a href="#local-6989586621679073007"><span class="hs-identifier hs-var">rdx</span></a></span></span><span> </span><span id="local-6989586621679073008"><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679073008"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span id="local-6989586621679073009"><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679073009"><span class="hs-identifier hs-var">dst</span></a></span></span><span> </span><span id="local-6989586621679073010"><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679073010"><span class="hs-identifier hs-var">count</span></a></span></span><span> </span><span id="local-6989586621679073011"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073011"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-234"></span><span>  </span><span class="annot"><span class="annottext">(e -&gt; Int)
+-&gt; v (PrimState m) e -&gt; MVector (PrimState m) Int -&gt; m ()
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) e.
+(PrimMonad m, MVector v e) =&gt;
+(e -&gt; Int)
+-&gt; v (PrimState m) e -&gt; MVector (PrimState m) Int -&gt; m ()
+</span><a href="Data.Vector.Algorithms.Common.html#countLoop"><span class="hs-identifier hs-var">countLoop</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; e -&gt; Int
+</span><a href="#local-6989586621679073007"><span class="hs-identifier hs-var">rdx</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073011"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679073008"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679073010"><span class="hs-identifier hs-var">count</span></a></span><span>
+</span><span id="line-235"></span><span>  </span><span class="annot"><span class="annottext">MVector (PrimState m) Int -&gt; m ()
+forall (m :: * -&gt; *).
+PrimMonad m =&gt;
+MVector (PrimState m) Int -&gt; m ()
+</span><a href="Data.Vector.Algorithms.Radix.html#accumulate"><span class="hs-identifier hs-var">accumulate</span></a></span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679073010"><span class="hs-identifier hs-var">count</span></a></span><span>
+</span><span id="line-236"></span><span>  </span><span class="annot"><span class="annottext">Int
+-&gt; (Int -&gt; e -&gt; Int)
+-&gt; v (PrimState m) e
+-&gt; v (PrimState m) e
+-&gt; MVector (PrimState m) Int
+-&gt; m ()
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) e.
+(PrimMonad m, MVector v e) =&gt;
+Int
+-&gt; (Int -&gt; e -&gt; Int)
+-&gt; v (PrimState m) e
+-&gt; v (PrimState m) e
+-&gt; MVector (PrimState m) Int
+-&gt; m ()
+</span><a href="Data.Vector.Algorithms.Radix.html#moveLoop"><span class="hs-identifier hs-var">moveLoop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073011"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; e -&gt; Int
+</span><a href="#local-6989586621679073007"><span class="hs-identifier hs-var">rdx</span></a></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679073008"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679073009"><span class="hs-identifier hs-var">dst</span></a></span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679073010"><span class="hs-identifier hs-var">count</span></a></span><span>
+</span><span id="line-237"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#body"><span class="hs-pragma hs-type">body</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-238"></span><span>
+</span><span id="line-239"></span><span id="local-6989586621679072486"><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#accumulate"><span class="hs-identifier hs-type">accumulate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimMonad</span></span><span> </span><span class="annot"><a href="#local-6989586621679072486"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-240"></span><span>           </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">PV.MVector</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimState</span></span><span> </span><span class="annot"><a href="#local-6989586621679072486"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679072486"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-241"></span><span id="accumulate"><span class="annot"><span class="annottext">accumulate :: forall (m :: * -&gt; *).
+PrimMonad m =&gt;
+MVector (PrimState m) Int -&gt; m ()
+</span><a href="Data.Vector.Algorithms.Radix.html#accumulate"><span class="hs-identifier hs-var hs-var">accumulate</span></a></span></span><span> </span><span id="local-6989586621679073032"><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679073032"><span class="hs-identifier hs-var">count</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; m ()
+</span><a href="#local-6989586621679073033"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-242"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-243"></span><span> </span><span id="local-6989586621679073034"><span class="annot"><span class="annottext">len :: Int
+</span><a href="#local-6989586621679073034"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int -&gt; Int
+forall (v :: * -&gt; * -&gt; *) a s. MVector v a =&gt; v s a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679073032"><span class="hs-identifier hs-var">count</span></a></span><span>
+</span><span id="line-244"></span><span> </span><span id="local-6989586621679073033"><span class="annot"><span class="annottext">go :: Int -&gt; Int -&gt; m ()
+</span><a href="#local-6989586621679073033"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679073035"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073035"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621679073036"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073036"><span class="hs-identifier hs-var">acc</span></a></span></span><span>
+</span><span id="line-245"></span><span>   </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073035"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073034"><span class="hs-identifier hs-var">len</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621679073037"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073037"><span class="hs-identifier hs-var">ci</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int -&gt; Int -&gt; m Int
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) a.
+(PrimMonad m, MVector v a) =&gt;
+v (PrimState m) a -&gt; Int -&gt; m a
+</span><span class="hs-identifier hs-var">unsafeRead</span></span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679073032"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073035"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-246"></span><span>                    </span><span class="annot"><span class="annottext">MVector (PrimState m) Int -&gt; Int -&gt; Int -&gt; m ()
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) a.
+(PrimMonad m, MVector v a) =&gt;
+v (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">unsafeWrite</span></span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679073032"><span class="hs-identifier hs-var">count</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073035"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073036"><span class="hs-identifier hs-var">acc</span></a></span><span>
+</span><span id="line-247"></span><span>                    </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; m ()
+</span><a href="#local-6989586621679073033"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073035"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073036"><span class="hs-identifier hs-var">acc</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073037"><span class="hs-identifier hs-var">ci</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-248"></span><span>   </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; m ()
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-249"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#accumulate"><span class="hs-pragma hs-type">accumulate</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-250"></span><span>
+</span><span id="line-251"></span><span id="local-6989586621679073040"><span id="local-6989586621679073041"><span id="local-6989586621679073042"><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#moveLoop"><span class="hs-identifier hs-type">moveLoop</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimMonad</span></span><span> </span><span class="annot"><a href="#local-6989586621679073040"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MVector</span></span><span> </span><span class="annot"><a href="#local-6989586621679073041"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679073042"><span class="hs-identifier hs-type">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-252"></span><span>         </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679073042"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679073041"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimState</span></span><span> </span><span class="annot"><a href="#local-6989586621679073040"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679073042"><span class="hs-identifier hs-type">e</span></a></span><span>
+</span><span id="line-253"></span><span>         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679073041"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimState</span></span><span> </span><span class="annot"><a href="#local-6989586621679073040"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679073042"><span class="hs-identifier hs-type">e</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">PV.MVector</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PrimState</span></span><span> </span><span class="annot"><a href="#local-6989586621679073040"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679073040"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-254"></span><span id="moveLoop"><span class="annot"><span class="annottext">moveLoop :: forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) e.
+(PrimMonad m, MVector v e) =&gt;
+Int
+-&gt; (Int -&gt; e -&gt; Int)
+-&gt; v (PrimState m) e
+-&gt; v (PrimState m) e
+-&gt; MVector (PrimState m) Int
+-&gt; m ()
+</span><a href="Data.Vector.Algorithms.Radix.html#moveLoop"><span class="hs-identifier hs-var hs-var">moveLoop</span></a></span></span><span> </span><span id="local-6989586621679073062"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073062"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span id="local-6989586621679073063"><span class="annot"><span class="annottext">Int -&gt; e -&gt; Int
+</span><a href="#local-6989586621679073063"><span class="hs-identifier hs-var">rdx</span></a></span></span><span> </span><span id="local-6989586621679073064"><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679073064"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span id="local-6989586621679073065"><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679073065"><span class="hs-identifier hs-var">dst</span></a></span></span><span> </span><span id="local-6989586621679073066"><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679073066"><span class="hs-identifier hs-var">prefix</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; m ()
+</span><a href="#local-6989586621679073067"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-255"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-256"></span><span> </span><span id="local-6989586621679073068"><span class="annot"><span class="annottext">len :: Int
+</span><a href="#local-6989586621679073068"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e -&gt; Int
+forall (v :: * -&gt; * -&gt; *) a s. MVector v a =&gt; v s a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679073064"><span class="hs-identifier hs-var">src</span></a></span><span>
+</span><span id="line-257"></span><span> </span><span id="local-6989586621679073067"><span class="annot"><span class="annottext">go :: Int -&gt; m ()
+</span><a href="#local-6989586621679073067"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679073069"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073069"><span class="hs-identifier hs-var">i</span></a></span></span><span>
+</span><span id="line-258"></span><span>   </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073069"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073068"><span class="hs-identifier hs-var">len</span></a></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621679073070"><span class="annot"><span class="annottext">e
+</span><a href="#local-6989586621679073070"><span class="hs-identifier hs-var">srci</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e -&gt; Int -&gt; m e
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) a.
+(PrimMonad m, MVector v a) =&gt;
+v (PrimState m) a -&gt; Int -&gt; m a
+</span><span class="hs-identifier hs-var">unsafeRead</span></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679073064"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073069"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-259"></span><span>                     </span><span id="local-6989586621679073071"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073071"><span class="hs-identifier hs-var">pf</span></a></span></span><span>   </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int -&gt; Int -&gt; m Int
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *).
+(PrimMonad m, MVector v Int) =&gt;
+v (PrimState m) Int -&gt; Int -&gt; m Int
+</span><a href="Data.Vector.Algorithms.Common.html#inc"><span class="hs-identifier hs-var">inc</span></a></span><span> </span><span class="annot"><span class="annottext">MVector (PrimState m) Int
+</span><a href="#local-6989586621679073066"><span class="hs-identifier hs-var">prefix</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; e -&gt; Int
+</span><a href="#local-6989586621679073063"><span class="hs-identifier hs-var">rdx</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073062"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">e
+</span><a href="#local-6989586621679073070"><span class="hs-identifier hs-var">srci</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-260"></span><span>                     </span><span class="annot"><span class="annottext">v (PrimState m) e -&gt; Int -&gt; e -&gt; m ()
+forall (m :: * -&gt; *) (v :: * -&gt; * -&gt; *) a.
+(PrimMonad m, MVector v a) =&gt;
+v (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">unsafeWrite</span></span><span> </span><span class="annot"><span class="annottext">v (PrimState m) e
+</span><a href="#local-6989586621679073065"><span class="hs-identifier hs-var">dst</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073071"><span class="hs-identifier hs-var">pf</span></a></span><span> </span><span class="annot"><span class="annottext">e
+</span><a href="#local-6989586621679073070"><span class="hs-identifier hs-var">srci</span></a></span><span>
+</span><span id="line-261"></span><span>                     </span><span class="annot"><span class="annottext">Int -&gt; m ()
+</span><a href="#local-6989586621679073067"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679073069"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-262"></span><span>   </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">() -&gt; m ()
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-263"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Data.Vector.Algorithms.Radix.html#moveLoop"><span class="hs-pragma hs-type">moveLoop</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-264"></span><span>
+</span><span id="line-265"></span></pre></body></html>

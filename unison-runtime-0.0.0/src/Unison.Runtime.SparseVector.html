@@ -1,0 +1,738 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- used for unsafe pointer equality</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE MagicHash #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Unison.Runtime.SparseVector</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-6"></span><span>
+</span><span id="line-7"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.ST</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ST</span></span><span class="hs-special">)</span><span>
+</span><span id="line-8"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bits</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-operator">(.&amp;.)</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-operator">(.|.)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-9"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bits</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Vector.Unboxed</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">UV</span></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Vector.Unboxed.Mutable</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">MUV</span></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">GHC.Exts</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Exts</span></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unzip</span></span><span class="hs-special">)</span><span>
+</span><span id="line-14"></span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- Denotes a `Nat -&gt; Maybe a`.</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- Representation is a `Vector a` along with a bitset</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- that encodes the index of each element.</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- Ex: `[(1,a), (5,b)]` is encoded as (100010, [a,b])</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">data</span><span> </span><span id="SparseVector"><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-var">SparseVector</span></a></span></span><span> </span><span id="local-6989586621680128088"><span class="annot"><a href="#local-6989586621680128088"><span class="hs-identifier hs-type">bits</span></a></span></span><span> </span><span id="local-6989586621680128089"><span class="annot"><a href="#local-6989586621680128089"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="SparseVector"><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-var">SparseVector</span></a></span></span><span>
+</span><span id="line-20"></span><span>  </span><span class="hs-special">{</span><span> </span><span id="%24sel%3Aindices%3ASparseVector"><span class="annot"><span class="annottext">forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var hs-var">indices</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="#local-6989586621680128088"><span class="hs-identifier hs-type">bits</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-21"></span><span>    </span><span id="%24sel%3Aelements%3ASparseVector"><span class="annot"><span class="annottext">forall bits a. SparseVector bits a -&gt; Vector a
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aelements%3ASparseVector"><span class="hs-identifier hs-var hs-var">elements</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">UV.Vector</span></span><span> </span><span class="annot"><a href="#local-6989586621680128089"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-22"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- todo: instance (UV.Unbox a, B.FiniteBits bits, Num n)</span><span>
+</span><span id="line-25"></span><span class="hs-comment">--   =&gt; Num (SparseVector bits n)</span><span>
+</span><span id="line-26"></span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- Denotationally: `map f v n = f &lt;$&gt; v n`</span><span>
+</span><span id="line-28"></span><span id="local-6989586621680128096"><span id="local-6989586621680128098"><span id="local-6989586621680128099"><span class="annot"><a href="Unison.Runtime.SparseVector.html#map"><span class="hs-identifier hs-type">map</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128096"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128098"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621680128096"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621680128098"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128099"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128096"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128099"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128098"><span class="hs-identifier hs-type">b</span></a></span></span></span></span><span>
+</span><span id="line-29"></span><span id="map"><span class="annot"><span class="annottext">map :: forall a b bits.
+(Unbox a, Unbox b) =&gt;
+(a -&gt; b) -&gt; SparseVector bits a -&gt; SparseVector bits b
+</span><a href="Unison.Runtime.SparseVector.html#map"><span class="hs-identifier hs-var hs-var">map</span></a></span></span><span> </span><span id="local-6989586621680128205"><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621680128205"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621680128206"><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128206"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128206"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="hs-special">{</span><span class="annot"><a href="Unison.Runtime.SparseVector.html#%24sel%3Aelements%3ASparseVector"><span class="hs-identifier hs-var">elements</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UV.map</span></span><span> </span><span class="annot"><a href="#local-6989586621680128205"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.Runtime.SparseVector.html#%24sel%3Aelements%3ASparseVector"><span class="hs-identifier hs-var">elements</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128206"><span class="hs-identifier hs-type">v</span></a></span><span class="hs-special">)</span><span class="hs-special">}</span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- Denotationally, a mask is a `Nat -&gt; Bool`, so this implementation</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- means: `mask ok v n = if ok n then v n else Nothing`</span><span>
+</span><span id="line-33"></span><span class="annot"><a href="Unison.Runtime.SparseVector.html#mask"><span class="hs-identifier hs-type">mask</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-34"></span><span>  </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621680128105"><span class="annot"><a href="#local-6989586621680128105"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span id="local-6989586621680128106"><span class="annot"><a href="#local-6989586621680128106"><span class="hs-identifier hs-type">bits</span></a></span></span><span class="hs-operator">.</span><span>
+</span><span id="line-35"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128105"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.FiniteBits</span></span><span> </span><span class="annot"><a href="#local-6989586621680128106"><span class="hs-identifier hs-type">bits</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-36"></span><span>  </span><span class="annot"><a href="#local-6989586621680128106"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-37"></span><span>  </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128106"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128105"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-38"></span><span>  </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128106"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128105"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-39"></span><span id="mask"><span class="annot"><span class="annottext">mask :: forall a bits.
+(Unbox a, FiniteBits bits) =&gt;
+bits -&gt; SparseVector bits a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#mask"><span class="hs-identifier hs-var hs-var">mask</span></a></span></span><span> </span><span id="local-6989586621680128218"><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128218"><span class="hs-identifier hs-var">bits</span></a></span></span><span> </span><span id="local-6989586621680128219"><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128219"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-40"></span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128220"><span class="hs-identifier hs-var">indices'</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128218"><span class="hs-identifier hs-var">bits</span></a></span><span>
+</span><span id="line-41"></span><span>    </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128219"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="hs-comment">-- check if mask is a superset</span><span>
+</span><span id="line-42"></span><span>    </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">bits -&gt; Vector a -&gt; SparseVector bits a
+forall bits a. bits -&gt; Vector a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-var">SparseVector</span></a></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128220"><span class="hs-identifier hs-var">indices'</span></a></span><span> </span><span class="annot"><span class="annottext">(Vector a -&gt; SparseVector bits a)
+-&gt; Vector a -&gt; SparseVector bits a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-43"></span><span>      </span><span class="annot"><span class="annottext">(forall s. ST s (MVector s a)) -&gt; Vector a
+forall a. Unbox a =&gt; (forall s. ST s (MVector s a)) -&gt; Vector a
+</span><span class="hs-identifier hs-var">UV.create</span></span><span> </span><span class="annot"><span class="annottext">((forall s. ST s (MVector s a)) -&gt; Vector a)
+-&gt; (forall s. ST s (MVector s a)) -&gt; Vector a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-44"></span><span>        </span><span id="local-6989586621680128228"><span class="annot"><span class="annottext">MVector s a
+</span><a href="#local-6989586621680128228"><span class="hs-identifier hs-var">vec</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ST s (MVector (PrimState (ST s)) a)
+forall (m :: * -&gt; *) a.
+(PrimMonad m, Unbox a) =&gt;
+Int -&gt; m (MVector (PrimState m) a)
+</span><span class="hs-identifier hs-var">MUV.new</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int
+</span><span class="hs-identifier hs-var">B.popCount</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128220"><span class="hs-identifier hs-var">indices'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span>        </span><span class="annot"><span class="annottext">MVector s a -&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; ST s (MVector s a)
+forall s.
+STVector s a -&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+</span><a href="#local-6989586621680128231"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">MVector s a
+</span><a href="#local-6989586621680128228"><span class="hs-identifier hs-var">vec</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SparseVector bits a -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128219"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128218"><span class="hs-identifier hs-var">bits</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-46"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-47"></span><span>    </span><span id="local-6989586621680128220"><span class="annot"><span class="annottext">indices' :: bits
+</span><a href="#local-6989586621680128220"><span class="hs-identifier hs-var hs-var">indices'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SparseVector bits a -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128219"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits -&gt; bits
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128218"><span class="hs-identifier hs-var">bits</span></a></span><span>
+</span><span id="line-48"></span><span>    </span><span id="local-6989586621680128232"><span class="annot"><span class="annottext">eas :: Vector a
+</span><a href="#local-6989586621680128232"><span class="hs-identifier hs-var hs-var">eas</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SparseVector bits a -&gt; Vector a
+forall bits a. SparseVector bits a -&gt; Vector a
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aelements%3ASparseVector"><span class="hs-identifier hs-var">elements</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128219"><span class="hs-identifier hs-var">a</span></a></span><span>
+</span><span id="line-49"></span><span>    </span><span id="local-6989586621680128128"><span class="annot"><a href="#local-6989586621680128231"><span class="hs-identifier hs-type">go</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MUV.STVector</span></span><span> </span><span class="annot"><a href="#local-6989586621680128128"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128105"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621680128106"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621680128106"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ST</span></span><span> </span><span class="annot"><a href="#local-6989586621680128128"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">MUV.STVector</span></span><span> </span><span class="annot"><a href="#local-6989586621680128128"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128105"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-50"></span><span>    </span><span id="local-6989586621680128231"><span class="annot"><span class="annottext">go :: forall s.
+STVector s a -&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+</span><a href="#local-6989586621680128231"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128269"><span class="annot"><span class="annottext">STVector s a
+</span><a href="#local-6989586621680128269"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128270"><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128270"><span class="hs-identifier hs-var">indAs</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128271"><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128271"><span class="hs-identifier hs-var">indBs</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128272"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128272"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128273"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128273"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-51"></span><span>      </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128270"><span class="hs-identifier hs-var">indAs</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">bits
+forall a. Bits a =&gt; a
+</span><span class="hs-identifier hs-var">B.zeroBits</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128271"><span class="hs-identifier hs-var">indBs</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">bits
+forall a. Bits a =&gt; a
+</span><span class="hs-identifier hs-var">B.zeroBits</span></span><span>
+</span><span id="line-52"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">STVector s a -&gt; ST s (STVector s a)
+forall a. a -&gt; ST s a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">STVector s a
+</span><a href="#local-6989586621680128269"><span class="hs-identifier hs-var">out</span></a></span><span>
+</span><span id="line-53"></span><span>        </span><span class="hs-keyword">else</span><span>
+</span><span id="line-54"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span class="hs-glyph">!</span><span id="local-6989586621680128276"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128276"><span class="hs-identifier hs-var">a1</span></a></span></span><span class="hs-special">,</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128277"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128277"><span class="hs-identifier hs-var">b1</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits -&gt; Int
+forall b. FiniteBits b =&gt; b -&gt; Int
+</span><span class="hs-identifier hs-var">B.countTrailingZeros</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128270"><span class="hs-identifier hs-var">indAs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">bits -&gt; Int
+forall b. FiniteBits b =&gt; b -&gt; Int
+</span><span class="hs-identifier hs-var">B.countTrailingZeros</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128271"><span class="hs-identifier hs-var">indBs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-55"></span><span>           </span><span class="hs-keyword">in</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128276"><span class="hs-identifier hs-var">a1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128277"><span class="hs-identifier hs-var">b1</span></a></span><span>
+</span><span id="line-56"></span><span>                </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-57"></span><span>                  </span><span class="annot"><span class="annottext">MVector (PrimState (ST s)) a -&gt; Int -&gt; a -&gt; ST s ()
+forall (m :: * -&gt; *) a.
+(PrimMonad m, Unbox a) =&gt;
+MVector (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">MUV.write</span></span><span> </span><span class="annot"><span class="annottext">STVector s a
+MVector (PrimState (ST s)) a
+</span><a href="#local-6989586621680128269"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128273"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Vector a
+</span><a href="#local-6989586621680128232"><span class="hs-identifier hs-var">eas</span></a></span><span> </span><span class="annot"><span class="annottext">Vector a -&gt; Int -&gt; a
+forall a. Unbox a =&gt; Vector a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">UV.!</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128272"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128276"><span class="hs-identifier hs-var">a1</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-58"></span><span>                  </span><span class="annot"><span class="annottext">STVector s a -&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+forall s.
+STVector s a -&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+</span><a href="#local-6989586621680128231"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-59"></span><span>                    </span><span class="annot"><span class="annottext">STVector s a
+</span><a href="#local-6989586621680128269"><span class="hs-identifier hs-var">out</span></a></span><span>
+</span><span id="line-60"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128270"><span class="hs-identifier hs-var">indAs</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; Int -&gt; bits
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`B.shiftR`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128276"><span class="hs-identifier hs-var">a1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-61"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128271"><span class="hs-identifier hs-var">indBs</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; Int -&gt; bits
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`B.shiftR`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128277"><span class="hs-identifier hs-var">b1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128272"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128273"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span><span>                </span><span class="hs-keyword">else</span><span>
+</span><span id="line-65"></span><span>                  </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128276"><span class="hs-identifier hs-var">a1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128277"><span class="hs-identifier hs-var">b1</span></a></span><span>
+</span><span id="line-66"></span><span>                    </span><span class="hs-keyword">then</span><span>
+</span><span id="line-67"></span><span>                      </span><span class="annot"><span class="annottext">STVector s a -&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+forall s.
+STVector s a -&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+</span><a href="#local-6989586621680128231"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-68"></span><span>                        </span><span class="annot"><span class="annottext">STVector s a
+</span><a href="#local-6989586621680128269"><span class="hs-identifier hs-var">out</span></a></span><span>
+</span><span id="line-69"></span><span>                        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128270"><span class="hs-identifier hs-var">indAs</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; Int -&gt; bits
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`B.shiftR`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128276"><span class="hs-identifier hs-var">a1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-70"></span><span>                        </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128271"><span class="hs-identifier hs-var">indBs</span></a></span><span>
+</span><span id="line-71"></span><span>                        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128272"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-72"></span><span>                        </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128273"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-73"></span><span>                    </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">STVector s a -&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+forall s.
+STVector s a -&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+</span><a href="#local-6989586621680128231"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">STVector s a
+</span><a href="#local-6989586621680128269"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128270"><span class="hs-identifier hs-var">indAs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128271"><span class="hs-identifier hs-var">indBs</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; Int -&gt; bits
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`B.shiftR`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128277"><span class="hs-identifier hs-var">b1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128272"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128273"><span class="hs-identifier hs-var">k</span></a></span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- Denotationally: `zipWith f a b n = f &lt;$&gt; a n &lt;*&gt; b n`, in other words,</span><span>
+</span><span id="line-76"></span><span class="hs-comment">-- this takes the intersection of the two shapes.</span><span>
+</span><span id="line-77"></span><span id="local-6989586621680128139"><span id="local-6989586621680128140"><span id="local-6989586621680128141"><span id="local-6989586621680128142"><span class="annot"><a href="Unison.Runtime.SparseVector.html#zipWith"><span class="hs-identifier hs-type">zipWith</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-78"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128139"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128140"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128141"><span class="hs-identifier hs-type">c</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.FiniteBits</span></span><span> </span><span class="annot"><a href="#local-6989586621680128142"><span class="hs-identifier hs-type">bits</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-79"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621680128139"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621680128140"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621680128141"><span class="hs-identifier hs-type">c</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-80"></span><span>  </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128142"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128139"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-81"></span><span>  </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128142"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128140"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-82"></span><span>  </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128142"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128141"><span class="hs-identifier hs-type">c</span></a></span></span></span></span></span><span>
+</span><span id="line-83"></span><span id="zipWith"><span class="annot"><span class="annottext">zipWith :: forall a b c bits.
+(Unbox a, Unbox b, Unbox c, FiniteBits bits) =&gt;
+(a -&gt; b -&gt; c)
+-&gt; SparseVector bits a
+-&gt; SparseVector bits b
+-&gt; SparseVector bits c
+</span><a href="Unison.Runtime.SparseVector.html#zipWith"><span class="hs-identifier hs-var hs-var">zipWith</span></a></span></span><span> </span><span id="local-6989586621680128303"><span class="annot"><span class="annottext">a -&gt; b -&gt; c
+</span><a href="#local-6989586621680128303"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621680128304"><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128304"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621680128305"><span class="annot"><span class="annottext">SparseVector bits b
+</span><a href="#local-6989586621680128305"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">SparseVector bits a -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128304"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits -&gt; Bool
+forall a. a -&gt; a -&gt; Bool
+</span><a href="Unison.Runtime.SparseVector.html#eq"><span class="hs-operator hs-var">`eq`</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits b -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits b
+</span><a href="#local-6989586621680128305"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128304"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">SparseVector bits b -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits b
+</span><a href="#local-6989586621680128305"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-85"></span><span>    </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">bits -&gt; Vector c -&gt; SparseVector bits c
+forall bits a. bits -&gt; Vector a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-var">SparseVector</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SparseVector bits a -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128304"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; b -&gt; c) -&gt; Vector a -&gt; Vector b -&gt; Vector c
+forall a b c.
+(Unbox a, Unbox b, Unbox c) =&gt;
+(a -&gt; b -&gt; c) -&gt; Vector a -&gt; Vector b -&gt; Vector c
+</span><span class="hs-identifier hs-var">UV.zipWith</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; b -&gt; c
+</span><a href="#local-6989586621680128303"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SparseVector bits a -&gt; Vector a
+forall bits a. SparseVector bits a -&gt; Vector a
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aelements%3ASparseVector"><span class="hs-identifier hs-var">elements</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128304"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SparseVector bits b -&gt; Vector b
+forall bits a. SparseVector bits a -&gt; Vector a
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aelements%3ASparseVector"><span class="hs-identifier hs-var">elements</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits b
+</span><a href="#local-6989586621680128305"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-86"></span><span>    </span><span class="hs-keyword">else</span><span>
+</span><span id="line-87"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680128308"><span class="annot"><span class="annottext">indices' :: bits
+</span><a href="#local-6989586621680128308"><span class="hs-identifier hs-var hs-var">indices'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SparseVector bits a -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128304"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits -&gt; bits
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.&amp;.</span></span><span> </span><span class="annot"><span class="annottext">SparseVector bits b -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits b
+</span><a href="#local-6989586621680128305"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-88"></span><span>          </span><span id="local-6989586621680128309"><span class="annot"><span class="annottext">a' :: SparseVector bits a
+</span><a href="#local-6989586621680128309"><span class="hs-identifier hs-var hs-var">a'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">bits -&gt; SparseVector bits a -&gt; SparseVector bits a
+forall a bits.
+(Unbox a, FiniteBits bits) =&gt;
+bits -&gt; SparseVector bits a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#mask"><span class="hs-identifier hs-var">mask</span></a></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128308"><span class="hs-identifier hs-var">indices'</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128304"><span class="hs-identifier hs-var">a</span></a></span><span>
+</span><span id="line-89"></span><span>          </span><span id="local-6989586621680128310"><span class="annot"><span class="annottext">b' :: SparseVector bits b
+</span><a href="#local-6989586621680128310"><span class="hs-identifier hs-var hs-var">b'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">bits -&gt; SparseVector bits b -&gt; SparseVector bits b
+forall a bits.
+(Unbox a, FiniteBits bits) =&gt;
+bits -&gt; SparseVector bits a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#mask"><span class="hs-identifier hs-var">mask</span></a></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128308"><span class="hs-identifier hs-var">indices'</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits b
+</span><a href="#local-6989586621680128305"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-90"></span><span>       </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">bits -&gt; Vector c -&gt; SparseVector bits c
+forall bits a. bits -&gt; Vector a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-var">SparseVector</span></a></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128308"><span class="hs-identifier hs-var">indices'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; b -&gt; c) -&gt; Vector a -&gt; Vector b -&gt; Vector c
+forall a b c.
+(Unbox a, Unbox b, Unbox c) =&gt;
+(a -&gt; b -&gt; c) -&gt; Vector a -&gt; Vector b -&gt; Vector c
+</span><span class="hs-identifier hs-var">UV.zipWith</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; b -&gt; c
+</span><a href="#local-6989586621680128303"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SparseVector bits a -&gt; Vector a
+forall bits a. SparseVector bits a -&gt; Vector a
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aelements%3ASparseVector"><span class="hs-identifier hs-var">elements</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128309"><span class="hs-identifier hs-var">a'</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SparseVector bits b -&gt; Vector b
+forall bits a. SparseVector bits a -&gt; Vector a
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aelements%3ASparseVector"><span class="hs-identifier hs-var">elements</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits b
+</span><a href="#local-6989586621680128310"><span class="hs-identifier hs-var">b'</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-91"></span><span>
+</span><span id="line-92"></span><span id="local-6989586621680128151"><span id="local-6989586621680128152"><span id="local-6989586621680128153"><span class="annot"><a href="Unison.Runtime.SparseVector.html#_1"><span class="hs-identifier hs-type">_1</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128151"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128152"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128153"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621680128151"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621680128152"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128153"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128151"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span>
+</span><span id="line-93"></span><span id="_1"><span class="annot"><span class="annottext">_1 :: forall a b bits.
+(Unbox a, Unbox b) =&gt;
+SparseVector bits (a, b) -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#_1"><span class="hs-identifier hs-var hs-var">_1</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SparseVector bits a, SparseVector bits b) -&gt; SparseVector bits a
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="annot"><span class="annottext">((SparseVector bits a, SparseVector bits b) -&gt; SparseVector bits a)
+-&gt; (SparseVector bits (a, b)
+    -&gt; (SparseVector bits a, SparseVector bits b))
+-&gt; SparseVector bits (a, b)
+-&gt; SparseVector bits a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SparseVector bits (a, b)
+-&gt; (SparseVector bits a, SparseVector bits b)
+forall a b bits.
+(Unbox a, Unbox b) =&gt;
+SparseVector bits (a, b)
+-&gt; (SparseVector bits a, SparseVector bits b)
+</span><a href="Unison.Runtime.SparseVector.html#unzip"><span class="hs-identifier hs-var">unzip</span></a></span><span>
+</span><span id="line-94"></span><span>
+</span><span id="line-95"></span><span id="local-6989586621680128165"><span id="local-6989586621680128166"><span id="local-6989586621680128167"><span class="annot"><a href="Unison.Runtime.SparseVector.html#_2"><span class="hs-identifier hs-type">_2</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128165"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128166"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128167"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621680128165"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621680128166"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128167"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128166"><span class="hs-identifier hs-type">b</span></a></span></span></span></span><span>
+</span><span id="line-96"></span><span id="_2"><span class="annot"><span class="annottext">_2 :: forall a b bits.
+(Unbox a, Unbox b) =&gt;
+SparseVector bits (a, b) -&gt; SparseVector bits b
+</span><a href="Unison.Runtime.SparseVector.html#_2"><span class="hs-identifier hs-var hs-var">_2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SparseVector bits a, SparseVector bits b) -&gt; SparseVector bits b
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">((SparseVector bits a, SparseVector bits b) -&gt; SparseVector bits b)
+-&gt; (SparseVector bits (a, b)
+    -&gt; (SparseVector bits a, SparseVector bits b))
+-&gt; SparseVector bits (a, b)
+-&gt; SparseVector bits b
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SparseVector bits (a, b)
+-&gt; (SparseVector bits a, SparseVector bits b)
+forall a b bits.
+(Unbox a, Unbox b) =&gt;
+SparseVector bits (a, b)
+-&gt; (SparseVector bits a, SparseVector bits b)
+</span><a href="Unison.Runtime.SparseVector.html#unzip"><span class="hs-identifier hs-var">unzip</span></a></span><span>
+</span><span id="line-97"></span><span>
+</span><span id="line-98"></span><span class="hs-comment">-- Denotationally: `unzip p = (\n -&gt; fst &lt;$&gt; p n, \n -&gt; snd &lt;$&gt; p n)`</span><span>
+</span><span id="line-99"></span><span id="local-6989586621680128162"><span id="local-6989586621680128163"><span id="local-6989586621680128164"><span class="annot"><a href="Unison.Runtime.SparseVector.html#unzip"><span class="hs-identifier hs-type">unzip</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-100"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128162"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128163"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-101"></span><span>  </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128164"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621680128162"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621680128163"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-102"></span><span>  </span><span class="hs-special">(</span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128164"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128162"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128164"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128163"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-103"></span><span id="unzip"><span class="annot"><span class="annottext">unzip :: forall a b bits.
+(Unbox a, Unbox b) =&gt;
+SparseVector bits (a, b)
+-&gt; (SparseVector bits a, SparseVector bits b)
+</span><a href="Unison.Runtime.SparseVector.html#unzip"><span class="hs-identifier hs-var hs-var">unzip</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span id="local-6989586621680128329"><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128329"><span class="hs-identifier hs-var">inds</span></a></span></span><span> </span><span id="local-6989586621680128330"><span class="annot"><span class="annottext">Vector (a, b)
+</span><a href="#local-6989586621680128330"><span class="hs-identifier hs-var">ps</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-104"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621680128331"><span class="annot"><span class="annottext">Vector a
+</span><a href="#local-6989586621680128331"><span class="hs-keyword hs-var">as</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680128332"><span class="annot"><span class="annottext">Vector b
+</span><a href="#local-6989586621680128332"><span class="hs-identifier hs-var">bs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Vector (a, b) -&gt; (Vector a, Vector b)
+forall a b.
+(Unbox a, Unbox b) =&gt;
+Vector (a, b) -&gt; (Vector a, Vector b)
+</span><span class="hs-identifier hs-var">UV.unzip</span></span><span> </span><span class="annot"><span class="annottext">Vector (a, b)
+</span><a href="#local-6989586621680128330"><span class="hs-identifier hs-var">ps</span></a></span><span>
+</span><span id="line-105"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits -&gt; Vector a -&gt; SparseVector bits a
+forall bits a. bits -&gt; Vector a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-var">SparseVector</span></a></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128329"><span class="hs-identifier hs-var">inds</span></a></span><span> </span><span class="annot"><span class="annottext">Vector a
+</span><a href="#local-6989586621680128331"><span class="hs-keyword hs-var">as</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">bits -&gt; Vector b -&gt; SparseVector bits b
+forall bits a. bits -&gt; Vector a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-var">SparseVector</span></a></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128329"><span class="hs-identifier hs-var">inds</span></a></span><span> </span><span class="annot"><span class="annottext">Vector b
+</span><a href="#local-6989586621680128332"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-106"></span><span>
+</span><span id="line-107"></span><span class="hs-comment">-- Denotationally: `choose bs a b n = if bs n then a n else b n`</span><span>
+</span><span id="line-108"></span><span id="local-6989586621680128178"><span id="local-6989586621680128179"><span class="annot"><a href="Unison.Runtime.SparseVector.html#choose"><span class="hs-identifier hs-type">choose</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-109"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">B.FiniteBits</span></span><span> </span><span class="annot"><a href="#local-6989586621680128178"><span class="hs-identifier hs-type">bits</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128179"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-110"></span><span>  </span><span class="annot"><a href="#local-6989586621680128178"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-111"></span><span>  </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128178"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128179"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-112"></span><span>  </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128178"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128179"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-113"></span><span>  </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128178"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128179"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-114"></span><span id="choose"><span class="annot"><span class="annottext">choose :: forall bits a.
+(FiniteBits bits, Unbox a) =&gt;
+bits
+-&gt; SparseVector bits a
+-&gt; SparseVector bits a
+-&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#choose"><span class="hs-identifier hs-var hs-var">choose</span></a></span></span><span> </span><span id="local-6989586621680128351"><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128351"><span class="hs-identifier hs-var">bits</span></a></span></span><span> </span><span id="local-6989586621680128352"><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128352"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621680128353"><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128353"><span class="hs-identifier hs-var">f</span></a></span></span><span>
+</span><span id="line-115"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">bits
+forall a. Bits a =&gt; a
+</span><span class="hs-identifier hs-var">B.zeroBits</span></span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128351"><span class="hs-identifier hs-var">bits</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128353"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-116"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits
+forall a. Bits a =&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">B.complement</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128351"><span class="hs-identifier hs-var">bits</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">bits
+forall a. Bits a =&gt; a
+</span><span class="hs-identifier hs-var">B.zeroBits</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128352"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-117"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-comment">-- it's a mix of true and false</span><span>
+</span><span id="line-118"></span><span>    </span><span class="hs-glyph">=</span><span>
+</span><span id="line-119"></span><span>      </span><span class="annot"><span class="annottext">SparseVector bits a -&gt; SparseVector bits a -&gt; SparseVector bits a
+forall a bits.
+(FiniteBits bits, Unbox a) =&gt;
+SparseVector bits a -&gt; SparseVector bits a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#merge"><span class="hs-identifier hs-var">merge</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits -&gt; SparseVector bits a -&gt; SparseVector bits a
+forall a bits.
+(Unbox a, FiniteBits bits) =&gt;
+bits -&gt; SparseVector bits a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#mask"><span class="hs-identifier hs-var">mask</span></a></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128351"><span class="hs-identifier hs-var">bits</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128352"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits -&gt; SparseVector bits a -&gt; SparseVector bits a
+forall a bits.
+(Unbox a, FiniteBits bits) =&gt;
+bits -&gt; SparseVector bits a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#mask"><span class="hs-identifier hs-var">mask</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits -&gt; bits
+forall a. Bits a =&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">B.complement</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128351"><span class="hs-identifier hs-var">bits</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128353"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-120"></span><span>
+</span><span id="line-121"></span><span class="hs-comment">-- Denotationally: `merge a b n = a n &lt;|&gt; b n`</span><span>
+</span><span id="line-122"></span><span class="annot"><a href="Unison.Runtime.SparseVector.html#merge"><span class="hs-identifier hs-type">merge</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-123"></span><span>  </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621680128183"><span class="annot"><a href="#local-6989586621680128183"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span id="local-6989586621680128182"><span class="annot"><a href="#local-6989586621680128182"><span class="hs-identifier hs-type">bits</span></a></span></span><span class="hs-operator">.</span><span>
+</span><span id="line-124"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">B.FiniteBits</span></span><span> </span><span class="annot"><a href="#local-6989586621680128182"><span class="hs-identifier hs-type">bits</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UV.Unbox</span></span><span> </span><span class="annot"><a href="#local-6989586621680128183"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-125"></span><span>  </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128182"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128183"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-126"></span><span>  </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128182"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128183"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-127"></span><span>  </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-type">SparseVector</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128182"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128183"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-128"></span><span id="merge"><span class="annot"><span class="annottext">merge :: forall a bits.
+(FiniteBits bits, Unbox a) =&gt;
+SparseVector bits a -&gt; SparseVector bits a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#merge"><span class="hs-identifier hs-var hs-var">merge</span></a></span></span><span> </span><span id="local-6989586621680128362"><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128362"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621680128363"><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128363"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">bits -&gt; Vector a -&gt; SparseVector bits a
+forall bits a. bits -&gt; Vector a -&gt; SparseVector bits a
+</span><a href="Unison.Runtime.SparseVector.html#SparseVector"><span class="hs-identifier hs-var">SparseVector</span></a></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128364"><span class="hs-identifier hs-var">indices'</span></a></span><span> </span><span class="annot"><span class="annottext">Vector a
+</span><a href="#local-6989586621680128365"><span class="hs-identifier hs-var">tricky</span></a></span><span>
+</span><span id="line-129"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-130"></span><span>    </span><span id="local-6989586621680128364"><span class="annot"><span class="annottext">indices' :: bits
+</span><a href="#local-6989586621680128364"><span class="hs-identifier hs-var hs-var">indices'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SparseVector bits a -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128362"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits -&gt; bits
+forall a. Bits a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">.|.</span></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128363"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-131"></span><span>    </span><span id="local-6989586621680128365"><span class="annot"><span class="annottext">tricky :: Vector a
+</span><a href="#local-6989586621680128365"><span class="hs-identifier hs-var hs-var">tricky</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(forall s. ST s (MVector s a)) -&gt; Vector a
+forall a. Unbox a =&gt; (forall s. ST s (MVector s a)) -&gt; Vector a
+</span><span class="hs-identifier hs-var">UV.create</span></span><span> </span><span class="annot"><span class="annottext">((forall s. ST s (MVector s a)) -&gt; Vector a)
+-&gt; (forall s. ST s (MVector s a)) -&gt; Vector a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-132"></span><span>      </span><span id="local-6989586621680128370"><span class="annot"><span class="annottext">MVector s a
+</span><a href="#local-6989586621680128370"><span class="hs-identifier hs-var">vec</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ST s (MVector (PrimState (ST s)) a)
+forall (m :: * -&gt; *) a.
+(PrimMonad m, Unbox a) =&gt;
+Int -&gt; m (MVector (PrimState m) a)
+</span><span class="hs-identifier hs-var">MUV.new</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits -&gt; Int
+forall a. Bits a =&gt; a -&gt; Int
+</span><span class="hs-identifier hs-var">B.popCount</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128364"><span class="hs-identifier hs-var">indices'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-133"></span><span>      </span><span class="annot"><span class="annottext">MVector s a
+-&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; Int -&gt; ST s (MVector s a)
+forall s.
+STVector s a
+-&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+</span><a href="#local-6989586621680128371"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">MVector s a
+</span><a href="#local-6989586621680128370"><span class="hs-identifier hs-var">vec</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SparseVector bits a -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128362"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SparseVector bits a -&gt; bits
+forall bits a. SparseVector bits a -&gt; bits
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aindices%3ASparseVector"><span class="hs-identifier hs-var">indices</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128363"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-134"></span><span>    </span><span class="hs-special">(</span><span class="hs-glyph">!</span><span id="local-6989586621680128372"><span class="annot"><span class="annottext">Vector a
+</span><a href="#local-6989586621680128372"><span class="hs-identifier hs-var">eas</span></a></span></span><span class="hs-special">,</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128373"><span class="annot"><span class="annottext">Vector a
+</span><a href="#local-6989586621680128373"><span class="hs-identifier hs-var">ebs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SparseVector bits a -&gt; Vector a
+forall bits a. SparseVector bits a -&gt; Vector a
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aelements%3ASparseVector"><span class="hs-identifier hs-var">elements</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128362"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SparseVector bits a -&gt; Vector a
+forall bits a. SparseVector bits a -&gt; Vector a
+</span><a href="Unison.Runtime.SparseVector.html#%24sel%3Aelements%3ASparseVector"><span class="hs-identifier hs-var">elements</span></a></span><span> </span><span class="annot"><span class="annottext">SparseVector bits a
+</span><a href="#local-6989586621680128363"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-135"></span><span>    </span><span id="local-6989586621680128187"><span class="annot"><a href="#local-6989586621680128371"><span class="hs-identifier hs-type">go</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">MUV.STVector</span></span><span> </span><span class="annot"><a href="#local-6989586621680128187"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128183"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621680128182"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621680128182"><span class="hs-identifier hs-type">bits</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ST</span></span><span> </span><span class="annot"><a href="#local-6989586621680128187"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">MUV.STVector</span></span><span> </span><span class="annot"><a href="#local-6989586621680128187"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680128183"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-136"></span><span>    </span><span id="local-6989586621680128371"><span class="annot"><span class="annottext">go :: forall s.
+STVector s a
+-&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+</span><a href="#local-6989586621680128371"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128424"><span class="annot"><span class="annottext">STVector s a
+</span><a href="#local-6989586621680128424"><span class="hs-identifier hs-var">out</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128425"><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128425"><span class="hs-identifier hs-var">indAs</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128426"><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128426"><span class="hs-identifier hs-var">indBs</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128427"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128427"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128428"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128428"><span class="hs-identifier hs-var">j</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128429"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128429"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-137"></span><span>      </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128425"><span class="hs-identifier hs-var">indAs</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">bits
+forall a. Bits a =&gt; a
+</span><span class="hs-identifier hs-var">B.zeroBits</span></span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool -&gt; Bool
+</span><span class="hs-operator hs-var">||</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128426"><span class="hs-identifier hs-var">indBs</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; bits -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">bits
+forall a. Bits a =&gt; a
+</span><span class="hs-identifier hs-var">B.zeroBits</span></span><span>
+</span><span id="line-138"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">STVector s a -&gt; ST s (STVector s a)
+forall a. a -&gt; ST s a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">STVector s a
+</span><a href="#local-6989586621680128424"><span class="hs-identifier hs-var">out</span></a></span><span>
+</span><span id="line-139"></span><span>        </span><span class="hs-keyword">else</span><span>
+</span><span id="line-140"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span class="hs-glyph">!</span><span id="local-6989586621680128430"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128430"><span class="hs-identifier hs-var">a1</span></a></span></span><span class="hs-special">,</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621680128431"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128431"><span class="hs-identifier hs-var">b1</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits -&gt; Int
+forall b. FiniteBits b =&gt; b -&gt; Int
+</span><span class="hs-identifier hs-var">B.countTrailingZeros</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128425"><span class="hs-identifier hs-var">indAs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">bits -&gt; Int
+forall b. FiniteBits b =&gt; b -&gt; Int
+</span><span class="hs-identifier hs-var">B.countTrailingZeros</span></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128426"><span class="hs-identifier hs-var">indBs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-141"></span><span>           </span><span class="hs-keyword">in</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128430"><span class="hs-identifier hs-var">a1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128431"><span class="hs-identifier hs-var">b1</span></a></span><span>
+</span><span id="line-142"></span><span>                </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-143"></span><span>                  </span><span class="annot"><span class="annottext">MVector (PrimState (ST s)) a -&gt; Int -&gt; a -&gt; ST s ()
+forall (m :: * -&gt; *) a.
+(PrimMonad m, Unbox a) =&gt;
+MVector (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">MUV.write</span></span><span> </span><span class="annot"><span class="annottext">STVector s a
+MVector (PrimState (ST s)) a
+</span><a href="#local-6989586621680128424"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128429"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Vector a
+</span><a href="#local-6989586621680128372"><span class="hs-identifier hs-var">eas</span></a></span><span> </span><span class="annot"><span class="annottext">Vector a -&gt; Int -&gt; a
+forall a. Unbox a =&gt; Vector a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">UV.!</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128427"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128430"><span class="hs-identifier hs-var">a1</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-144"></span><span>                  </span><span class="annot"><span class="annottext">STVector s a
+-&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+forall s.
+STVector s a
+-&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+</span><a href="#local-6989586621680128371"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-145"></span><span>                    </span><span class="annot"><span class="annottext">STVector s a
+</span><a href="#local-6989586621680128424"><span class="hs-identifier hs-var">out</span></a></span><span>
+</span><span id="line-146"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128425"><span class="hs-identifier hs-var">indAs</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; Int -&gt; bits
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`B.shiftR`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128430"><span class="hs-identifier hs-var">a1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-147"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128426"><span class="hs-identifier hs-var">indBs</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; Int -&gt; bits
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`B.shiftR`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128431"><span class="hs-identifier hs-var">b1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-148"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128427"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-149"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128428"><span class="hs-identifier hs-var">j</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-150"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128429"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-151"></span><span>                </span><span class="hs-keyword">else</span><span>
+</span><span id="line-152"></span><span>                  </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128430"><span class="hs-identifier hs-var">a1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128431"><span class="hs-identifier hs-var">b1</span></a></span><span>
+</span><span id="line-153"></span><span>                    </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-154"></span><span>                      </span><span class="annot"><span class="annottext">MVector (PrimState (ST s)) a -&gt; Int -&gt; a -&gt; ST s ()
+forall (m :: * -&gt; *) a.
+(PrimMonad m, Unbox a) =&gt;
+MVector (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">MUV.write</span></span><span> </span><span class="annot"><span class="annottext">STVector s a
+MVector (PrimState (ST s)) a
+</span><a href="#local-6989586621680128424"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128429"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Vector a
+</span><a href="#local-6989586621680128372"><span class="hs-identifier hs-var">eas</span></a></span><span> </span><span class="annot"><span class="annottext">Vector a -&gt; Int -&gt; a
+forall a. Unbox a =&gt; Vector a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">UV.!</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128427"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128430"><span class="hs-identifier hs-var">a1</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-155"></span><span>                      </span><span class="annot"><span class="annottext">STVector s a
+-&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+forall s.
+STVector s a
+-&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+</span><a href="#local-6989586621680128371"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-156"></span><span>                        </span><span class="annot"><span class="annottext">STVector s a
+</span><a href="#local-6989586621680128424"><span class="hs-identifier hs-var">out</span></a></span><span>
+</span><span id="line-157"></span><span>                        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128425"><span class="hs-identifier hs-var">indAs</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; Int -&gt; bits
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`B.shiftR`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128430"><span class="hs-identifier hs-var">a1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-158"></span><span>                        </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128426"><span class="hs-identifier hs-var">indBs</span></a></span><span>
+</span><span id="line-159"></span><span>                        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128427"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-160"></span><span>                        </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128428"><span class="hs-identifier hs-var">j</span></a></span><span>
+</span><span id="line-161"></span><span>                        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128429"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-162"></span><span>                    </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-163"></span><span>                      </span><span class="annot"><span class="annottext">MVector (PrimState (ST s)) a -&gt; Int -&gt; a -&gt; ST s ()
+forall (m :: * -&gt; *) a.
+(PrimMonad m, Unbox a) =&gt;
+MVector (PrimState m) a -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">MUV.write</span></span><span> </span><span class="annot"><span class="annottext">STVector s a
+MVector (PrimState (ST s)) a
+</span><a href="#local-6989586621680128424"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128429"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Vector a
+</span><a href="#local-6989586621680128373"><span class="hs-identifier hs-var">ebs</span></a></span><span> </span><span class="annot"><span class="annottext">Vector a -&gt; Int -&gt; a
+forall a. Unbox a =&gt; Vector a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">UV.!</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128428"><span class="hs-identifier hs-var">j</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128430"><span class="hs-identifier hs-var">a1</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-164"></span><span>                      </span><span class="annot"><span class="annottext">STVector s a
+-&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+forall s.
+STVector s a
+-&gt; bits -&gt; bits -&gt; Int -&gt; Int -&gt; Int -&gt; ST s (STVector s a)
+</span><a href="#local-6989586621680128371"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">STVector s a
+</span><a href="#local-6989586621680128424"><span class="hs-identifier hs-var">out</span></a></span><span> </span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128425"><span class="hs-identifier hs-var">indAs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">bits
+</span><a href="#local-6989586621680128426"><span class="hs-identifier hs-var">indBs</span></a></span><span> </span><span class="annot"><span class="annottext">bits -&gt; Int -&gt; bits
+forall a. Bits a =&gt; a -&gt; Int -&gt; a
+</span><span class="hs-operator hs-var">`B.shiftR`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128431"><span class="hs-identifier hs-var">b1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128427"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128428"><span class="hs-identifier hs-var">j</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621680128429"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-165"></span><span>
+</span><span id="line-166"></span><span class="hs-comment">-- Pointer equality a la Scala.</span><span>
+</span><span id="line-167"></span><span id="local-6989586621680128147"><span class="annot"><a href="Unison.Runtime.SparseVector.html#eq"><span class="hs-identifier hs-type">eq</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621680128147"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621680128147"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span></span><span>
+</span><span id="line-168"></span><span id="eq"><span class="annot"><span class="annottext">eq :: forall a. a -&gt; a -&gt; Bool
+</span><a href="Unison.Runtime.SparseVector.html#eq"><span class="hs-identifier hs-var hs-var">eq</span></a></span></span><span> </span><span id="local-6989586621680128432"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621680128432"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621680128433"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621680128433"><span class="hs-identifier hs-var">y</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Bool
+</span><span class="hs-identifier hs-var">Exts.isTrue#</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; a -&gt; Int#
+forall a b. a -&gt; b -&gt; Int#
+</span><span class="hs-identifier hs-var">Exts.reallyUnsafePtrEquality#</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621680128432"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621680128433"><span class="hs-identifier hs-var">y</span></a></span><span> </span><span class="annot"><span class="annottext">Int# -&gt; Int# -&gt; Int#
+</span><span class="hs-operator hs-var">Exts.==#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><span class="hs-number">1#</span></span><span class="hs-special">)</span><span>
+</span><span id="line-169"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Unison.Runtime.SparseVector.html#eq"><span class="hs-pragma hs-type">eq</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-170"></span></pre></body></html>

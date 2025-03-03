@@ -1,0 +1,813 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE DeriveTraversable #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE DeriveDataTypeable #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE DeriveGeneric #-}</span><span>
+</span><span id="line-4"></span><span class="hs-pragma">{-# LANGUAGE CPP #-}</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-6"></span><span class="hs-comment">--</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- = Simpler API</span><span>
+</span><span id="line-8"></span><span class="hs-comment">--</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- The API below is rather low-level. The @Network.HTTP.Simple@ module (from</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- the @http-conduit@ package) provides a higher-level API with built-in</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- support for things like JSON request and response bodies. For most users,</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- this will be an easier place to start. You can read the tutorial at:</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- https://github.com/snoyberg/http-client/blob/master/TUTORIAL.md</span><span>
+</span><span id="line-15"></span><span class="hs-comment">--</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- = Lower-level API</span><span>
+</span><span id="line-17"></span><span class="hs-comment">--</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- This is the main entry point for using http-client. Used by itself, this</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- module provides low-level access for streaming request and response bodies,</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- and only non-secure HTTP connections. Helper packages such as http-conduit</span><span>
+</span><span id="line-21"></span><span class="hs-comment">-- provide higher level streaming approaches, while other helper packages like</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- http-client-tls provide secure connections.</span><span>
+</span><span id="line-23"></span><span class="hs-comment">--</span><span>
+</span><span id="line-24"></span><span class="hs-comment">-- There are three core components to be understood here: requests, responses,</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- and managers. A 'Manager' keeps track of open connections to various hosts,</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- and when requested, will provide either an existing open connection or</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- create a new connection on demand. A 'Manager' also automatically reaps</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- connections which have been unused for a certain period of time. A 'Manager'</span><span>
+</span><span id="line-29"></span><span class="hs-comment">-- allows for more efficient HTTP usage by allowing for keep-alive connections.</span><span>
+</span><span id="line-30"></span><span class="hs-comment">-- Secure HTTP connections can be allowed by modifying the settings used for</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- creating a manager. The simplest way to create a 'Manager' is with:</span><span>
+</span><span id="line-32"></span><span class="hs-comment">--</span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- 'newManager' 'defaultManagerSettings'</span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-36"></span><span class="hs-comment">--</span><span>
+</span><span id="line-37"></span><span class="hs-comment">-- While generally speaking it is a good idea to share a single 'Manager'</span><span>
+</span><span id="line-38"></span><span class="hs-comment">-- throughout your application, there are cases where it makes more sense to</span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- create and destroy 'Manager's more frequently. As an example, if you have an</span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- application which will make a large number of requests to different hosts,</span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- and will never make more than one connection to a single host, then sharing</span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- a 'Manager' will result in idle connections being kept open longer than</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- necessary. In such a situation, it makes sense to use 'newManager' before</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- each new request, to avoid running out of file descriptors. (Note that the</span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- 'managerIdleConnectionCount' setting mitigates the risk of leaking too many</span><span>
+</span><span id="line-46"></span><span class="hs-comment">-- file descriptors.)</span><span>
+</span><span id="line-47"></span><span class="hs-comment">--</span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- The next core component is a 'Request', which represents a single HTTP</span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- request to be sent to a specific server. 'Request's allow for many settings</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- to control exact how they function, but usually the simplest approach for</span><span>
+</span><span id="line-51"></span><span class="hs-comment">-- creating a 'Request' is to use 'parseRequest'.</span><span>
+</span><span id="line-52"></span><span class="hs-comment">--</span><span>
+</span><span id="line-53"></span><span class="hs-comment">-- Finally, a 'Response' is the result of sending a single 'Request' to a</span><span>
+</span><span id="line-54"></span><span class="hs-comment">-- server, over a connection which was acquired from a 'Manager'. Note that you</span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- must close the response when you're done with it to ensure that the</span><span>
+</span><span id="line-56"></span><span class="hs-comment">-- connection is recycled to the 'Manager' to either be used by another</span><span>
+</span><span id="line-57"></span><span class="hs-comment">-- request, or to be reaped. Usage of 'withResponse' will ensure that this</span><span>
+</span><span id="line-58"></span><span class="hs-comment">-- happens automatically.</span><span>
+</span><span id="line-59"></span><span class="hs-comment">--</span><span>
+</span><span id="line-60"></span><span class="hs-comment">-- Helper packages may provide replacements for various recommendations listed</span><span>
+</span><span id="line-61"></span><span class="hs-comment">-- above. For example, if using http-client-tls, instead of using</span><span>
+</span><span id="line-62"></span><span class="hs-comment">-- 'defaultManagerSettings', you would want to use 'tlsManagerSettings'. Be</span><span>
+</span><span id="line-63"></span><span class="hs-comment">-- sure to read the relevant helper library documentation for more information.</span><span>
+</span><span id="line-64"></span><span class="hs-comment">--</span><span>
+</span><span id="line-65"></span><span class="hs-comment">-- A note on exceptions: for the most part, all actions that perform I/O should</span><span>
+</span><span id="line-66"></span><span class="hs-comment">-- be assumed to throw an 'HttpException' in the event of some problem, and all</span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- pure functions will be total. For example, 'withResponse', 'httpLbs', and</span><span>
+</span><span id="line-68"></span><span class="hs-comment">-- 'BodyReader' can all throw exceptions. Functions like 'responseStatus' and</span><span>
+</span><span id="line-69"></span><span class="hs-comment">-- 'applyBasicAuth' are guaranteed to be total (or there's a bug in the</span><span>
+</span><span id="line-70"></span><span class="hs-comment">-- library).</span><span>
+</span><span id="line-71"></span><span class="hs-comment">--</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- One thing to be cautioned about: the type of 'parseRequest' allows it to work in</span><span>
+</span><span id="line-73"></span><span class="hs-comment">-- different monads. If used in the 'IO' monad, it will throw an exception in</span><span>
+</span><span id="line-74"></span><span class="hs-comment">-- the case of an invalid URI. In addition, if you leverage the @IsString@</span><span>
+</span><span id="line-75"></span><span class="hs-comment">-- instance of the 'Request' value via @OverloadedStrings@, an invalid URI will</span><span>
+</span><span id="line-76"></span><span class="hs-comment">-- result in a partial value. Caveat emptor!</span><span>
+</span><span id="line-77"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Network.HTTP.Client</span><span>
+</span><span id="line-78"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-comment">-- $example1</span></span><span>
+</span><span id="line-79"></span><span>
+</span><span id="line-80"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Performing requests</span></span><span>
+</span><span id="line-81"></span><span>      </span><span class="annot"><a href="Network.HTTP.Client.Core.html#withResponse"><span class="hs-identifier">withResponse</span></a></span><span>
+</span><span id="line-82"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Core.html#httpLbs"><span class="hs-identifier">httpLbs</span></a></span><span>
+</span><span id="line-83"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Core.html#httpNoBody"><span class="hs-identifier">httpNoBody</span></a></span><span>
+</span><span id="line-84"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Core.html#responseOpen"><span class="hs-identifier">responseOpen</span></a></span><span>
+</span><span id="line-85"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Core.html#responseClose"><span class="hs-identifier">responseClose</span></a></span><span>
+</span><span id="line-86"></span><span>      </span><span class="annot"><span class="hs-comment">-- ** Tracking redirect history</span></span><span>
+</span><span id="line-87"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#withResponseHistory"><span class="hs-identifier">withResponseHistory</span></a></span><span>
+</span><span id="line-88"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#responseOpenHistory"><span class="hs-identifier">responseOpenHistory</span></a></span><span>
+</span><span id="line-89"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#HistoriedResponse"><span class="hs-identifier">HistoriedResponse</span></a></span><span>
+</span><span id="line-90"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#hrRedirects"><span class="hs-identifier">hrRedirects</span></a></span><span>
+</span><span id="line-91"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#hrFinalRequest"><span class="hs-identifier">hrFinalRequest</span></a></span><span>
+</span><span id="line-92"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#hrFinalResponse"><span class="hs-identifier">hrFinalResponse</span></a></span><span>
+</span><span id="line-93"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Connection manager</span></span><span>
+</span><span id="line-94"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Manager"><span class="hs-identifier">Manager</span></a></span><span>
+</span><span id="line-95"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#newManager"><span class="hs-identifier">newManager</span></a></span><span>
+</span><span id="line-96"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#closeManager"><span class="hs-identifier">closeManager</span></a></span><span>
+</span><span id="line-97"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#withManager"><span class="hs-identifier">withManager</span></a></span><span>
+</span><span id="line-98"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#HasHttpManager"><span class="hs-identifier">HasHttpManager</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-99"></span><span>      </span><span class="annot"><span class="hs-comment">-- ** Connection manager settings</span></span><span>
+</span><span id="line-100"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ManagerSettings"><span class="hs-identifier">ManagerSettings</span></a></span><span>
+</span><span id="line-101"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#defaultManagerSettings"><span class="hs-identifier">defaultManagerSettings</span></a></span><span>
+</span><span id="line-102"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#managerConnCount"><span class="hs-identifier">managerConnCount</span></a></span><span>
+</span><span id="line-103"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#managerRawConnection"><span class="hs-identifier">managerRawConnection</span></a></span><span>
+</span><span id="line-104"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#managerTlsConnection"><span class="hs-identifier">managerTlsConnection</span></a></span><span>
+</span><span id="line-105"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#managerResponseTimeout"><span class="hs-identifier">managerResponseTimeout</span></a></span><span>
+</span><span id="line-106"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#managerRetryableException"><span class="hs-identifier">managerRetryableException</span></a></span><span>
+</span><span id="line-107"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#managerWrapException"><span class="hs-identifier">managerWrapException</span></a></span><span>
+</span><span id="line-108"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#managerIdleConnectionCount"><span class="hs-identifier">managerIdleConnectionCount</span></a></span><span>
+</span><span id="line-109"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#managerModifyRequest"><span class="hs-identifier">managerModifyRequest</span></a></span><span>
+</span><span id="line-110"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#managerModifyResponse"><span class="hs-identifier">managerModifyResponse</span></a></span><span>
+</span><span id="line-111"></span><span>      </span><span class="annot"><span class="hs-comment">-- *** Manager proxy settings</span></span><span>
+</span><span id="line-112"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#managerSetProxy"><span class="hs-identifier">managerSetProxy</span></a></span><span>
+</span><span id="line-113"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#managerSetInsecureProxy"><span class="hs-identifier">managerSetInsecureProxy</span></a></span><span>
+</span><span id="line-114"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#managerSetSecureProxy"><span class="hs-identifier">managerSetSecureProxy</span></a></span><span>
+</span><span id="line-115"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#managerSetMaxHeaderLength"><span class="hs-identifier">managerSetMaxHeaderLength</span></a></span><span>
+</span><span id="line-116"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ProxyOverride"><span class="hs-identifier">ProxyOverride</span></a></span><span>
+</span><span id="line-117"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#proxyFromRequest"><span class="hs-identifier">proxyFromRequest</span></a></span><span>
+</span><span id="line-118"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#noProxy"><span class="hs-identifier">noProxy</span></a></span><span>
+</span><span id="line-119"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#useProxy"><span class="hs-identifier">useProxy</span></a></span><span>
+</span><span id="line-120"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#useProxySecureWithoutConnect"><span class="hs-identifier">useProxySecureWithoutConnect</span></a></span><span>
+</span><span id="line-121"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#proxyEnvironment"><span class="hs-identifier">proxyEnvironment</span></a></span><span>
+</span><span id="line-122"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#proxyEnvironmentNamed"><span class="hs-identifier">proxyEnvironmentNamed</span></a></span><span>
+</span><span id="line-123"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#defaultProxy"><span class="hs-identifier">defaultProxy</span></a></span><span>
+</span><span id="line-124"></span><span>      </span><span class="annot"><span class="hs-comment">-- *** Response timeouts</span></span><span>
+</span><span id="line-125"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ResponseTimeout"><span class="hs-identifier">ResponseTimeout</span></a></span><span>
+</span><span id="line-126"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#responseTimeoutMicro"><span class="hs-identifier">responseTimeoutMicro</span></a></span><span>
+</span><span id="line-127"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#responseTimeoutNone"><span class="hs-identifier">responseTimeoutNone</span></a></span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#responseTimeoutDefault"><span class="hs-identifier">responseTimeoutDefault</span></a></span><span>
+</span><span id="line-129"></span><span>      </span><span class="annot"><span class="hs-comment">-- *** Helpers</span></span><span>
+</span><span id="line-130"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#rawConnectionModifySocket"><span class="hs-identifier">rawConnectionModifySocket</span></a></span><span>
+</span><span id="line-131"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html#rawConnectionModifySocketSize"><span class="hs-identifier">rawConnectionModifySocketSize</span></a></span><span>
+</span><span id="line-132"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Request</span></span><span>
+</span><span id="line-133"></span><span>      </span><span class="annot"><span class="hs-comment">-- $parsing-request</span></span><span>
+</span><span id="line-134"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#parseUrl"><span class="hs-identifier">parseUrl</span></a></span><span>
+</span><span id="line-135"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#parseUrlThrow"><span class="hs-identifier">parseUrlThrow</span></a></span><span>
+</span><span id="line-136"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#parseRequest"><span class="hs-identifier">parseRequest</span></a></span><span>
+</span><span id="line-137"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#parseRequest_"><span class="hs-identifier">parseRequest_</span></a></span><span>
+</span><span id="line-138"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#requestFromURI"><span class="hs-identifier">requestFromURI</span></a></span><span>
+</span><span id="line-139"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#requestFromURI_"><span class="hs-identifier">requestFromURI_</span></a></span><span>
+</span><span id="line-140"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#defaultRequest"><span class="hs-identifier">defaultRequest</span></a></span><span>
+</span><span id="line-141"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#applyBasicAuth"><span class="hs-identifier">applyBasicAuth</span></a></span><span>
+</span><span id="line-142"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#applyBearerAuth"><span class="hs-identifier">applyBearerAuth</span></a></span><span>
+</span><span id="line-143"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#urlEncodedBody"><span class="hs-identifier">urlEncodedBody</span></a></span><span>
+</span><span id="line-144"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#getUri"><span class="hs-identifier">getUri</span></a></span><span>
+</span><span id="line-145"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#setRequestIgnoreStatus"><span class="hs-identifier">setRequestIgnoreStatus</span></a></span><span>
+</span><span id="line-146"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#setRequestCheckStatus"><span class="hs-identifier">setRequestCheckStatus</span></a></span><span>
+</span><span id="line-147"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#setQueryString"><span class="hs-identifier">setQueryString</span></a></span><span class="hs-cpp">
+#if MIN_VERSION_http_types(0,12,1)
+</span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#setQueryStringPartialEscape"><span class="hs-identifier">setQueryStringPartialEscape</span></a></span><span class="hs-cpp">
+#endif
+</span><span>      </span><span class="annot"><span class="hs-comment">-- ** Request type and fields</span></span><span>
+</span><span id="line-152"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Request"><span class="hs-identifier">Request</span></a></span><span>
+</span><span id="line-153"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#method"><span class="hs-identifier">method</span></a></span><span>
+</span><span id="line-154"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#secure"><span class="hs-identifier">secure</span></a></span><span>
+</span><span id="line-155"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#host"><span class="hs-identifier">host</span></a></span><span>
+</span><span id="line-156"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#port"><span class="hs-identifier">port</span></a></span><span>
+</span><span id="line-157"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#path"><span class="hs-identifier">path</span></a></span><span>
+</span><span id="line-158"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#queryString"><span class="hs-identifier">queryString</span></a></span><span>
+</span><span id="line-159"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#requestHeaders"><span class="hs-identifier">requestHeaders</span></a></span><span>
+</span><span id="line-160"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#requestBody"><span class="hs-identifier">requestBody</span></a></span><span>
+</span><span id="line-161"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#proxy"><span class="hs-identifier">proxy</span></a></span><span>
+</span><span id="line-162"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#applyBasicProxyAuth"><span class="hs-identifier">applyBasicProxyAuth</span></a></span><span>
+</span><span id="line-163"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#decompress"><span class="hs-identifier">decompress</span></a></span><span>
+</span><span id="line-164"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#redirectCount"><span class="hs-identifier">redirectCount</span></a></span><span>
+</span><span id="line-165"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#shouldStripHeaderOnRedirect"><span class="hs-identifier">shouldStripHeaderOnRedirect</span></a></span><span>
+</span><span id="line-166"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#shouldStripHeaderOnRedirectIfOnDifferentHostOnly"><span class="hs-identifier">shouldStripHeaderOnRedirectIfOnDifferentHostOnly</span></a></span><span>
+</span><span id="line-167"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#checkResponse"><span class="hs-identifier">checkResponse</span></a></span><span>
+</span><span id="line-168"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#responseTimeout"><span class="hs-identifier">responseTimeout</span></a></span><span>
+</span><span id="line-169"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#cookieJar"><span class="hs-identifier">cookieJar</span></a></span><span>
+</span><span id="line-170"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#requestVersion"><span class="hs-identifier">requestVersion</span></a></span><span>
+</span><span id="line-171"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#redactHeaders"><span class="hs-identifier">redactHeaders</span></a></span><span>
+</span><span id="line-172"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#earlyHintHeadersReceived"><span class="hs-identifier">earlyHintHeadersReceived</span></a></span><span>
+</span><span id="line-173"></span><span>      </span><span class="annot"><span class="hs-comment">-- ** Request body</span></span><span>
+</span><span id="line-174"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#RequestBody"><span class="hs-identifier">RequestBody</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-175"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Popper"><span class="hs-identifier">Popper</span></a></span><span>
+</span><span id="line-176"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#NeedsPopper"><span class="hs-identifier">NeedsPopper</span></a></span><span>
+</span><span id="line-177"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#GivesPopper"><span class="hs-identifier">GivesPopper</span></a></span><span>
+</span><span id="line-178"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#streamFile"><span class="hs-identifier">streamFile</span></a></span><span>
+</span><span id="line-179"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#observedStreamFile"><span class="hs-identifier">observedStreamFile</span></a></span><span>
+</span><span id="line-180"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#StreamFileStatus"><span class="hs-identifier">StreamFileStatus</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-181"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Response</span></span><span>
+</span><span id="line-182"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Response"><span class="hs-identifier">Response</span></a></span><span>
+</span><span id="line-183"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#responseStatus"><span class="hs-identifier">responseStatus</span></a></span><span>
+</span><span id="line-184"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#responseVersion"><span class="hs-identifier">responseVersion</span></a></span><span>
+</span><span id="line-185"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#responseHeaders"><span class="hs-identifier">responseHeaders</span></a></span><span>
+</span><span id="line-186"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#responseBody"><span class="hs-identifier">responseBody</span></a></span><span>
+</span><span id="line-187"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#responseCookieJar"><span class="hs-identifier">responseCookieJar</span></a></span><span>
+</span><span id="line-188"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Response.html#getOriginalRequest"><span class="hs-identifier">getOriginalRequest</span></a></span><span>
+</span><span id="line-189"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#responseEarlyHints"><span class="hs-identifier">responseEarlyHints</span></a></span><span>
+</span><span id="line-190"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html#throwErrorStatusCodes"><span class="hs-identifier">throwErrorStatusCodes</span></a></span><span>
+</span><span id="line-191"></span><span>      </span><span class="annot"><span class="hs-comment">-- ** Response body</span></span><span>
+</span><span id="line-192"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier">BodyReader</span></a></span><span>
+</span><span id="line-193"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html#brRead"><span class="hs-identifier">brRead</span></a></span><span>
+</span><span id="line-194"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html#brReadSome"><span class="hs-identifier">brReadSome</span></a></span><span>
+</span><span id="line-195"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html#brConsume"><span class="hs-identifier">brConsume</span></a></span><span>
+</span><span id="line-196"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Advanced connection creation</span></span><span>
+</span><span id="line-197"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Connection.html#makeConnection"><span class="hs-identifier">makeConnection</span></a></span><span>
+</span><span id="line-198"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Connection.html#socketConnection"><span class="hs-identifier">socketConnection</span></a></span><span>
+</span><span id="line-199"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Misc</span></span><span>
+</span><span id="line-200"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#HttpException"><span class="hs-identifier">HttpException</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-201"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#HttpExceptionContent"><span class="hs-identifier">HttpExceptionContent</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-202"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Cookie"><span class="hs-identifier">Cookie</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-203"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#equalCookie"><span class="hs-identifier">equalCookie</span></a></span><span>
+</span><span id="line-204"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#equivCookie"><span class="hs-identifier">equivCookie</span></a></span><span>
+</span><span id="line-205"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#compareCookies"><span class="hs-identifier">compareCookies</span></a></span><span>
+</span><span id="line-206"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#CookieJar"><span class="hs-identifier">CookieJar</span></a></span><span>
+</span><span id="line-207"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#equalCookieJar"><span class="hs-identifier">equalCookieJar</span></a></span><span>
+</span><span id="line-208"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#equivCookieJar"><span class="hs-identifier">equivCookieJar</span></a></span><span>
+</span><span id="line-209"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Proxy"><span class="hs-identifier">Proxy</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-210"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Core.html#withConnection"><span class="hs-identifier">withConnection</span></a></span><span>
+</span><span id="line-211"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Connection.html#strippedHostName"><span class="hs-identifier">strippedHostName</span></a></span><span>
+</span><span id="line-212"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Cookies</span></span><span>
+</span><span id="line-213"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="hs-keyword">module</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Cookies.html"><span class="hs-identifier">Network.HTTP.Client.Cookies</span></a></span><span>
+</span><span id="line-214"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-215"></span><span>
+</span><span id="line-216"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Body.html"><span class="hs-identifier">Network.HTTP.Client.Body</span></a></span><span>
+</span><span id="line-217"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Connection.html"><span class="hs-identifier">Network.HTTP.Client.Connection</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP.Client.Connection.html#makeConnection"><span class="hs-identifier">makeConnection</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Connection.html#socketConnection"><span class="hs-identifier">socketConnection</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Connection.html#strippedHostName"><span class="hs-identifier">strippedHostName</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-218"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Cookies.html"><span class="hs-identifier">Network.HTTP.Client.Cookies</span></a></span><span>
+</span><span id="line-219"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Core.html"><span class="hs-identifier">Network.HTTP.Client.Core</span></a></span><span>
+</span><span id="line-220"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Manager.html"><span class="hs-identifier">Network.HTTP.Client.Manager</span></a></span><span>
+</span><span id="line-221"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Request.html"><span class="hs-identifier">Network.HTTP.Client.Request</span></a></span><span>
+</span><span id="line-222"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Response.html"><span class="hs-identifier">Network.HTTP.Client.Response</span></a></span><span>
+</span><span id="line-223"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html"><span class="hs-identifier">Network.HTTP.Client.Types</span></a></span><span>
+</span><span id="line-224"></span><span>
+</span><span id="line-225"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">newIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">writeIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">readIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">modifyIORef</span></span><span class="hs-special">)</span><span>
+</span><span id="line-226"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Lazy</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">L</span></span><span>
+</span><span id="line-227"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Foldable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Foldable</span></span><span class="hs-special">)</span><span>
+</span><span id="line-228"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Traversable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Traversable</span></span><span class="hs-special">)</span><span>
+</span><span id="line-229"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Network.HTTP.Types</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">statusCode</span></span><span class="hs-special">)</span><span>
+</span><span id="line-230"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">GHC.Generics</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Generic</span></span><span class="hs-special">)</span><span>
+</span><span id="line-231"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Typeable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Typeable</span></span><span class="hs-special">)</span><span>
+</span><span id="line-232"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">bracket</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">catch</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">handle</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">throwIO</span></span><span class="hs-special">)</span><span>
+</span><span id="line-233"></span><span>
+</span><span id="line-234"></span><span class="hs-comment">-- | A datatype holding information on redirected requests and the final response.</span><span>
+</span><span id="line-235"></span><span class="hs-comment">--</span><span>
+</span><span id="line-236"></span><span class="hs-comment">-- Since 0.4.1</span><span>
+</span><span id="line-237"></span><span class="hs-keyword">data</span><span> </span><span id="HistoriedResponse"><span class="annot"><a href="Network.HTTP.Client.html#HistoriedResponse"><span class="hs-identifier hs-var">HistoriedResponse</span></a></span></span><span> </span><span id="local-6989586621679108771"><span class="annot"><a href="#local-6989586621679108771"><span class="hs-identifier hs-type">body</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="HistoriedResponse"><span class="annot"><a href="Network.HTTP.Client.html#HistoriedResponse"><span class="hs-identifier hs-var">HistoriedResponse</span></a></span></span><span>
+</span><span id="line-238"></span><span>    </span><span class="hs-special">{</span><span> </span><span id="hrRedirects"><span class="annot"><span class="annottext">forall body.
+HistoriedResponse body -&gt; [(Request, Response ByteString)]
+</span><a href="Network.HTTP.Client.html#hrRedirects"><span class="hs-identifier hs-var hs-var">hrRedirects</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP.Client.Types.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">L.ByteString</span></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-239"></span><span>    </span><span class="hs-comment">-- ^ Requests which resulted in a redirect, together with their responses.</span><span>
+</span><span id="line-240"></span><span>    </span><span class="hs-comment">-- The response contains the first 1024 bytes of the body.</span><span>
+</span><span id="line-241"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-242"></span><span>    </span><span class="hs-comment">-- Since 0.4.1</span><span>
+</span><span id="line-243"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="hrFinalRequest"><span class="annot"><span class="annottext">forall body. HistoriedResponse body -&gt; Request
+</span><a href="Network.HTTP.Client.html#hrFinalRequest"><span class="hs-identifier hs-var hs-var">hrFinalRequest</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span>
+</span><span id="line-244"></span><span>    </span><span class="hs-comment">-- ^ The final request performed.</span><span>
+</span><span id="line-245"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-246"></span><span>    </span><span class="hs-comment">-- Since 0.4.1</span><span>
+</span><span id="line-247"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="hrFinalResponse"><span class="annot"><span class="annottext">forall body. HistoriedResponse body -&gt; Response body
+</span><a href="Network.HTTP.Client.html#hrFinalResponse"><span class="hs-identifier hs-var hs-var">hrFinalResponse</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Response"><span class="hs-identifier hs-type">Response</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679108771"><span class="hs-identifier hs-type">body</span></a></span><span>
+</span><span id="line-248"></span><span>    </span><span class="hs-comment">-- ^ The response from the final request.</span><span>
+</span><span id="line-249"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-250"></span><span>    </span><span class="hs-comment">-- Since 0.4.1</span><span>
+</span><span id="line-251"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-252"></span><span>    </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679109007"><span id="local-6989586621679109011"><span class="annot"><span class="annottext">(forall a b.
+ (a -&gt; b) -&gt; HistoriedResponse a -&gt; HistoriedResponse b)
+-&gt; (forall a b. a -&gt; HistoriedResponse b -&gt; HistoriedResponse a)
+-&gt; Functor HistoriedResponse
+forall a b. a -&gt; HistoriedResponse b -&gt; HistoriedResponse a
+forall a b. (a -&gt; b) -&gt; HistoriedResponse a -&gt; HistoriedResponse b
+forall (f :: * -&gt; *).
+(forall a b. (a -&gt; b) -&gt; f a -&gt; f b)
+-&gt; (forall a b. a -&gt; f b -&gt; f a) -&gt; Functor f
+$cfmap :: forall a b. (a -&gt; b) -&gt; HistoriedResponse a -&gt; HistoriedResponse b
+fmap :: forall a b. (a -&gt; b) -&gt; HistoriedResponse a -&gt; HistoriedResponse b
+$c&lt;$ :: forall a b. a -&gt; HistoriedResponse b -&gt; HistoriedResponse a
+&lt;$ :: forall a b. a -&gt; HistoriedResponse b -&gt; HistoriedResponse a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Functor</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679109021"><span id="local-6989586621679109029"><span id="local-6989586621679109035"><span id="local-6989586621679109040"><span class="annot"><span class="annottext">Functor HistoriedResponse
+Foldable HistoriedResponse
+(Functor HistoriedResponse, Foldable HistoriedResponse) =&gt;
+(forall (f :: * -&gt; *) a b.
+ Applicative f =&gt;
+ (a -&gt; f b) -&gt; HistoriedResponse a -&gt; f (HistoriedResponse b))
+-&gt; (forall (f :: * -&gt; *) a.
+    Applicative f =&gt;
+    HistoriedResponse (f a) -&gt; f (HistoriedResponse a))
+-&gt; (forall (m :: * -&gt; *) a b.
+    Monad m =&gt;
+    (a -&gt; m b) -&gt; HistoriedResponse a -&gt; m (HistoriedResponse b))
+-&gt; (forall (m :: * -&gt; *) a.
+    Monad m =&gt;
+    HistoriedResponse (m a) -&gt; m (HistoriedResponse a))
+-&gt; Traversable HistoriedResponse
+forall (t :: * -&gt; *).
+(Functor t, Foldable t) =&gt;
+(forall (f :: * -&gt; *) a b.
+ Applicative f =&gt;
+ (a -&gt; f b) -&gt; t a -&gt; f (t b))
+-&gt; (forall (f :: * -&gt; *) a. Applicative f =&gt; t (f a) -&gt; f (t a))
+-&gt; (forall (m :: * -&gt; *) a b.
+    Monad m =&gt;
+    (a -&gt; m b) -&gt; t a -&gt; m (t b))
+-&gt; (forall (m :: * -&gt; *) a. Monad m =&gt; t (m a) -&gt; m (t a))
+-&gt; Traversable t
+forall (m :: * -&gt; *) a.
+Monad m =&gt;
+HistoriedResponse (m a) -&gt; m (HistoriedResponse a)
+forall (f :: * -&gt; *) a.
+Applicative f =&gt;
+HistoriedResponse (f a) -&gt; f (HistoriedResponse a)
+forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; m b) -&gt; HistoriedResponse a -&gt; m (HistoriedResponse b)
+forall (f :: * -&gt; *) a b.
+Applicative f =&gt;
+(a -&gt; f b) -&gt; HistoriedResponse a -&gt; f (HistoriedResponse b)
+$ctraverse :: forall (f :: * -&gt; *) a b.
+Applicative f =&gt;
+(a -&gt; f b) -&gt; HistoriedResponse a -&gt; f (HistoriedResponse b)
+traverse :: forall (f :: * -&gt; *) a b.
+Applicative f =&gt;
+(a -&gt; f b) -&gt; HistoriedResponse a -&gt; f (HistoriedResponse b)
+$csequenceA :: forall (f :: * -&gt; *) a.
+Applicative f =&gt;
+HistoriedResponse (f a) -&gt; f (HistoriedResponse a)
+sequenceA :: forall (f :: * -&gt; *) a.
+Applicative f =&gt;
+HistoriedResponse (f a) -&gt; f (HistoriedResponse a)
+$cmapM :: forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; m b) -&gt; HistoriedResponse a -&gt; m (HistoriedResponse b)
+mapM :: forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; m b) -&gt; HistoriedResponse a -&gt; m (HistoriedResponse b)
+$csequence :: forall (m :: * -&gt; *) a.
+Monad m =&gt;
+HistoriedResponse (m a) -&gt; m (HistoriedResponse a)
+sequence :: forall (m :: * -&gt; *) a.
+Monad m =&gt;
+HistoriedResponse (m a) -&gt; m (HistoriedResponse a)
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Data.Traversable.Traversable</span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679109047"><span id="local-6989586621679109052"><span id="local-6989586621679109058"><span id="local-6989586621679109063"><span id="local-6989586621679109066"><span id="local-6989586621679109069"><span id="local-6989586621679109072"><span id="local-6989586621679109075"><span id="local-6989586621679109078"><span id="local-6989586621679109081"><span id="local-6989586621679109084"><span id="local-6989586621679109087"><span id="local-6989586621679109090"><span id="local-6989586621679109095"><span id="local-6989586621679109100"><span id="local-6989586621679109105"><span id="local-6989586621679109110"><span class="annot"><span class="annottext">(forall m. Monoid m =&gt; HistoriedResponse m -&gt; m)
+-&gt; (forall m a. Monoid m =&gt; (a -&gt; m) -&gt; HistoriedResponse a -&gt; m)
+-&gt; (forall m a. Monoid m =&gt; (a -&gt; m) -&gt; HistoriedResponse a -&gt; m)
+-&gt; (forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b)
+-&gt; (forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b)
+-&gt; (forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b)
+-&gt; (forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b)
+-&gt; (forall a. (a -&gt; a -&gt; a) -&gt; HistoriedResponse a -&gt; a)
+-&gt; (forall a. (a -&gt; a -&gt; a) -&gt; HistoriedResponse a -&gt; a)
+-&gt; (forall a. HistoriedResponse a -&gt; [a])
+-&gt; (forall a. HistoriedResponse a -&gt; Bool)
+-&gt; (forall a. HistoriedResponse a -&gt; Int)
+-&gt; (forall a. Eq a =&gt; a -&gt; HistoriedResponse a -&gt; Bool)
+-&gt; (forall a. Ord a =&gt; HistoriedResponse a -&gt; a)
+-&gt; (forall a. Ord a =&gt; HistoriedResponse a -&gt; a)
+-&gt; (forall a. Num a =&gt; HistoriedResponse a -&gt; a)
+-&gt; (forall a. Num a =&gt; HistoriedResponse a -&gt; a)
+-&gt; Foldable HistoriedResponse
+forall a. Eq a =&gt; a -&gt; HistoriedResponse a -&gt; Bool
+forall a. Num a =&gt; HistoriedResponse a -&gt; a
+forall a. Ord a =&gt; HistoriedResponse a -&gt; a
+forall m. Monoid m =&gt; HistoriedResponse m -&gt; m
+forall a. HistoriedResponse a -&gt; Bool
+forall a. HistoriedResponse a -&gt; Int
+forall a. HistoriedResponse a -&gt; [a]
+forall a. (a -&gt; a -&gt; a) -&gt; HistoriedResponse a -&gt; a
+forall m a. Monoid m =&gt; (a -&gt; m) -&gt; HistoriedResponse a -&gt; m
+forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b
+forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b
+forall (t :: * -&gt; *).
+(forall m. Monoid m =&gt; t m -&gt; m)
+-&gt; (forall m a. Monoid m =&gt; (a -&gt; m) -&gt; t a -&gt; m)
+-&gt; (forall m a. Monoid m =&gt; (a -&gt; m) -&gt; t a -&gt; m)
+-&gt; (forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b)
+-&gt; (forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b)
+-&gt; (forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b)
+-&gt; (forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b)
+-&gt; (forall a. (a -&gt; a -&gt; a) -&gt; t a -&gt; a)
+-&gt; (forall a. (a -&gt; a -&gt; a) -&gt; t a -&gt; a)
+-&gt; (forall a. t a -&gt; [a])
+-&gt; (forall a. t a -&gt; Bool)
+-&gt; (forall a. t a -&gt; Int)
+-&gt; (forall a. Eq a =&gt; a -&gt; t a -&gt; Bool)
+-&gt; (forall a. Ord a =&gt; t a -&gt; a)
+-&gt; (forall a. Ord a =&gt; t a -&gt; a)
+-&gt; (forall a. Num a =&gt; t a -&gt; a)
+-&gt; (forall a. Num a =&gt; t a -&gt; a)
+-&gt; Foldable t
+$cfold :: forall m. Monoid m =&gt; HistoriedResponse m -&gt; m
+fold :: forall m. Monoid m =&gt; HistoriedResponse m -&gt; m
+$cfoldMap :: forall m a. Monoid m =&gt; (a -&gt; m) -&gt; HistoriedResponse a -&gt; m
+foldMap :: forall m a. Monoid m =&gt; (a -&gt; m) -&gt; HistoriedResponse a -&gt; m
+$cfoldMap' :: forall m a. Monoid m =&gt; (a -&gt; m) -&gt; HistoriedResponse a -&gt; m
+foldMap' :: forall m a. Monoid m =&gt; (a -&gt; m) -&gt; HistoriedResponse a -&gt; m
+$cfoldr :: forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b
+foldr :: forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b
+$cfoldr' :: forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b
+foldr' :: forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b
+$cfoldl :: forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b
+foldl :: forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b
+$cfoldl' :: forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b
+foldl' :: forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; HistoriedResponse a -&gt; b
+$cfoldr1 :: forall a. (a -&gt; a -&gt; a) -&gt; HistoriedResponse a -&gt; a
+foldr1 :: forall a. (a -&gt; a -&gt; a) -&gt; HistoriedResponse a -&gt; a
+$cfoldl1 :: forall a. (a -&gt; a -&gt; a) -&gt; HistoriedResponse a -&gt; a
+foldl1 :: forall a. (a -&gt; a -&gt; a) -&gt; HistoriedResponse a -&gt; a
+$ctoList :: forall a. HistoriedResponse a -&gt; [a]
+toList :: forall a. HistoriedResponse a -&gt; [a]
+$cnull :: forall a. HistoriedResponse a -&gt; Bool
+null :: forall a. HistoriedResponse a -&gt; Bool
+$clength :: forall a. HistoriedResponse a -&gt; Int
+length :: forall a. HistoriedResponse a -&gt; Int
+$celem :: forall a. Eq a =&gt; a -&gt; HistoriedResponse a -&gt; Bool
+elem :: forall a. Eq a =&gt; a -&gt; HistoriedResponse a -&gt; Bool
+$cmaximum :: forall a. Ord a =&gt; HistoriedResponse a -&gt; a
+maximum :: forall a. Ord a =&gt; HistoriedResponse a -&gt; a
+$cminimum :: forall a. Ord a =&gt; HistoriedResponse a -&gt; a
+minimum :: forall a. Ord a =&gt; HistoriedResponse a -&gt; a
+$csum :: forall a. Num a =&gt; HistoriedResponse a -&gt; a
+sum :: forall a. Num a =&gt; HistoriedResponse a -&gt; a
+$cproduct :: forall a. Num a =&gt; HistoriedResponse a -&gt; a
+product :: forall a. Num a =&gt; HistoriedResponse a -&gt; a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Data.Foldable.Foldable</span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679109117"><span id="local-6989586621679109128"><span id="local-6989586621679109132"><span class="annot"><span class="annottext">Int -&gt; HistoriedResponse body -&gt; ShowS
+[HistoriedResponse body] -&gt; ShowS
+HistoriedResponse body -&gt; String
+(Int -&gt; HistoriedResponse body -&gt; ShowS)
+-&gt; (HistoriedResponse body -&gt; String)
+-&gt; ([HistoriedResponse body] -&gt; ShowS)
+-&gt; Show (HistoriedResponse body)
+forall body. Show body =&gt; Int -&gt; HistoriedResponse body -&gt; ShowS
+forall body. Show body =&gt; [HistoriedResponse body] -&gt; ShowS
+forall body. Show body =&gt; HistoriedResponse body -&gt; String
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: forall body. Show body =&gt; Int -&gt; HistoriedResponse body -&gt; ShowS
+showsPrec :: Int -&gt; HistoriedResponse body -&gt; ShowS
+$cshow :: forall body. Show body =&gt; HistoriedResponse body -&gt; String
+show :: HistoriedResponse body -&gt; String
+$cshowList :: forall body. Show body =&gt; [HistoriedResponse body] -&gt; ShowS
+showList :: [HistoriedResponse body] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Typeable</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679109141"><span id="local-6989586621679109143"><span class="annot"><span class="annottext">(forall x.
+ HistoriedResponse body -&gt; Rep (HistoriedResponse body) x)
+-&gt; (forall x.
+    Rep (HistoriedResponse body) x -&gt; HistoriedResponse body)
+-&gt; Generic (HistoriedResponse body)
+forall x. Rep (HistoriedResponse body) x -&gt; HistoriedResponse body
+forall x. HistoriedResponse body -&gt; Rep (HistoriedResponse body) x
+forall a.
+(forall x. a -&gt; Rep a x) -&gt; (forall x. Rep a x -&gt; a) -&gt; Generic a
+forall body x.
+Rep (HistoriedResponse body) x -&gt; HistoriedResponse body
+forall body x.
+HistoriedResponse body -&gt; Rep (HistoriedResponse body) x
+$cfrom :: forall body x.
+HistoriedResponse body -&gt; Rep (HistoriedResponse body) x
+from :: forall x. HistoriedResponse body -&gt; Rep (HistoriedResponse body) x
+$cto :: forall body x.
+Rep (HistoriedResponse body) x -&gt; HistoriedResponse body
+to :: forall x. Rep (HistoriedResponse body) x -&gt; HistoriedResponse body
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Generic</span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-253"></span><span>
+</span><span id="line-254"></span><span class="hs-comment">-- | A variant of @responseOpen@ which keeps a history of all redirects</span><span>
+</span><span id="line-255"></span><span class="hs-comment">-- performed in the interim, together with the first 1024 bytes of their</span><span>
+</span><span id="line-256"></span><span class="hs-comment">-- response bodies.</span><span>
+</span><span id="line-257"></span><span class="hs-comment">--</span><span>
+</span><span id="line-258"></span><span class="hs-comment">-- Since 0.4.1</span><span>
+</span><span id="line-259"></span><span class="annot"><a href="Network.HTTP.Client.html#responseOpenHistory"><span class="hs-identifier hs-type">responseOpenHistory</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP.Client.html#HistoriedResponse"><span class="hs-identifier hs-type">HistoriedResponse</span></a></span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier hs-type">BodyReader</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-260"></span><span id="responseOpenHistory"><span class="annot"><span class="annottext">responseOpenHistory :: Request -&gt; Manager -&gt; IO (HistoriedResponse BodyReader)
+</span><a href="Network.HTTP.Client.html#responseOpenHistory"><span class="hs-identifier hs-var hs-var">responseOpenHistory</span></a></span></span><span> </span><span id="local-6989586621679109146"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109146"><span class="hs-identifier hs-var">reqOrig</span></a></span></span><span> </span><span id="local-6989586621679109147"><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679109147"><span class="hs-identifier hs-var">man0</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(HttpExceptionContentWrapper -&gt; IO (HistoriedResponse BodyReader))
+-&gt; IO (HistoriedResponse BodyReader)
+-&gt; IO (HistoriedResponse BodyReader)
+forall e a. Exception e =&gt; (e -&gt; IO a) -&gt; IO a -&gt; IO a
+</span><span class="hs-identifier hs-var">handle</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HttpException -&gt; IO (HistoriedResponse BodyReader)
+forall e a. Exception e =&gt; e -&gt; IO a
+</span><span class="hs-identifier hs-var">throwIO</span></span><span> </span><span class="annot"><span class="annottext">(HttpException -&gt; IO (HistoriedResponse BodyReader))
+-&gt; (HttpExceptionContentWrapper -&gt; HttpException)
+-&gt; HttpExceptionContentWrapper
+-&gt; IO (HistoriedResponse BodyReader)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Request -&gt; HttpExceptionContentWrapper -&gt; HttpException
+</span><a href="Network.HTTP.Client.Types.html#toHttpException"><span class="hs-identifier hs-var">toHttpException</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109146"><span class="hs-identifier hs-var">reqOrig</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO (HistoriedResponse BodyReader)
+ -&gt; IO (HistoriedResponse BodyReader))
+-&gt; IO (HistoriedResponse BodyReader)
+-&gt; IO (HistoriedResponse BodyReader)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-261"></span><span>    </span><span id="local-6989586621679109150"><span class="annot"><span class="annottext">IORef Request
+</span><a href="#local-6989586621679109150"><span class="hs-identifier hs-var">reqRef</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Request -&gt; IO (IORef Request)
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109146"><span class="hs-identifier hs-var">reqOrig</span></a></span><span>
+</span><span id="line-262"></span><span>    </span><span id="local-6989586621679109151"><span class="annot"><span class="annottext">IORef
+  ([(Request, Response ByteString)]
+   -&gt; [(Request, Response ByteString)])
+</span><a href="#local-6989586621679109151"><span class="hs-identifier hs-var">historyRef</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">([(Request, Response ByteString)]
+ -&gt; [(Request, Response ByteString)])
+-&gt; IO
+     (IORef
+        ([(Request, Response ByteString)]
+         -&gt; [(Request, Response ByteString)]))
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">[(Request, Response ByteString)]
+-&gt; [(Request, Response ByteString)]
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span>
+</span><span id="line-263"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679109162"><span class="annot"><span class="annottext">go :: Request -&gt; IO (Response BodyReader, Request, Bool)
+</span><a href="#local-6989586621679109162"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679109163"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109163"><span class="hs-identifier hs-var">req0</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-264"></span><span>            </span><span class="hs-special">(</span><span id="local-6989586621679109164"><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679109164"><span class="hs-identifier hs-var">man</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679109165"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109165"><span class="hs-identifier hs-var">req</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Manager -&gt; Request -&gt; IO (Manager, Request)
+</span><a href="Network.HTTP.Client.Core.html#getModifiedRequestManager"><span class="hs-identifier hs-var">getModifiedRequestManager</span></a></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679109147"><span class="hs-identifier hs-var">man0</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109163"><span class="hs-identifier hs-var">req0</span></a></span><span>
+</span><span id="line-265"></span><span>            </span><span class="hs-special">(</span><span id="local-6989586621679109167"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109167"><span class="hs-identifier hs-var">req'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679109168"><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679109168"><span class="hs-identifier hs-var">res'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Request -&gt; Manager -&gt; IO (Request, Response BodyReader)
+</span><a href="Network.HTTP.Client.Core.html#httpRaw%27"><span class="hs-identifier hs-var">httpRaw'</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109165"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679109164"><span class="hs-identifier hs-var">man</span></a></span><span>
+</span><span id="line-266"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679109172"><span class="annot"><span class="annottext">res :: Response BodyReader
+</span><a href="#local-6989586621679109172"><span class="hs-identifier hs-var hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679109168"><span class="hs-identifier hs-var">res'</span></a></span><span>
+</span><span id="line-267"></span><span>                    </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#responseBody"><span class="hs-identifier hs-var">responseBody</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">handle</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">throwIO</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">.</span></span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#toHttpException"><span class="hs-identifier hs-type">toHttpException</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679109163"><span class="hs-identifier hs-type">req0</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-268"></span><span>                                            </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP.Client.Types.html#responseBody"><span class="hs-identifier hs-var">responseBody</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679109168"><span class="hs-identifier hs-type">res'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-269"></span><span>                    </span><span class="hs-special">}</span><span>
+</span><span id="line-270"></span><span>            </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Request
+-&gt; Request -&gt; ResponseHeaders -&gt; CookieJar -&gt; Int -&gt; Maybe Request
+</span><a href="Network.HTTP.Client.Response.html#getRedirectedRequest"><span class="hs-identifier hs-var">getRedirectedRequest</span></a></span><span>
+</span><span id="line-271"></span><span>                    </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109165"><span class="hs-identifier hs-var">req</span></a></span><span>
+</span><span id="line-272"></span><span>                    </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109167"><span class="hs-identifier hs-var">req'</span></a></span><span>
+</span><span id="line-273"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Response BodyReader -&gt; ResponseHeaders
+forall body. Response body -&gt; ResponseHeaders
+</span><a href="Network.HTTP.Client.Types.html#responseHeaders"><span class="hs-identifier hs-var">responseHeaders</span></a></span><span> </span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679109172"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-274"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Response BodyReader -&gt; CookieJar
+forall body. Response body -&gt; CookieJar
+</span><a href="Network.HTTP.Client.Types.html#responseCookieJar"><span class="hs-identifier hs-var">responseCookieJar</span></a></span><span> </span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679109172"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-275"></span><span>                    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Status -&gt; Int
+</span><span class="hs-identifier hs-var">statusCode</span></span><span> </span><span class="annot"><span class="annottext">(Status -&gt; Int) -&gt; Status -&gt; Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Response BodyReader -&gt; Status
+forall body. Response body -&gt; Status
+</span><a href="Network.HTTP.Client.Types.html#responseStatus"><span class="hs-identifier hs-var">responseStatus</span></a></span><span> </span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679109172"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-276"></span><span>                </span><span class="annot"><span class="annottext">Maybe Request
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(Response BodyReader, Request, Bool)
+-&gt; IO (Response BodyReader, Request, Bool)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679109172"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109167"><span class="hs-identifier hs-var">req'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span class="hs-special">)</span><span>
+</span><span id="line-277"></span><span>                </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679109174"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109174"><span class="hs-identifier hs-var">req''</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-278"></span><span>                    </span><span class="annot"><span class="annottext">IORef Request -&gt; Request -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Request
+</span><a href="#local-6989586621679109150"><span class="hs-identifier hs-var">reqRef</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109174"><span class="hs-identifier hs-var">req''</span></a></span><span>
+</span><span id="line-279"></span><span>                    </span><span id="local-6989586621679109175"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621679109175"><span class="hs-identifier hs-var">body</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BodyReader -&gt; Int -&gt; IO ByteString
+</span><a href="Network.HTTP.Client.Body.html#brReadSome"><span class="hs-identifier hs-var">brReadSome</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Response BodyReader -&gt; BodyReader
+forall body. Response body -&gt; body
+</span><a href="Network.HTTP.Client.Types.html#responseBody"><span class="hs-identifier hs-var">responseBody</span></a></span><span> </span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679109172"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1024</span></span><span>
+</span><span id="line-280"></span><span>                        </span><span class="annot"><span class="annottext">IO ByteString -&gt; (SomeException -&gt; IO ByteString) -&gt; IO ByteString
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><span class="hs-operator hs-var">`catch`</span></span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; IO ByteString
+</span><a href="Network.HTTP.Client.Core.html#handleClosedRead"><span class="hs-identifier hs-var">handleClosedRead</span></a></span><span>
+</span><span id="line-281"></span><span>                    </span><span class="annot"><span class="annottext">IORef
+  ([(Request, Response ByteString)]
+   -&gt; [(Request, Response ByteString)])
+-&gt; (([(Request, Response ByteString)]
+     -&gt; [(Request, Response ByteString)])
+    -&gt; [(Request, Response ByteString)]
+    -&gt; [(Request, Response ByteString)])
+-&gt; IO ()
+forall a. IORef a -&gt; (a -&gt; a) -&gt; IO ()
+</span><span class="hs-identifier hs-var">modifyIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef
+  ([(Request, Response ByteString)]
+   -&gt; [(Request, Response ByteString)])
+</span><a href="#local-6989586621679109151"><span class="hs-identifier hs-var">historyRef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">([(Request, Response ByteString)]
+ -&gt; [(Request, Response ByteString)])
+-&gt; ([(Request, Response ByteString)]
+    -&gt; [(Request, Response ByteString)])
+-&gt; [(Request, Response ByteString)]
+-&gt; [(Request, Response ByteString)]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109165"><span class="hs-identifier hs-var">req</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679109172"><span class="hs-identifier hs-var">res</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="hs-identifier">responseBody</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier">body</span></span><span> </span><span class="hs-special">}</span><span class="hs-special">)</span><span class="annot"><span class="annottext">(Request, Response ByteString)
+-&gt; [(Request, Response ByteString)]
+-&gt; [(Request, Response ByteString)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-282"></span><span>                    </span><span class="annot"><span class="annottext">(Response BodyReader, Request, Bool)
+-&gt; IO (Response BodyReader, Request, Bool)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679109172"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109174"><span class="hs-identifier hs-var">req''</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span class="hs-special">)</span><span>
+</span><span id="line-283"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Request
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679109177"><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679109177"><span class="hs-identifier hs-var">res</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int
+-&gt; (Request -&gt; IO (Response BodyReader, Request, Bool))
+-&gt; Request
+-&gt; IO (Request, Response BodyReader)
+</span><a href="Network.HTTP.Client.Core.html#httpRedirect%27"><span class="hs-identifier hs-var">httpRedirect'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Request -&gt; Int
+</span><a href="Network.HTTP.Client.Types.html#redirectCount"><span class="hs-identifier hs-var">redirectCount</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109146"><span class="hs-identifier hs-var">reqOrig</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Request -&gt; IO (Response BodyReader, Request, Bool)
+</span><a href="#local-6989586621679109162"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109146"><span class="hs-identifier hs-var">reqOrig</span></a></span><span>
+</span><span id="line-284"></span><span>    </span><span id="local-6989586621679109179"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109179"><span class="hs-identifier hs-var">reqFinal</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef Request -&gt; IO Request
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef Request
+</span><a href="#local-6989586621679109150"><span class="hs-identifier hs-var">reqRef</span></a></span><span>
+</span><span id="line-285"></span><span>    </span><span id="local-6989586621679109180"><span class="annot"><span class="annottext">[(Request, Response ByteString)]
+-&gt; [(Request, Response ByteString)]
+</span><a href="#local-6989586621679109180"><span class="hs-identifier hs-var">history</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef
+  ([(Request, Response ByteString)]
+   -&gt; [(Request, Response ByteString)])
+-&gt; IO
+     ([(Request, Response ByteString)]
+      -&gt; [(Request, Response ByteString)])
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef
+  ([(Request, Response ByteString)]
+   -&gt; [(Request, Response ByteString)])
+</span><a href="#local-6989586621679109151"><span class="hs-identifier hs-var">historyRef</span></a></span><span>
+</span><span id="line-286"></span><span>    </span><span class="annot"><span class="annottext">HistoriedResponse BodyReader -&gt; IO (HistoriedResponse BodyReader)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><a href="Network.HTTP.Client.html#HistoriedResponse"><span class="hs-identifier hs-type">HistoriedResponse</span></a></span><span>
+</span><span id="line-287"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">hrRedirects :: [(Request, Response ByteString)]
+</span><a href="Network.HTTP.Client.html#hrRedirects"><span class="hs-identifier hs-var">hrRedirects</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(Request, Response ByteString)]
+-&gt; [(Request, Response ByteString)]
+</span><a href="#local-6989586621679109180"><span class="hs-identifier hs-var">history</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-288"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">hrFinalRequest :: Request
+</span><a href="Network.HTTP.Client.html#hrFinalRequest"><span class="hs-identifier hs-var">hrFinalRequest</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109179"><span class="hs-identifier hs-var">reqFinal</span></a></span><span>
+</span><span id="line-289"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">hrFinalResponse :: Response BodyReader
+</span><a href="Network.HTTP.Client.html#hrFinalResponse"><span class="hs-identifier hs-var">hrFinalResponse</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Response BodyReader
+</span><a href="#local-6989586621679109177"><span class="hs-identifier hs-var">res</span></a></span><span>
+</span><span id="line-290"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-291"></span><span>
+</span><span id="line-292"></span><span class="hs-comment">-- | A variant of @withResponse@ which keeps a history of all redirects</span><span>
+</span><span id="line-293"></span><span class="hs-comment">-- performed in the interim, together with the first 1024 bytes of their</span><span>
+</span><span id="line-294"></span><span class="hs-comment">-- response bodies.</span><span>
+</span><span id="line-295"></span><span class="hs-comment">--</span><span>
+</span><span id="line-296"></span><span class="hs-comment">-- Since 0.4.1</span><span>
+</span><span id="line-297"></span><span id="local-6989586621679108867"><span class="annot"><a href="Network.HTTP.Client.html#withResponseHistory"><span class="hs-identifier hs-type">withResponseHistory</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Request"><span class="hs-identifier hs-type">Request</span></a></span><span>
+</span><span id="line-298"></span><span>                    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#Manager"><span class="hs-identifier hs-type">Manager</span></a></span><span>
+</span><span id="line-299"></span><span>                    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Network.HTTP.Client.html#HistoriedResponse"><span class="hs-identifier hs-type">HistoriedResponse</span></a></span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#BodyReader"><span class="hs-identifier hs-type">BodyReader</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679108867"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-300"></span><span>                    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679108867"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-301"></span><span id="withResponseHistory"><span class="annot"><span class="annottext">withResponseHistory :: forall a.
+Request
+-&gt; Manager -&gt; (HistoriedResponse BodyReader -&gt; IO a) -&gt; IO a
+</span><a href="Network.HTTP.Client.html#withResponseHistory"><span class="hs-identifier hs-var hs-var">withResponseHistory</span></a></span></span><span> </span><span id="local-6989586621679109181"><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109181"><span class="hs-identifier hs-var">req</span></a></span></span><span> </span><span id="local-6989586621679109182"><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679109182"><span class="hs-identifier hs-var">man</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (HistoriedResponse BodyReader)
+-&gt; (HistoriedResponse BodyReader -&gt; IO ())
+-&gt; (HistoriedResponse BodyReader -&gt; IO a)
+-&gt; IO a
+forall a b c. IO a -&gt; (a -&gt; IO b) -&gt; (a -&gt; IO c) -&gt; IO c
+</span><span class="hs-identifier hs-var">bracket</span></span><span>
+</span><span id="line-302"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Request -&gt; Manager -&gt; IO (HistoriedResponse BodyReader)
+</span><a href="Network.HTTP.Client.html#responseOpenHistory"><span class="hs-identifier hs-var">responseOpenHistory</span></a></span><span> </span><span class="annot"><span class="annottext">Request
+</span><a href="#local-6989586621679109181"><span class="hs-identifier hs-var">req</span></a></span><span> </span><span class="annot"><span class="annottext">Manager
+</span><a href="#local-6989586621679109182"><span class="hs-identifier hs-var">man</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-303"></span><span>    </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Response BodyReader -&gt; IO ()
+forall a. Response a -&gt; IO ()
+</span><a href="Network.HTTP.Client.Core.html#responseClose"><span class="hs-identifier hs-var">responseClose</span></a></span><span> </span><span class="annot"><span class="annottext">(Response BodyReader -&gt; IO ())
+-&gt; (HistoriedResponse BodyReader -&gt; Response BodyReader)
+-&gt; HistoriedResponse BodyReader
+-&gt; IO ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">HistoriedResponse BodyReader -&gt; Response BodyReader
+forall body. HistoriedResponse body -&gt; Response body
+</span><a href="Network.HTTP.Client.html#hrFinalResponse"><span class="hs-identifier hs-var">hrFinalResponse</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-304"></span><span>
+</span><span id="line-305"></span><span class="hs-comment">-- | Set the proxy override value, only for HTTP (insecure) connections.</span><span>
+</span><span id="line-306"></span><span class="hs-comment">--</span><span>
+</span><span id="line-307"></span><span class="hs-comment">-- Since 0.4.7</span><span>
+</span><span id="line-308"></span><span class="annot"><a href="Network.HTTP.Client.html#managerSetInsecureProxy"><span class="hs-identifier hs-type">managerSetInsecureProxy</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ProxyOverride"><span class="hs-identifier hs-type">ProxyOverride</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ManagerSettings"><span class="hs-identifier hs-type">ManagerSettings</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ManagerSettings"><span class="hs-identifier hs-type">ManagerSettings</span></a></span><span>
+</span><span id="line-309"></span><span id="managerSetInsecureProxy"><span class="annot"><span class="annottext">managerSetInsecureProxy :: ProxyOverride -&gt; ManagerSettings -&gt; ManagerSettings
+</span><a href="Network.HTTP.Client.html#managerSetInsecureProxy"><span class="hs-identifier hs-var hs-var">managerSetInsecureProxy</span></a></span></span><span> </span><span id="local-6989586621679109183"><span class="annot"><span class="annottext">ProxyOverride
+</span><a href="#local-6989586621679109183"><span class="hs-identifier hs-var">po</span></a></span></span><span> </span><span id="local-6989586621679109184"><span class="annot"><span class="annottext">ManagerSettings
+</span><a href="#local-6989586621679109184"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ManagerSettings
+</span><a href="#local-6989586621679109184"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#managerProxyInsecure"><span class="hs-identifier hs-var">managerProxyInsecure</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621679109183"><span class="hs-identifier hs-type">po</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-310"></span><span>
+</span><span id="line-311"></span><span class="hs-comment">-- | Set the proxy override value, only for HTTPS (secure) connections.</span><span>
+</span><span id="line-312"></span><span class="hs-comment">--</span><span>
+</span><span id="line-313"></span><span class="hs-comment">-- Since 0.4.7</span><span>
+</span><span id="line-314"></span><span class="annot"><a href="Network.HTTP.Client.html#managerSetSecureProxy"><span class="hs-identifier hs-type">managerSetSecureProxy</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ProxyOverride"><span class="hs-identifier hs-type">ProxyOverride</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ManagerSettings"><span class="hs-identifier hs-type">ManagerSettings</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ManagerSettings"><span class="hs-identifier hs-type">ManagerSettings</span></a></span><span>
+</span><span id="line-315"></span><span id="managerSetSecureProxy"><span class="annot"><span class="annottext">managerSetSecureProxy :: ProxyOverride -&gt; ManagerSettings -&gt; ManagerSettings
+</span><a href="Network.HTTP.Client.html#managerSetSecureProxy"><span class="hs-identifier hs-var hs-var">managerSetSecureProxy</span></a></span></span><span> </span><span id="local-6989586621679109186"><span class="annot"><span class="annottext">ProxyOverride
+</span><a href="#local-6989586621679109186"><span class="hs-identifier hs-var">po</span></a></span></span><span> </span><span id="local-6989586621679109187"><span class="annot"><span class="annottext">ManagerSettings
+</span><a href="#local-6989586621679109187"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ManagerSettings
+</span><a href="#local-6989586621679109187"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#managerProxySecure"><span class="hs-identifier hs-var">managerProxySecure</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621679109186"><span class="hs-identifier hs-type">po</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-316"></span><span>
+</span><span id="line-317"></span><span class="hs-comment">-- | Set the proxy override value, for both HTTP (insecure) and HTTPS</span><span>
+</span><span id="line-318"></span><span class="hs-comment">-- (insecure) connections.</span><span>
+</span><span id="line-319"></span><span class="hs-comment">--</span><span>
+</span><span id="line-320"></span><span class="hs-comment">-- Since 0.4.7</span><span>
+</span><span id="line-321"></span><span class="annot"><a href="Network.HTTP.Client.html#managerSetProxy"><span class="hs-identifier hs-type">managerSetProxy</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ProxyOverride"><span class="hs-identifier hs-type">ProxyOverride</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ManagerSettings"><span class="hs-identifier hs-type">ManagerSettings</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ManagerSettings"><span class="hs-identifier hs-type">ManagerSettings</span></a></span><span>
+</span><span id="line-322"></span><span id="managerSetProxy"><span class="annot"><span class="annottext">managerSetProxy :: ProxyOverride -&gt; ManagerSettings -&gt; ManagerSettings
+</span><a href="Network.HTTP.Client.html#managerSetProxy"><span class="hs-identifier hs-var hs-var">managerSetProxy</span></a></span></span><span> </span><span id="local-6989586621679109189"><span class="annot"><span class="annottext">ProxyOverride
+</span><a href="#local-6989586621679109189"><span class="hs-identifier hs-var">po</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ProxyOverride -&gt; ManagerSettings -&gt; ManagerSettings
+</span><a href="Network.HTTP.Client.html#managerSetInsecureProxy"><span class="hs-identifier hs-var">managerSetInsecureProxy</span></a></span><span> </span><span class="annot"><span class="annottext">ProxyOverride
+</span><a href="#local-6989586621679109189"><span class="hs-identifier hs-var">po</span></a></span><span> </span><span class="annot"><span class="annottext">(ManagerSettings -&gt; ManagerSettings)
+-&gt; (ManagerSettings -&gt; ManagerSettings)
+-&gt; ManagerSettings
+-&gt; ManagerSettings
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">ProxyOverride -&gt; ManagerSettings -&gt; ManagerSettings
+</span><a href="Network.HTTP.Client.html#managerSetSecureProxy"><span class="hs-identifier hs-var">managerSetSecureProxy</span></a></span><span> </span><span class="annot"><span class="annottext">ProxyOverride
+</span><a href="#local-6989586621679109189"><span class="hs-identifier hs-var">po</span></a></span><span>
+</span><span id="line-323"></span><span>
+</span><span id="line-324"></span><span class="hs-comment">-- @since 0.7.17</span><span>
+</span><span id="line-325"></span><span class="annot"><a href="Network.HTTP.Client.html#managerSetMaxHeaderLength"><span class="hs-identifier hs-type">managerSetMaxHeaderLength</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ManagerSettings"><span class="hs-identifier hs-type">ManagerSettings</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ManagerSettings"><span class="hs-identifier hs-type">ManagerSettings</span></a></span><span>
+</span><span id="line-326"></span><span id="managerSetMaxHeaderLength"><span class="annot"><span class="annottext">managerSetMaxHeaderLength :: Int -&gt; ManagerSettings -&gt; ManagerSettings
+</span><a href="Network.HTTP.Client.html#managerSetMaxHeaderLength"><span class="hs-identifier hs-var hs-var">managerSetMaxHeaderLength</span></a></span></span><span> </span><span id="local-6989586621679109190"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679109190"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span id="local-6989586621679109191"><span class="annot"><span class="annottext">ManagerSettings
+</span><a href="#local-6989586621679109191"><span class="hs-identifier hs-var">manager</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ManagerSettings
+</span><a href="#local-6989586621679109191"><span class="hs-identifier hs-var">manager</span></a></span><span>
+</span><span id="line-327"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#managerMaxHeaderLength"><span class="hs-identifier hs-var">managerMaxHeaderLength</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">$</span></span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#MaxHeaderLength"><span class="hs-identifier hs-type">MaxHeaderLength</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679109190"><span class="hs-identifier hs-type">l</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-328"></span><span>
+</span><span id="line-329"></span><span class="hs-comment">-- $example1</span><span>
+</span><span id="line-330"></span><span class="hs-comment">-- = Example Usage</span><span>
+</span><span id="line-331"></span><span class="hs-comment">--</span><span>
+</span><span id="line-332"></span><span class="hs-comment">-- === Making a GET request</span><span>
+</span><span id="line-333"></span><span class="hs-comment">--</span><span>
+</span><span id="line-334"></span><span class="hs-comment">-- &gt; import Network.HTTP.Client</span><span>
+</span><span id="line-335"></span><span class="hs-comment">-- &gt; import Network.HTTP.Types.Status (statusCode)</span><span>
+</span><span id="line-336"></span><span class="hs-comment">-- &gt;</span><span>
+</span><span id="line-337"></span><span class="hs-comment">-- &gt; main :: IO ()</span><span>
+</span><span id="line-338"></span><span class="hs-comment">-- &gt; main = do</span><span>
+</span><span id="line-339"></span><span class="hs-comment">-- &gt;   manager &lt;- newManager defaultManagerSettings</span><span>
+</span><span id="line-340"></span><span class="hs-comment">-- &gt;</span><span>
+</span><span id="line-341"></span><span class="hs-comment">-- &gt;   request &lt;- parseRequest &quot;http://httpbin.org/get&quot;</span><span>
+</span><span id="line-342"></span><span class="hs-comment">-- &gt;   response &lt;- httpLbs request manager</span><span>
+</span><span id="line-343"></span><span class="hs-comment">-- &gt;</span><span>
+</span><span id="line-344"></span><span class="hs-comment">-- &gt;   putStrLn $ &quot;The status code was: &quot; ++ (show $ statusCode $ responseStatus response)</span><span>
+</span><span id="line-345"></span><span class="hs-comment">-- &gt;   print $ responseBody response</span><span>
+</span><span id="line-346"></span><span class="hs-comment">--</span><span>
+</span><span id="line-347"></span><span class="hs-comment">--</span><span>
+</span><span id="line-348"></span><span class="hs-comment">-- === Posting JSON to a server</span><span>
+</span><span id="line-349"></span><span class="hs-comment">--</span><span>
+</span><span id="line-350"></span><span class="hs-comment">-- &gt; {-# LANGUAGE OverloadedStrings #-}</span><span>
+</span><span id="line-351"></span><span class="hs-comment">-- &gt; import Network.HTTP.Client</span><span>
+</span><span id="line-352"></span><span class="hs-comment">-- &gt; import Network.HTTP.Types.Status (statusCode)</span><span>
+</span><span id="line-353"></span><span class="hs-comment">-- &gt; import Data.Aeson (object, (.=), encode)</span><span>
+</span><span id="line-354"></span><span class="hs-comment">-- &gt; import Data.Text (Text)</span><span>
+</span><span id="line-355"></span><span class="hs-comment">-- &gt;</span><span>
+</span><span id="line-356"></span><span class="hs-comment">-- &gt; main :: IO ()</span><span>
+</span><span id="line-357"></span><span class="hs-comment">-- &gt; main = do</span><span>
+</span><span id="line-358"></span><span class="hs-comment">-- &gt;   manager &lt;- newManager defaultManagerSettings</span><span>
+</span><span id="line-359"></span><span class="hs-comment">-- &gt;</span><span>
+</span><span id="line-360"></span><span class="hs-comment">-- &gt;   -- Create the request</span><span>
+</span><span id="line-361"></span><span class="hs-comment">-- &gt;   let requestObject = object [&quot;name&quot; .= &quot;Michael&quot;, &quot;age&quot; .= 30]</span><span>
+</span><span id="line-362"></span><span class="hs-comment">-- &gt;   let requestObject = object</span><span>
+</span><span id="line-363"></span><span class="hs-comment">-- &gt;        [ &quot;name&quot; .= (&quot;Michael&quot; :: Text)</span><span>
+</span><span id="line-364"></span><span class="hs-comment">-- &gt;        , &quot;age&quot;  .= (30 :: Int)</span><span>
+</span><span id="line-365"></span><span class="hs-comment">-- &gt;        ]</span><span>
+</span><span id="line-366"></span><span class="hs-comment">-- &gt;</span><span>
+</span><span id="line-367"></span><span class="hs-comment">-- &gt;   initialRequest &lt;- parseRequest &quot;http://httpbin.org/post&quot;</span><span>
+</span><span id="line-368"></span><span class="hs-comment">-- &gt;   let request = initialRequest { method = &quot;POST&quot;, requestBody = RequestBodyLBS $ encode requestObject }</span><span>
+</span><span id="line-369"></span><span class="hs-comment">-- &gt;</span><span>
+</span><span id="line-370"></span><span class="hs-comment">-- &gt;   response &lt;- httpLbs request manager</span><span>
+</span><span id="line-371"></span><span class="hs-comment">-- &gt;   putStrLn $ &quot;The status code was: &quot; ++ (show $ statusCode $ responseStatus response)</span><span>
+</span><span id="line-372"></span><span class="hs-comment">-- &gt;   print $ responseBody response</span><span>
+</span><span id="line-373"></span><span class="hs-comment">--</span><span>
+</span><span id="line-374"></span><span>
+</span><span id="line-375"></span><span class="hs-comment">-- | Specify maximum time in microseconds the retrieval of response</span><span>
+</span><span id="line-376"></span><span class="hs-comment">-- headers is allowed to take</span><span>
+</span><span id="line-377"></span><span class="hs-comment">--</span><span>
+</span><span id="line-378"></span><span class="hs-comment">-- @since 0.5.0</span><span>
+</span><span id="line-379"></span><span class="annot"><a href="Network.HTTP.Client.html#responseTimeoutMicro"><span class="hs-identifier hs-type">responseTimeoutMicro</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ResponseTimeout"><span class="hs-identifier hs-type">ResponseTimeout</span></a></span><span>
+</span><span id="line-380"></span><span id="responseTimeoutMicro"><span class="annot"><span class="annottext">responseTimeoutMicro :: Int -&gt; ResponseTimeout
+</span><a href="Network.HTTP.Client.html#responseTimeoutMicro"><span class="hs-identifier hs-var hs-var">responseTimeoutMicro</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; ResponseTimeout
+</span><a href="Network.HTTP.Client.Types.html#ResponseTimeoutMicro"><span class="hs-identifier hs-var">ResponseTimeoutMicro</span></a></span><span>
+</span><span id="line-381"></span><span>
+</span><span id="line-382"></span><span class="hs-comment">-- | Do not have a response timeout</span><span>
+</span><span id="line-383"></span><span class="hs-comment">--</span><span>
+</span><span id="line-384"></span><span class="hs-comment">-- @since 0.5.0</span><span>
+</span><span id="line-385"></span><span class="annot"><a href="Network.HTTP.Client.html#responseTimeoutNone"><span class="hs-identifier hs-type">responseTimeoutNone</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ResponseTimeout"><span class="hs-identifier hs-type">ResponseTimeout</span></a></span><span>
+</span><span id="line-386"></span><span id="responseTimeoutNone"><span class="annot"><span class="annottext">responseTimeoutNone :: ResponseTimeout
+</span><a href="Network.HTTP.Client.html#responseTimeoutNone"><span class="hs-identifier hs-var hs-var">responseTimeoutNone</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ResponseTimeout
+</span><a href="Network.HTTP.Client.Types.html#ResponseTimeoutNone"><span class="hs-identifier hs-var">ResponseTimeoutNone</span></a></span><span>
+</span><span id="line-387"></span><span>
+</span><span id="line-388"></span><span class="hs-comment">-- | Use the default response timeout</span><span>
+</span><span id="line-389"></span><span class="hs-comment">--</span><span>
+</span><span id="line-390"></span><span class="hs-comment">-- When used on a 'Request', means: use the manager's timeout value</span><span>
+</span><span id="line-391"></span><span class="hs-comment">--</span><span>
+</span><span id="line-392"></span><span class="hs-comment">-- When used on a 'ManagerSettings', means: default to 30 seconds</span><span>
+</span><span id="line-393"></span><span class="hs-comment">--</span><span>
+</span><span id="line-394"></span><span class="hs-comment">-- @since 0.5.0</span><span>
+</span><span id="line-395"></span><span class="annot"><a href="Network.HTTP.Client.html#responseTimeoutDefault"><span class="hs-identifier hs-type">responseTimeoutDefault</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Network.HTTP.Client.Types.html#ResponseTimeout"><span class="hs-identifier hs-type">ResponseTimeout</span></a></span><span>
+</span><span id="line-396"></span><span id="responseTimeoutDefault"><span class="annot"><span class="annottext">responseTimeoutDefault :: ResponseTimeout
+</span><a href="Network.HTTP.Client.html#responseTimeoutDefault"><span class="hs-identifier hs-var hs-var">responseTimeoutDefault</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ResponseTimeout
+</span><a href="Network.HTTP.Client.Types.html#ResponseTimeoutDefault"><span class="hs-identifier hs-var">ResponseTimeoutDefault</span></a></span><span>
+</span><span id="line-397"></span><span>
+</span><span id="line-398"></span><span class="hs-comment">-- $parsing-request</span><span>
+</span><span id="line-399"></span><span class="hs-comment">--</span><span>
+</span><span id="line-400"></span><span class="hs-comment">-- The way you parse string of characters to construct a 'Request' will</span><span>
+</span><span id="line-401"></span><span class="hs-comment">-- determine whether exceptions will be thrown on non-2XX response status</span><span>
+</span><span id="line-402"></span><span class="hs-comment">-- codes. This is because the behavior is controlled by a setting in</span><span>
+</span><span id="line-403"></span><span class="hs-comment">-- 'Request' itself (see 'checkResponse') and different parsing functions</span><span>
+</span><span id="line-404"></span><span class="hs-comment">-- set it to different 'IO' actions.</span><span>
+</span><span id="line-405"></span></pre></body></html>

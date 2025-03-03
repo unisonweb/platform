@@ -1,0 +1,1153 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- | When there aren't enough registers to hold all the vregs we have to spill</span><span>
+</span><span id="line-2"></span><span class="hs-comment">--   some of those vregs to slots on the stack. This module is used modify the</span><span>
+</span><span id="line-3"></span><span class="hs-comment">--   code to use those slots.</span><span>
+</span><span id="line-4"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.CmmToAsm.Reg.Graph.Spill</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-5"></span><span>        </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill"><span class="hs-identifier">regSpill</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-6"></span><span>        </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillStats"><span class="hs-identifier">SpillStats</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>        </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#accSpillSL"><span class="hs-identifier">accSpillSL</span></a></span><span>
+</span><span id="line-8"></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-9"></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-11"></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html"><span class="hs-identifier">GHC.CmmToAsm.Reg.Liveness</span></a></span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Utils.html"><span class="hs-identifier">GHC.CmmToAsm.Reg.Utils</span></a></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html"><span class="hs-identifier">GHC.CmmToAsm.Instr</span></a></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html"><span class="hs-identifier">GHC.Platform.Reg</span></a></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.html"><span class="hs-identifier">GHC.Cmm</span></a></span><span> </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.Expr.html#RegSet"><span class="hs-identifier">RegSet</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.BlockId.html"><span class="hs-identifier">GHC.Cmm.BlockId</span></a></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Cmm.Dataflow.Collections.html"><span class="hs-identifier">GHC.Cmm.Dataflow.Collections</span></a></span><span>
+</span><span id="line-19"></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Monad.html"><span class="hs-identifier">GHC.Utils.Monad</span></a></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Monad.State.Strict.html"><span class="hs-identifier">GHC.Utils.Monad.State.Strict</span></a></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Unique.html"><span class="hs-identifier">GHC.Types.Unique</span></a></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html"><span class="hs-identifier">GHC.Types.Unique.FM</span></a></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Set.html"><span class="hs-identifier">GHC.Types.Unique.Set</span></a></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Supply.html"><span class="hs-identifier">GHC.Types.Unique.Supply</span></a></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html"><span class="hs-identifier">GHC.Utils.Outputable</span></a></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Panic.html"><span class="hs-identifier">GHC.Utils.Panic</span></a></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Platform.html"><span class="hs-identifier">GHC.Platform</span></a></span><span>
+</span><span id="line-29"></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.List.html#/Data.List.html"><span class="hs-identifier">Data.List</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/Data.OldList.html#nub/Data.OldList.html#nub"><span class="hs-identifier">nub</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.OldList.html#%5C%5C/Data.OldList.html#%5C%5C"><span class="hs-operator">(\\)</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.OldList.html#intersect/Data.OldList.html#intersect"><span class="hs-identifier">intersect</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Maybe.html#/Data.Maybe.html"><span class="hs-identifier">Data.Maybe</span></a></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../containers-0.6.7/src/Data.IntSet.html#/Data.IntSet.html"><span class="hs-identifier">Data.IntSet</span></a></span><span>              </span><span class="hs-special">(</span><span class="annot"><a href="../../containers-0.6.7/src/Data.IntSet.Internal.html#IntSet/Data.IntSet.Internal.html#IntSet"><span class="hs-identifier">IntSet</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../containers-0.6.7/src/Data.IntSet.html#/Data.IntSet.html"><span class="hs-identifier">Data.IntSet</span></a></span><span>    </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">IntSet</span></span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- | Spill all these virtual regs to stack slots.</span><span>
+</span><span id="line-37"></span><span class="hs-comment">--</span><span>
+</span><span id="line-38"></span><span class="hs-comment">--   Bumps the number of required stack slots if required.</span><span>
+</span><span id="line-39"></span><span class="hs-comment">--</span><span>
+</span><span id="line-40"></span><span class="hs-comment">--</span><span>
+</span><span id="line-41"></span><span class="hs-comment">--   TODO: See if we can split some of the live ranges instead of just globally</span><span>
+</span><span id="line-42"></span><span class="hs-comment">--         spilling the virtual reg. This might make the spill cleaner's job easier.</span><span>
+</span><span id="line-43"></span><span class="hs-comment">--</span><span>
+</span><span id="line-44"></span><span class="hs-comment">--   TODO: On CISCy x86 and x86_64 we don't necessarily have to add a mov instruction</span><span>
+</span><span id="line-45"></span><span class="hs-comment">--         when making spills. If an instr is using a spilled virtual we may be able to</span><span>
+</span><span id="line-46"></span><span class="hs-comment">--         address the spill slot directly.</span><span>
+</span><span id="line-47"></span><span class="hs-comment">--</span><span>
+</span><span id="line-48"></span><span id="local-6989586621681812620"><span id="local-6989586621681812623"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill"><span class="hs-identifier hs-type">regSpill</span></a></span><span>
+</span><span id="line-49"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html#Instruction"><span class="hs-identifier hs-type">Instruction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812620"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-50"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span>
+</span><span id="line-51"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveCmmDecl"><span class="hs-identifier hs-type">LiveCmmDecl</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812623"><span class="hs-identifier hs-type">statics</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812620"><span class="hs-identifier hs-type">instr</span></a></span><span class="hs-special">]</span><span>  </span><span class="annot"><span class="hs-comment">-- ^ the code</span></span><span>
+</span><span id="line-52"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Set.html#UniqSet"><span class="hs-identifier hs-type">UniqSet</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>                  </span><span class="annot"><span class="hs-comment">-- ^ available stack slots</span></span><span>
+</span><span id="line-53"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>                          </span><span class="annot"><span class="hs-comment">-- ^ current number of spill slots.</span></span><span>
+</span><span id="line-54"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Set.html#UniqSet"><span class="hs-identifier hs-type">UniqSet</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#VirtualReg"><span class="hs-identifier hs-type">VirtualReg</span></a></span><span>           </span><span class="annot"><span class="hs-comment">-- ^ the regs to spill</span></span><span>
+</span><span id="line-55"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Supply.html#UniqSM"><span class="hs-identifier hs-type">UniqSM</span></a></span><span>
+</span><span id="line-56"></span><span>            </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveCmmDecl"><span class="hs-identifier hs-type">LiveCmmDecl</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812623"><span class="hs-identifier hs-type">statics</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812620"><span class="hs-identifier hs-type">instr</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-57"></span><span>                 </span><span class="hs-comment">-- code with SPILL and RELOAD meta instructions added.</span><span>
+</span><span id="line-58"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Set.html#UniqSet"><span class="hs-identifier hs-type">UniqSet</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>               </span><span class="hs-comment">-- left over slots</span><span>
+</span><span id="line-59"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>                       </span><span class="hs-comment">-- slot count in use now.</span><span>
+</span><span id="line-60"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillStats"><span class="hs-identifier hs-type">SpillStats</span></a></span><span> </span><span class="hs-special">)</span></span></span><span>              </span><span class="hs-comment">-- stats about what happened during spilling</span><span>
+</span><span id="line-61"></span><span>
+</span><span id="line-62"></span><span id="regSpill"><span class="annot"><span class="annottext">regSpill :: forall instr statics.
+Instruction instr =&gt;
+Platform
+-&gt; [LiveCmmDecl statics instr]
+-&gt; UniqSet Int
+-&gt; Int
+-&gt; UniqSet VirtualReg
+-&gt; UniqSM
+     ([LiveCmmDecl statics instr], UniqSet Int, Int, SpillStats)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill"><span class="hs-identifier hs-var hs-var">regSpill</span></a></span></span><span> </span><span id="local-6989586621681812803"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681812803"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span id="local-6989586621681812804"><span class="annot"><span class="annottext">[LiveCmmDecl statics instr]
+</span><a href="#local-6989586621681812804"><span class="hs-identifier hs-var">code</span></a></span></span><span> </span><span id="local-6989586621681812805"><span class="annot"><span class="annottext">UniqSet Int
+</span><a href="#local-6989586621681812805"><span class="hs-identifier hs-var">slotsFree</span></a></span></span><span> </span><span id="local-6989586621681812806"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681812806"><span class="hs-identifier hs-var">slotCount</span></a></span></span><span> </span><span id="local-6989586621681812807"><span class="annot"><span class="annottext">UniqSet VirtualReg
+</span><a href="#local-6989586621681812807"><span class="hs-identifier hs-var">regs</span></a></span></span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span>        </span><span class="hs-comment">-- Not enough slots to spill these regs.</span><span>
+</span><span id="line-65"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">UniqSet Int -&gt; Int
+forall a. UniqSet a -&gt; Int
+</span><a href="GHC.Types.Unique.Set.html#sizeUniqSet"><span class="hs-identifier hs-var">sizeUniqSet</span></a></span><span> </span><span class="annot"><span class="annottext">UniqSet Int
+</span><a href="#local-6989586621681812805"><span class="hs-identifier hs-var">slotsFree</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;</span></span><span> </span><span class="annot"><span class="annottext">UniqSet VirtualReg -&gt; Int
+forall a. UniqSet a -&gt; Int
+</span><a href="GHC.Types.Unique.Set.html#sizeUniqSet"><span class="hs-identifier hs-var">sizeUniqSet</span></a></span><span> </span><span class="annot"><span class="annottext">UniqSet VirtualReg
+</span><a href="#local-6989586621681812807"><span class="hs-identifier hs-var">regs</span></a></span><span>
+</span><span id="line-66"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="hs-comment">-- pprTrace &quot;Bumping slot count:&quot; (ppr slotCount &lt;&gt; text &quot; -&gt; &quot; &lt;&gt; ppr (slotCount+512)) $</span><span>
+</span><span id="line-67"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812810"><span class="annot"><span class="annottext">slotsFree' :: UniqSet Int
+</span><a href="#local-6989586621681812810"><span class="hs-identifier hs-var hs-var">slotsFree'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UniqSet Int -&gt; [Int] -&gt; UniqSet Int
+forall a. Uniquable a =&gt; UniqSet a -&gt; [a] -&gt; UniqSet a
+</span><a href="GHC.Types.Unique.Set.html#addListToUniqSet"><span class="hs-identifier hs-var">addListToUniqSet</span></a></span><span> </span><span class="annot"><span class="annottext">UniqSet Int
+</span><a href="#local-6989586621681812805"><span class="hs-identifier hs-var">slotsFree</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681812806"><span class="hs-identifier hs-var">slotCount</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-glyph">..</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681812806"><span class="hs-identifier hs-var">slotCount</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">512</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span>          </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Platform
+-&gt; [LiveCmmDecl statics instr]
+-&gt; UniqSet Int
+-&gt; Int
+-&gt; UniqSet VirtualReg
+-&gt; UniqSM
+     ([LiveCmmDecl statics instr], UniqSet Int, Int, SpillStats)
+forall instr statics.
+Instruction instr =&gt;
+Platform
+-&gt; [LiveCmmDecl statics instr]
+-&gt; UniqSet Int
+-&gt; Int
+-&gt; UniqSet VirtualReg
+-&gt; UniqSM
+     ([LiveCmmDecl statics instr], UniqSet Int, Int, SpillStats)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill"><span class="hs-identifier hs-var">regSpill</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681812803"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">[LiveCmmDecl statics instr]
+</span><a href="#local-6989586621681812804"><span class="hs-identifier hs-var">code</span></a></span><span> </span><span class="annot"><span class="annottext">UniqSet Int
+</span><a href="#local-6989586621681812810"><span class="hs-identifier hs-var">slotsFree'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681812806"><span class="hs-identifier hs-var">slotCount</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">512</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">UniqSet VirtualReg
+</span><a href="#local-6989586621681812807"><span class="hs-identifier hs-var">regs</span></a></span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>
+</span><span id="line-71"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-72"></span><span>                </span><span class="hs-comment">-- Allocate a slot for each of the spilled regs.</span><span>
+</span><span id="line-73"></span><span>                </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812813"><span class="annot"><span class="annottext">slots :: [Int]
+</span><a href="#local-6989586621681812813"><span class="hs-identifier hs-var hs-var">slots</span></a></span></span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [Int] -&gt; [Int]
+forall a. Int -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#take/GHC.List.html#take"><span class="hs-identifier hs-var">take</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UniqSet VirtualReg -&gt; Int
+forall a. UniqSet a -&gt; Int
+</span><a href="GHC.Types.Unique.Set.html#sizeUniqSet"><span class="hs-identifier hs-var">sizeUniqSet</span></a></span><span> </span><span class="annot"><span class="annottext">UniqSet VirtualReg
+</span><a href="#local-6989586621681812807"><span class="hs-identifier hs-var">regs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Int] -&gt; [Int]) -&gt; [Int] -&gt; [Int]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">UniqSet Int -&gt; [Int]
+forall elt. UniqSet elt -&gt; [elt]
+</span><a href="GHC.Types.Unique.Set.html#nonDetEltsUniqSet"><span class="hs-identifier hs-var">nonDetEltsUniqSet</span></a></span><span> </span><span class="annot"><span class="annottext">UniqSet Int
+</span><a href="#local-6989586621681812805"><span class="hs-identifier hs-var">slotsFree</span></a></span><span>
+</span><span id="line-74"></span><span>                </span><span class="hs-keyword">let</span><span>
+</span><span id="line-75"></span><span>                    </span><span id="local-6989586621681812816"><span class="annot"><span class="annottext">regSlotMap :: UniqFM Reg Int
+</span><a href="#local-6989586621681812816"><span class="hs-identifier hs-var hs-var">regSlotMap</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">UniqFM VirtualReg Int -&gt; UniqFM Reg Int
+forall elt. UniqFM VirtualReg elt -&gt; UniqFM Reg elt
+</span><a href="GHC.CmmToAsm.Reg.Utils.html#toRegMap"><span class="hs-identifier hs-var">toRegMap</span></a></span><span> </span><span class="hs-comment">-- Cast keys from VirtualReg to Reg</span><span>
+</span><span id="line-76"></span><span>                                           </span><span class="hs-comment">-- See Note [UniqFM and the register allocator]</span><span>
+</span><span id="line-77"></span><span>                                </span><span class="annot"><span class="annottext">(UniqFM VirtualReg Int -&gt; UniqFM Reg Int)
+-&gt; UniqFM VirtualReg Int -&gt; UniqFM Reg Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[(VirtualReg, Int)] -&gt; UniqFM VirtualReg Int
+forall key elt. Uniquable key =&gt; [(key, elt)] -&gt; UniqFM key elt
+</span><a href="GHC.Types.Unique.FM.html#listToUFM"><span class="hs-identifier hs-var">listToUFM</span></a></span><span>
+</span><span id="line-78"></span><span>                                </span><span class="annot"><span class="annottext">([(VirtualReg, Int)] -&gt; UniqFM VirtualReg Int)
+-&gt; [(VirtualReg, Int)] -&gt; UniqFM VirtualReg Int
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[VirtualReg] -&gt; [Int] -&gt; [(VirtualReg, Int)]
+forall a b. [a] -&gt; [b] -&gt; [(a, b)]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#zip/GHC.List.html#zip"><span class="hs-identifier hs-var">zip</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UniqSet VirtualReg -&gt; [VirtualReg]
+forall elt. UniqSet elt -&gt; [elt]
+</span><a href="GHC.Types.Unique.Set.html#nonDetEltsUniqSet"><span class="hs-identifier hs-var">nonDetEltsUniqSet</span></a></span><span> </span><span class="annot"><span class="annottext">UniqSet VirtualReg
+</span><a href="#local-6989586621681812807"><span class="hs-identifier hs-var">regs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621681812813"><span class="hs-identifier hs-var">slots</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#UniqFM"><span class="hs-identifier hs-type">UniqFM</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-79"></span><span>                    </span><span class="hs-comment">-- This is non-deterministic but we do not</span><span>
+</span><span id="line-80"></span><span>                    </span><span class="hs-comment">-- currently support deterministic code-generation.</span><span>
+</span><span id="line-81"></span><span>                    </span><span class="hs-comment">-- See Note [Unique Determinism and code generation]</span><span>
+</span><span id="line-82"></span><span>
+</span><span id="line-83"></span><span>                </span><span class="hs-comment">-- Grab the unique supply from the monad.</span><span>
+</span><span id="line-84"></span><span>                </span><span id="local-6989586621681812819"><span class="annot"><span class="annottext">UniqSupply
+</span><a href="#local-6989586621681812819"><span class="hs-identifier hs-var">us</span></a></span></span><span>      </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">UniqSM UniqSupply
+forall (m :: * -&gt; *). MonadUnique m =&gt; m UniqSupply
+</span><a href="GHC.Types.Unique.Supply.html#getUniqueSupplyM"><span class="hs-identifier hs-var">getUniqueSupplyM</span></a></span><span>
+</span><span id="line-85"></span><span>
+</span><span id="line-86"></span><span>                </span><span class="hs-comment">-- Run the spiller on all the blocks.</span><span>
+</span><span id="line-87"></span><span>                </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681812821"><span class="annot"><span class="annottext">[LiveCmmDecl statics instr]
+</span><a href="#local-6989586621681812821"><span class="hs-identifier hs-var">code'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681812822"><span class="annot"><span class="annottext">SpillS
+</span><a href="#local-6989586621681812822"><span class="hs-identifier hs-var">state'</span></a></span></span><span class="hs-special">)</span><span>     </span><span class="hs-glyph">=</span><span>
+</span><span id="line-88"></span><span>                        </span><span class="annot"><span class="annottext">State SpillS [LiveCmmDecl statics instr]
+-&gt; SpillS -&gt; ([LiveCmmDecl statics instr], SpillS)
+forall s a. State s a -&gt; s -&gt; (a, s)
+</span><a href="GHC.Utils.Monad.State.Strict.html#runState"><span class="hs-identifier hs-var">runState</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(LiveCmmDecl statics instr
+ -&gt; State SpillS (LiveCmmDecl statics instr))
+-&gt; [LiveCmmDecl statics instr]
+-&gt; State SpillS [LiveCmmDecl statics instr]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; [a] -&gt; m [b]
+</span><a href="../../base-4.18.2.1/src/Data.Traversable.html#mapM/Data.Traversable.html#mapM"><span class="hs-identifier hs-var">mapM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform
+-&gt; UniqFM Reg Int
+-&gt; LiveCmmDecl statics instr
+-&gt; State SpillS (LiveCmmDecl statics instr)
+forall instr statics.
+Instruction instr =&gt;
+Platform
+-&gt; UniqFM Reg Int
+-&gt; LiveCmmDecl statics instr
+-&gt; SpillM (LiveCmmDecl statics instr)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill_top"><span class="hs-identifier hs-var">regSpill_top</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681812803"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812816"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[LiveCmmDecl statics instr]
+</span><a href="#local-6989586621681812804"><span class="hs-identifier hs-var">code</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-89"></span><span>                                 </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UniqSupply -&gt; SpillS
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#initSpillS"><span class="hs-identifier hs-var">initSpillS</span></a></span><span> </span><span class="annot"><span class="annottext">UniqSupply
+</span><a href="#local-6989586621681812819"><span class="hs-identifier hs-var">us</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-90"></span><span>
+</span><span id="line-91"></span><span>                </span><span class="annot"><span class="annottext">([LiveCmmDecl statics instr], UniqSet Int, Int, SpillStats)
+-&gt; UniqSM
+     ([LiveCmmDecl statics instr], UniqSet Int, Int, SpillStats)
+forall a. a -&gt; UniqSM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">[LiveCmmDecl statics instr]
+</span><a href="#local-6989586621681812821"><span class="hs-identifier hs-var">code'</span></a></span><span>
+</span><span id="line-92"></span><span>                        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">UniqSet Int -&gt; UniqSet Int -&gt; UniqSet Int
+forall a. UniqSet a -&gt; UniqSet a -&gt; UniqSet a
+</span><a href="GHC.Types.Unique.Set.html#minusUniqSet"><span class="hs-identifier hs-var">minusUniqSet</span></a></span><span> </span><span class="annot"><span class="annottext">UniqSet Int
+</span><a href="#local-6989586621681812805"><span class="hs-identifier hs-var">slotsFree</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Int] -&gt; UniqSet Int
+forall a. Uniquable a =&gt; [a] -&gt; UniqSet a
+</span><a href="GHC.Types.Unique.Set.html#mkUniqSet"><span class="hs-identifier hs-var">mkUniqSet</span></a></span><span> </span><span class="annot"><span class="annottext">[Int]
+</span><a href="#local-6989586621681812813"><span class="hs-identifier hs-var">slots</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span>                        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681812806"><span class="hs-identifier hs-var">slotCount</span></a></span><span>
+</span><span id="line-94"></span><span>                        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">SpillS -&gt; SpillStats
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#makeSpillStats"><span class="hs-identifier hs-var">makeSpillStats</span></a></span><span> </span><span class="annot"><span class="annottext">SpillS
+</span><a href="#local-6989586621681812822"><span class="hs-identifier hs-var">state'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-95"></span><span>
+</span><span id="line-96"></span><span>
+</span><span id="line-97"></span><span class="annot"><span class="hs-comment">-- | Spill some registers to stack slots in a top-level thing.</span></span><span>
+</span><span id="line-98"></span><span id="local-6989586621681812657"><span id="local-6989586621681812658"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill_top"><span class="hs-identifier hs-type">regSpill_top</span></a></span><span>
+</span><span id="line-99"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html#Instruction"><span class="hs-identifier hs-type">Instruction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812657"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-100"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span>
+</span><span id="line-101"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#RegMap"><span class="hs-identifier hs-type">RegMap</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-102"></span><span>                </span><span class="annot"><span class="hs-comment">-- ^ map of vregs to slots they're being spilled to.</span></span><span>
+</span><span id="line-103"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveCmmDecl"><span class="hs-identifier hs-type">LiveCmmDecl</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812658"><span class="hs-identifier hs-type">statics</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812657"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-104"></span><span>                </span><span class="annot"><span class="hs-comment">-- ^ the top level thing.</span></span><span>
+</span><span id="line-105"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillM"><span class="hs-identifier hs-type">SpillM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveCmmDecl"><span class="hs-identifier hs-type">LiveCmmDecl</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812658"><span class="hs-identifier hs-type">statics</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812657"><span class="hs-identifier hs-type">instr</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-106"></span><span>
+</span><span id="line-107"></span><span id="regSpill_top"><span class="annot"><span class="annottext">regSpill_top :: forall instr statics.
+Instruction instr =&gt;
+Platform
+-&gt; UniqFM Reg Int
+-&gt; LiveCmmDecl statics instr
+-&gt; SpillM (LiveCmmDecl statics instr)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill_top"><span class="hs-identifier hs-var hs-var">regSpill_top</span></a></span></span><span> </span><span id="local-6989586621681812845"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681812845"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span id="local-6989586621681812846"><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812846"><span class="hs-identifier hs-var">regSlotMap</span></a></span></span><span> </span><span id="local-6989586621681812847"><span class="annot"><span class="annottext">LiveCmmDecl statics instr
+</span><a href="#local-6989586621681812847"><span class="hs-identifier hs-var">cmm</span></a></span></span><span>
+</span><span id="line-108"></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">LiveCmmDecl statics instr
+</span><a href="#local-6989586621681812847"><span class="hs-identifier hs-var">cmm</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-109"></span><span>        </span><span class="annot"><a href="GHC.Cmm.html#CmmData"><span class="hs-identifier hs-type">CmmData</span></a></span><span class="hs-special">{</span><span class="hs-special">}</span><span>
+</span><span id="line-110"></span><span>         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">LiveCmmDecl statics instr -&gt; SpillM (LiveCmmDecl statics instr)
+forall a. a -&gt; State SpillS a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">LiveCmmDecl statics instr
+</span><a href="#local-6989586621681812847"><span class="hs-identifier hs-var">cmm</span></a></span><span>
+</span><span id="line-111"></span><span>
+</span><span id="line-112"></span><span>        </span><span class="annot"><a href="GHC.Cmm.html#CmmProc"><span class="hs-identifier hs-type">CmmProc</span></a></span><span> </span><span id="local-6989586621681812850"><span class="annot"><span class="annottext">LiveInfo
+</span><a href="#local-6989586621681812850"><span class="hs-identifier hs-var">info</span></a></span></span><span> </span><span id="local-6989586621681812851"><span class="annot"><span class="annottext">CLabel
+</span><a href="#local-6989586621681812851"><span class="hs-keyword hs-var">label</span></a></span></span><span> </span><span id="local-6989586621681812852"><span class="annot"><span class="annottext">[GlobalReg]
+</span><a href="#local-6989586621681812852"><span class="hs-identifier hs-var">live</span></a></span></span><span> </span><span id="local-6989586621681812853"><span class="annot"><span class="annottext">[SCC (LiveBasicBlock instr)]
+</span><a href="#local-6989586621681812853"><span class="hs-identifier hs-var">sccs</span></a></span></span><span>
+</span><span id="line-113"></span><span>         </span><span class="hs-glyph">|</span><span>  </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInfo"><span class="hs-identifier hs-type">LiveInfo</span></a></span><span> </span><span id="local-6989586621681812855"><span class="annot"><span class="annottext">LabelMap RawCmmStatics
+</span><a href="#local-6989586621681812855"><span class="hs-identifier hs-var">static</span></a></span></span><span> </span><span id="local-6989586621681812856"><span class="annot"><span class="annottext">[BlockId]
+</span><a href="#local-6989586621681812856"><span class="hs-identifier hs-var">firstId</span></a></span></span><span> </span><span id="local-6989586621681812857"><span class="annot"><span class="annottext">BlockMap RegSet
+</span><a href="#local-6989586621681812857"><span class="hs-identifier hs-var">liveVRegsOnEntry</span></a></span></span><span> </span><span id="local-6989586621681812858"><span class="annot"><span class="annottext">BlockMap IntSet
+</span><a href="#local-6989586621681812858"><span class="hs-identifier hs-var">liveSlotsOnEntry</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">LiveInfo
+</span><a href="#local-6989586621681812850"><span class="hs-identifier hs-var">info</span></a></span><span>
+</span><span id="line-114"></span><span>         </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-115"></span><span>                </span><span class="hs-comment">-- The liveVRegsOnEntry contains the set of vregs that are live</span><span>
+</span><span id="line-116"></span><span>                </span><span class="hs-comment">-- on entry to each basic block. If we spill one of those vregs</span><span>
+</span><span id="line-117"></span><span>                </span><span class="hs-comment">-- we remove it from that set and add the corresponding slot</span><span>
+</span><span id="line-118"></span><span>                </span><span class="hs-comment">-- number to the liveSlotsOnEntry set. The spill cleaner needs</span><span>
+</span><span id="line-119"></span><span>                </span><span class="hs-comment">-- this information to erase unneeded spill and reload instructions</span><span>
+</span><span id="line-120"></span><span>                </span><span class="hs-comment">-- after we've done a successful allocation.</span><span>
+</span><span id="line-121"></span><span>                </span><span class="hs-keyword">let</span><span> </span><span class="annot"><a href="#local-6989586621681812859"><span class="hs-identifier hs-type">liveSlotsOnEntry'</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#BlockMap"><span class="hs-identifier hs-type">BlockMap</span></a></span><span> </span><span class="annot"><a href="../../containers-0.6.7/src/Data.IntSet.Internal.html#IntSet/Data.IntSet.Internal.html#IntSet"><span class="hs-identifier hs-type">IntSet</span></a></span><span>
+</span><span id="line-122"></span><span>                    </span><span id="local-6989586621681812859"><span class="annot"><span class="annottext">liveSlotsOnEntry' :: BlockMap IntSet
+</span><a href="#local-6989586621681812859"><span class="hs-identifier hs-var hs-var">liveSlotsOnEntry'</span></a></span></span><span>
+</span><span id="line-123"></span><span>                        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(BlockMap IntSet -&gt; KeyOf LabelMap -&gt; RegSet -&gt; BlockMap IntSet)
+-&gt; BlockMap IntSet -&gt; BlockMap RegSet -&gt; BlockMap IntSet
+forall b a. (b -&gt; KeyOf LabelMap -&gt; a -&gt; b) -&gt; b -&gt; LabelMap a -&gt; b
+forall (map :: * -&gt; *) b a.
+IsMap map =&gt;
+(b -&gt; KeyOf map -&gt; a -&gt; b) -&gt; b -&gt; map a -&gt; b
+</span><a href="GHC.Cmm.Dataflow.Collections.html#mapFoldlWithKey"><span class="hs-identifier hs-var">mapFoldlWithKey</span></a></span><span> </span><span class="annot"><span class="annottext">BlockMap IntSet -&gt; KeyOf LabelMap -&gt; RegSet -&gt; BlockMap IntSet
+BlockMap IntSet -&gt; BlockId -&gt; RegSet -&gt; BlockMap IntSet
+</span><a href="#local-6989586621681812861"><span class="hs-identifier hs-var">patchLiveSlot</span></a></span><span>
+</span><span id="line-124"></span><span>                                          </span><span class="annot"><span class="annottext">BlockMap IntSet
+</span><a href="#local-6989586621681812858"><span class="hs-identifier hs-var">liveSlotsOnEntry</span></a></span><span> </span><span class="annot"><span class="annottext">BlockMap RegSet
+</span><a href="#local-6989586621681812857"><span class="hs-identifier hs-var">liveVRegsOnEntry</span></a></span><span>
+</span><span id="line-125"></span><span>
+</span><span id="line-126"></span><span>                </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812862"><span class="annot"><span class="annottext">info' :: LiveInfo
+</span><a href="#local-6989586621681812862"><span class="hs-identifier hs-var hs-var">info'</span></a></span></span><span>
+</span><span id="line-127"></span><span>                        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">LabelMap RawCmmStatics
+-&gt; [BlockId] -&gt; BlockMap RegSet -&gt; BlockMap IntSet -&gt; LiveInfo
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInfo"><span class="hs-identifier hs-var">LiveInfo</span></a></span><span> </span><span class="annot"><span class="annottext">LabelMap RawCmmStatics
+</span><a href="#local-6989586621681812855"><span class="hs-identifier hs-var">static</span></a></span><span> </span><span class="annot"><span class="annottext">[BlockId]
+</span><a href="#local-6989586621681812856"><span class="hs-identifier hs-var">firstId</span></a></span><span>
+</span><span id="line-128"></span><span>                                </span><span class="annot"><span class="annottext">BlockMap RegSet
+</span><a href="#local-6989586621681812857"><span class="hs-identifier hs-var">liveVRegsOnEntry</span></a></span><span>
+</span><span id="line-129"></span><span>                                </span><span class="annot"><span class="annottext">BlockMap IntSet
+</span><a href="#local-6989586621681812859"><span class="hs-identifier hs-var">liveSlotsOnEntry'</span></a></span><span>
+</span><span id="line-130"></span><span>
+</span><span id="line-131"></span><span>                </span><span class="hs-comment">-- Apply the spiller to all the basic blocks in the CmmProc.</span><span>
+</span><span id="line-132"></span><span>                </span><span id="local-6989586621681812863"><span class="annot"><span class="annottext">[SCC (LiveBasicBlock instr)]
+</span><a href="#local-6989586621681812863"><span class="hs-identifier hs-var">sccs'</span></a></span></span><span>   </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(SCC (LiveBasicBlock instr)
+ -&gt; State SpillS (SCC (LiveBasicBlock instr)))
+-&gt; [SCC (LiveBasicBlock instr)]
+-&gt; State SpillS [SCC (LiveBasicBlock instr)]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; [a] -&gt; m [b]
+</span><a href="../../base-4.18.2.1/src/Data.Traversable.html#mapM/Data.Traversable.html#mapM"><span class="hs-identifier hs-var">mapM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(LiveBasicBlock instr -&gt; State SpillS (LiveBasicBlock instr))
+-&gt; SCC (LiveBasicBlock instr)
+-&gt; State SpillS (SCC (LiveBasicBlock instr))
+forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; m b) -&gt; SCC a -&gt; m (SCC b)
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#mapSCCM"><span class="hs-identifier hs-var">mapSCCM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform
+-&gt; UniqFM Reg Int
+-&gt; LiveBasicBlock instr
+-&gt; State SpillS (LiveBasicBlock instr)
+forall instr.
+Instruction instr =&gt;
+Platform
+-&gt; UniqFM Reg Int
+-&gt; LiveBasicBlock instr
+-&gt; SpillM (LiveBasicBlock instr)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill_block"><span class="hs-identifier hs-var">regSpill_block</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681812845"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812846"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[SCC (LiveBasicBlock instr)]
+</span><a href="#local-6989586621681812853"><span class="hs-identifier hs-var">sccs</span></a></span><span>
+</span><span id="line-133"></span><span>
+</span><span id="line-134"></span><span>                </span><span class="annot"><span class="annottext">LiveCmmDecl statics instr -&gt; SpillM (LiveCmmDecl statics instr)
+forall a. a -&gt; State SpillS a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span>  </span><span class="annot"><span class="annottext">(LiveCmmDecl statics instr -&gt; SpillM (LiveCmmDecl statics instr))
+-&gt; LiveCmmDecl statics instr -&gt; SpillM (LiveCmmDecl statics instr)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">LiveInfo
+-&gt; CLabel
+-&gt; [GlobalReg]
+-&gt; [SCC (LiveBasicBlock instr)]
+-&gt; LiveCmmDecl statics instr
+forall d h g. h -&gt; CLabel -&gt; [GlobalReg] -&gt; g -&gt; GenCmmDecl d h g
+</span><a href="GHC.Cmm.html#CmmProc"><span class="hs-identifier hs-var">CmmProc</span></a></span><span> </span><span class="annot"><span class="annottext">LiveInfo
+</span><a href="#local-6989586621681812862"><span class="hs-identifier hs-var">info'</span></a></span><span> </span><span class="annot"><span class="annottext">CLabel
+</span><a href="#local-6989586621681812851"><span class="hs-keyword hs-var">label</span></a></span><span> </span><span class="annot"><span class="annottext">[GlobalReg]
+</span><a href="#local-6989586621681812852"><span class="hs-identifier hs-var">live</span></a></span><span> </span><span class="annot"><span class="annottext">[SCC (LiveBasicBlock instr)]
+</span><a href="#local-6989586621681812863"><span class="hs-identifier hs-var">sccs'</span></a></span><span>
+</span><span id="line-135"></span><span>
+</span><span id="line-136"></span><span> </span><span class="hs-keyword">where</span><span>  </span><span class="hs-comment">-- Given a BlockId and the set of registers live in it,</span><span>
+</span><span id="line-137"></span><span>        </span><span class="hs-comment">-- if registers in this block are being spilled to stack slots,</span><span>
+</span><span id="line-138"></span><span>        </span><span class="hs-comment">-- then record the fact that these slots are now live in those blocks</span><span>
+</span><span id="line-139"></span><span>        </span><span class="hs-comment">-- in the given slotmap.</span><span>
+</span><span id="line-140"></span><span>        </span><span class="annot"><a href="#local-6989586621681812861"><span class="hs-identifier hs-type">patchLiveSlot</span></a></span><span>
+</span><span id="line-141"></span><span>                </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#BlockMap"><span class="hs-identifier hs-type">BlockMap</span></a></span><span> </span><span class="annot"><a href="../../containers-0.6.7/src/Data.IntSet.Internal.html#IntSet/Data.IntSet.Internal.html#IntSet"><span class="hs-identifier hs-type">IntSet</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Cmm.BlockId.html#BlockId"><span class="hs-identifier hs-type">BlockId</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#RegSet"><span class="hs-identifier hs-type">RegSet</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#BlockMap"><span class="hs-identifier hs-type">BlockMap</span></a></span><span> </span><span class="annot"><a href="../../containers-0.6.7/src/Data.IntSet.Internal.html#IntSet/Data.IntSet.Internal.html#IntSet"><span class="hs-identifier hs-type">IntSet</span></a></span><span>
+</span><span id="line-142"></span><span>
+</span><span id="line-143"></span><span>        </span><span id="local-6989586621681812861"><span class="annot"><span class="annottext">patchLiveSlot :: BlockMap IntSet -&gt; BlockId -&gt; RegSet -&gt; BlockMap IntSet
+</span><a href="#local-6989586621681812861"><span class="hs-identifier hs-var hs-var">patchLiveSlot</span></a></span></span><span> </span><span id="local-6989586621681812866"><span class="annot"><span class="annottext">BlockMap IntSet
+</span><a href="#local-6989586621681812866"><span class="hs-identifier hs-var">slotMap</span></a></span></span><span> </span><span id="local-6989586621681812867"><span class="annot"><span class="annottext">BlockId
+</span><a href="#local-6989586621681812867"><span class="hs-identifier hs-var">blockId</span></a></span></span><span> </span><span id="local-6989586621681812868"><span class="annot"><span class="annottext">RegSet
+</span><a href="#local-6989586621681812868"><span class="hs-identifier hs-var">regsLive</span></a></span></span><span>
+</span><span id="line-144"></span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span>
+</span><span id="line-145"></span><span>                </span><span class="hs-comment">-- Slots that are already recorded as being live.</span><span>
+</span><span id="line-146"></span><span>                </span><span id="local-6989586621681812869"><span class="annot"><span class="annottext">curSlotsLive :: IntSet
+</span><a href="#local-6989586621681812869"><span class="hs-identifier hs-var hs-var">curSlotsLive</span></a></span></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IntSet -&gt; Maybe IntSet -&gt; IntSet
+forall a. a -&gt; Maybe a -&gt; a
+</span><a href="../../base-4.18.2.1/src/Data.Maybe.html#fromMaybe/Data.Maybe.html#fromMaybe"><span class="hs-identifier hs-var">fromMaybe</span></a></span><span> </span><span class="annot"><span class="annottext">IntSet
+</span><a href="../../containers-0.6.7/src/Data.IntSet.Internal.html#empty/Data.IntSet.Internal.html#empty"><span class="hs-identifier hs-var">IntSet.empty</span></a></span><span>
+</span><span id="line-147"></span><span>                                </span><span class="annot"><span class="annottext">(Maybe IntSet -&gt; IntSet) -&gt; Maybe IntSet -&gt; IntSet
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">KeyOf LabelMap -&gt; BlockMap IntSet -&gt; Maybe IntSet
+forall a. KeyOf LabelMap -&gt; LabelMap a -&gt; Maybe a
+forall (map :: * -&gt; *) a.
+IsMap map =&gt;
+KeyOf map -&gt; map a -&gt; Maybe a
+</span><a href="GHC.Cmm.Dataflow.Collections.html#mapLookup"><span class="hs-identifier hs-var">mapLookup</span></a></span><span> </span><span class="annot"><span class="annottext">KeyOf LabelMap
+BlockId
+</span><a href="#local-6989586621681812867"><span class="hs-identifier hs-var">blockId</span></a></span><span> </span><span class="annot"><span class="annottext">BlockMap IntSet
+</span><a href="#local-6989586621681812866"><span class="hs-identifier hs-var">slotMap</span></a></span><span>
+</span><span id="line-148"></span><span>
+</span><span id="line-149"></span><span>                </span><span id="local-6989586621681812873"><span class="annot"><span class="annottext">moreSlotsLive :: IntSet
+</span><a href="#local-6989586621681812873"><span class="hs-identifier hs-var hs-var">moreSlotsLive</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Int] -&gt; IntSet
+</span><a href="../../containers-0.6.7/src/Data.IntSet.Internal.html#fromList/Data.IntSet.Internal.html#fromList"><span class="hs-identifier hs-var">IntSet.fromList</span></a></span><span>
+</span><span id="line-150"></span><span>                                </span><span class="annot"><span class="annottext">([Int] -&gt; IntSet) -&gt; [Int] -&gt; IntSet
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">(Reg -&gt; Maybe Int) -&gt; [Reg] -&gt; [Int]
+forall a b. (a -&gt; Maybe b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/Data.Maybe.html#mapMaybe/Data.Maybe.html#mapMaybe"><span class="hs-identifier hs-var">mapMaybe</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UniqFM Reg Int -&gt; Reg -&gt; Maybe Int
+forall key elt. Uniquable key =&gt; UniqFM key elt -&gt; key -&gt; Maybe elt
+</span><a href="GHC.Types.Unique.FM.html#lookupUFM"><span class="hs-identifier hs-var">lookupUFM</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812846"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-151"></span><span>                                </span><span class="annot"><span class="annottext">([Reg] -&gt; [Int]) -&gt; [Reg] -&gt; [Int]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">RegSet -&gt; [Reg]
+forall elt. UniqSet elt -&gt; [elt]
+</span><a href="GHC.Types.Unique.Set.html#nonDetEltsUniqSet"><span class="hs-identifier hs-var">nonDetEltsUniqSet</span></a></span><span> </span><span class="annot"><span class="annottext">RegSet
+</span><a href="#local-6989586621681812868"><span class="hs-identifier hs-var">regsLive</span></a></span><span>
+</span><span id="line-152"></span><span>                    </span><span class="hs-comment">-- See Note [Unique Determinism and code generation]</span><span>
+</span><span id="line-153"></span><span>
+</span><span id="line-154"></span><span>                </span><span id="local-6989586621681812877"><span class="annot"><span class="annottext">slotMap' :: BlockMap IntSet
+</span><a href="#local-6989586621681812877"><span class="hs-identifier hs-var hs-var">slotMap'</span></a></span></span><span>
+</span><span id="line-155"></span><span>                 </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">KeyOf LabelMap -&gt; IntSet -&gt; BlockMap IntSet -&gt; BlockMap IntSet
+forall a. KeyOf LabelMap -&gt; a -&gt; LabelMap a -&gt; LabelMap a
+forall (map :: * -&gt; *) a.
+IsMap map =&gt;
+KeyOf map -&gt; a -&gt; map a -&gt; map a
+</span><a href="GHC.Cmm.Dataflow.Collections.html#mapInsert"><span class="hs-identifier hs-var">mapInsert</span></a></span><span> </span><span class="annot"><span class="annottext">KeyOf LabelMap
+BlockId
+</span><a href="#local-6989586621681812867"><span class="hs-identifier hs-var">blockId</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IntSet -&gt; IntSet -&gt; IntSet
+</span><a href="../../containers-0.6.7/src/Data.IntSet.Internal.html#union/Data.IntSet.Internal.html#union"><span class="hs-identifier hs-var">IntSet.union</span></a></span><span> </span><span class="annot"><span class="annottext">IntSet
+</span><a href="#local-6989586621681812869"><span class="hs-identifier hs-var">curSlotsLive</span></a></span><span> </span><span class="annot"><span class="annottext">IntSet
+</span><a href="#local-6989586621681812873"><span class="hs-identifier hs-var">moreSlotsLive</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-156"></span><span>                             </span><span class="annot"><span class="annottext">BlockMap IntSet
+</span><a href="#local-6989586621681812866"><span class="hs-identifier hs-var">slotMap</span></a></span><span>
+</span><span id="line-157"></span><span>
+</span><span id="line-158"></span><span>           </span><span class="hs-keyword">in</span><span>   </span><span class="annot"><span class="annottext">BlockMap IntSet
+</span><a href="#local-6989586621681812877"><span class="hs-identifier hs-var">slotMap'</span></a></span><span>
+</span><span id="line-159"></span><span>
+</span><span id="line-160"></span><span>
+</span><span id="line-161"></span><span class="annot"><span class="hs-comment">-- | Spill some registers to stack slots in a basic block.</span></span><span>
+</span><span id="line-162"></span><span id="local-6989586621681812685"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill_block"><span class="hs-identifier hs-type">regSpill_block</span></a></span><span>
+</span><span id="line-163"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html#Instruction"><span class="hs-identifier hs-type">Instruction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812685"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-164"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span>
+</span><span id="line-165"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#UniqFM"><span class="hs-identifier hs-type">UniqFM</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>   </span><span class="annot"><span class="hs-comment">-- ^ map of vregs to slots they're being spilled to.</span></span><span>
+</span><span id="line-166"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveBasicBlock"><span class="hs-identifier hs-type">LiveBasicBlock</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812685"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-167"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillM"><span class="hs-identifier hs-type">SpillM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveBasicBlock"><span class="hs-identifier hs-type">LiveBasicBlock</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812685"><span class="hs-identifier hs-type">instr</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-168"></span><span>
+</span><span id="line-169"></span><span id="regSpill_block"><span class="annot"><span class="annottext">regSpill_block :: forall instr.
+Instruction instr =&gt;
+Platform
+-&gt; UniqFM Reg Int
+-&gt; LiveBasicBlock instr
+-&gt; SpillM (LiveBasicBlock instr)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill_block"><span class="hs-identifier hs-var hs-var">regSpill_block</span></a></span></span><span> </span><span id="local-6989586621681812888"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681812888"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span id="local-6989586621681812889"><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812889"><span class="hs-identifier hs-var">regSlotMap</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Cmm.html#BasicBlock"><span class="hs-identifier hs-type">BasicBlock</span></a></span><span> </span><span id="local-6989586621681812891"><span class="annot"><span class="annottext">BlockId
+</span><a href="#local-6989586621681812891"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621681812892"><span class="annot"><span class="annottext">[LiveInstr instr]
+</span><a href="#local-6989586621681812892"><span class="hs-identifier hs-var">instrs</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-170"></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>   </span><span id="local-6989586621681812893"><span class="annot"><span class="annottext">[[LiveInstr instr]]
+</span><a href="#local-6989586621681812893"><span class="hs-identifier hs-var">instrss'</span></a></span></span><span>        </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(LiveInstr instr -&gt; State SpillS [LiveInstr instr])
+-&gt; [LiveInstr instr] -&gt; State SpillS [[LiveInstr instr]]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; [a] -&gt; m [b]
+</span><a href="../../base-4.18.2.1/src/Data.Traversable.html#mapM/Data.Traversable.html#mapM"><span class="hs-identifier hs-var">mapM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Platform
+-&gt; UniqFM Reg Int
+-&gt; LiveInstr instr
+-&gt; State SpillS [LiveInstr instr]
+forall instr.
+Instruction instr =&gt;
+Platform
+-&gt; UniqFM Reg Int -&gt; LiveInstr instr -&gt; SpillM [LiveInstr instr]
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill_instr"><span class="hs-identifier hs-var">regSpill_instr</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681812888"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812889"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[LiveInstr instr]
+</span><a href="#local-6989586621681812892"><span class="hs-identifier hs-var">instrs</span></a></span><span>
+</span><span id="line-171"></span><span>        </span><span class="annot"><span class="annottext">GenBasicBlock (LiveInstr instr)
+-&gt; SpillM (GenBasicBlock (LiveInstr instr))
+forall a. a -&gt; State SpillS a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span>  </span><span class="annot"><span class="annottext">(GenBasicBlock (LiveInstr instr)
+ -&gt; SpillM (GenBasicBlock (LiveInstr instr)))
+-&gt; GenBasicBlock (LiveInstr instr)
+-&gt; SpillM (GenBasicBlock (LiveInstr instr))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">BlockId -&gt; [LiveInstr instr] -&gt; GenBasicBlock (LiveInstr instr)
+forall i. BlockId -&gt; [i] -&gt; GenBasicBlock i
+</span><a href="GHC.Cmm.html#BasicBlock"><span class="hs-identifier hs-var">BasicBlock</span></a></span><span> </span><span class="annot"><span class="annottext">BlockId
+</span><a href="#local-6989586621681812891"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[[LiveInstr instr]] -&gt; [LiveInstr instr]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#concat/Data.Foldable.html#concat"><span class="hs-identifier hs-var">concat</span></a></span><span> </span><span class="annot"><span class="annottext">[[LiveInstr instr]]
+</span><a href="#local-6989586621681812893"><span class="hs-identifier hs-var">instrss'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-172"></span><span>
+</span><span id="line-173"></span><span>
+</span><span id="line-174"></span><span class="hs-comment">-- | Spill some registers to stack slots in a single instruction.</span><span>
+</span><span id="line-175"></span><span class="hs-comment">--   If the instruction uses registers that need to be spilled, then it is</span><span>
+</span><span id="line-176"></span><span class="hs-comment">--   prefixed (or postfixed) with the appropriate RELOAD or SPILL meta</span><span>
+</span><span id="line-177"></span><span class="hs-comment">--   instructions.</span><span>
+</span><span id="line-178"></span><span id="local-6989586621681812700"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill_instr"><span class="hs-identifier hs-type">regSpill_instr</span></a></span><span>
+</span><span id="line-179"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html#Instruction"><span class="hs-identifier hs-type">Instruction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812700"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-180"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.html#Platform"><span class="hs-identifier hs-type">Platform</span></a></span><span>
+</span><span id="line-181"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#UniqFM"><span class="hs-identifier hs-type">UniqFM</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ map of vregs to slots they're being spilled to.</span></span><span>
+</span><span id="line-182"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-type">LiveInstr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812700"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-183"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillM"><span class="hs-identifier hs-type">SpillM</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-type">LiveInstr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812700"><span class="hs-identifier hs-type">instr</span></a></span><span class="hs-special">]</span></span><span>
+</span><span id="line-184"></span><span id="regSpill_instr"><span class="annot"><span class="annottext">regSpill_instr :: forall instr.
+Instruction instr =&gt;
+Platform
+-&gt; UniqFM Reg Int -&gt; LiveInstr instr -&gt; SpillM [LiveInstr instr]
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill_instr"><span class="hs-identifier hs-var hs-var">regSpill_instr</span></a></span></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681812924"><span class="annot"><span class="annottext">li :: LiveInstr instr
+</span><a href="#local-6989586621681812924"><span class="hs-identifier hs-var">li</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-type">LiveInstr</span></a></span><span> </span><span class="annot"><span class="annottext">InstrSR instr
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Maybe Liveness
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[LiveInstr instr] -&gt; State SpillS [LiveInstr instr]
+forall a. a -&gt; State SpillS a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">LiveInstr instr
+</span><a href="#local-6989586621681812924"><span class="hs-identifier hs-var">li</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-185"></span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#regSpill_instr"><span class="hs-identifier hs-var">regSpill_instr</span></a></span><span> </span><span id="local-6989586621681812926"><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681812926"><span class="hs-identifier hs-var">platform</span></a></span></span><span> </span><span id="local-6989586621681812927"><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812927"><span class="hs-identifier hs-var">regSlotMap</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-type">LiveInstr</span></a></span><span> </span><span id="local-6989586621681812928"><span class="annot"><span class="annottext">InstrSR instr
+</span><a href="#local-6989586621681812928"><span class="hs-identifier hs-var">instr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span class="annot"><span class="annottext">Liveness
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-186"></span><span>  </span><span class="hs-comment">-- work out which regs are read and written in this instr</span><span>
+</span><span id="line-187"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html#RU"><span class="hs-identifier hs-type">RU</span></a></span><span> </span><span id="local-6989586621681812930"><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812930"><span class="hs-identifier hs-var">rlRead</span></a></span></span><span> </span><span id="local-6989586621681812931"><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812931"><span class="hs-identifier hs-var">rlWritten</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Platform -&gt; InstrSR instr -&gt; RegUsage
+forall instr. Instruction instr =&gt; Platform -&gt; instr -&gt; RegUsage
+</span><a href="GHC.CmmToAsm.Instr.html#regUsageOfInstr"><span class="hs-identifier hs-var">regUsageOfInstr</span></a></span><span> </span><span class="annot"><span class="annottext">Platform
+</span><a href="#local-6989586621681812926"><span class="hs-identifier hs-var">platform</span></a></span><span> </span><span class="annot"><span class="annottext">InstrSR instr
+</span><a href="#local-6989586621681812928"><span class="hs-identifier hs-var">instr</span></a></span><span>
+</span><span id="line-188"></span><span>
+</span><span id="line-189"></span><span>  </span><span class="hs-comment">-- sometimes a register is listed as being read more than once,</span><span>
+</span><span id="line-190"></span><span>  </span><span class="hs-comment">--      nub this so we don't end up inserting two lots of spill code.</span><span>
+</span><span id="line-191"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812933"><span class="annot"><span class="annottext">rsRead_ :: [Reg]
+</span><a href="#local-6989586621681812933"><span class="hs-identifier hs-var hs-var">rsRead_</span></a></span></span><span>             </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Reg] -&gt; [Reg]
+forall a. Eq a =&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/Data.OldList.html#nub/Data.OldList.html#nub"><span class="hs-identifier hs-var">nub</span></a></span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812930"><span class="hs-identifier hs-var">rlRead</span></a></span><span>
+</span><span id="line-192"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812934"><span class="annot"><span class="annottext">rsWritten_ :: [Reg]
+</span><a href="#local-6989586621681812934"><span class="hs-identifier hs-var hs-var">rsWritten_</span></a></span></span><span>          </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Reg] -&gt; [Reg]
+forall a. Eq a =&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/Data.OldList.html#nub/Data.OldList.html#nub"><span class="hs-identifier hs-var">nub</span></a></span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812931"><span class="hs-identifier hs-var">rlWritten</span></a></span><span>
+</span><span id="line-193"></span><span>
+</span><span id="line-194"></span><span>  </span><span class="hs-comment">-- if a reg is modified, it appears in both lists, want to undo this..</span><span>
+</span><span id="line-195"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812935"><span class="annot"><span class="annottext">rsRead :: [Reg]
+</span><a href="#local-6989586621681812935"><span class="hs-identifier hs-var hs-var">rsRead</span></a></span></span><span>              </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812933"><span class="hs-identifier hs-var">rsRead_</span></a></span><span>    </span><span class="annot"><span class="annottext">[Reg] -&gt; [Reg] -&gt; [Reg]
+forall a. Eq a =&gt; [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/Data.OldList.html#%5C%5C/Data.OldList.html#%5C%5C"><span class="hs-operator hs-var">\\</span></a></span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812934"><span class="hs-identifier hs-var">rsWritten_</span></a></span><span>
+</span><span id="line-196"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812936"><span class="annot"><span class="annottext">rsWritten :: [Reg]
+</span><a href="#local-6989586621681812936"><span class="hs-identifier hs-var hs-var">rsWritten</span></a></span></span><span>           </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812934"><span class="hs-identifier hs-var">rsWritten_</span></a></span><span> </span><span class="annot"><span class="annottext">[Reg] -&gt; [Reg] -&gt; [Reg]
+forall a. Eq a =&gt; [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/Data.OldList.html#%5C%5C/Data.OldList.html#%5C%5C"><span class="hs-operator hs-var">\\</span></a></span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812933"><span class="hs-identifier hs-var">rsRead_</span></a></span><span>
+</span><span id="line-197"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812937"><span class="annot"><span class="annottext">rsModify :: [Reg]
+</span><a href="#local-6989586621681812937"><span class="hs-identifier hs-var hs-var">rsModify</span></a></span></span><span>            </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Reg] -&gt; [Reg] -&gt; [Reg]
+forall a. Eq a =&gt; [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/Data.OldList.html#intersect/Data.OldList.html#intersect"><span class="hs-identifier hs-var">intersect</span></a></span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812933"><span class="hs-identifier hs-var">rsRead_</span></a></span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812934"><span class="hs-identifier hs-var">rsWritten_</span></a></span><span>
+</span><span id="line-198"></span><span>
+</span><span id="line-199"></span><span>  </span><span class="hs-comment">-- work out if any of the regs being used are currently being spilled.</span><span>
+</span><span id="line-200"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812938"><span class="annot"><span class="annottext">rsSpillRead :: [Reg]
+</span><a href="#local-6989586621681812938"><span class="hs-identifier hs-var hs-var">rsSpillRead</span></a></span></span><span>         </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Reg -&gt; Bool) -&gt; [Reg] -&gt; [Reg]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#filter/GHC.List.html#filter"><span class="hs-identifier hs-var">filter</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621681812939"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812939"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; UniqFM Reg Int -&gt; Bool
+forall key elt. Uniquable key =&gt; key -&gt; UniqFM key elt -&gt; Bool
+</span><a href="GHC.Types.Unique.FM.html#elemUFM"><span class="hs-identifier hs-var">elemUFM</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812939"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812927"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812935"><span class="hs-identifier hs-var">rsRead</span></a></span><span>
+</span><span id="line-201"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812941"><span class="annot"><span class="annottext">rsSpillWritten :: [Reg]
+</span><a href="#local-6989586621681812941"><span class="hs-identifier hs-var hs-var">rsSpillWritten</span></a></span></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Reg -&gt; Bool) -&gt; [Reg] -&gt; [Reg]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#filter/GHC.List.html#filter"><span class="hs-identifier hs-var">filter</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621681812942"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812942"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; UniqFM Reg Int -&gt; Bool
+forall key elt. Uniquable key =&gt; key -&gt; UniqFM key elt -&gt; Bool
+</span><a href="GHC.Types.Unique.FM.html#elemUFM"><span class="hs-identifier hs-var">elemUFM</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812942"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812927"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812936"><span class="hs-identifier hs-var">rsWritten</span></a></span><span>
+</span><span id="line-202"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812943"><span class="annot"><span class="annottext">rsSpillModify :: [Reg]
+</span><a href="#local-6989586621681812943"><span class="hs-identifier hs-var hs-var">rsSpillModify</span></a></span></span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Reg -&gt; Bool) -&gt; [Reg] -&gt; [Reg]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#filter/GHC.List.html#filter"><span class="hs-identifier hs-var">filter</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621681812944"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812944"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; UniqFM Reg Int -&gt; Bool
+forall key elt. Uniquable key =&gt; key -&gt; UniqFM key elt -&gt; Bool
+</span><a href="GHC.Types.Unique.FM.html#elemUFM"><span class="hs-identifier hs-var">elemUFM</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812944"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812927"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812937"><span class="hs-identifier hs-var">rsModify</span></a></span><span>
+</span><span id="line-203"></span><span>
+</span><span id="line-204"></span><span>  </span><span class="hs-comment">-- rewrite the instr and work out spill code.</span><span>
+</span><span id="line-205"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621681812945"><span class="annot"><span class="annottext">InstrSR instr
+</span><a href="#local-6989586621681812945"><span class="hs-identifier hs-var">instr1</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681812946"><span class="annot"><span class="annottext">[([LiveInstr instr], [LiveInstr instr])]
+</span><a href="#local-6989586621681812946"><span class="hs-identifier hs-var">prepost1</span></a></span></span><span class="hs-special">)</span><span>      </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(InstrSR instr
+ -&gt; Reg
+ -&gt; State
+      SpillS (InstrSR instr, ([LiveInstr instr], [LiveInstr instr])))
+-&gt; InstrSR instr
+-&gt; [Reg]
+-&gt; State
+     SpillS (InstrSR instr, [([LiveInstr instr], [LiveInstr instr])])
+forall (m :: * -&gt; *) (t :: * -&gt; *) acc x y.
+(Monad m, Traversable t) =&gt;
+(acc -&gt; x -&gt; m (acc, y)) -&gt; acc -&gt; t x -&gt; m (acc, t y)
+</span><a href="GHC.Utils.Monad.html#mapAccumLM"><span class="hs-identifier hs-var">mapAccumLM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UniqFM Reg Int
+-&gt; InstrSR instr
+-&gt; Reg
+-&gt; State
+     SpillS (InstrSR instr, ([LiveInstr instr], [LiveInstr instr]))
+forall instr instr'.
+Instruction instr =&gt;
+UniqFM Reg Int
+-&gt; instr
+-&gt; Reg
+-&gt; SpillM (instr, ([LiveInstr instr'], [LiveInstr instr']))
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#spillRead"><span class="hs-identifier hs-var">spillRead</span></a></span><span>   </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812927"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">InstrSR instr
+</span><a href="#local-6989586621681812928"><span class="hs-identifier hs-var">instr</span></a></span><span>  </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812938"><span class="hs-identifier hs-var">rsSpillRead</span></a></span><span>
+</span><span id="line-206"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621681812949"><span class="annot"><span class="annottext">InstrSR instr
+</span><a href="#local-6989586621681812949"><span class="hs-identifier hs-var">instr2</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681812950"><span class="annot"><span class="annottext">[([LiveInstr instr], [LiveInstr instr])]
+</span><a href="#local-6989586621681812950"><span class="hs-identifier hs-var">prepost2</span></a></span></span><span class="hs-special">)</span><span>      </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(InstrSR instr
+ -&gt; Reg
+ -&gt; State
+      SpillS (InstrSR instr, ([LiveInstr instr], [LiveInstr instr])))
+-&gt; InstrSR instr
+-&gt; [Reg]
+-&gt; State
+     SpillS (InstrSR instr, [([LiveInstr instr], [LiveInstr instr])])
+forall (m :: * -&gt; *) (t :: * -&gt; *) acc x y.
+(Monad m, Traversable t) =&gt;
+(acc -&gt; x -&gt; m (acc, y)) -&gt; acc -&gt; t x -&gt; m (acc, t y)
+</span><a href="GHC.Utils.Monad.html#mapAccumLM"><span class="hs-identifier hs-var">mapAccumLM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UniqFM Reg Int
+-&gt; InstrSR instr
+-&gt; Reg
+-&gt; State
+     SpillS (InstrSR instr, ([LiveInstr instr], [LiveInstr instr]))
+forall instr instr'.
+Instruction instr =&gt;
+UniqFM Reg Int
+-&gt; instr
+-&gt; Reg
+-&gt; SpillM (instr, ([LiveInstr instr'], [LiveInstr instr']))
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#spillWrite"><span class="hs-identifier hs-var">spillWrite</span></a></span><span>  </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812927"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">InstrSR instr
+</span><a href="#local-6989586621681812945"><span class="hs-identifier hs-var">instr1</span></a></span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812941"><span class="hs-identifier hs-var">rsSpillWritten</span></a></span><span>
+</span><span id="line-207"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621681812952"><span class="annot"><span class="annottext">InstrSR instr
+</span><a href="#local-6989586621681812952"><span class="hs-identifier hs-var">instr3</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681812953"><span class="annot"><span class="annottext">[([LiveInstr instr], [LiveInstr instr])]
+</span><a href="#local-6989586621681812953"><span class="hs-identifier hs-var">prepost3</span></a></span></span><span class="hs-special">)</span><span>      </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(InstrSR instr
+ -&gt; Reg
+ -&gt; State
+      SpillS (InstrSR instr, ([LiveInstr instr], [LiveInstr instr])))
+-&gt; InstrSR instr
+-&gt; [Reg]
+-&gt; State
+     SpillS (InstrSR instr, [([LiveInstr instr], [LiveInstr instr])])
+forall (m :: * -&gt; *) (t :: * -&gt; *) acc x y.
+(Monad m, Traversable t) =&gt;
+(acc -&gt; x -&gt; m (acc, y)) -&gt; acc -&gt; t x -&gt; m (acc, t y)
+</span><a href="GHC.Utils.Monad.html#mapAccumLM"><span class="hs-identifier hs-var">mapAccumLM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UniqFM Reg Int
+-&gt; InstrSR instr
+-&gt; Reg
+-&gt; State
+     SpillS (InstrSR instr, ([LiveInstr instr], [LiveInstr instr]))
+forall instr instr'.
+Instruction instr =&gt;
+UniqFM Reg Int
+-&gt; instr
+-&gt; Reg
+-&gt; SpillM (instr, ([LiveInstr instr'], [LiveInstr instr']))
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#spillModify"><span class="hs-identifier hs-var">spillModify</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812927"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">InstrSR instr
+</span><a href="#local-6989586621681812949"><span class="hs-identifier hs-var">instr2</span></a></span><span> </span><span class="annot"><span class="annottext">[Reg]
+</span><a href="#local-6989586621681812943"><span class="hs-identifier hs-var">rsSpillModify</span></a></span><span>
+</span><span id="line-208"></span><span>
+</span><span id="line-209"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681812955"><span class="annot"><span class="annottext">[[LiveInstr instr]]
+</span><a href="#local-6989586621681812955"><span class="hs-identifier hs-var">mPrefixes</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681812956"><span class="annot"><span class="annottext">[[LiveInstr instr]]
+</span><a href="#local-6989586621681812956"><span class="hs-identifier hs-var">mPostfixes</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[([LiveInstr instr], [LiveInstr instr])]
+-&gt; ([[LiveInstr instr]], [[LiveInstr instr]])
+forall a b. [(a, b)] -&gt; ([a], [b])
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#unzip/GHC.List.html#unzip"><span class="hs-identifier hs-var">unzip</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[([LiveInstr instr], [LiveInstr instr])]
+</span><a href="#local-6989586621681812946"><span class="hs-identifier hs-var">prepost1</span></a></span><span> </span><span class="annot"><span class="annottext">[([LiveInstr instr], [LiveInstr instr])]
+-&gt; [([LiveInstr instr], [LiveInstr instr])]
+-&gt; [([LiveInstr instr], [LiveInstr instr])]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">[([LiveInstr instr], [LiveInstr instr])]
+</span><a href="#local-6989586621681812950"><span class="hs-identifier hs-var">prepost2</span></a></span><span> </span><span class="annot"><span class="annottext">[([LiveInstr instr], [LiveInstr instr])]
+-&gt; [([LiveInstr instr], [LiveInstr instr])]
+-&gt; [([LiveInstr instr], [LiveInstr instr])]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">[([LiveInstr instr], [LiveInstr instr])]
+</span><a href="#local-6989586621681812953"><span class="hs-identifier hs-var">prepost3</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-210"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812958"><span class="annot"><span class="annottext">prefixes :: [LiveInstr instr]
+</span><a href="#local-6989586621681812958"><span class="hs-identifier hs-var hs-var">prefixes</span></a></span></span><span>                </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[[LiveInstr instr]] -&gt; [LiveInstr instr]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#concat/Data.Foldable.html#concat"><span class="hs-identifier hs-var">concat</span></a></span><span> </span><span class="annot"><span class="annottext">[[LiveInstr instr]]
+</span><a href="#local-6989586621681812955"><span class="hs-identifier hs-var">mPrefixes</span></a></span><span>
+</span><span id="line-211"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812959"><span class="annot"><span class="annottext">postfixes :: [LiveInstr instr]
+</span><a href="#local-6989586621681812959"><span class="hs-identifier hs-var hs-var">postfixes</span></a></span></span><span>               </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[[LiveInstr instr]] -&gt; [LiveInstr instr]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#concat/Data.Foldable.html#concat"><span class="hs-identifier hs-var">concat</span></a></span><span> </span><span class="annot"><span class="annottext">[[LiveInstr instr]]
+</span><a href="#local-6989586621681812956"><span class="hs-identifier hs-var">mPostfixes</span></a></span><span>
+</span><span id="line-212"></span><span>
+</span><span id="line-213"></span><span>  </span><span class="hs-comment">-- final code</span><span>
+</span><span id="line-214"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681812960"><span class="annot"><span class="annottext">instrs' :: [LiveInstr instr]
+</span><a href="#local-6989586621681812960"><span class="hs-identifier hs-var hs-var">instrs'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>  </span><span class="annot"><span class="annottext">[LiveInstr instr]
+</span><a href="#local-6989586621681812958"><span class="hs-identifier hs-var">prefixes</span></a></span><span>
+</span><span id="line-215"></span><span>              </span><span class="annot"><span class="annottext">[LiveInstr instr] -&gt; [LiveInstr instr] -&gt; [LiveInstr instr]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">InstrSR instr -&gt; Maybe Liveness -&gt; LiveInstr instr
+forall instr. InstrSR instr -&gt; Maybe Liveness -&gt; LiveInstr instr
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-var">LiveInstr</span></a></span><span> </span><span class="annot"><span class="annottext">InstrSR instr
+</span><a href="#local-6989586621681812952"><span class="hs-identifier hs-var">instr3</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Liveness
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-216"></span><span>              </span><span class="annot"><span class="annottext">[LiveInstr instr] -&gt; [LiveInstr instr] -&gt; [LiveInstr instr]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">[LiveInstr instr]
+</span><a href="#local-6989586621681812959"><span class="hs-identifier hs-var">postfixes</span></a></span><span>
+</span><span id="line-217"></span><span>
+</span><span id="line-218"></span><span>  </span><span class="annot"><span class="annottext">[LiveInstr instr] -&gt; State SpillS [LiveInstr instr]
+forall a. a -&gt; State SpillS a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">[LiveInstr instr]
+</span><a href="#local-6989586621681812960"><span class="hs-identifier hs-var">instrs'</span></a></span><span>
+</span><span id="line-219"></span><span>
+</span><span id="line-220"></span><span>
+</span><span id="line-221"></span><span class="hs-comment">-- | Add a RELOAD met a instruction to load a value for an instruction that</span><span>
+</span><span id="line-222"></span><span class="hs-comment">--   writes to a vreg that is being spilled.</span><span>
+</span><span id="line-223"></span><span id="local-6989586621681812720"><span id="local-6989586621681812721"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#spillRead"><span class="hs-identifier hs-type">spillRead</span></a></span><span>
+</span><span id="line-224"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html#Instruction"><span class="hs-identifier hs-type">Instruction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812720"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-225"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#UniqFM"><span class="hs-identifier hs-type">UniqFM</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-226"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621681812720"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-227"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span>
+</span><span id="line-228"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillM"><span class="hs-identifier hs-type">SpillM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621681812720"><span class="hs-identifier hs-type">instr</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-type">LiveInstr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812721"><span class="hs-identifier hs-type">instr'</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-type">LiveInstr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812721"><span class="hs-identifier hs-type">instr'</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-229"></span><span>
+</span><span id="line-230"></span><span id="spillRead"><span class="annot"><span class="annottext">spillRead :: forall instr instr'.
+Instruction instr =&gt;
+UniqFM Reg Int
+-&gt; instr
+-&gt; Reg
+-&gt; SpillM (instr, ([LiveInstr instr'], [LiveInstr instr']))
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#spillRead"><span class="hs-identifier hs-var hs-var">spillRead</span></a></span></span><span> </span><span id="local-6989586621681812970"><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812970"><span class="hs-identifier hs-var">regSlotMap</span></a></span></span><span> </span><span id="local-6989586621681812971"><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681812971"><span class="hs-identifier hs-var">instr</span></a></span></span><span> </span><span id="local-6989586621681812972"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812972"><span class="hs-identifier hs-var">reg</span></a></span></span><span>
+</span><span id="line-231"></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681812973"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681812973"><span class="hs-identifier hs-var">slot</span></a></span></span><span>     </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int -&gt; Reg -&gt; Maybe Int
+forall key elt. Uniquable key =&gt; UniqFM key elt -&gt; key -&gt; Maybe elt
+</span><a href="GHC.Types.Unique.FM.html#lookupUFM"><span class="hs-identifier hs-var">lookupUFM</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812970"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812972"><span class="hs-identifier hs-var">reg</span></a></span><span>
+</span><span id="line-232"></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>    </span><span class="hs-special">(</span><span id="local-6989586621681812974"><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681812974"><span class="hs-identifier hs-var">instr'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681812975"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812975"><span class="hs-identifier hs-var">nReg</span></a></span></span><span class="hs-special">)</span><span>  </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; instr -&gt; SpillM (instr, Reg)
+forall instr.
+Instruction instr =&gt;
+Reg -&gt; instr -&gt; SpillM (instr, Reg)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#patchInstr"><span class="hs-identifier hs-var">patchInstr</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812972"><span class="hs-identifier hs-var">reg</span></a></span><span> </span><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681812971"><span class="hs-identifier hs-var">instr</span></a></span><span>
+</span><span id="line-233"></span><span>
+</span><span id="line-234"></span><span>         </span><span class="annot"><span class="annottext">(SpillS -&gt; SpillS) -&gt; State SpillS ()
+forall s. (s -&gt; s) -&gt; State s ()
+</span><a href="GHC.Utils.Monad.State.Strict.html#modify"><span class="hs-identifier hs-var">modify</span></a></span><span> </span><span class="annot"><span class="annottext">((SpillS -&gt; SpillS) -&gt; State SpillS ())
+-&gt; (SpillS -&gt; SpillS) -&gt; State SpillS ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681812978"><span class="annot"><span class="annottext">SpillS
+</span><a href="#local-6989586621681812978"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SpillS
+</span><a href="#local-6989586621681812978"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-235"></span><span>                </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateSpillSL"><span class="hs-identifier hs-var">stateSpillSL</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#addToUFM_C"><span class="hs-identifier hs-type">addToUFM_C</span></a></span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#accSpillSL"><span class="hs-identifier hs-type">accSpillSL</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateSpillSL"><span class="hs-identifier hs-var">stateSpillSL</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812978"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621681812972"><span class="hs-identifier hs-type">reg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621681812972"><span class="hs-identifier hs-type">reg</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-number">0</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-236"></span><span>
+</span><span id="line-237"></span><span>         </span><span class="annot"><span class="annottext">(instr, ([LiveInstr instr'], [LiveInstr instr']))
+-&gt; SpillM (instr, ([LiveInstr instr'], [LiveInstr instr']))
+forall a. a -&gt; State SpillS a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681812974"><span class="hs-identifier hs-var">instr'</span></a></span><span>
+</span><span id="line-238"></span><span>                 </span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">InstrSR instr' -&gt; Maybe Liveness -&gt; LiveInstr instr'
+forall instr. InstrSR instr -&gt; Maybe Liveness -&gt; LiveInstr instr
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-var">LiveInstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Reg -&gt; InstrSR instr'
+forall instr. Int -&gt; Reg -&gt; InstrSR instr
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#RELOAD"><span class="hs-identifier hs-var">RELOAD</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681812973"><span class="hs-identifier hs-var">slot</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812975"><span class="hs-identifier hs-var">nReg</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Maybe Liveness
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-239"></span><span>                 </span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-240"></span><span>
+</span><span id="line-241"></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; SpillM (instr, ([LiveInstr instr'], [LiveInstr instr']))
+forall a. HasCallStack =&gt; String -&gt; a
+</span><a href="GHC.Utils.Panic.Plain.html#panic"><span class="hs-identifier hs-var">panic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;RegSpill.spillRead: no slot defined for spilled reg&quot;</span></span><span>
+</span><span id="line-242"></span><span>
+</span><span id="line-243"></span><span>
+</span><span id="line-244"></span><span class="hs-comment">-- | Add a SPILL meta instruction to store a value for an instruction that</span><span>
+</span><span id="line-245"></span><span class="hs-comment">--   writes to a vreg that is being spilled.</span><span>
+</span><span id="line-246"></span><span id="local-6989586621681812983"><span id="local-6989586621681812984"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#spillWrite"><span class="hs-identifier hs-type">spillWrite</span></a></span><span>
+</span><span id="line-247"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html#Instruction"><span class="hs-identifier hs-type">Instruction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812983"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-248"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#UniqFM"><span class="hs-identifier hs-type">UniqFM</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-249"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621681812983"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-250"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span>
+</span><span id="line-251"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillM"><span class="hs-identifier hs-type">SpillM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621681812983"><span class="hs-identifier hs-type">instr</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-type">LiveInstr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812984"><span class="hs-identifier hs-type">instr'</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-type">LiveInstr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812984"><span class="hs-identifier hs-type">instr'</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-252"></span><span>
+</span><span id="line-253"></span><span id="spillWrite"><span class="annot"><span class="annottext">spillWrite :: forall instr instr'.
+Instruction instr =&gt;
+UniqFM Reg Int
+-&gt; instr
+-&gt; Reg
+-&gt; SpillM (instr, ([LiveInstr instr'], [LiveInstr instr']))
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#spillWrite"><span class="hs-identifier hs-var hs-var">spillWrite</span></a></span></span><span> </span><span id="local-6989586621681812994"><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812994"><span class="hs-identifier hs-var">regSlotMap</span></a></span></span><span> </span><span id="local-6989586621681812995"><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681812995"><span class="hs-identifier hs-var">instr</span></a></span></span><span> </span><span id="local-6989586621681812996"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812996"><span class="hs-identifier hs-var">reg</span></a></span></span><span>
+</span><span id="line-254"></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681812997"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681812997"><span class="hs-identifier hs-var">slot</span></a></span></span><span>     </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int -&gt; Reg -&gt; Maybe Int
+forall key elt. Uniquable key =&gt; UniqFM key elt -&gt; key -&gt; Maybe elt
+</span><a href="GHC.Types.Unique.FM.html#lookupUFM"><span class="hs-identifier hs-var">lookupUFM</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681812994"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812996"><span class="hs-identifier hs-var">reg</span></a></span><span>
+</span><span id="line-255"></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>    </span><span class="hs-special">(</span><span id="local-6989586621681812998"><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681812998"><span class="hs-identifier hs-var">instr'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681812999"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812999"><span class="hs-identifier hs-var">nReg</span></a></span></span><span class="hs-special">)</span><span>  </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; instr -&gt; SpillM (instr, Reg)
+forall instr.
+Instruction instr =&gt;
+Reg -&gt; instr -&gt; SpillM (instr, Reg)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#patchInstr"><span class="hs-identifier hs-var">patchInstr</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812996"><span class="hs-identifier hs-var">reg</span></a></span><span> </span><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681812995"><span class="hs-identifier hs-var">instr</span></a></span><span>
+</span><span id="line-256"></span><span>
+</span><span id="line-257"></span><span>         </span><span class="annot"><span class="annottext">(SpillS -&gt; SpillS) -&gt; State SpillS ()
+forall s. (s -&gt; s) -&gt; State s ()
+</span><a href="GHC.Utils.Monad.State.Strict.html#modify"><span class="hs-identifier hs-var">modify</span></a></span><span> </span><span class="annot"><span class="annottext">((SpillS -&gt; SpillS) -&gt; State SpillS ())
+-&gt; (SpillS -&gt; SpillS) -&gt; State SpillS ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681813000"><span class="annot"><span class="annottext">SpillS
+</span><a href="#local-6989586621681813000"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SpillS
+</span><a href="#local-6989586621681813000"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-258"></span><span>                </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateSpillSL"><span class="hs-identifier hs-var">stateSpillSL</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#addToUFM_C"><span class="hs-identifier hs-type">addToUFM_C</span></a></span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#accSpillSL"><span class="hs-identifier hs-type">accSpillSL</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateSpillSL"><span class="hs-identifier hs-var">stateSpillSL</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813000"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621681812996"><span class="hs-identifier hs-type">reg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621681812996"><span class="hs-identifier hs-type">reg</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-number">1</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-259"></span><span>
+</span><span id="line-260"></span><span>         </span><span class="annot"><span class="annottext">(instr, ([LiveInstr instr'], [LiveInstr instr']))
+-&gt; SpillM (instr, ([LiveInstr instr'], [LiveInstr instr']))
+forall a. a -&gt; State SpillS a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681812998"><span class="hs-identifier hs-var">instr'</span></a></span><span>
+</span><span id="line-261"></span><span>                 </span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-262"></span><span>                   </span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">InstrSR instr' -&gt; Maybe Liveness -&gt; LiveInstr instr'
+forall instr. InstrSR instr -&gt; Maybe Liveness -&gt; LiveInstr instr
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-var">LiveInstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Reg -&gt; Int -&gt; InstrSR instr'
+forall instr. Reg -&gt; Int -&gt; InstrSR instr
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#SPILL"><span class="hs-identifier hs-var">SPILL</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681812999"><span class="hs-identifier hs-var">nReg</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681812997"><span class="hs-identifier hs-var">slot</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Maybe Liveness
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-263"></span><span>
+</span><span id="line-264"></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; SpillM (instr, ([LiveInstr instr'], [LiveInstr instr']))
+forall a. HasCallStack =&gt; String -&gt; a
+</span><a href="GHC.Utils.Panic.Plain.html#panic"><span class="hs-identifier hs-var">panic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;RegSpill.spillWrite: no slot defined for spilled reg&quot;</span></span><span>
+</span><span id="line-265"></span><span>
+</span><span id="line-266"></span><span>
+</span><span id="line-267"></span><span class="hs-comment">-- | Add both RELOAD and SPILL meta instructions for an instruction that</span><span>
+</span><span id="line-268"></span><span class="hs-comment">--   both reads and writes to a vreg that is being spilled.</span><span>
+</span><span id="line-269"></span><span id="local-6989586621681813002"><span id="local-6989586621681813003"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#spillModify"><span class="hs-identifier hs-type">spillModify</span></a></span><span>
+</span><span id="line-270"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html#Instruction"><span class="hs-identifier hs-type">Instruction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813002"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-271"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#UniqFM"><span class="hs-identifier hs-type">UniqFM</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-272"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621681813002"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-273"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span>
+</span><span id="line-274"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillM"><span class="hs-identifier hs-type">SpillM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621681813002"><span class="hs-identifier hs-type">instr</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-type">LiveInstr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813003"><span class="hs-identifier hs-type">instr'</span></a></span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-type">LiveInstr</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813003"><span class="hs-identifier hs-type">instr'</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-275"></span><span>
+</span><span id="line-276"></span><span id="spillModify"><span class="annot"><span class="annottext">spillModify :: forall instr instr'.
+Instruction instr =&gt;
+UniqFM Reg Int
+-&gt; instr
+-&gt; Reg
+-&gt; SpillM (instr, ([LiveInstr instr'], [LiveInstr instr']))
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#spillModify"><span class="hs-identifier hs-var hs-var">spillModify</span></a></span></span><span> </span><span id="local-6989586621681813013"><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681813013"><span class="hs-identifier hs-var">regSlotMap</span></a></span></span><span> </span><span id="local-6989586621681813014"><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681813014"><span class="hs-identifier hs-var">instr</span></a></span></span><span> </span><span id="local-6989586621681813015"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813015"><span class="hs-identifier hs-var">reg</span></a></span></span><span>
+</span><span id="line-277"></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681813016"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813016"><span class="hs-identifier hs-var">slot</span></a></span></span><span>     </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int -&gt; Reg -&gt; Maybe Int
+forall key elt. Uniquable key =&gt; UniqFM key elt -&gt; key -&gt; Maybe elt
+</span><a href="GHC.Types.Unique.FM.html#lookupUFM"><span class="hs-identifier hs-var">lookupUFM</span></a></span><span> </span><span class="annot"><span class="annottext">UniqFM Reg Int
+</span><a href="#local-6989586621681813013"><span class="hs-identifier hs-var">regSlotMap</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813015"><span class="hs-identifier hs-var">reg</span></a></span><span>
+</span><span id="line-278"></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>    </span><span class="hs-special">(</span><span id="local-6989586621681813017"><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681813017"><span class="hs-identifier hs-var">instr'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681813018"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813018"><span class="hs-identifier hs-var">nReg</span></a></span></span><span class="hs-special">)</span><span>  </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; instr -&gt; SpillM (instr, Reg)
+forall instr.
+Instruction instr =&gt;
+Reg -&gt; instr -&gt; SpillM (instr, Reg)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#patchInstr"><span class="hs-identifier hs-var">patchInstr</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813015"><span class="hs-identifier hs-var">reg</span></a></span><span> </span><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681813014"><span class="hs-identifier hs-var">instr</span></a></span><span>
+</span><span id="line-279"></span><span>
+</span><span id="line-280"></span><span>         </span><span class="annot"><span class="annottext">(SpillS -&gt; SpillS) -&gt; State SpillS ()
+forall s. (s -&gt; s) -&gt; State s ()
+</span><a href="GHC.Utils.Monad.State.Strict.html#modify"><span class="hs-identifier hs-var">modify</span></a></span><span> </span><span class="annot"><span class="annottext">((SpillS -&gt; SpillS) -&gt; State SpillS ())
+-&gt; (SpillS -&gt; SpillS) -&gt; State SpillS ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681813019"><span class="annot"><span class="annottext">SpillS
+</span><a href="#local-6989586621681813019"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SpillS
+</span><a href="#local-6989586621681813019"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-281"></span><span>                </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateSpillSL"><span class="hs-identifier hs-var">stateSpillSL</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#addToUFM_C"><span class="hs-identifier hs-type">addToUFM_C</span></a></span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#accSpillSL"><span class="hs-identifier hs-type">accSpillSL</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateSpillSL"><span class="hs-identifier hs-var">stateSpillSL</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813019"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621681813015"><span class="hs-identifier hs-type">reg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621681813015"><span class="hs-identifier hs-type">reg</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-number">1</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-282"></span><span>
+</span><span id="line-283"></span><span>         </span><span class="annot"><span class="annottext">(instr, ([LiveInstr instr'], [LiveInstr instr']))
+-&gt; SpillM (instr, ([LiveInstr instr'], [LiveInstr instr']))
+forall a. a -&gt; State SpillS a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681813017"><span class="hs-identifier hs-var">instr'</span></a></span><span>
+</span><span id="line-284"></span><span>                 </span><span class="hs-special">,</span><span> </span><span class="hs-special">(</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">InstrSR instr' -&gt; Maybe Liveness -&gt; LiveInstr instr'
+forall instr. InstrSR instr -&gt; Maybe Liveness -&gt; LiveInstr instr
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-var">LiveInstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Reg -&gt; InstrSR instr'
+forall instr. Int -&gt; Reg -&gt; InstrSR instr
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#RELOAD"><span class="hs-identifier hs-var">RELOAD</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813016"><span class="hs-identifier hs-var">slot</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813018"><span class="hs-identifier hs-var">nReg</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Maybe Liveness
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-285"></span><span>                   </span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">InstrSR instr' -&gt; Maybe Liveness -&gt; LiveInstr instr'
+forall instr. InstrSR instr -&gt; Maybe Liveness -&gt; LiveInstr instr
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#LiveInstr"><span class="hs-identifier hs-var">LiveInstr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Reg -&gt; Int -&gt; InstrSR instr'
+forall instr. Reg -&gt; Int -&gt; InstrSR instr
+</span><a href="GHC.CmmToAsm.Reg.Liveness.html#SPILL"><span class="hs-identifier hs-var">SPILL</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813018"><span class="hs-identifier hs-var">nReg</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813016"><span class="hs-identifier hs-var">slot</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Maybe Liveness
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-286"></span><span>
+</span><span id="line-287"></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; SpillM (instr, ([LiveInstr instr'], [LiveInstr instr']))
+forall a. HasCallStack =&gt; String -&gt; a
+</span><a href="GHC.Utils.Panic.Plain.html#panic"><span class="hs-identifier hs-var">panic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;RegSpill.spillModify: no slot defined for spilled reg&quot;</span></span><span>
+</span><span id="line-288"></span><span>
+</span><span id="line-289"></span><span>
+</span><span id="line-290"></span><span class="hs-comment">-- | Rewrite uses of this virtual reg in an instr to use a different</span><span>
+</span><span id="line-291"></span><span class="hs-comment">--   virtual reg.</span><span>
+</span><span id="line-292"></span><span id="local-6989586621681812730"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#patchInstr"><span class="hs-identifier hs-type">patchInstr</span></a></span><span>
+</span><span id="line-293"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html#Instruction"><span class="hs-identifier hs-type">Instruction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812730"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-294"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621681812730"><span class="hs-identifier hs-type">instr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillM"><span class="hs-identifier hs-type">SpillM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621681812730"><span class="hs-identifier hs-type">instr</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-295"></span><span>
+</span><span id="line-296"></span><span id="patchInstr"><span class="annot"><span class="annottext">patchInstr :: forall instr.
+Instruction instr =&gt;
+Reg -&gt; instr -&gt; SpillM (instr, Reg)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#patchInstr"><span class="hs-identifier hs-var hs-var">patchInstr</span></a></span></span><span> </span><span id="local-6989586621681813026"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813026"><span class="hs-identifier hs-var">reg</span></a></span></span><span> </span><span id="local-6989586621681813027"><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681813027"><span class="hs-identifier hs-var">instr</span></a></span></span><span>
+</span><span id="line-297"></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>   </span><span id="local-6989586621681813028"><span class="annot"><span class="annottext">Unique
+</span><a href="#local-6989586621681813028"><span class="hs-identifier hs-var">nUnique</span></a></span></span><span>         </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">SpillM Unique
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#newUnique"><span class="hs-identifier hs-var">newUnique</span></a></span><span>
+</span><span id="line-298"></span><span>
+</span><span id="line-299"></span><span>        </span><span class="hs-comment">-- The register we're rewriting is supposed to be virtual.</span><span>
+</span><span id="line-300"></span><span>        </span><span class="hs-comment">-- If it's not then something has gone horribly wrong.</span><span>
+</span><span id="line-301"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681813030"><span class="annot"><span class="annottext">nReg :: Reg
+</span><a href="#local-6989586621681813030"><span class="hs-identifier hs-var hs-var">nReg</span></a></span></span><span>
+</span><span id="line-302"></span><span>             </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813026"><span class="hs-identifier hs-var">reg</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-303"></span><span>                </span><span class="annot"><a href="GHC.Platform.Reg.html#RegVirtual"><span class="hs-identifier hs-type">RegVirtual</span></a></span><span> </span><span id="local-6989586621681813032"><span class="annot"><span class="annottext">VirtualReg
+</span><a href="#local-6989586621681813032"><span class="hs-identifier hs-var">vr</span></a></span></span><span>
+</span><span id="line-304"></span><span>                 </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">VirtualReg -&gt; Reg
+</span><a href="GHC.Platform.Reg.html#RegVirtual"><span class="hs-identifier hs-var">RegVirtual</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Unique -&gt; VirtualReg -&gt; VirtualReg
+</span><a href="GHC.Platform.Reg.html#renameVirtualReg"><span class="hs-identifier hs-var">renameVirtualReg</span></a></span><span> </span><span class="annot"><span class="annottext">Unique
+</span><a href="#local-6989586621681813028"><span class="hs-identifier hs-var">nUnique</span></a></span><span> </span><span class="annot"><span class="annottext">VirtualReg
+</span><a href="#local-6989586621681813032"><span class="hs-identifier hs-var">vr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-305"></span><span>
+</span><span id="line-306"></span><span>                </span><span class="annot"><a href="GHC.Platform.Reg.html#RegReal"><span class="hs-identifier hs-type">RegReal</span></a></span><span class="hs-special">{</span><span class="hs-special">}</span><span>
+</span><span id="line-307"></span><span>                 </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">String -&gt; Reg
+forall a. HasCallStack =&gt; String -&gt; a
+</span><a href="GHC.Utils.Panic.Plain.html#panic"><span class="hs-identifier hs-var">panic</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;RegAlloc.Graph.Spill.patchIntr: not patching real reg&quot;</span></span><span>
+</span><span id="line-308"></span><span>
+</span><span id="line-309"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681813035"><span class="annot"><span class="annottext">instr' :: instr
+</span><a href="#local-6989586621681813035"><span class="hs-identifier hs-var hs-var">instr'</span></a></span></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; Reg -&gt; instr -&gt; instr
+forall instr. Instruction instr =&gt; Reg -&gt; Reg -&gt; instr -&gt; instr
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#patchReg1"><span class="hs-identifier hs-var">patchReg1</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813026"><span class="hs-identifier hs-var">reg</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813030"><span class="hs-identifier hs-var">nReg</span></a></span><span> </span><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681813027"><span class="hs-identifier hs-var">instr</span></a></span><span>
+</span><span id="line-310"></span><span>        </span><span class="annot"><span class="annottext">(instr, Reg) -&gt; SpillM (instr, Reg)
+forall a. a -&gt; State SpillS a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span>          </span><span class="hs-special">(</span><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681813035"><span class="hs-identifier hs-var">instr'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813030"><span class="hs-identifier hs-var">nReg</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-311"></span><span>
+</span><span id="line-312"></span><span>
+</span><span id="line-313"></span><span id="local-6989586621681812742"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#patchReg1"><span class="hs-identifier hs-type">patchReg1</span></a></span><span>
+</span><span id="line-314"></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Instr.html#Instruction"><span class="hs-identifier hs-type">Instruction</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681812742"><span class="hs-identifier hs-type">instr</span></a></span><span>
+</span><span id="line-315"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621681812742"><span class="hs-identifier hs-type">instr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621681812742"><span class="hs-identifier hs-type">instr</span></a></span></span><span>
+</span><span id="line-316"></span><span>
+</span><span id="line-317"></span><span id="patchReg1"><span class="annot"><span class="annottext">patchReg1 :: forall instr. Instruction instr =&gt; Reg -&gt; Reg -&gt; instr -&gt; instr
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#patchReg1"><span class="hs-identifier hs-var hs-var">patchReg1</span></a></span></span><span> </span><span id="local-6989586621681813040"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813040"><span class="hs-identifier hs-var">old</span></a></span></span><span> </span><span id="local-6989586621681813041"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813041"><span class="hs-identifier hs-var">new</span></a></span></span><span> </span><span id="local-6989586621681813042"><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681813042"><span class="hs-identifier hs-var">instr</span></a></span></span><span>
+</span><span id="line-318"></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span>  </span><span id="local-6989586621681813043"><span class="annot"><span class="annottext">patchF :: Reg -&gt; Reg
+</span><a href="#local-6989586621681813043"><span class="hs-identifier hs-var hs-var">patchF</span></a></span></span><span> </span><span id="local-6989586621681813044"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813044"><span class="hs-identifier hs-var">r</span></a></span></span><span>
+</span><span id="line-319"></span><span>                </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813044"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Reg -&gt; Reg -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813040"><span class="hs-identifier hs-var">old</span></a></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813041"><span class="hs-identifier hs-var">new</span></a></span><span>
+</span><span id="line-320"></span><span>                </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813044"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-321"></span><span>   </span><span class="hs-keyword">in</span><span>   </span><span class="annot"><span class="annottext">instr -&gt; (Reg -&gt; Reg) -&gt; instr
+forall instr. Instruction instr =&gt; instr -&gt; (Reg -&gt; Reg) -&gt; instr
+</span><a href="GHC.CmmToAsm.Instr.html#patchRegsOfInstr"><span class="hs-identifier hs-var">patchRegsOfInstr</span></a></span><span> </span><span class="annot"><span class="annottext">instr
+</span><a href="#local-6989586621681813042"><span class="hs-identifier hs-var">instr</span></a></span><span> </span><span class="annot"><span class="annottext">Reg -&gt; Reg
+</span><a href="#local-6989586621681813043"><span class="hs-identifier hs-var">patchF</span></a></span><span>
+</span><span id="line-322"></span><span>
+</span><span id="line-323"></span><span>
+</span><span id="line-324"></span><span class="hs-comment">-- Spiller monad --------------------------------------------------------------</span><span>
+</span><span id="line-325"></span><span class="annot"><span class="hs-comment">-- | State monad for the spill code generator.</span></span><span>
+</span><span id="line-326"></span><span class="hs-keyword">type</span><span> </span><span id="SpillM"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillM"><span class="hs-identifier hs-var">SpillM</span></a></span></span><span> </span><span id="local-6989586621681813046"><span class="annot"><a href="#local-6989586621681813046"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-327"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.Utils.Monad.State.Strict.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillS"><span class="hs-identifier hs-type">SpillS</span></a></span><span> </span><span class="annot"><a href="#local-6989586621681813046"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-328"></span><span>
+</span><span id="line-329"></span><span class="annot"><span class="hs-comment">-- | Spill code generator state.</span></span><span>
+</span><span id="line-330"></span><span class="hs-keyword">data</span><span> </span><span id="SpillS"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillS"><span class="hs-identifier hs-var">SpillS</span></a></span></span><span>
+</span><span id="line-331"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span id="SpillS"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillS"><span class="hs-identifier hs-var">SpillS</span></a></span></span><span>
+</span><span id="line-332"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="hs-comment">-- | Unique supply for generating fresh vregs.</span></span><span>
+</span><span id="line-333"></span><span>          </span><span id="stateUS"><span class="annot"><span class="annottext">SpillS -&gt; UniqSupply
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateUS"><span class="hs-identifier hs-var hs-var">stateUS</span></a></span></span><span>       </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Supply.html#UniqSupply"><span class="hs-identifier hs-type">UniqSupply</span></a></span><span>
+</span><span id="line-334"></span><span>
+</span><span id="line-335"></span><span>          </span><span class="annot"><span class="hs-comment">-- | Spilled vreg vs the number of times it was loaded, stored.</span></span><span>
+</span><span id="line-336"></span><span>        </span><span class="hs-special">,</span><span> </span><span id="stateSpillSL"><span class="annot"><span class="annottext">SpillS -&gt; UniqFM Reg (Reg, Int, Int)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateSpillSL"><span class="hs-identifier hs-var hs-var">stateSpillSL</span></a></span></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#UniqFM"><span class="hs-identifier hs-type">UniqFM</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-337"></span><span>
+</span><span id="line-338"></span><span>
+</span><span id="line-339"></span><span class="annot"><span class="hs-comment">-- | Create a new spiller state.</span></span><span>
+</span><span id="line-340"></span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#initSpillS"><span class="hs-identifier hs-type">initSpillS</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Unique.Supply.html#UniqSupply"><span class="hs-identifier hs-type">UniqSupply</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillS"><span class="hs-identifier hs-type">SpillS</span></a></span><span>
+</span><span id="line-341"></span><span id="initSpillS"><span class="annot"><span class="annottext">initSpillS :: UniqSupply -&gt; SpillS
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#initSpillS"><span class="hs-identifier hs-var hs-var">initSpillS</span></a></span></span><span> </span><span id="local-6989586621681813049"><span class="annot"><span class="annottext">UniqSupply
+</span><a href="#local-6989586621681813049"><span class="hs-identifier hs-var">uniqueSupply</span></a></span></span><span>
+</span><span id="line-342"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillS"><span class="hs-identifier hs-type">SpillS</span></a></span><span>
+</span><span id="line-343"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">stateUS :: UniqSupply
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateUS"><span class="hs-identifier hs-var">stateUS</span></a></span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">UniqSupply
+</span><a href="#local-6989586621681813049"><span class="hs-identifier hs-var">uniqueSupply</span></a></span><span>
+</span><span id="line-344"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">stateSpillSL :: UniqFM Reg (Reg, Int, Int)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateSpillSL"><span class="hs-identifier hs-var">stateSpillSL</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">UniqFM Reg (Reg, Int, Int)
+forall key elt. UniqFM key elt
+</span><a href="GHC.Types.Unique.FM.html#emptyUFM"><span class="hs-identifier hs-var">emptyUFM</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-345"></span><span>
+</span><span id="line-346"></span><span>
+</span><span id="line-347"></span><span class="annot"><span class="hs-comment">-- | Allocate a new unique in the spiller monad.</span></span><span>
+</span><span id="line-348"></span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#newUnique"><span class="hs-identifier hs-type">newUnique</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillM"><span class="hs-identifier hs-type">SpillM</span></a></span><span> </span><span class="annot"><a href="GHC.Types.Unique.html#Unique"><span class="hs-identifier hs-type">Unique</span></a></span><span>
+</span><span id="line-349"></span><span id="newUnique"><span class="annot"><span class="annottext">newUnique :: SpillM Unique
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#newUnique"><span class="hs-identifier hs-var hs-var">newUnique</span></a></span></span><span>
+</span><span id="line-350"></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>   </span><span id="local-6989586621681813051"><span class="annot"><span class="annottext">UniqSupply
+</span><a href="#local-6989586621681813051"><span class="hs-identifier hs-var">us</span></a></span></span><span>      </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(SpillS -&gt; UniqSupply) -&gt; State SpillS UniqSupply
+forall s a. (s -&gt; a) -&gt; State s a
+</span><a href="GHC.Utils.Monad.State.Strict.html#gets"><span class="hs-identifier hs-var">gets</span></a></span><span> </span><span class="annot"><span class="annottext">SpillS -&gt; UniqSupply
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateUS"><span class="hs-identifier hs-var">stateUS</span></a></span><span>
+</span><span id="line-351"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">UniqSupply -&gt; (Unique, UniqSupply)
+</span><a href="GHC.Types.Unique.Supply.html#takeUniqFromSupply"><span class="hs-identifier hs-var">takeUniqFromSupply</span></a></span><span> </span><span class="annot"><span class="annottext">UniqSupply
+</span><a href="#local-6989586621681813051"><span class="hs-identifier hs-var">us</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-352"></span><span>         </span><span class="hs-special">(</span><span id="local-6989586621681813054"><span class="annot"><span class="annottext">Unique
+</span><a href="#local-6989586621681813054"><span class="hs-identifier hs-var">uniq</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681813055"><span class="annot"><span class="annottext">UniqSupply
+</span><a href="#local-6989586621681813055"><span class="hs-identifier hs-var">us'</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-353"></span><span>          </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="annot"><span class="annottext">(SpillS -&gt; SpillS) -&gt; State SpillS ()
+forall s. (s -&gt; s) -&gt; State s ()
+</span><a href="GHC.Utils.Monad.State.Strict.html#modify"><span class="hs-identifier hs-var">modify</span></a></span><span> </span><span class="annot"><span class="annottext">((SpillS -&gt; SpillS) -&gt; State SpillS ())
+-&gt; (SpillS -&gt; SpillS) -&gt; State SpillS ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681813056"><span class="annot"><span class="annottext">SpillS
+</span><a href="#local-6989586621681813056"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SpillS
+</span><a href="#local-6989586621681813056"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateUS"><span class="hs-identifier hs-var">stateUS</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621681813055"><span class="hs-identifier hs-type">us'</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-354"></span><span>                </span><span class="annot"><span class="annottext">Unique -&gt; SpillM Unique
+forall a. a -&gt; State SpillS a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">Unique
+</span><a href="#local-6989586621681813054"><span class="hs-identifier hs-var">uniq</span></a></span><span>
+</span><span id="line-355"></span><span>
+</span><span id="line-356"></span><span>
+</span><span id="line-357"></span><span class="annot"><span class="hs-comment">-- | Add a spill/reload count to a stats record for a register.</span></span><span>
+</span><span id="line-358"></span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#accSpillSL"><span class="hs-identifier hs-type">accSpillSL</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span>
+</span><span id="line-359"></span><span id="accSpillSL"><span class="annot"><span class="annottext">accSpillSL :: (Reg, Int, Int) -&gt; (Reg, Int, Int) -&gt; (Reg, Int, Int)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#accSpillSL"><span class="hs-identifier hs-var hs-var">accSpillSL</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681813057"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813057"><span class="hs-identifier hs-var">r1</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681813058"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813058"><span class="hs-identifier hs-var">s1</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681813059"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813059"><span class="hs-identifier hs-var">l1</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Reg
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681813060"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813060"><span class="hs-identifier hs-var">s2</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681813061"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813061"><span class="hs-identifier hs-var">l2</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-360"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813057"><span class="hs-identifier hs-var">r1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813058"><span class="hs-identifier hs-var">s1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813060"><span class="hs-identifier hs-var">s2</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813059"><span class="hs-identifier hs-var">l1</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813061"><span class="hs-identifier hs-var">l2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-361"></span><span>
+</span><span id="line-362"></span><span>
+</span><span id="line-363"></span><span class="hs-comment">-- Spiller stats --------------------------------------------------------------</span><span>
+</span><span id="line-364"></span><span class="hs-comment">-- | Spiller statistics.</span><span>
+</span><span id="line-365"></span><span class="hs-comment">--   Tells us what registers were spilled.</span><span>
+</span><span id="line-366"></span><span class="hs-keyword">data</span><span> </span><span id="SpillStats"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillStats"><span class="hs-identifier hs-var">SpillStats</span></a></span></span><span>
+</span><span id="line-367"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span id="SpillStats"><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillStats"><span class="hs-identifier hs-var">SpillStats</span></a></span></span><span>
+</span><span id="line-368"></span><span>        </span><span class="hs-special">{</span><span> </span><span id="spillStoreLoad"><span class="annot"><span class="annottext">SpillStats -&gt; UniqFM Reg (Reg, Int, Int)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#spillStoreLoad"><span class="hs-identifier hs-var hs-var">spillStoreLoad</span></a></span></span><span>        </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Unique.FM.html#UniqFM"><span class="hs-identifier hs-type">UniqFM</span></a></span><span> </span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Platform.Reg.html#Reg"><span class="hs-identifier hs-type">Reg</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-369"></span><span>
+</span><span id="line-370"></span><span>
+</span><span id="line-371"></span><span class="annot"><span class="hs-comment">-- | Extract spiller statistics from the spiller state.</span></span><span>
+</span><span id="line-372"></span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#makeSpillStats"><span class="hs-identifier hs-type">makeSpillStats</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillS"><span class="hs-identifier hs-type">SpillS</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillStats"><span class="hs-identifier hs-type">SpillStats</span></a></span><span>
+</span><span id="line-373"></span><span id="makeSpillStats"><span class="annot"><span class="annottext">makeSpillStats :: SpillS -&gt; SpillStats
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#makeSpillStats"><span class="hs-identifier hs-var hs-var">makeSpillStats</span></a></span></span><span> </span><span id="local-6989586621681813064"><span class="annot"><span class="annottext">SpillS
+</span><a href="#local-6989586621681813064"><span class="hs-identifier hs-var">s</span></a></span></span><span>
+</span><span id="line-374"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillStats"><span class="hs-identifier hs-type">SpillStats</span></a></span><span>
+</span><span id="line-375"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">spillStoreLoad :: UniqFM Reg (Reg, Int, Int)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#spillStoreLoad"><span class="hs-identifier hs-var">spillStoreLoad</span></a></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SpillS -&gt; UniqFM Reg (Reg, Int, Int)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#stateSpillSL"><span class="hs-identifier hs-var">stateSpillSL</span></a></span><span> </span><span class="annot"><span class="annottext">SpillS
+</span><a href="#local-6989586621681813064"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-376"></span><span>
+</span><span id="line-377"></span><span>
+</span><span id="line-378"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="GHC.Utils.Outputable.html#Outputable"><span class="hs-identifier hs-type">Outputable</span></a></span><span> </span><span class="annot"><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#SpillStats"><span class="hs-identifier hs-type">SpillStats</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-379"></span><span> </span><span id="local-6989586621681813077"><span class="annot"><span class="annottext">ppr :: SpillStats -&gt; SDoc
+</span><a href="#local-6989586621681813077"><span class="hs-identifier hs-var hs-var hs-var hs-var">ppr</span></a></span></span><span> </span><span id="local-6989586621681813079"><span class="annot"><span class="annottext">SpillStats
+</span><a href="#local-6989586621681813079"><span class="hs-identifier hs-var">stats</span></a></span></span><span>
+</span><span id="line-380"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">UniqFM Reg (Reg, Int, Int) -&gt; ([(Reg, Int, Int)] -&gt; SDoc) -&gt; SDoc
+forall key a. UniqFM key a -&gt; ([a] -&gt; SDoc) -&gt; SDoc
+</span><a href="GHC.Types.Unique.FM.html#pprUFM"><span class="hs-identifier hs-var">pprUFM</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">SpillStats -&gt; UniqFM Reg (Reg, Int, Int)
+</span><a href="GHC.CmmToAsm.Reg.Graph.Spill.html#spillStoreLoad"><span class="hs-identifier hs-var">spillStoreLoad</span></a></span><span> </span><span class="annot"><span class="annottext">SpillStats
+</span><a href="#local-6989586621681813079"><span class="hs-identifier hs-var">stats</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-381"></span><span>                 </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[SDoc] -&gt; SDoc
+forall doc. IsDoc doc =&gt; [doc] -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#vcat"><span class="hs-identifier hs-var">vcat</span></a></span><span> </span><span class="annot"><span class="annottext">([SDoc] -&gt; SDoc)
+-&gt; ([(Reg, Int, Int)] -&gt; [SDoc]) -&gt; [(Reg, Int, Int)] -&gt; SDoc
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">((Reg, Int, Int) -&gt; SDoc) -&gt; [(Reg, Int, Int)] -&gt; [SDoc]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621681813083"><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813083"><span class="hs-identifier hs-var">r</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681813084"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813084"><span class="hs-identifier hs-var">s</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681813085"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813085"><span class="hs-identifier hs-var">l</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Reg -&gt; SDoc
+forall a. Outputable a =&gt; a -&gt; SDoc
+</span><a href="GHC.Utils.Outputable.html#ppr"><span class="hs-identifier hs-var">ppr</span></a></span><span> </span><span class="annot"><span class="annottext">Reg
+</span><a href="#local-6989586621681813083"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; SDoc
+forall doc. IsLine doc =&gt; Int -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#int"><span class="hs-identifier hs-var">int</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813084"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">SDoc -&gt; SDoc -&gt; SDoc
+forall doc. IsLine doc =&gt; doc -&gt; doc -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#%3C%2B%3E"><span class="hs-operator hs-var">&lt;+&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; SDoc
+forall doc. IsLine doc =&gt; Int -&gt; doc
+</span><a href="GHC.Utils.Outputable.html#int"><span class="hs-identifier hs-var">int</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681813085"><span class="hs-identifier hs-var">l</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-382"></span></pre></body></html>

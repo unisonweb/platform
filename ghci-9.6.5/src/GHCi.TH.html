@@ -1,0 +1,930 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE ScopedTypeVariables, StandaloneDeriving, DeriveGeneric,
+    TupleSections, RecordWildCards, InstanceSigs, CPP #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# OPTIONS_GHC -fno-warn-name-shadowing #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Running TH splices</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHCi.TH</span><span>
+</span><span id="line-9"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHCi.TH.html#startTH"><span class="hs-identifier">startTH</span></a></span><span>
+</span><span id="line-10"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHCi.TH.html#runModFinalizerRefs"><span class="hs-identifier">runModFinalizerRefs</span></a></span><span>
+</span><span id="line-11"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHCi.TH.html#runTH"><span class="hs-identifier">runTH</span></a></span><span>
+</span><span id="line-12"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHCi.TH.html#GHCiQException"><span class="hs-identifier">GHCiQException</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-14"></span><span>
+</span><span id="line-15"></span><span class="hs-comment">{- Note [Remote Template Haskell]
+   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Here is an overview of how TH works with -fexternal-interpreter.
+
+Initialisation
+~~~~~~~~~~~~~~
+
+GHC sends a StartTH message to the server (see GHC.Tc.Gen.Splice.getTHState):
+
+   StartTH :: Message (RemoteRef (IORef QState))
+
+The server creates an initial QState object, makes an IORef to it, and
+returns a RemoteRef to this to GHC. (see GHCi.TH.startTH below).
+
+This happens once per module, the first time we need to run a TH
+splice.  The reference that GHC gets back is kept in
+tcg_th_remote_state in the TcGblEnv, and passed to each RunTH call
+that follows.
+
+
+For each splice
+~~~~~~~~~~~~~~~
+
+1. GHC compiles a splice to byte code, and sends it to the server: in
+   a CreateBCOs message:
+
+   CreateBCOs :: [LB.ByteString] -&gt; Message [HValueRef]
+
+2. The server creates the real byte-code objects in its heap, and
+   returns HValueRefs to GHC.  HValueRef is the same as RemoteRef
+   HValue.
+
+3. GHC sends a RunTH message to the server:
+
+  RunTH
+   :: RemoteRef (IORef QState)
+        -- The state returned by StartTH in step1
+   -&gt; HValueRef
+        -- The HValueRef we got in step 4, points to the code for the splice
+   -&gt; THResultType
+        -- Tells us what kind of splice this is (decl, expr, type, etc.)
+   -&gt; Maybe TH.Loc
+        -- Source location
+   -&gt; Message (QResult ByteString)
+        -- Eventually it will return a QResult back to GHC.  The
+        -- ByteString here is the (encoded) result of the splice.
+
+4. The server runs the splice code.
+
+5. Each time the splice code calls a method of the Quasi class, such
+   as qReify, a message is sent from the server to GHC.  These
+   messages are defined by the THMessage type.  GHC responds with the
+   result of the request, e.g. in the case of qReify it would be the
+   TH.Info for the requested entity.
+
+6. When the splice has been fully evaluated, the server sends
+   RunTHDone back to GHC.  This tells GHC that the server has finished
+   sending THMessages and will send the QResult next.
+
+8. The server then sends a QResult back to GHC, which is notionally
+   the response to the original RunTH message.  The QResult indicates
+   whether the splice succeeded, failed, or threw an exception.
+
+
+After typechecking
+~~~~~~~~~~~~~~~~~~
+
+GHC sends a FinishTH message to the server (see GHC.Tc.Gen.Splice.finishTH).
+The server runs any finalizers that were added by addModuleFinalizer.
+
+
+Other Notes on TH / Remote GHCi
+
+  * Note [Remote GHCi] in compiler/GHC/Runtime/Interpreter.hs
+  * Note [External GHCi pointers] in compiler/GHC/Runtime/Interpreter.hs
+  * Note [TH recover with -fexternal-interpreter] in GHC.Tc.Gen.Splice
+-}</span><span>
+</span><span id="line-92"></span><span>
+</span><span id="line-93"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Prelude.html#/Prelude.html"><span class="hs-identifier">Prelude</span></a></span><span> </span><span class="hs-comment">-- See note [Why do we import Prelude here?]</span><span>
+</span><span id="line-94"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHCi.Message.html"><span class="hs-identifier">GHCi.Message</span></a></span><span>
+</span><span id="line-95"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHCi.RemoteTypes.html"><span class="hs-identifier">GHCi.RemoteTypes</span></a></span><span>
+</span><span id="line-96"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../ghc-boot-9.6.5/src/GHC.Serialized.html#/GHC.Serialized.html"><span class="hs-identifier">GHC.Serialized</span></a></span><span>
+</span><span id="line-97"></span><span>
+</span><span id="line-98"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Exception.html#/Control.Exception.html"><span class="hs-identifier">Control.Exception</span></a></span><span>
+</span><span id="line-99"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Monad.IO.Class.html#/Control.Monad.IO.Class.html"><span class="hs-identifier">Control.Monad.IO.Class</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Monad.IO.Class.html#MonadIO/Control.Monad.IO.Class.html#MonadIO"><span class="hs-identifier">MonadIO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-100"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.html#/Data.Binary.html"><span class="hs-identifier">Data.Binary</span></a></span><span>
+</span><span id="line-101"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#/Data.Binary.Put.html"><span class="hs-identifier">Data.Binary.Put</span></a></span><span>
+</span><span id="line-102"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#/Data.ByteString.html"><span class="hs-identifier">Data.ByteString</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier">ByteString</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-103"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#/Data.ByteString.html"><span class="hs-identifier">Data.ByteString</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-104"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Lazy.html#/Data.ByteString.Lazy.html"><span class="hs-identifier">Data.ByteString.Lazy</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">LB</span></span><span>
+</span><span id="line-105"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Data.html#/Data.Data.html"><span class="hs-identifier">Data.Data</span></a></span><span>
+</span><span id="line-106"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Dynamic.html#/Data.Dynamic.html"><span class="hs-identifier">Data.Dynamic</span></a></span><span>
+</span><span id="line-107"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Either.html#/Data.Either.html"><span class="hs-identifier">Data.Either</span></a></span><span>
+</span><span id="line-108"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.IORef.html#/Data.IORef.html"><span class="hs-identifier">Data.IORef</span></a></span><span>
+</span><span id="line-109"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../containers-0.6.7/src/Data.Map.html#/Data.Map.html"><span class="hs-identifier">Data.Map</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../containers-0.6.7/src/Data.Map.Internal.html#Map/Data.Map.Internal.html#Map"><span class="hs-identifier">Map</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-110"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../containers-0.6.7/src/Data.Map.html#/Data.Map.html"><span class="hs-identifier">Data.Map</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">M</span></span><span>
+</span><span id="line-111"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Maybe.html#/Data.Maybe.html"><span class="hs-identifier">Data.Maybe</span></a></span><span>
+</span><span id="line-112"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Desugar.html#/GHC.Desugar.html"><span class="hs-identifier">GHC.Desugar</span></a></span><span>
+</span><span id="line-113"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.html#/Language.Haskell.TH.html"><span class="hs-identifier">Language.Haskell.TH</span></a></span><span>        </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">TH</span></span><span>
+</span><span id="line-114"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#/Language.Haskell.TH.Syntax.html"><span class="hs-identifier">Language.Haskell.TH.Syntax</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">TH</span></span><span>
+</span><span id="line-115"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Unsafe.Coerce.html#/Unsafe.Coerce.html"><span class="hs-identifier">Unsafe.Coerce</span></a></span><span>
+</span><span id="line-116"></span><span>
+</span><span id="line-117"></span><span class="annot"><span class="hs-comment">-- | Create a new instance of 'QState'</span></span><span>
+</span><span id="line-118"></span><span class="annot"><a href="GHCi.TH.html#initQState"><span class="hs-identifier hs-type">initQState</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHCi.Message.html#Pipe"><span class="hs-identifier hs-type">Pipe</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHCi.Message.html#QState"><span class="hs-identifier hs-type">QState</span></a></span><span>
+</span><span id="line-119"></span><span id="initQState"><span class="annot"><span class="annottext">initQState :: Pipe -&gt; QState
+</span><a href="GHCi.TH.html#initQState"><span class="hs-identifier hs-var hs-var">initQState</span></a></span></span><span> </span><span id="local-6989586621679098655"><span class="annot"><span class="annottext">Pipe
+</span><a href="#local-6989586621679098655"><span class="hs-identifier hs-var">p</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map TypeRep Dynamic -&gt; Maybe Loc -&gt; Pipe -&gt; QState
+</span><a href="GHCi.Message.html#QState"><span class="hs-identifier hs-var">QState</span></a></span><span> </span><span class="annot"><span class="annottext">Map TypeRep Dynamic
+forall k a. Map k a
+</span><a href="../../containers-0.6.7/src/Data.Map.Internal.html#empty/Data.Map.Internal.html#empty"><span class="hs-identifier hs-var">M.empty</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Loc
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span> </span><span class="annot"><span class="annottext">Pipe
+</span><a href="#local-6989586621679098655"><span class="hs-identifier hs-var">p</span></a></span><span>
+</span><span id="line-120"></span><span>
+</span><span id="line-121"></span><span class="annot"><span class="hs-comment">-- | The monad in which we run TH computations on the server</span></span><span>
+</span><span id="line-122"></span><span class="hs-keyword">newtype</span><span> </span><span id="GHCiQ"><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span></span><span> </span><span id="local-6989586621679098473"><span class="annot"><a href="#local-6989586621679098473"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="GHCiQ"><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span></span><span> </span><span class="hs-special">{</span><span> </span><span id="runGHCiQ"><span class="annot"><span class="annottext">forall a. GHCiQ a -&gt; QState -&gt; IO (a, QState)
+</span><a href="GHCi.TH.html#runGHCiQ"><span class="hs-identifier hs-var hs-var">runGHCiQ</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHCi.Message.html#QState"><span class="hs-identifier hs-type">QState</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679098473"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHCi.Message.html#QState"><span class="hs-identifier hs-type">QState</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-123"></span><span>
+</span><span id="line-124"></span><span class="annot"><span class="hs-comment">-- | The exception thrown by &quot;fail&quot; in the GHCiQ monad</span></span><span>
+</span><span id="line-125"></span><span class="hs-keyword">data</span><span> </span><span id="GHCiQException"><span class="annot"><a href="GHCi.TH.html#GHCiQException"><span class="hs-identifier hs-var">GHCiQException</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="GHCiQException"><span class="annot"><a href="GHCi.TH.html#GHCiQException"><span class="hs-identifier hs-var">GHCiQException</span></a></span></span><span> </span><span class="annot"><a href="GHCi.Message.html#QState"><span class="hs-identifier hs-type">QState</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#String/GHC.Base.html#String"><span class="hs-identifier hs-type">String</span></a></span><span>
+</span><span id="line-126"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679098661"><span id="local-6989586621679098670"><span id="local-6989586621679098674"><span class="annot"><span class="annottext">Int -&gt; GHCiQException -&gt; ShowS
+[GHCiQException] -&gt; ShowS
+GHCiQException -&gt; String
+(Int -&gt; GHCiQException -&gt; ShowS)
+-&gt; (GHCiQException -&gt; String)
+-&gt; ([GHCiQException] -&gt; ShowS)
+-&gt; Show GHCiQException
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; GHCiQException -&gt; ShowS
+showsPrec :: Int -&gt; GHCiQException -&gt; ShowS
+$cshow :: GHCiQException -&gt; String
+show :: GHCiQException -&gt; String
+$cshowList :: [GHCiQException] -&gt; ShowS
+showList :: [GHCiQException] -&gt; ShowS
+</span><a href="../../base-4.18.2.1/src/GHC.Show.html#Show/GHC.Show.html#Show"><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></a></span></span></span></span><span>
+</span><span id="line-127"></span><span>
+</span><span id="line-128"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679098683"><span id="local-6989586621679098687"><span id="local-6989586621679098690"><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Exception.Type.html#Exception/GHC.Exception.Type.html#Exception"><span class="hs-identifier hs-type">Exception</span></a></span><span> </span><span class="annot"><a href="GHCi.TH.html#GHCiQException"><span class="hs-identifier hs-type">GHCiQException</span></a></span></span></span></span><span>
+</span><span id="line-129"></span><span>
+</span><span id="line-130"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679098695"><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#Functor/GHC.Base.html#Functor"><span class="hs-identifier hs-type">Functor</span></a></span><span> </span><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-type">GHCiQ</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-131"></span><span>  </span><span id="local-6989586621679098700"><span class="annot"><span class="annottext">fmap :: forall a b. (a -&gt; b) -&gt; GHCiQ a -&gt; GHCiQ b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#fmap/GHC.Base.html#fmap"><span class="hs-identifier hs-var hs-var hs-var hs-var">fmap</span></a></span></span><span> </span><span id="local-6989586621679098701"><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621679098701"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-type">GHCiQ</span></a></span><span> </span><span id="local-6989586621679098702"><span class="annot"><span class="annottext">QState -&gt; IO (a, QState)
+</span><a href="#local-6989586621679098702"><span class="hs-identifier hs-var">s</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(QState -&gt; IO (b, QState)) -&gt; GHCiQ b
+forall a. (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">((QState -&gt; IO (b, QState)) -&gt; GHCiQ b)
+-&gt; (QState -&gt; IO (b, QState)) -&gt; GHCiQ b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">((a, QState) -&gt; (b, QState)) -&gt; IO (a, QState) -&gt; IO (b, QState)
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#fmap/GHC.Base.html#fmap"><span class="hs-identifier hs-var">fmap</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621679098703"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679098703"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679098704"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098704"><span class="hs-identifier hs-var">s'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621679098701"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679098703"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098704"><span class="hs-identifier hs-var">s'</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(IO (a, QState) -&gt; IO (b, QState))
+-&gt; (QState -&gt; IO (a, QState)) -&gt; QState -&gt; IO (b, QState)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">QState -&gt; IO (a, QState)
+</span><a href="#local-6989586621679098702"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679098711"><span id="local-6989586621679098715"><span id="local-6989586621679098718"><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#Applicative/GHC.Base.html#Applicative"><span class="hs-identifier hs-type">Applicative</span></a></span><span> </span><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-type">GHCiQ</span></a></span></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-134"></span><span>  </span><span id="local-6989586621679098724"><span class="annot"><span class="annottext">GHCiQ (a -&gt; b)
+</span><a href="#local-6989586621679098724"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679098725"><span class="annot"><span class="annottext">&lt;*&gt; :: forall a b. GHCiQ (a -&gt; b) -&gt; GHCiQ a -&gt; GHCiQ b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%2A%3E/GHC.Base.html#%3C%2A%3E"><span class="hs-operator hs-var hs-var hs-var hs-var">&lt;*&gt;</span></a></span></span><span> </span><span id="local-6989586621679098726"><span class="annot"><span class="annottext">GHCiQ a
+</span><a href="#local-6989586621679098726"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(QState -&gt; IO (b, QState)) -&gt; GHCiQ b
+forall a. (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">((QState -&gt; IO (b, QState)) -&gt; GHCiQ b)
+-&gt; (QState -&gt; IO (b, QState)) -&gt; GHCiQ b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679098727"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098727"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-135"></span><span>    </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679098728"><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621679098728"><span class="hs-identifier hs-var">f'</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679098729"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098729"><span class="hs-identifier hs-var">s'</span></a></span></span><span class="hs-special">)</span><span>  </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">GHCiQ (a -&gt; b) -&gt; QState -&gt; IO (a -&gt; b, QState)
+forall a. GHCiQ a -&gt; QState -&gt; IO (a, QState)
+</span><a href="GHCi.TH.html#runGHCiQ"><span class="hs-identifier hs-var">runGHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">GHCiQ (a -&gt; b)
+</span><a href="#local-6989586621679098724"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098727"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-136"></span><span>       </span><span class="hs-special">(</span><span id="local-6989586621679098730"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679098730"><span class="hs-identifier hs-var">a'</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679098731"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098731"><span class="hs-identifier hs-var">s''</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">GHCiQ a -&gt; QState -&gt; IO (a, QState)
+forall a. GHCiQ a -&gt; QState -&gt; IO (a, QState)
+</span><a href="GHCi.TH.html#runGHCiQ"><span class="hs-identifier hs-var">runGHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">GHCiQ a
+</span><a href="#local-6989586621679098726"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098729"><span class="hs-identifier hs-var">s'</span></a></span><span>
+</span><span id="line-137"></span><span>       </span><span class="annot"><span class="annottext">(b, QState) -&gt; IO (b, QState)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; b
+</span><a href="#local-6989586621679098728"><span class="hs-identifier hs-var">f'</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679098730"><span class="hs-identifier hs-var">a'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098731"><span class="hs-identifier hs-var">s''</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-138"></span><span>  </span><span id="local-6989586621679098733"><span class="annot"><span class="annottext">pure :: forall a. a -&gt; GHCiQ a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#pure/GHC.Base.html#pure"><span class="hs-identifier hs-var hs-var hs-var hs-var">pure</span></a></span></span><span> </span><span id="local-6989586621679098734"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679098734"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+forall a. (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679098735"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098735"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(a, QState) -&gt; IO (a, QState)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679098734"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098735"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-139"></span><span>
+</span><span id="line-140"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679098740"><span id="local-6989586621679098744"><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#Monad/GHC.Base.html#Monad"><span class="hs-identifier hs-type">Monad</span></a></span><span> </span><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-type">GHCiQ</span></a></span></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-141"></span><span>  </span><span id="local-6989586621679098750"><span class="annot"><span class="annottext">GHCiQ a
+</span><a href="#local-6989586621679098750"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span id="local-6989586621679098751"><span class="annot"><span class="annottext">&gt;&gt;= :: forall a b. GHCiQ a -&gt; (a -&gt; GHCiQ b) -&gt; GHCiQ b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3E%3E%3D/GHC.Base.html#%3E%3E%3D"><span class="hs-operator hs-var hs-var hs-var hs-var">&gt;&gt;=</span></a></span></span><span> </span><span id="local-6989586621679098752"><span class="annot"><span class="annottext">a -&gt; GHCiQ b
+</span><a href="#local-6989586621679098752"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(QState -&gt; IO (b, QState)) -&gt; GHCiQ b
+forall a. (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">((QState -&gt; IO (b, QState)) -&gt; GHCiQ b)
+-&gt; (QState -&gt; IO (b, QState)) -&gt; GHCiQ b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679098753"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098753"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-142"></span><span>    </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679098754"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679098754"><span class="hs-identifier hs-var">m'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679098755"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098755"><span class="hs-identifier hs-var">s'</span></a></span></span><span class="hs-special">)</span><span>  </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">GHCiQ a -&gt; QState -&gt; IO (a, QState)
+forall a. GHCiQ a -&gt; QState -&gt; IO (a, QState)
+</span><a href="GHCi.TH.html#runGHCiQ"><span class="hs-identifier hs-var">runGHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">GHCiQ a
+</span><a href="#local-6989586621679098750"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098753"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-143"></span><span>       </span><span class="hs-special">(</span><span id="local-6989586621679098756"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679098756"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">,</span><span>  </span><span id="local-6989586621679098757"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098757"><span class="hs-identifier hs-var">s''</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">GHCiQ b -&gt; QState -&gt; IO (b, QState)
+forall a. GHCiQ a -&gt; QState -&gt; IO (a, QState)
+</span><a href="GHCi.TH.html#runGHCiQ"><span class="hs-identifier hs-var">runGHCiQ</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; GHCiQ b
+</span><a href="#local-6989586621679098752"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679098754"><span class="hs-identifier hs-var">m'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098755"><span class="hs-identifier hs-var">s'</span></a></span><span>
+</span><span id="line-144"></span><span>       </span><span class="annot"><span class="annottext">(b, QState) -&gt; IO (b, QState)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679098756"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098757"><span class="hs-identifier hs-var">s''</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-145"></span><span>
+</span><span id="line-146"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Monad.Fail.html#MonadFail/Control.Monad.Fail.html#MonadFail"><span class="hs-identifier hs-type">MonadFail</span></a></span><span> </span><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-type">GHCiQ</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-147"></span><span>  </span><span id="local-6989586621679098764"><span class="annot"><span class="annottext">fail :: forall a. String -&gt; GHCiQ a
+</span><a href="../../base-4.18.2.1/src/Control.Monad.Fail.html#fail/Control.Monad.Fail.html#fail"><span class="hs-identifier hs-var hs-var hs-var hs-var">fail</span></a></span></span><span> </span><span id="local-6989586621679098765"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098765"><span class="hs-identifier hs-var">err</span></a></span></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+forall a. (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">((QState -&gt; IO (a, QState)) -&gt; GHCiQ a)
+-&gt; (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679098766"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098766"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">GHCiQException -&gt; IO (a, QState)
+forall e a. Exception e =&gt; e -&gt; IO a
+</span><a href="../../base-4.18.2.1/src/GHC.IO.html#throwIO/GHC.IO.html#throwIO"><span class="hs-identifier hs-var">throwIO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QState -&gt; String -&gt; GHCiQException
+</span><a href="GHCi.TH.html#GHCiQException"><span class="hs-identifier hs-var">GHCiQException</span></a></span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098766"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098765"><span class="hs-identifier hs-var">err</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-148"></span><span>
+</span><span id="line-149"></span><span class="annot"><a href="GHCi.TH.html#getState"><span class="hs-identifier hs-type">getState</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-type">GHCiQ</span></a></span><span> </span><span class="annot"><a href="GHCi.Message.html#QState"><span class="hs-identifier hs-type">QState</span></a></span><span>
+</span><span id="line-150"></span><span id="getState"><span class="annot"><span class="annottext">getState :: GHCiQ QState
+</span><a href="GHCi.TH.html#getState"><span class="hs-identifier hs-var hs-var">getState</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(QState -&gt; IO (QState, QState)) -&gt; GHCiQ QState
+forall a. (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">((QState -&gt; IO (QState, QState)) -&gt; GHCiQ QState)
+-&gt; (QState -&gt; IO (QState, QState)) -&gt; GHCiQ QState
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679098769"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098769"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(QState, QState) -&gt; IO (QState, QState)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098769"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098769"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-151"></span><span>
+</span><span id="line-152"></span><span class="annot"><a href="GHCi.TH.html#noLoc"><span class="hs-identifier hs-type">noLoc</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Loc/Language.Haskell.TH.Syntax.html#Loc"><span class="hs-identifier hs-type">TH.Loc</span></a></span><span>
+</span><span id="line-153"></span><span id="noLoc"><span class="annot"><span class="annottext">noLoc :: Loc
+</span><a href="GHCi.TH.html#noLoc"><span class="hs-identifier hs-var hs-var">noLoc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String -&gt; CharPos -&gt; CharPos -&gt; Loc
+</span><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Loc/Language.Haskell.TH.Syntax.html#Loc"><span class="hs-identifier hs-var">TH.Loc</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&lt;no file&gt;&quot;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&lt;no package&gt;&quot;</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;&lt;no module&gt;&quot;</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span>
+</span><span id="line-154"></span><span>
+</span><span id="line-155"></span><span class="annot"><span class="hs-comment">-- | Send a 'THMessage' to GHC and return the result.</span></span><span>
+</span><span id="line-156"></span><span id="local-6989586621679098523"><span class="annot"><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-type">ghcCmd</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Class.html#Binary/Data.Binary.Class.html#Binary"><span class="hs-identifier hs-type">Binary</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679098523"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHCi.Message.html#THMessage"><span class="hs-identifier hs-type">THMessage</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHCi.Message.html#THResult"><span class="hs-identifier hs-type">THResult</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679098523"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-type">GHCiQ</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679098523"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-157"></span><span id="ghcCmd"><span class="annot"><span class="annottext">ghcCmd :: forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var hs-var">ghcCmd</span></a></span></span><span> </span><span id="local-6989586621679098779"><span class="annot"><span class="annottext">THMessage (THResult a)
+</span><a href="#local-6989586621679098779"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+forall a. (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">((QState -&gt; IO (a, QState)) -&gt; GHCiQ a)
+-&gt; (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679098780"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098780"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-158"></span><span>  </span><span id="local-6989586621679098781"><span class="annot"><span class="annottext">THResult a
+</span><a href="#local-6989586621679098781"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Pipe -&gt; THMessage (THResult a) -&gt; IO (THResult a)
+forall a. Binary a =&gt; Pipe -&gt; THMessage a -&gt; IO a
+</span><a href="GHCi.Message.html#remoteTHCall"><span class="hs-identifier hs-var">remoteTHCall</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QState -&gt; Pipe
+</span><a href="GHCi.Message.html#qsPipe"><span class="hs-identifier hs-var">qsPipe</span></a></span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098780"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult a)
+</span><a href="#local-6989586621679098779"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-159"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">THResult a
+</span><a href="#local-6989586621679098781"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-160"></span><span>    </span><span class="annot"><a href="GHCi.Message.html#THException"><span class="hs-identifier hs-type">THException</span></a></span><span> </span><span id="local-6989586621679098785"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098785"><span class="hs-identifier hs-var">str</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">GHCiQException -&gt; IO (a, QState)
+forall e a. Exception e =&gt; e -&gt; IO a
+</span><a href="../../base-4.18.2.1/src/GHC.IO.html#throwIO/GHC.IO.html#throwIO"><span class="hs-identifier hs-var">throwIO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QState -&gt; String -&gt; GHCiQException
+</span><a href="GHCi.TH.html#GHCiQException"><span class="hs-identifier hs-var">GHCiQException</span></a></span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098780"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098785"><span class="hs-identifier hs-var">str</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-161"></span><span>    </span><span class="annot"><a href="GHCi.Message.html#THComplete"><span class="hs-identifier hs-type">THComplete</span></a></span><span> </span><span id="local-6989586621679098787"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679098787"><span class="hs-identifier hs-var">res</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(a, QState) -&gt; IO (a, QState)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679098787"><span class="hs-identifier hs-var">res</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098780"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-162"></span><span>
+</span><span id="line-163"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Monad.IO.Class.html#MonadIO/Control.Monad.IO.Class.html#MonadIO"><span class="hs-identifier hs-type">MonadIO</span></a></span><span> </span><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-type">GHCiQ</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-164"></span><span>  </span><span id="local-6989586621679098794"><span class="annot"><span class="annottext">liftIO :: forall a. IO a -&gt; GHCiQ a
+</span><a href="#local-6989586621679098794"><span class="hs-identifier hs-var hs-var hs-var hs-var">liftIO</span></a></span></span><span> </span><span id="local-6989586621679098796"><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679098796"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+forall a. (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">((QState -&gt; IO (a, QState)) -&gt; GHCiQ a)
+-&gt; (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679098797"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098797"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(a -&gt; (a, QState)) -&gt; IO a -&gt; IO (a, QState)
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#fmap/GHC.Base.html#fmap"><span class="hs-identifier hs-var">fmap</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">,</span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098797"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679098796"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-165"></span><span>
+</span><span id="line-166"></span><span class="hs-keyword">instance</span><span> </span><span id="local-6989586621679098816"><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Quasi/Language.Haskell.TH.Syntax.html#Quasi"><span class="hs-identifier hs-type">TH.Quasi</span></a></span><span> </span><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-type">GHCiQ</span></a></span></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-167"></span><span>  </span><span id="local-6989586621679098834"><span class="annot"><span class="annottext">qNewName :: String -&gt; GHCiQ Name
+</span><a href="#local-6989586621679098834"><span class="hs-identifier hs-var hs-var hs-var hs-var">qNewName</span></a></span></span><span> </span><span id="local-6989586621679098836"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098836"><span class="hs-identifier hs-var">str</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult Name) -&gt; GHCiQ Name
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; THMessage (THResult Name)
+</span><a href="GHCi.Message.html#NewName"><span class="hs-identifier hs-var">NewName</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098836"><span class="hs-identifier hs-var">str</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-168"></span><span>  </span><span id="local-6989586621679098840"><span class="annot"><span class="annottext">qReport :: Bool -&gt; String -&gt; GHCiQ ()
+</span><a href="#local-6989586621679098840"><span class="hs-identifier hs-var hs-var hs-var hs-var">qReport</span></a></span></span><span> </span><span id="local-6989586621679098842"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679098842"><span class="hs-identifier hs-var">isError</span></a></span></span><span> </span><span id="local-6989586621679098843"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098843"><span class="hs-identifier hs-var">msg</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult ()) -&gt; GHCiQ ()
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; String -&gt; THMessage (THResult ())
+</span><a href="GHCi.Message.html#Report"><span class="hs-identifier hs-var">Report</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679098842"><span class="hs-identifier hs-var">isError</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098843"><span class="hs-identifier hs-var">msg</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-169"></span><span>
+</span><span id="line-170"></span><span>  </span><span class="hs-comment">-- See Note [TH recover with -fexternal-interpreter] in GHC.Tc.Gen.Splice</span><span>
+</span><span id="line-171"></span><span>  </span><span id="local-6989586621679098854"><span class="annot"><span class="annottext">qRecover :: forall a. GHCiQ a -&gt; GHCiQ a -&gt; GHCiQ a
+</span><a href="#local-6989586621679098854"><span class="hs-identifier hs-var hs-var hs-var hs-var">qRecover</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-type">GHCiQ</span></a></span><span> </span><span id="local-6989586621679098856"><span class="annot"><span class="annottext">QState -&gt; IO (a, QState)
+</span><a href="#local-6989586621679098856"><span class="hs-identifier hs-var">h</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679098857"><span class="annot"><span class="annottext">GHCiQ a
+</span><a href="#local-6989586621679098857"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+forall a. (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">((QState -&gt; IO (a, QState)) -&gt; GHCiQ a)
+-&gt; (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679098858"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098858"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">((forall a. IO a -&gt; IO a) -&gt; IO (a, QState)) -&gt; IO (a, QState)
+forall b. ((forall a. IO a -&gt; IO a) -&gt; IO b) -&gt; IO b
+</span><a href="../../base-4.18.2.1/src/GHC.IO.html#mask/GHC.IO.html#mask"><span class="hs-identifier hs-var">mask</span></a></span><span> </span><span class="annot"><span class="annottext">(((forall a. IO a -&gt; IO a) -&gt; IO (a, QState)) -&gt; IO (a, QState))
+-&gt; ((forall a. IO a -&gt; IO a) -&gt; IO (a, QState)) -&gt; IO (a, QState)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679098860"><span class="annot"><span class="annottext">forall a. IO a -&gt; IO a
+</span><a href="#local-6989586621679098860"><span class="hs-identifier hs-var">unmask</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-172"></span><span>    </span><span class="annot"><span class="annottext">Pipe -&gt; THMessage () -&gt; IO ()
+forall a. Binary a =&gt; Pipe -&gt; THMessage a -&gt; IO a
+</span><a href="GHCi.Message.html#remoteTHCall"><span class="hs-identifier hs-var">remoteTHCall</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QState -&gt; Pipe
+</span><a href="GHCi.Message.html#qsPipe"><span class="hs-identifier hs-var">qsPipe</span></a></span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098858"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">THMessage ()
+</span><a href="GHCi.Message.html#StartRecover"><span class="hs-identifier hs-var">StartRecover</span></a></span><span>
+</span><span id="line-173"></span><span>    </span><span id="local-6989586621679098862"><span class="annot"><span class="annottext">Either GHCiQException (a, QState)
+</span><a href="#local-6989586621679098862"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO (a, QState) -&gt; IO (Either GHCiQException (a, QState))
+forall e a. Exception e =&gt; IO a -&gt; IO (Either e a)
+</span><a href="../../base-4.18.2.1/src/Control.Exception.Base.html#try/Control.Exception.Base.html#try"><span class="hs-identifier hs-var">try</span></a></span><span> </span><span class="annot"><span class="annottext">(IO (a, QState) -&gt; IO (Either GHCiQException (a, QState)))
+-&gt; IO (a, QState) -&gt; IO (Either GHCiQException (a, QState))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">IO (a, QState) -&gt; IO (a, QState)
+forall a. IO a -&gt; IO a
+</span><a href="#local-6989586621679098860"><span class="hs-identifier hs-var">unmask</span></a></span><span> </span><span class="annot"><span class="annottext">(IO (a, QState) -&gt; IO (a, QState))
+-&gt; IO (a, QState) -&gt; IO (a, QState)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">GHCiQ a -&gt; QState -&gt; IO (a, QState)
+forall a. GHCiQ a -&gt; QState -&gt; IO (a, QState)
+</span><a href="GHCi.TH.html#runGHCiQ"><span class="hs-identifier hs-var">runGHCiQ</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">GHCiQ a
+</span><a href="#local-6989586621679098857"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">GHCiQ a -&gt; GHCiQ () -&gt; GHCiQ a
+forall a b. GHCiQ a -&gt; GHCiQ b -&gt; GHCiQ a
+forall (f :: * -&gt; *) a b. Applicative f =&gt; f a -&gt; f b -&gt; f a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3C%2A/GHC.Base.html#%3C%2A"><span class="hs-operator hs-var">&lt;*</span></a></span><span> </span><span class="annot"><span class="annottext">THMessage (THResult ()) -&gt; GHCiQ ()
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="annot"><span class="annottext">THMessage (THResult ())
+</span><a href="GHCi.Message.html#FailIfErrs"><span class="hs-identifier hs-var">FailIfErrs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098858"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-174"></span><span>    </span><span class="annot"><span class="annottext">Pipe -&gt; THMessage () -&gt; IO ()
+forall a. Binary a =&gt; Pipe -&gt; THMessage a -&gt; IO a
+</span><a href="GHCi.Message.html#remoteTHCall"><span class="hs-identifier hs-var">remoteTHCall</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QState -&gt; Pipe
+</span><a href="GHCi.Message.html#qsPipe"><span class="hs-identifier hs-var">qsPipe</span></a></span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098858"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; THMessage ()
+</span><a href="GHCi.Message.html#EndRecover"><span class="hs-identifier hs-var">EndRecover</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Either GHCiQException (a, QState) -&gt; Bool
+forall a b. Either a b -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.Either.html#isLeft/Data.Either.html#isLeft"><span class="hs-identifier hs-var">isLeft</span></a></span><span> </span><span class="annot"><span class="annottext">Either GHCiQException (a, QState)
+</span><a href="#local-6989586621679098862"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-175"></span><span>    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Either GHCiQException (a, QState)
+</span><a href="#local-6989586621679098862"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-176"></span><span>      </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Either.html#Left/Data.Either.html#Left"><span class="hs-identifier hs-type">Left</span></a></span><span> </span><span class="annot"><a href="GHCi.TH.html#GHCiQException"><span class="hs-identifier hs-type">GHCiQException</span></a></span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">QState -&gt; IO (a, QState)
+</span><a href="#local-6989586621679098856"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098858"><span class="hs-identifier hs-var">s</span></a></span><span>
+</span><span id="line-177"></span><span>      </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Either.html#Right/Data.Either.html#Right"><span class="hs-identifier hs-type">Right</span></a></span><span> </span><span id="local-6989586621679098868"><span class="annot"><span class="annottext">(a, QState)
+</span><a href="#local-6989586621679098868"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(a, QState) -&gt; IO (a, QState)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(a, QState)
+</span><a href="#local-6989586621679098868"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-178"></span><span>  </span><span id="local-6989586621679098872"><span class="annot"><span class="annottext">qLookupName :: Bool -&gt; String -&gt; GHCiQ (Maybe Name)
+</span><a href="#local-6989586621679098872"><span class="hs-identifier hs-var hs-var hs-var hs-var">qLookupName</span></a></span></span><span> </span><span id="local-6989586621679098874"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679098874"><span class="hs-identifier hs-var">isType</span></a></span></span><span> </span><span id="local-6989586621679098875"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098875"><span class="hs-identifier hs-var">occ</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult (Maybe Name)) -&gt; GHCiQ (Maybe Name)
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; String -&gt; THMessage (THResult (Maybe Name))
+</span><a href="GHCi.Message.html#LookupName"><span class="hs-identifier hs-var">LookupName</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679098874"><span class="hs-identifier hs-var">isType</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098875"><span class="hs-identifier hs-var">occ</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-179"></span><span>  </span><span id="local-6989586621679098879"><span class="annot"><span class="annottext">qReify :: Name -&gt; GHCiQ Info
+</span><a href="#local-6989586621679098879"><span class="hs-identifier hs-var hs-var hs-var hs-var">qReify</span></a></span></span><span> </span><span id="local-6989586621679098881"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621679098881"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult Info) -&gt; GHCiQ Info
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; THMessage (THResult Info)
+</span><a href="GHCi.Message.html#Reify"><span class="hs-identifier hs-var">Reify</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621679098881"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-180"></span><span>  </span><span id="local-6989586621679098886"><span class="annot"><span class="annottext">qReifyFixity :: Name -&gt; GHCiQ (Maybe Fixity)
+</span><a href="#local-6989586621679098886"><span class="hs-identifier hs-var hs-var hs-var hs-var">qReifyFixity</span></a></span></span><span> </span><span id="local-6989586621679098888"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621679098888"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult (Maybe Fixity)) -&gt; GHCiQ (Maybe Fixity)
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; THMessage (THResult (Maybe Fixity))
+</span><a href="GHCi.Message.html#ReifyFixity"><span class="hs-identifier hs-var">ReifyFixity</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621679098888"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-181"></span><span>  </span><span id="local-6989586621679098891"><span class="annot"><span class="annottext">qReifyType :: Name -&gt; GHCiQ Type
+</span><a href="#local-6989586621679098891"><span class="hs-identifier hs-var hs-var hs-var hs-var">qReifyType</span></a></span></span><span> </span><span id="local-6989586621679098893"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621679098893"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult Type) -&gt; GHCiQ Type
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; THMessage (THResult Type)
+</span><a href="GHCi.Message.html#ReifyType"><span class="hs-identifier hs-var">ReifyType</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621679098893"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-182"></span><span>  </span><span id="local-6989586621679098896"><span class="annot"><span class="annottext">qReifyInstances :: Name -&gt; [Type] -&gt; GHCiQ [Dec]
+</span><a href="#local-6989586621679098896"><span class="hs-identifier hs-var hs-var hs-var hs-var">qReifyInstances</span></a></span></span><span> </span><span id="local-6989586621679098898"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621679098898"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span id="local-6989586621679098899"><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621679098899"><span class="hs-identifier hs-var">tys</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult [Dec]) -&gt; GHCiQ [Dec]
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; [Type] -&gt; THMessage (THResult [Dec])
+</span><a href="GHCi.Message.html#ReifyInstances"><span class="hs-identifier hs-var">ReifyInstances</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621679098898"><span class="hs-identifier hs-var">name</span></a></span><span> </span><span class="annot"><span class="annottext">[Type]
+</span><a href="#local-6989586621679098899"><span class="hs-identifier hs-var">tys</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-183"></span><span>  </span><span id="local-6989586621679098904"><span class="annot"><span class="annottext">qReifyRoles :: Name -&gt; GHCiQ [Role]
+</span><a href="#local-6989586621679098904"><span class="hs-identifier hs-var hs-var hs-var hs-var">qReifyRoles</span></a></span></span><span> </span><span id="local-6989586621679098906"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621679098906"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult [Role]) -&gt; GHCiQ [Role]
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; THMessage (THResult [Role])
+</span><a href="GHCi.Message.html#ReifyRoles"><span class="hs-identifier hs-var">ReifyRoles</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621679098906"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-184"></span><span>
+</span><span id="line-185"></span><span>  </span><span class="hs-comment">-- To reify annotations, we send GHC the AnnLookup and also the</span><span>
+</span><span id="line-186"></span><span>  </span><span class="hs-comment">-- TypeRep of the thing we're looking for, to avoid needing to</span><span>
+</span><span id="line-187"></span><span>  </span><span class="hs-comment">-- serialize irrelevant annotations.</span><span>
+</span><span id="line-188"></span><span>  </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#qReifyAnnotations/Language.Haskell.TH.Syntax.html#qReifyAnnotations"><span class="hs-identifier hs-type">qReifyAnnotations</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679098909"><span class="annot"><a href="#local-6989586621679098909"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Data.html#Data/Data.Data.html#Data"><span class="hs-identifier hs-type">Data</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679098909"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#AnnLookup/Language.Haskell.TH.Syntax.html#AnnLookup"><span class="hs-identifier hs-type">TH.AnnLookup</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-type">GHCiQ</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621679098909"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-189"></span><span>  </span><span id="local-6989586621679098920"><span class="annot"><span class="annottext">qReifyAnnotations :: forall a. Data a =&gt; AnnLookup -&gt; GHCiQ [a]
+</span><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#qReifyAnnotations/Language.Haskell.TH.Syntax.html#qReifyAnnotations"><span class="hs-identifier hs-var hs-var hs-var hs-var">qReifyAnnotations</span></a></span></span><span> </span><span id="local-6989586621679098921"><span class="annot"><span class="annottext">AnnLookup
+</span><a href="#local-6989586621679098921"><span class="hs-identifier hs-var">lookup</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-190"></span><span>    </span><span class="annot"><span class="annottext">(ByteString -&gt; a) -&gt; [ByteString] -&gt; [a]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Word8] -&gt; a
+forall a. Data a =&gt; [Word8] -&gt; a
+</span><a href="../../ghc-boot-9.6.5/src/GHC.Serialized.html#deserializeWithData/GHC.Serialized.html#deserializeWithData"><span class="hs-identifier hs-var">deserializeWithData</span></a></span><span> </span><span class="annot"><span class="annottext">([Word8] -&gt; a) -&gt; (ByteString -&gt; [Word8]) -&gt; ByteString -&gt; a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; [Word8]
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.html#unpack/Data.ByteString.html#unpack"><span class="hs-identifier hs-var">B.unpack</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([ByteString] -&gt; [a]) -&gt; GHCiQ [ByteString] -&gt; GHCiQ [a]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span>
+</span><span id="line-191"></span><span>      </span><span class="annot"><span class="annottext">THMessage (THResult [ByteString]) -&gt; GHCiQ [ByteString]
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AnnLookup -&gt; TypeRep -&gt; THMessage (THResult [ByteString])
+</span><a href="GHCi.Message.html#ReifyAnnotations"><span class="hs-identifier hs-var">ReifyAnnotations</span></a></span><span> </span><span class="annot"><span class="annottext">AnnLookup
+</span><a href="#local-6989586621679098921"><span class="hs-identifier hs-var">lookup</span></a></span><span> </span><span class="annot"><span class="annottext">TypeRep
+</span><a href="#local-6989586621679098926"><span class="hs-identifier hs-var">typerep</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-192"></span><span>    </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679098926"><span class="annot"><span class="annottext">typerep :: TypeRep
+</span><a href="#local-6989586621679098926"><span class="hs-identifier hs-var hs-var">typerep</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">a -&gt; TypeRep
+forall a. Typeable a =&gt; a -&gt; TypeRep
+</span><a href="../../base-4.18.2.1/src/Data.Typeable.html#typeOf/Data.Typeable.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+forall a. HasCallStack =&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Err.html#undefined/GHC.Err.html#undefined"><span class="hs-identifier hs-var">undefined</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679098909"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-193"></span><span>
+</span><span id="line-194"></span><span>  </span><span id="local-6989586621679098934"><span class="annot"><span class="annottext">qReifyModule :: Module -&gt; GHCiQ ModuleInfo
+</span><a href="#local-6989586621679098934"><span class="hs-identifier hs-var hs-var hs-var hs-var">qReifyModule</span></a></span></span><span> </span><span id="local-6989586621679098936"><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621679098936"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult ModuleInfo) -&gt; GHCiQ ModuleInfo
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Module -&gt; THMessage (THResult ModuleInfo)
+</span><a href="GHCi.Message.html#ReifyModule"><span class="hs-identifier hs-var">ReifyModule</span></a></span><span> </span><span class="annot"><span class="annottext">Module
+</span><a href="#local-6989586621679098936"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-195"></span><span>  </span><span id="local-6989586621679098941"><span class="annot"><span class="annottext">qReifyConStrictness :: Name -&gt; GHCiQ [DecidedStrictness]
+</span><a href="#local-6989586621679098941"><span class="hs-identifier hs-var hs-var hs-var hs-var">qReifyConStrictness</span></a></span></span><span> </span><span id="local-6989586621679098943"><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621679098943"><span class="hs-identifier hs-var">name</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult [DecidedStrictness])
+-&gt; GHCiQ [DecidedStrictness]
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Name -&gt; THMessage (THResult [DecidedStrictness])
+</span><a href="GHCi.Message.html#ReifyConStrictness"><span class="hs-identifier hs-var">ReifyConStrictness</span></a></span><span> </span><span class="annot"><span class="annottext">Name
+</span><a href="#local-6989586621679098943"><span class="hs-identifier hs-var">name</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-196"></span><span>  </span><span id="local-6989586621679098946"><span class="annot"><span class="annottext">qLocation :: GHCiQ Loc
+</span><a href="#local-6989586621679098946"><span class="hs-identifier hs-var hs-var hs-var hs-var">qLocation</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Loc -&gt; Maybe Loc -&gt; Loc
+forall a. a -&gt; Maybe a -&gt; a
+</span><a href="../../base-4.18.2.1/src/Data.Maybe.html#fromMaybe/Data.Maybe.html#fromMaybe"><span class="hs-identifier hs-var">fromMaybe</span></a></span><span> </span><span class="annot"><span class="annottext">Loc
+</span><a href="GHCi.TH.html#noLoc"><span class="hs-identifier hs-var">noLoc</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe Loc -&gt; Loc) -&gt; (QState -&gt; Maybe Loc) -&gt; QState -&gt; Loc
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">QState -&gt; Maybe Loc
+</span><a href="GHCi.Message.html#qsLocation"><span class="hs-identifier hs-var">qsLocation</span></a></span><span> </span><span class="annot"><span class="annottext">(QState -&gt; Loc) -&gt; GHCiQ QState -&gt; GHCiQ Loc
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">GHCiQ QState
+</span><a href="GHCi.TH.html#getState"><span class="hs-identifier hs-var">getState</span></a></span><span>
+</span><span id="line-197"></span><span>  </span><span id="local-6989586621679098953"><span class="annot"><span class="annottext">qGetPackageRoot :: GHCiQ String
+</span><a href="#local-6989586621679098953"><span class="hs-identifier hs-var hs-var hs-var hs-var">qGetPackageRoot</span></a></span></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult String) -&gt; GHCiQ String
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="annot"><span class="annottext">THMessage (THResult String)
+</span><a href="GHCi.Message.html#GetPackageRoot"><span class="hs-identifier hs-var">GetPackageRoot</span></a></span><span>
+</span><span id="line-198"></span><span>  </span><span id="local-6989586621679098957"><span class="annot"><span class="annottext">qAddDependentFile :: String -&gt; GHCiQ ()
+</span><a href="#local-6989586621679098957"><span class="hs-identifier hs-var hs-var hs-var hs-var">qAddDependentFile</span></a></span></span><span> </span><span id="local-6989586621679098959"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098959"><span class="hs-identifier hs-var">file</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult ()) -&gt; GHCiQ ()
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; THMessage (THResult ())
+</span><a href="GHCi.Message.html#AddDependentFile"><span class="hs-identifier hs-var">AddDependentFile</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098959"><span class="hs-identifier hs-var">file</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-199"></span><span>  </span><span id="local-6989586621679098963"><span class="annot"><span class="annottext">qAddTempFile :: String -&gt; GHCiQ String
+</span><a href="#local-6989586621679098963"><span class="hs-identifier hs-var hs-var hs-var hs-var">qAddTempFile</span></a></span></span><span> </span><span id="local-6989586621679098965"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098965"><span class="hs-identifier hs-var">suffix</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult String) -&gt; GHCiQ String
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; THMessage (THResult String)
+</span><a href="GHCi.Message.html#AddTempFile"><span class="hs-identifier hs-var">AddTempFile</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098965"><span class="hs-identifier hs-var">suffix</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-200"></span><span>  </span><span id="local-6989586621679098968"><span class="annot"><span class="annottext">qAddTopDecls :: [Dec] -&gt; GHCiQ ()
+</span><a href="#local-6989586621679098968"><span class="hs-identifier hs-var hs-var hs-var hs-var">qAddTopDecls</span></a></span></span><span> </span><span id="local-6989586621679098970"><span class="annot"><span class="annottext">[Dec]
+</span><a href="#local-6989586621679098970"><span class="hs-identifier hs-var">decls</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult ()) -&gt; GHCiQ ()
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[Dec] -&gt; THMessage (THResult ())
+</span><a href="GHCi.Message.html#AddTopDecls"><span class="hs-identifier hs-var">AddTopDecls</span></a></span><span> </span><span class="annot"><span class="annottext">[Dec]
+</span><a href="#local-6989586621679098970"><span class="hs-identifier hs-var">decls</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-201"></span><span>  </span><span id="local-6989586621679098973"><span class="annot"><span class="annottext">qAddForeignFilePath :: ForeignSrcLang -&gt; String -&gt; GHCiQ ()
+</span><a href="#local-6989586621679098973"><span class="hs-identifier hs-var hs-var hs-var hs-var">qAddForeignFilePath</span></a></span></span><span> </span><span id="local-6989586621679098975"><span class="annot"><span class="annottext">ForeignSrcLang
+</span><a href="#local-6989586621679098975"><span class="hs-identifier hs-var">lang</span></a></span></span><span> </span><span id="local-6989586621679098976"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098976"><span class="hs-identifier hs-var">fp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult ()) -&gt; GHCiQ ()
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ForeignSrcLang -&gt; String -&gt; THMessage (THResult ())
+</span><a href="GHCi.Message.html#AddForeignFilePath"><span class="hs-identifier hs-var">AddForeignFilePath</span></a></span><span> </span><span class="annot"><span class="annottext">ForeignSrcLang
+</span><a href="#local-6989586621679098975"><span class="hs-identifier hs-var">lang</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098976"><span class="hs-identifier hs-var">fp</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-202"></span><span>  </span><span id="local-6989586621679098982"><span class="annot"><span class="annottext">qAddModFinalizer :: Q () -&gt; GHCiQ ()
+</span><a href="#local-6989586621679098982"><span class="hs-identifier hs-var hs-var hs-var hs-var">qAddModFinalizer</span></a></span></span><span> </span><span id="local-6989586621679098984"><span class="annot"><span class="annottext">Q ()
+</span><a href="#local-6989586621679098984"><span class="hs-identifier hs-var">fin</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(QState -&gt; IO (RemoteRef (Q ()), QState))
+-&gt; GHCiQ (RemoteRef (Q ()))
+forall a. (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621679098985"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098985"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Q () -&gt; IO (RemoteRef (Q ()))
+forall a. a -&gt; IO (RemoteRef a)
+</span><a href="GHCi.RemoteTypes.html#mkRemoteRef"><span class="hs-identifier hs-var">mkRemoteRef</span></a></span><span> </span><span class="annot"><span class="annottext">Q ()
+</span><a href="#local-6989586621679098984"><span class="hs-identifier hs-var">fin</span></a></span><span> </span><span class="annot"><span class="annottext">IO (RemoteRef (Q ()))
+-&gt; (RemoteRef (Q ()) -&gt; IO (RemoteRef (Q ()), QState))
+-&gt; IO (RemoteRef (Q ()), QState)
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3E%3E%3D/GHC.Base.html#%3E%3E%3D"><span class="hs-operator hs-var">&gt;&gt;=</span></a></span><span> </span><span class="annot"><span class="annottext">(RemoteRef (Q ()), QState) -&gt; IO (RemoteRef (Q ()), QState)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">((RemoteRef (Q ()), QState) -&gt; IO (RemoteRef (Q ()), QState))
+-&gt; (RemoteRef (Q ()) -&gt; (RemoteRef (Q ()), QState))
+-&gt; RemoteRef (Q ())
+-&gt; IO (RemoteRef (Q ()), QState)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098985"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">GHCiQ (RemoteRef (Q ()))
+-&gt; (RemoteRef (Q ()) -&gt; GHCiQ ()) -&gt; GHCiQ ()
+forall a b. GHCiQ a -&gt; (a -&gt; GHCiQ b) -&gt; GHCiQ b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3E%3E%3D/GHC.Base.html#%3E%3E%3D"><span class="hs-operator hs-var">&gt;&gt;=</span></a></span><span>
+</span><span id="line-203"></span><span>                         </span><span class="annot"><span class="annottext">THMessage (THResult ()) -&gt; GHCiQ ()
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="annot"><span class="annottext">(THMessage (THResult ()) -&gt; GHCiQ ())
+-&gt; (RemoteRef (Q ()) -&gt; THMessage (THResult ()))
+-&gt; RemoteRef (Q ())
+-&gt; GHCiQ ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">RemoteRef (Q ()) -&gt; THMessage (THResult ())
+</span><a href="GHCi.Message.html#AddModFinalizer"><span class="hs-identifier hs-var">AddModFinalizer</span></a></span><span>
+</span><span id="line-204"></span><span>  </span><span id="local-6989586621679098989"><span class="annot"><span class="annottext">qAddCorePlugin :: String -&gt; GHCiQ ()
+</span><a href="#local-6989586621679098989"><span class="hs-identifier hs-var hs-var hs-var hs-var">qAddCorePlugin</span></a></span></span><span> </span><span id="local-6989586621679098991"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098991"><span class="hs-identifier hs-var">str</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult ()) -&gt; GHCiQ ()
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; THMessage (THResult ())
+</span><a href="GHCi.Message.html#AddCorePlugin"><span class="hs-identifier hs-var">AddCorePlugin</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679098991"><span class="hs-identifier hs-var">str</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-205"></span><span>  </span><span id="local-6989586621679098996"><span class="annot"><span class="annottext">qGetQ :: forall a. Typeable a =&gt; GHCiQ (Maybe a)
+</span><a href="#local-6989586621679098996"><span class="hs-identifier hs-var hs-var hs-var hs-var">qGetQ</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(QState -&gt; IO (Maybe a, QState)) -&gt; GHCiQ (Maybe a)
+forall a. (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">((QState -&gt; IO (Maybe a, QState)) -&gt; GHCiQ (Maybe a))
+-&gt; (QState -&gt; IO (Maybe a, QState)) -&gt; GHCiQ (Maybe a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679098998"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098998"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-206"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span class="annot"><a href="#local-6989586621679098999"><span class="hs-identifier hs-type">lookup</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679098574"><span class="annot"><a href="#local-6989586621679098574"><span class="hs-identifier hs-type">a</span></a></span></span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Typeable.Internal.html#Typeable/Data.Typeable.Internal.html#Typeable"><span class="hs-identifier hs-type">Typeable</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679098574"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="../../containers-0.6.7/src/Data.Map.Internal.html#Map/Data.Map.Internal.html#Map"><span class="hs-identifier hs-type">Map</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Typeable.html#TypeRep/Data.Typeable.html#TypeRep"><span class="hs-identifier hs-type">TypeRep</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Dynamic.html#Dynamic/Data.Dynamic.html#Dynamic"><span class="hs-identifier hs-type">Dynamic</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679098574"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-207"></span><span>        </span><span id="local-6989586621679098999"><span class="annot"><span class="annottext">lookup :: forall a. Typeable a =&gt; Map TypeRep Dynamic -&gt; Maybe a
+</span><a href="#local-6989586621679098999"><span class="hs-identifier hs-var hs-var">lookup</span></a></span></span><span> </span><span id="local-6989586621679099009"><span class="annot"><span class="annottext">Map TypeRep Dynamic
+</span><a href="#local-6989586621679099009"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Dynamic -&gt; Maybe a
+forall a. Typeable a =&gt; Dynamic -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/Data.Dynamic.html#fromDynamic/Data.Dynamic.html#fromDynamic"><span class="hs-identifier hs-var">fromDynamic</span></a></span><span> </span><span class="annot"><span class="annottext">(Dynamic -&gt; Maybe a) -&gt; Maybe Dynamic -&gt; Maybe a
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; m a -&gt; m b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3D%3C%3C/GHC.Base.html#%3D%3C%3C"><span class="hs-operator hs-var">=&lt;&lt;</span></a></span><span> </span><span class="annot"><span class="annottext">TypeRep -&gt; Map TypeRep Dynamic -&gt; Maybe Dynamic
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><a href="../../containers-0.6.7/src/Data.Map.Internal.html#lookup/Data.Map.Internal.html#lookup"><span class="hs-identifier hs-var">M.lookup</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; TypeRep
+forall a. Typeable a =&gt; a -&gt; TypeRep
+</span><a href="../../base-4.18.2.1/src/Data.Typeable.html#typeOf/Data.Typeable.html#typeOf"><span class="hs-identifier hs-var">typeOf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+forall a. HasCallStack =&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Err.html#undefined/GHC.Err.html#undefined"><span class="hs-identifier hs-var">undefined</span></a></span><span class="hs-glyph">::</span><span class="annot"><a href="#local-6989586621679098574"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Map TypeRep Dynamic
+</span><a href="#local-6989586621679099009"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-208"></span><span>    </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">(Maybe a, QState) -&gt; IO (Maybe a, QState)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map TypeRep Dynamic -&gt; Maybe a
+forall a. Typeable a =&gt; Map TypeRep Dynamic -&gt; Maybe a
+</span><a href="#local-6989586621679098999"><span class="hs-identifier hs-var">lookup</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">QState -&gt; Map TypeRep Dynamic
+</span><a href="GHCi.Message.html#qsMap"><span class="hs-identifier hs-var">qsMap</span></a></span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098998"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679098998"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-209"></span><span>  </span><span id="local-6989586621679099019"><span class="annot"><span class="annottext">qPutQ :: forall a. Typeable a =&gt; a -&gt; GHCiQ ()
+</span><a href="#local-6989586621679099019"><span class="hs-identifier hs-var hs-var hs-var hs-var">qPutQ</span></a></span></span><span> </span><span id="local-6989586621679099021"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679099021"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(QState -&gt; IO ((), QState)) -&gt; GHCiQ ()
+forall a. (QState -&gt; IO (a, QState)) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#GHCiQ"><span class="hs-identifier hs-var">GHCiQ</span></a></span><span> </span><span class="annot"><span class="annottext">((QState -&gt; IO ((), QState)) -&gt; GHCiQ ())
+-&gt; (QState -&gt; IO ((), QState)) -&gt; GHCiQ ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679099022"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679099022"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-210"></span><span>    </span><span class="annot"><span class="annottext">((), QState) -&gt; IO ((), QState)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679099022"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHCi.Message.html#qsMap"><span class="hs-identifier hs-var">qsMap</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="../../containers-0.6.7/src/Data.Map.Internal.html#insert/Data.Map.Internal.html#insert"><span class="hs-identifier hs-type">M.insert</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Typeable.html#typeOf/Data.Typeable.html#typeOf"><span class="hs-identifier hs-type">typeOf</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679099021"><span class="hs-identifier hs-type">k</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Dynamic.html#toDyn/Data.Dynamic.html#toDyn"><span class="hs-identifier hs-type">toDyn</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679099021"><span class="hs-identifier hs-type">k</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHCi.Message.html#qsMap"><span class="hs-identifier hs-var">qsMap</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679099022"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">}</span><span class="hs-special">)</span><span>
+</span><span id="line-211"></span><span>  </span><span id="local-6989586621679099026"><span class="annot"><span class="annottext">qIsExtEnabled :: Extension -&gt; GHCiQ Bool
+</span><a href="#local-6989586621679099026"><span class="hs-identifier hs-var hs-var hs-var hs-var">qIsExtEnabled</span></a></span></span><span> </span><span id="local-6989586621679099028"><span class="annot"><span class="annottext">Extension
+</span><a href="#local-6989586621679099028"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult Bool) -&gt; GHCiQ Bool
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Extension -&gt; THMessage (THResult Bool)
+</span><a href="GHCi.Message.html#IsExtEnabled"><span class="hs-identifier hs-var">IsExtEnabled</span></a></span><span> </span><span class="annot"><span class="annottext">Extension
+</span><a href="#local-6989586621679099028"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-212"></span><span>  </span><span id="local-6989586621679099033"><span class="annot"><span class="annottext">qExtsEnabled :: GHCiQ [Extension]
+</span><a href="#local-6989586621679099033"><span class="hs-identifier hs-var hs-var hs-var hs-var">qExtsEnabled</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult [Extension]) -&gt; GHCiQ [Extension]
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="annot"><span class="annottext">THMessage (THResult [Extension])
+</span><a href="GHCi.Message.html#ExtsEnabled"><span class="hs-identifier hs-var">ExtsEnabled</span></a></span><span>
+</span><span id="line-213"></span><span>  </span><span id="local-6989586621679099037"><span class="annot"><span class="annottext">qPutDoc :: DocLoc -&gt; String -&gt; GHCiQ ()
+</span><a href="#local-6989586621679099037"><span class="hs-identifier hs-var hs-var hs-var hs-var">qPutDoc</span></a></span></span><span> </span><span id="local-6989586621679099039"><span class="annot"><span class="annottext">DocLoc
+</span><a href="#local-6989586621679099039"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span id="local-6989586621679099040"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679099040"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult ()) -&gt; GHCiQ ()
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">DocLoc -&gt; String -&gt; THMessage (THResult ())
+</span><a href="GHCi.Message.html#PutDoc"><span class="hs-identifier hs-var">PutDoc</span></a></span><span> </span><span class="annot"><span class="annottext">DocLoc
+</span><a href="#local-6989586621679099039"><span class="hs-identifier hs-var">l</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679099040"><span class="hs-identifier hs-var">s</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-214"></span><span>  </span><span id="local-6989586621679099045"><span class="annot"><span class="annottext">qGetDoc :: DocLoc -&gt; GHCiQ (Maybe String)
+</span><a href="#local-6989586621679099045"><span class="hs-identifier hs-var hs-var hs-var hs-var">qGetDoc</span></a></span></span><span> </span><span id="local-6989586621679099047"><span class="annot"><span class="annottext">DocLoc
+</span><a href="#local-6989586621679099047"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">THMessage (THResult (Maybe String)) -&gt; GHCiQ (Maybe String)
+forall a. Binary a =&gt; THMessage (THResult a) -&gt; GHCiQ a
+</span><a href="GHCi.TH.html#ghcCmd"><span class="hs-identifier hs-var">ghcCmd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">DocLoc -&gt; THMessage (THResult (Maybe String))
+</span><a href="GHCi.Message.html#GetDoc"><span class="hs-identifier hs-var">GetDoc</span></a></span><span> </span><span class="annot"><span class="annottext">DocLoc
+</span><a href="#local-6989586621679099047"><span class="hs-identifier hs-var">l</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-215"></span><span>
+</span><span id="line-216"></span><span class="hs-comment">-- | The implementation of the 'StartTH' message: create</span><span>
+</span><span id="line-217"></span><span class="hs-comment">-- a new IORef QState, and return a RemoteRef to it.</span><span>
+</span><span id="line-218"></span><span class="annot"><a href="GHCi.TH.html#startTH"><span class="hs-identifier hs-type">startTH</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHCi.RemoteTypes.html#RemoteRef"><span class="hs-identifier hs-type">RemoteRef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IORef.html#IORef/GHC.IORef.html#IORef"><span class="hs-identifier hs-type">IORef</span></a></span><span> </span><span class="annot"><a href="GHCi.Message.html#QState"><span class="hs-identifier hs-type">QState</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-219"></span><span id="startTH"><span class="annot"><span class="annottext">startTH :: IO (RemoteRef (IORef QState))
+</span><a href="GHCi.TH.html#startTH"><span class="hs-identifier hs-var hs-var">startTH</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-220"></span><span>  </span><span id="local-6989586621679099050"><span class="annot"><span class="annottext">IORef QState
+</span><a href="#local-6989586621679099050"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">QState -&gt; IO (IORef QState)
+forall a. a -&gt; IO (IORef a)
+</span><a href="../../base-4.18.2.1/src/GHC.IORef.html#newIORef/GHC.IORef.html#newIORef"><span class="hs-identifier hs-var">newIORef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Pipe -&gt; QState
+</span><a href="GHCi.TH.html#initQState"><span class="hs-identifier hs-var">initQState</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Pipe
+forall a. HasCallStack =&gt; String -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Err.html#error/GHC.Err.html#error"><span class="hs-identifier hs-var">error</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;startTH: no pipe&quot;</span></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-221"></span><span>  </span><span class="annot"><span class="annottext">IORef QState -&gt; IO (RemoteRef (IORef QState))
+forall a. a -&gt; IO (RemoteRef a)
+</span><a href="GHCi.RemoteTypes.html#mkRemoteRef"><span class="hs-identifier hs-var">mkRemoteRef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef QState
+</span><a href="#local-6989586621679099050"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-222"></span><span>
+</span><span id="line-223"></span><span class="hs-comment">-- | Runs the mod finalizers.</span><span>
+</span><span id="line-224"></span><span class="hs-comment">--</span><span>
+</span><span id="line-225"></span><span class="hs-comment">-- The references must be created on the caller process.</span><span>
+</span><span id="line-226"></span><span class="annot"><a href="GHCi.TH.html#runModFinalizerRefs"><span class="hs-identifier hs-type">runModFinalizerRefs</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHCi.Message.html#Pipe"><span class="hs-identifier hs-type">Pipe</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHCi.RemoteTypes.html#RemoteRef"><span class="hs-identifier hs-type">RemoteRef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IORef.html#IORef/GHC.IORef.html#IORef"><span class="hs-identifier hs-type">IORef</span></a></span><span> </span><span class="annot"><a href="GHCi.Message.html#QState"><span class="hs-identifier hs-type">QState</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-227"></span><span>                    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHCi.RemoteTypes.html#RemoteRef"><span class="hs-identifier hs-type">RemoteRef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Q/Language.Haskell.TH.Syntax.html#Q"><span class="hs-identifier hs-type">TH.Q</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-228"></span><span>                    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-229"></span><span id="runModFinalizerRefs"><span class="annot"><span class="annottext">runModFinalizerRefs :: Pipe -&gt; RemoteRef (IORef QState) -&gt; [RemoteRef (Q ())] -&gt; IO ()
+</span><a href="GHCi.TH.html#runModFinalizerRefs"><span class="hs-identifier hs-var hs-var">runModFinalizerRefs</span></a></span></span><span> </span><span id="local-6989586621679099053"><span class="annot"><span class="annottext">Pipe
+</span><a href="#local-6989586621679099053"><span class="hs-identifier hs-var">pipe</span></a></span></span><span> </span><span id="local-6989586621679099054"><span class="annot"><span class="annottext">RemoteRef (IORef QState)
+</span><a href="#local-6989586621679099054"><span class="hs-identifier hs-var">rstate</span></a></span></span><span> </span><span id="local-6989586621679099055"><span class="annot"><span class="annottext">[RemoteRef (Q ())]
+</span><a href="#local-6989586621679099055"><span class="hs-identifier hs-var">qrefs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-230"></span><span>  </span><span id="local-6989586621679099056"><span class="annot"><span class="annottext">[Q ()]
+</span><a href="#local-6989586621679099056"><span class="hs-identifier hs-var">qs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(RemoteRef (Q ()) -&gt; IO (Q ())) -&gt; [RemoteRef (Q ())] -&gt; IO [Q ()]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m (t b)
+forall (m :: * -&gt; *) a b. Monad m =&gt; (a -&gt; m b) -&gt; [a] -&gt; m [b]
+</span><a href="../../base-4.18.2.1/src/Data.Traversable.html#mapM/Data.Traversable.html#mapM"><span class="hs-identifier hs-var">mapM</span></a></span><span> </span><span class="annot"><span class="annottext">RemoteRef (Q ()) -&gt; IO (Q ())
+forall a. RemoteRef a -&gt; IO a
+</span><a href="GHCi.RemoteTypes.html#localRef"><span class="hs-identifier hs-var">localRef</span></a></span><span> </span><span class="annot"><span class="annottext">[RemoteRef (Q ())]
+</span><a href="#local-6989586621679099055"><span class="hs-identifier hs-var">qrefs</span></a></span><span>
+</span><span id="line-231"></span><span>  </span><span id="local-6989586621679099059"><span class="annot"><span class="annottext">IORef QState
+</span><a href="#local-6989586621679099059"><span class="hs-identifier hs-var">qstateref</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">RemoteRef (IORef QState) -&gt; IO (IORef QState)
+forall a. RemoteRef a -&gt; IO a
+</span><a href="GHCi.RemoteTypes.html#localRef"><span class="hs-identifier hs-var">localRef</span></a></span><span> </span><span class="annot"><span class="annottext">RemoteRef (IORef QState)
+</span><a href="#local-6989586621679099054"><span class="hs-identifier hs-var">rstate</span></a></span><span>
+</span><span id="line-232"></span><span>  </span><span id="local-6989586621679099060"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679099060"><span class="hs-identifier hs-var">qstate</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef QState -&gt; IO QState
+forall a. IORef a -&gt; IO a
+</span><a href="../../base-4.18.2.1/src/GHC.IORef.html#readIORef/GHC.IORef.html#readIORef"><span class="hs-identifier hs-var">readIORef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef QState
+</span><a href="#local-6989586621679099059"><span class="hs-identifier hs-var">qstateref</span></a></span><span>
+</span><span id="line-233"></span><span>  </span><span class="annot"><span class="annottext">((), QState)
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">GHCiQ () -&gt; QState -&gt; IO ((), QState)
+forall a. GHCiQ a -&gt; QState -&gt; IO (a, QState)
+</span><a href="GHCi.TH.html#runGHCiQ"><span class="hs-identifier hs-var">runGHCiQ</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Q () -&gt; GHCiQ ()
+forall (m :: * -&gt; *) a. Quasi m =&gt; Q a -&gt; m a
+</span><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#runQ/Language.Haskell.TH.Syntax.html#runQ"><span class="hs-identifier hs-var">TH.runQ</span></a></span><span> </span><span class="annot"><span class="annottext">(Q () -&gt; GHCiQ ()) -&gt; Q () -&gt; GHCiQ ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[Q ()] -&gt; Q ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a.
+(Foldable t, Monad m) =&gt;
+t (m a) -&gt; m ()
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#sequence_/Data.Foldable.html#sequence_"><span class="hs-identifier hs-var">sequence_</span></a></span><span> </span><span class="annot"><span class="annottext">[Q ()]
+</span><a href="#local-6989586621679099056"><span class="hs-identifier hs-var">qs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679099060"><span class="hs-identifier hs-var">qstate</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHCi.Message.html#qsPipe"><span class="hs-identifier hs-var">qsPipe</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621679099053"><span class="hs-identifier hs-type">pipe</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-234"></span><span>  </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-235"></span><span>
+</span><span id="line-236"></span><span class="annot"><span class="hs-comment">-- | The implementation of the 'RunTH' message</span></span><span>
+</span><span id="line-237"></span><span class="annot"><a href="GHCi.TH.html#runTH"><span class="hs-identifier hs-type">runTH</span></a></span><span>
+</span><span id="line-238"></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHCi.Message.html#Pipe"><span class="hs-identifier hs-type">Pipe</span></a></span><span>
+</span><span id="line-239"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHCi.RemoteTypes.html#RemoteRef"><span class="hs-identifier hs-type">RemoteRef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IORef.html#IORef/GHC.IORef.html#IORef"><span class="hs-identifier hs-type">IORef</span></a></span><span> </span><span class="annot"><a href="GHCi.Message.html#QState"><span class="hs-identifier hs-type">QState</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-240"></span><span>      </span><span class="annot"><span class="hs-comment">-- ^ The TH state, created by 'startTH'</span></span><span>
+</span><span id="line-241"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHCi.RemoteTypes.html#HValueRef"><span class="hs-identifier hs-type">HValueRef</span></a></span><span>
+</span><span id="line-242"></span><span>      </span><span class="annot"><span class="hs-comment">-- ^ The splice to run</span></span><span>
+</span><span id="line-243"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHCi.Message.html#THResultType"><span class="hs-identifier hs-type">THResultType</span></a></span><span>
+</span><span id="line-244"></span><span>      </span><span class="annot"><span class="hs-comment">-- ^ What kind of splice it is</span></span><span>
+</span><span id="line-245"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Loc/Language.Haskell.TH.Syntax.html#Loc"><span class="hs-identifier hs-type">TH.Loc</span></a></span><span>
+</span><span id="line-246"></span><span>      </span><span class="annot"><span class="hs-comment">-- ^ The source location</span></span><span>
+</span><span id="line-247"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">ByteString</span></a></span><span>
+</span><span id="line-248"></span><span>      </span><span class="annot"><span class="hs-comment">-- ^ Returns an (encoded) result that depends on the THResultType</span></span><span>
+</span><span id="line-249"></span><span>
+</span><span id="line-250"></span><span id="runTH"><span class="annot"><span class="annottext">runTH :: Pipe
+-&gt; RemoteRef (IORef QState)
+-&gt; HValueRef
+-&gt; THResultType
+-&gt; Maybe Loc
+-&gt; IO ByteString
+</span><a href="GHCi.TH.html#runTH"><span class="hs-identifier hs-var hs-var">runTH</span></a></span></span><span> </span><span id="local-6989586621679099065"><span class="annot"><span class="annottext">Pipe
+</span><a href="#local-6989586621679099065"><span class="hs-identifier hs-var">pipe</span></a></span></span><span> </span><span id="local-6989586621679099066"><span class="annot"><span class="annottext">RemoteRef (IORef QState)
+</span><a href="#local-6989586621679099066"><span class="hs-identifier hs-var">rstate</span></a></span></span><span> </span><span id="local-6989586621679099067"><span class="annot"><span class="annottext">HValueRef
+</span><a href="#local-6989586621679099067"><span class="hs-identifier hs-var">rhv</span></a></span></span><span> </span><span id="local-6989586621679099068"><span class="annot"><span class="annottext">THResultType
+</span><a href="#local-6989586621679099068"><span class="hs-identifier hs-var">ty</span></a></span></span><span> </span><span id="local-6989586621679099069"><span class="annot"><span class="annottext">Maybe Loc
+</span><a href="#local-6989586621679099069"><span class="hs-identifier hs-var">mb_loc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-251"></span><span>  </span><span id="local-6989586621679099070"><span class="annot"><span class="annottext">HValue
+</span><a href="#local-6989586621679099070"><span class="hs-identifier hs-var">hv</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">HValueRef -&gt; IO HValue
+forall a. RemoteRef a -&gt; IO a
+</span><a href="GHCi.RemoteTypes.html#localRef"><span class="hs-identifier hs-var">localRef</span></a></span><span> </span><span class="annot"><span class="annottext">HValueRef
+</span><a href="#local-6989586621679099067"><span class="hs-identifier hs-var">rhv</span></a></span><span>
+</span><span id="line-252"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">THResultType
+</span><a href="#local-6989586621679099068"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-253"></span><span>    </span><span class="annot"><span class="annottext">THResultType
+</span><a href="GHCi.Message.html#THExp"><span class="hs-identifier hs-var">THExp</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Pipe
+-&gt; RemoteRef (IORef QState) -&gt; Maybe Loc -&gt; Q Exp -&gt; IO ByteString
+forall a.
+Binary a =&gt;
+Pipe
+-&gt; RemoteRef (IORef QState) -&gt; Maybe Loc -&gt; Q a -&gt; IO ByteString
+</span><a href="GHCi.TH.html#runTHQ"><span class="hs-identifier hs-var">runTHQ</span></a></span><span> </span><span class="annot"><span class="annottext">Pipe
+</span><a href="#local-6989586621679099065"><span class="hs-identifier hs-var">pipe</span></a></span><span> </span><span class="annot"><span class="annottext">RemoteRef (IORef QState)
+</span><a href="#local-6989586621679099066"><span class="hs-identifier hs-var">rstate</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Loc
+</span><a href="#local-6989586621679099069"><span class="hs-identifier hs-var">mb_loc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HValue -&gt; Q Exp
+forall a b. a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Unsafe.Coerce.html#unsafeCoerce/Unsafe.Coerce.html#unsafeCoerce"><span class="hs-identifier hs-var">unsafeCoerce</span></a></span><span> </span><span class="annot"><span class="annottext">HValue
+</span><a href="#local-6989586621679099070"><span class="hs-identifier hs-var">hv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Q/Language.Haskell.TH.Syntax.html#Q"><span class="hs-identifier hs-type">TH.Q</span></a></span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Exp/Language.Haskell.TH.Syntax.html#Exp"><span class="hs-identifier hs-type">TH.Exp</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-254"></span><span>    </span><span class="annot"><span class="annottext">THResultType
+</span><a href="GHCi.Message.html#THPat"><span class="hs-identifier hs-var">THPat</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Pipe
+-&gt; RemoteRef (IORef QState) -&gt; Maybe Loc -&gt; Q Pat -&gt; IO ByteString
+forall a.
+Binary a =&gt;
+Pipe
+-&gt; RemoteRef (IORef QState) -&gt; Maybe Loc -&gt; Q a -&gt; IO ByteString
+</span><a href="GHCi.TH.html#runTHQ"><span class="hs-identifier hs-var">runTHQ</span></a></span><span> </span><span class="annot"><span class="annottext">Pipe
+</span><a href="#local-6989586621679099065"><span class="hs-identifier hs-var">pipe</span></a></span><span> </span><span class="annot"><span class="annottext">RemoteRef (IORef QState)
+</span><a href="#local-6989586621679099066"><span class="hs-identifier hs-var">rstate</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Loc
+</span><a href="#local-6989586621679099069"><span class="hs-identifier hs-var">mb_loc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HValue -&gt; Q Pat
+forall a b. a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Unsafe.Coerce.html#unsafeCoerce/Unsafe.Coerce.html#unsafeCoerce"><span class="hs-identifier hs-var">unsafeCoerce</span></a></span><span> </span><span class="annot"><span class="annottext">HValue
+</span><a href="#local-6989586621679099070"><span class="hs-identifier hs-var">hv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Q/Language.Haskell.TH.Syntax.html#Q"><span class="hs-identifier hs-type">TH.Q</span></a></span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Pat/Language.Haskell.TH.Syntax.html#Pat"><span class="hs-identifier hs-type">TH.Pat</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-255"></span><span>    </span><span class="annot"><span class="annottext">THResultType
+</span><a href="GHCi.Message.html#THType"><span class="hs-identifier hs-var">THType</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Pipe
+-&gt; RemoteRef (IORef QState) -&gt; Maybe Loc -&gt; Q Type -&gt; IO ByteString
+forall a.
+Binary a =&gt;
+Pipe
+-&gt; RemoteRef (IORef QState) -&gt; Maybe Loc -&gt; Q a -&gt; IO ByteString
+</span><a href="GHCi.TH.html#runTHQ"><span class="hs-identifier hs-var">runTHQ</span></a></span><span> </span><span class="annot"><span class="annottext">Pipe
+</span><a href="#local-6989586621679099065"><span class="hs-identifier hs-var">pipe</span></a></span><span> </span><span class="annot"><span class="annottext">RemoteRef (IORef QState)
+</span><a href="#local-6989586621679099066"><span class="hs-identifier hs-var">rstate</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Loc
+</span><a href="#local-6989586621679099069"><span class="hs-identifier hs-var">mb_loc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HValue -&gt; Q Type
+forall a b. a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Unsafe.Coerce.html#unsafeCoerce/Unsafe.Coerce.html#unsafeCoerce"><span class="hs-identifier hs-var">unsafeCoerce</span></a></span><span> </span><span class="annot"><span class="annottext">HValue
+</span><a href="#local-6989586621679099070"><span class="hs-identifier hs-var">hv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Q/Language.Haskell.TH.Syntax.html#Q"><span class="hs-identifier hs-type">TH.Q</span></a></span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Type/Language.Haskell.TH.Syntax.html#Type"><span class="hs-identifier hs-type">TH.Type</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-256"></span><span>    </span><span class="annot"><span class="annottext">THResultType
+</span><a href="GHCi.Message.html#THDec"><span class="hs-identifier hs-var">THDec</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Pipe
+-&gt; RemoteRef (IORef QState)
+-&gt; Maybe Loc
+-&gt; Q [Dec]
+-&gt; IO ByteString
+forall a.
+Binary a =&gt;
+Pipe
+-&gt; RemoteRef (IORef QState) -&gt; Maybe Loc -&gt; Q a -&gt; IO ByteString
+</span><a href="GHCi.TH.html#runTHQ"><span class="hs-identifier hs-var">runTHQ</span></a></span><span> </span><span class="annot"><span class="annottext">Pipe
+</span><a href="#local-6989586621679099065"><span class="hs-identifier hs-var">pipe</span></a></span><span> </span><span class="annot"><span class="annottext">RemoteRef (IORef QState)
+</span><a href="#local-6989586621679099066"><span class="hs-identifier hs-var">rstate</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe Loc
+</span><a href="#local-6989586621679099069"><span class="hs-identifier hs-var">mb_loc</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HValue -&gt; Q [Dec]
+forall a b. a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Unsafe.Coerce.html#unsafeCoerce/Unsafe.Coerce.html#unsafeCoerce"><span class="hs-identifier hs-var">unsafeCoerce</span></a></span><span> </span><span class="annot"><span class="annottext">HValue
+</span><a href="#local-6989586621679099070"><span class="hs-identifier hs-var">hv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Q/Language.Haskell.TH.Syntax.html#Q"><span class="hs-identifier hs-type">TH.Q</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Dec/Language.Haskell.TH.Syntax.html#Dec"><span class="hs-identifier hs-type">TH.Dec</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-257"></span><span>    </span><span class="annot"><span class="annottext">THResultType
+</span><a href="GHCi.Message.html#THAnnWrapper"><span class="hs-identifier hs-var">THAnnWrapper</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-258"></span><span>      </span><span id="local-6989586621679099078"><span class="annot"><span class="annottext">AnnotationWrapper
+</span><a href="#local-6989586621679099078"><span class="hs-identifier hs-var">hv</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">HValue -&gt; AnnotationWrapper
+forall a b. a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Unsafe.Coerce.html#unsafeCoerce/Unsafe.Coerce.html#unsafeCoerce"><span class="hs-identifier hs-var">unsafeCoerce</span></a></span><span> </span><span class="annot"><span class="annottext">(HValue -&gt; AnnotationWrapper) -&gt; IO HValue -&gt; IO AnnotationWrapper
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/Data.Functor.html#%3C%24%3E/Data.Functor.html#%3C%24%3E"><span class="hs-operator hs-var">&lt;$&gt;</span></a></span><span> </span><span class="annot"><span class="annottext">HValueRef -&gt; IO HValue
+forall a. RemoteRef a -&gt; IO a
+</span><a href="GHCi.RemoteTypes.html#localRef"><span class="hs-identifier hs-var">localRef</span></a></span><span> </span><span class="annot"><span class="annottext">HValueRef
+</span><a href="#local-6989586621679099067"><span class="hs-identifier hs-var">rhv</span></a></span><span>
+</span><span id="line-259"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">AnnotationWrapper
+</span><a href="#local-6989586621679099078"><span class="hs-identifier hs-var">hv</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Desugar.html#AnnotationWrapper/GHC.Desugar.html#AnnotationWrapper"><span class="hs-identifier hs-type">AnnotationWrapper</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-260"></span><span>        </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Desugar.html#AnnotationWrapper/GHC.Desugar.html#AnnotationWrapper"><span class="hs-identifier hs-type">AnnotationWrapper</span></a></span><span> </span><span id="local-6989586621679099087"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679099087"><span class="hs-identifier hs-var">thing</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ByteString) -&gt; ByteString -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24%21/GHC.Base.html#%24%21"><span class="hs-operator hs-var">$!</span></a></span><span>
+</span><span id="line-261"></span><span>          </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Lazy.Internal.html#toStrict/Data.ByteString.Lazy.Internal.html#toStrict"><span class="hs-identifier hs-var">LB.toStrict</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Put -&gt; ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#runPut/Data.Binary.Put.html#runPut"><span class="hs-identifier hs-var">runPut</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Serialized -&gt; Put
+forall t. Binary t =&gt; t -&gt; Put
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Class.html#put/Data.Binary.Class.html#put"><span class="hs-identifier hs-var">put</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(a -&gt; [Word8]) -&gt; a -&gt; Serialized
+forall a. Typeable a =&gt; (a -&gt; [Word8]) -&gt; a -&gt; Serialized
+</span><a href="../../ghc-boot-9.6.5/src/GHC.Serialized.html#toSerialized/GHC.Serialized.html#toSerialized"><span class="hs-identifier hs-var">toSerialized</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; [Word8]
+forall a. Data a =&gt; a -&gt; [Word8]
+</span><a href="../../ghc-boot-9.6.5/src/GHC.Serialized.html#serializeWithData/GHC.Serialized.html#serializeWithData"><span class="hs-identifier hs-var">serializeWithData</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679099087"><span class="hs-identifier hs-var">thing</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-262"></span><span>
+</span><span id="line-263"></span><span class="annot"><span class="hs-comment">-- | Run a Q computation.</span></span><span>
+</span><span id="line-264"></span><span id="local-6989586621679098604"><span class="annot"><a href="GHCi.TH.html#runTHQ"><span class="hs-identifier hs-type">runTHQ</span></a></span><span>
+</span><span id="line-265"></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../binary-0.8.9.1/src/Data.Binary.Class.html#Binary/Data.Binary.Class.html#Binary"><span class="hs-identifier hs-type">Binary</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679098604"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="GHCi.Message.html#Pipe"><span class="hs-identifier hs-type">Pipe</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHCi.RemoteTypes.html#RemoteRef"><span class="hs-identifier hs-type">RemoteRef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IORef.html#IORef/GHC.IORef.html#IORef"><span class="hs-identifier hs-type">IORef</span></a></span><span> </span><span class="annot"><a href="GHCi.Message.html#QState"><span class="hs-identifier hs-type">QState</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Loc/Language.Haskell.TH.Syntax.html#Loc"><span class="hs-identifier hs-type">TH.Loc</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#Q/Language.Haskell.TH.Syntax.html#Q"><span class="hs-identifier hs-type">TH.Q</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679098604"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-266"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Internal.Type.html#ByteString/Data.ByteString.Internal.Type.html#ByteString"><span class="hs-identifier hs-type">ByteString</span></a></span></span><span>
+</span><span id="line-267"></span><span id="runTHQ"><span class="annot"><span class="annottext">runTHQ :: forall a.
+Binary a =&gt;
+Pipe
+-&gt; RemoteRef (IORef QState) -&gt; Maybe Loc -&gt; Q a -&gt; IO ByteString
+</span><a href="GHCi.TH.html#runTHQ"><span class="hs-identifier hs-var hs-var">runTHQ</span></a></span></span><span> </span><span id="local-6989586621679099102"><span class="annot"><span class="annottext">Pipe
+</span><a href="#local-6989586621679099102"><span class="hs-identifier hs-var">pipe</span></a></span></span><span> </span><span id="local-6989586621679099103"><span class="annot"><span class="annottext">RemoteRef (IORef QState)
+</span><a href="#local-6989586621679099103"><span class="hs-identifier hs-var">rstate</span></a></span></span><span> </span><span id="local-6989586621679099104"><span class="annot"><span class="annottext">Maybe Loc
+</span><a href="#local-6989586621679099104"><span class="hs-identifier hs-var">mb_loc</span></a></span></span><span> </span><span id="local-6989586621679099105"><span class="annot"><span class="annottext">Q a
+</span><a href="#local-6989586621679099105"><span class="hs-identifier hs-var">ghciq</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-268"></span><span>  </span><span id="local-6989586621679099106"><span class="annot"><span class="annottext">IORef QState
+</span><a href="#local-6989586621679099106"><span class="hs-identifier hs-var">qstateref</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">RemoteRef (IORef QState) -&gt; IO (IORef QState)
+forall a. RemoteRef a -&gt; IO a
+</span><a href="GHCi.RemoteTypes.html#localRef"><span class="hs-identifier hs-var">localRef</span></a></span><span> </span><span class="annot"><span class="annottext">RemoteRef (IORef QState)
+</span><a href="#local-6989586621679099103"><span class="hs-identifier hs-var">rstate</span></a></span><span>
+</span><span id="line-269"></span><span>  </span><span id="local-6989586621679099107"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679099107"><span class="hs-identifier hs-var">qstate</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef QState -&gt; IO QState
+forall a. IORef a -&gt; IO a
+</span><a href="../../base-4.18.2.1/src/GHC.IORef.html#readIORef/GHC.IORef.html#readIORef"><span class="hs-identifier hs-var">readIORef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef QState
+</span><a href="#local-6989586621679099106"><span class="hs-identifier hs-var">qstateref</span></a></span><span>
+</span><span id="line-270"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679099108"><span class="annot"><span class="annottext">st :: QState
+</span><a href="#local-6989586621679099108"><span class="hs-identifier hs-var hs-var">st</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679099107"><span class="hs-identifier hs-var">qstate</span></a></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><a href="GHCi.Message.html#qsLocation"><span class="hs-identifier hs-var">qsLocation</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621679099104"><span class="hs-identifier hs-type">mb_loc</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHCi.Message.html#qsPipe"><span class="hs-identifier hs-var">qsPipe</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="#local-6989586621679099102"><span class="hs-identifier hs-type">pipe</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-271"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621679099109"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679099109"><span class="hs-identifier hs-var">r</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679099110"><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679099110"><span class="hs-identifier hs-var">new_state</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">GHCiQ a -&gt; QState -&gt; IO (a, QState)
+forall a. GHCiQ a -&gt; QState -&gt; IO (a, QState)
+</span><a href="GHCi.TH.html#runGHCiQ"><span class="hs-identifier hs-var">runGHCiQ</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Q a -&gt; GHCiQ a
+forall (m :: * -&gt; *) a. Quasi m =&gt; Q a -&gt; m a
+</span><a href="../../template-haskell-2.20.0.0/src/Language.Haskell.TH.Syntax.html#runQ/Language.Haskell.TH.Syntax.html#runQ"><span class="hs-identifier hs-var">TH.runQ</span></a></span><span> </span><span class="annot"><span class="annottext">Q a
+</span><a href="#local-6989586621679099105"><span class="hs-identifier hs-var">ghciq</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679099108"><span class="hs-identifier hs-var">st</span></a></span><span>
+</span><span id="line-272"></span><span>  </span><span class="annot"><span class="annottext">IORef QState -&gt; QState -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IORef.html#writeIORef/GHC.IORef.html#writeIORef"><span class="hs-identifier hs-var">writeIORef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef QState
+</span><a href="#local-6989586621679099106"><span class="hs-identifier hs-var">qstateref</span></a></span><span> </span><span class="annot"><span class="annottext">QState
+</span><a href="#local-6989586621679099110"><span class="hs-identifier hs-var">new_state</span></a></span><span>
+</span><span id="line-273"></span><span>  </span><span class="annot"><span class="annottext">ByteString -&gt; IO ByteString
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(ByteString -&gt; IO ByteString) -&gt; ByteString -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24%21/GHC.Base.html#%24%21"><span class="hs-operator hs-var">$!</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString -&gt; ByteString
+</span><a href="../../bytestring-0.11.5.3/src/Data.ByteString.Lazy.Internal.html#toStrict/Data.ByteString.Lazy.Internal.html#toStrict"><span class="hs-identifier hs-var">LB.toStrict</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Put -&gt; ByteString
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Put.html#runPut/Data.Binary.Put.html#runPut"><span class="hs-identifier hs-var">runPut</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Put
+forall t. Binary t =&gt; t -&gt; Put
+</span><a href="../../binary-0.8.9.1/src/Data.Binary.Class.html#put/Data.Binary.Class.html#put"><span class="hs-identifier hs-var">put</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679099109"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-274"></span></pre></body></html>

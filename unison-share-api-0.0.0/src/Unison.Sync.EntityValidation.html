@@ -1,0 +1,503 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE DeriveAnyClass #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE DuplicateRecordFields #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="annot"><span class="hs-comment">-- | Module for validating hashes of entities received/sent via sync.</span></span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Unison.Sync.EntityValidation</span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Unison.Sync.EntityValidation.html#validateEntity"><span class="hs-identifier">validateEntity</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Unison.Sync.EntityValidation.html#validateTempEntity"><span class="hs-identifier">validateTempEntity</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-9"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-10"></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BS</span></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bytes.Get</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">runGetS</span></span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Set</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Set</span></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Text</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Text</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.HashTags</span></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Branch.Format</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">BranchFormat</span></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Causal</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">CausalFormat</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Decl.Format</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">DeclFormat</span></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Decode</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Decode</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Entity</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Entity</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.HashHandle</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">HH</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Orphans</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Patch.Format</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">PatchFormat</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Serialization</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Serialization</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.TempEntity</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">TempEntity</span></span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Term.Format</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">TermFormat</span></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.V2.HashHandle</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">v2HashHandle</span></span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Hash</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Hash</span></span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Hash32</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Hash32</span></span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Hash32</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Hash32</span></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Hashing.V2</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">H</span></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Prelude</span></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Sync.Common.html"><span class="hs-identifier">Unison.Sync.Common</span></a></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Share</span></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Sync.Types.html"><span class="hs-identifier">Unison.Sync.Types</span></a></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Share</span></span><span>
+</span><span id="line-35"></span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- | Note: We currently only validate Namespace hashes.</span><span>
+</span><span id="line-37"></span><span class="hs-comment">-- We should add more validation as more entities are shared.</span><span>
+</span><span id="line-38"></span><span class="annot"><a href="Unison.Sync.EntityValidation.html#validateEntity"><span class="hs-identifier hs-type">validateEntity</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Unison.Sync.Types.html#Entity"><span class="hs-identifier hs-type">Share.Entity</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Unison.Sync.Types.html#EntityValidationError"><span class="hs-identifier hs-type">Share.EntityValidationError</span></a></span><span>
+</span><span id="line-39"></span><span id="validateEntity"><span class="annot"><span class="annottext">validateEntity :: Hash32 -&gt; Entity Text Hash32 Hash32 -&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validateEntity"><span class="hs-identifier hs-var hs-var">validateEntity</span></a></span></span><span> </span><span id="local-6989586621680088409"><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088409"><span class="hs-identifier hs-var">expectedHash32</span></a></span></span><span> </span><span id="local-6989586621680088410"><span class="annot"><span class="annottext">Entity Text Hash32 Hash32
+</span><a href="#local-6989586621680088410"><span class="hs-identifier hs-var">entity</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-40"></span><span>  </span><span class="annot"><span class="annottext">Hash32 -&gt; TempEntity -&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validateTempEntity"><span class="hs-identifier hs-var">validateTempEntity</span></a></span><span> </span><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088409"><span class="hs-identifier hs-var">expectedHash32</span></a></span><span> </span><span class="annot"><span class="annottext">(TempEntity -&gt; Maybe EntityValidationError)
+-&gt; TempEntity -&gt; Maybe EntityValidationError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(Hash32 -&gt; Hash32) -&gt; Entity Text Hash32 Hash32 -&gt; TempEntity
+forall hash.
+(hash -&gt; Hash32) -&gt; Entity Text Hash32 hash -&gt; TempEntity
+</span><a href="Unison.Sync.Common.html#entityToTempEntity"><span class="hs-identifier hs-var">Share.entityToTempEntity</span></a></span><span> </span><span class="annot"><span class="annottext">Hash32 -&gt; Hash32
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="annot"><span class="annottext">Entity Text Hash32 Hash32
+</span><a href="#local-6989586621680088410"><span class="hs-identifier hs-var">entity</span></a></span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- | Note: We currently only validate Namespace hashes.</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- We should add more validation as more entities are shared.</span><span>
+</span><span id="line-44"></span><span class="annot"><a href="Unison.Sync.EntityValidation.html#validateTempEntity"><span class="hs-identifier hs-type">validateTempEntity</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">TempEntity</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Unison.Sync.Types.html#EntityValidationError"><span class="hs-identifier hs-type">Share.EntityValidationError</span></a></span><span>
+</span><span id="line-45"></span><span id="validateTempEntity"><span class="annot"><span class="annottext">validateTempEntity :: Hash32 -&gt; TempEntity -&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validateTempEntity"><span class="hs-identifier hs-var hs-var">validateTempEntity</span></a></span></span><span> </span><span id="local-6989586621680088413"><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088413"><span class="hs-identifier hs-var">expectedHash32</span></a></span></span><span> </span><span id="local-6989586621680088414"><span class="annot"><span class="annottext">TempEntity
+</span><a href="#local-6989586621680088414"><span class="hs-identifier hs-var">tempEntity</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-46"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">TempEntity
+</span><a href="#local-6989586621680088414"><span class="hs-identifier hs-var">tempEntity</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-47"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Entity.TC</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">TermFormat.SyncTerm</span></span><span> </span><span id="local-6989586621680088417"><span class="annot"><span class="annottext">SyncLocallyIndexedComponent' Text Hash32
+</span><a href="#local-6989586621680088417"><span class="hs-identifier hs-var">localComp</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-48"></span><span>      </span><span class="annot"><span class="annottext">Hash
+-&gt; SyncLocallyIndexedComponent' Text Hash32
+-&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validateTerm"><span class="hs-identifier hs-var">validateTerm</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088419"><span class="hs-identifier hs-var">expectedHash</span></a></span><span> </span><span class="annot"><span class="annottext">SyncLocallyIndexedComponent' Text Hash32
+</span><a href="#local-6989586621680088417"><span class="hs-identifier hs-var">localComp</span></a></span><span>
+</span><span id="line-49"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Entity.DC</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">DeclFormat.SyncDecl</span></span><span> </span><span id="local-6989586621680088422"><span class="annot"><span class="annottext">SyncLocallyIndexedComponent' Text Hash32
+</span><a href="#local-6989586621680088422"><span class="hs-identifier hs-var">localComp</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-50"></span><span>      </span><span class="annot"><span class="annottext">Hash
+-&gt; SyncLocallyIndexedComponent' Text Hash32
+-&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validateDecl"><span class="hs-identifier hs-var">validateDecl</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088419"><span class="hs-identifier hs-var">expectedHash</span></a></span><span> </span><span class="annot"><span class="annottext">SyncLocallyIndexedComponent' Text Hash32
+</span><a href="#local-6989586621680088422"><span class="hs-identifier hs-var">localComp</span></a></span><span>
+</span><span id="line-51"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Entity.N</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BranchFormat.SyncDiff</span></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-52"></span><span>      </span><span class="annot"><span class="annottext">EntityValidationError -&gt; Maybe EntityValidationError
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(EntityValidationError -&gt; Maybe EntityValidationError)
+-&gt; EntityValidationError -&gt; Maybe EntityValidationError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Hash32 -&gt; EntityType -&gt; EntityValidationError
+</span><a href="Unison.Sync.Types.html#UnsupportedEntityType"><span class="hs-identifier hs-var">Share.UnsupportedEntityType</span></a></span><span> </span><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088413"><span class="hs-identifier hs-var">expectedHash32</span></a></span><span> </span><span class="annot"><span class="annottext">EntityType
+</span><a href="Unison.Sync.Types.html#NamespaceDiffType"><span class="hs-identifier hs-var">Share.NamespaceDiffType</span></a></span><span>
+</span><span id="line-53"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Entity.N</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BranchFormat.SyncFull</span></span><span> </span><span id="local-6989586621680088429"><span class="annot"><span class="annottext">BranchLocalIds' Text Hash32 Hash32 (Hash32, Hash32)
+</span><a href="#local-6989586621680088429"><span class="hs-identifier hs-var">localIds</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BranchFormat.LocalBranchBytes</span></span><span> </span><span id="local-6989586621680088431"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621680088431"><span class="hs-identifier hs-var">bytes</span></a></span></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-54"></span><span>      </span><span class="annot"><span class="annottext">Hash
+-&gt; BranchLocalIds' Text Hash32 Hash32 (Hash32, Hash32)
+-&gt; ByteString
+-&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validateBranchFull"><span class="hs-identifier hs-var">validateBranchFull</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088419"><span class="hs-identifier hs-var">expectedHash</span></a></span><span> </span><span class="annot"><span class="annottext">BranchLocalIds' Text Hash32 Hash32 (Hash32, Hash32)
+</span><a href="#local-6989586621680088429"><span class="hs-identifier hs-var">localIds</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621680088431"><span class="hs-identifier hs-var">bytes</span></a></span><span>
+</span><span id="line-55"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Entity.C</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">CausalFormat.SyncCausalFormat</span></span><span> </span><span class="hs-special">{</span><span id="local-6989586621680088435"><span class="annot"><span class="annottext">Hash32
+valueHash :: Hash32
+$sel:valueHash:SyncCausalFormat :: forall causalHash valueHash.
+SyncCausalFormat' causalHash valueHash -&gt; valueHash
+</span><a href="#local-6989586621680088435"><span class="hs-identifier hs-var hs-var">valueHash</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680088437"><span class="annot"><span class="annottext">Vector Hash32
+parents :: Vector Hash32
+$sel:parents:SyncCausalFormat :: forall causalHash valueHash.
+SyncCausalFormat' causalHash valueHash -&gt; Vector causalHash
+</span><a href="#local-6989586621680088437"><span class="hs-identifier hs-var hs-var">parents</span></a></span></span><span class="hs-special">}</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-56"></span><span>      </span><span class="annot"><span class="annottext">Hash32 -&gt; Hash32 -&gt; [Hash32] -&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validateCausal"><span class="hs-identifier hs-var">validateCausal</span></a></span><span> </span><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088413"><span class="hs-identifier hs-var">expectedHash32</span></a></span><span> </span><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088435"><span class="hs-identifier hs-var">valueHash</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Vector Hash32 -&gt; [Hash32]
+forall a. Vector a -&gt; [a]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; [a]
+</span><span class="hs-identifier hs-var">toList</span></span><span> </span><span class="annot"><span class="annottext">Vector Hash32
+</span><a href="#local-6989586621680088437"><span class="hs-identifier hs-var">parents</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-57"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Entity.P</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PatchFormat.SyncDiff</span></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-58"></span><span>      </span><span class="annot"><span class="annottext">EntityValidationError -&gt; Maybe EntityValidationError
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(EntityValidationError -&gt; Maybe EntityValidationError)
+-&gt; EntityValidationError -&gt; Maybe EntityValidationError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Hash32 -&gt; EntityType -&gt; EntityValidationError
+</span><a href="Unison.Sync.Types.html#UnsupportedEntityType"><span class="hs-identifier hs-var">Share.UnsupportedEntityType</span></a></span><span> </span><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088413"><span class="hs-identifier hs-var">expectedHash32</span></a></span><span> </span><span class="annot"><span class="annottext">EntityType
+</span><a href="Unison.Sync.Types.html#PatchDiffType"><span class="hs-identifier hs-var">Share.PatchDiffType</span></a></span><span>
+</span><span id="line-59"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Entity.P</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">PatchFormat.SyncFull</span></span><span> </span><span id="local-6989586621680088445"><span class="annot"><span class="annottext">PatchLocalIds' Text Hash32 Hash32
+</span><a href="#local-6989586621680088445"><span class="hs-identifier hs-var">localIds</span></a></span></span><span> </span><span id="local-6989586621680088446"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621680088446"><span class="hs-identifier hs-var">bytes</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-60"></span><span>      </span><span class="annot"><span class="annottext">Hash32
+-&gt; PatchLocalIds' Text Hash32 Hash32
+-&gt; ByteString
+-&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validatePatchFull"><span class="hs-identifier hs-var">validatePatchFull</span></a></span><span> </span><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088413"><span class="hs-identifier hs-var">expectedHash32</span></a></span><span> </span><span class="annot"><span class="annottext">PatchLocalIds' Text Hash32 Hash32
+</span><a href="#local-6989586621680088445"><span class="hs-identifier hs-var">localIds</span></a></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621680088446"><span class="hs-identifier hs-var">bytes</span></a></span><span>
+</span><span id="line-61"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-62"></span><span>    </span><span class="annot"><a href="#local-6989586621680088419"><span class="hs-identifier hs-type">expectedHash</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span>
+</span><span id="line-63"></span><span>    </span><span id="local-6989586621680088419"><span class="annot"><span class="annottext">expectedHash :: Hash
+</span><a href="#local-6989586621680088419"><span class="hs-identifier hs-var hs-var">expectedHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Hash32 -&gt; Hash
+</span><span class="hs-identifier hs-var">Hash32.toHash</span></span><span> </span><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088413"><span class="hs-identifier hs-var">expectedHash32</span></a></span><span>
+</span><span id="line-64"></span><span>
+</span><span id="line-65"></span><span class="annot"><a href="Unison.Sync.EntityValidation.html#validatePatchFull"><span class="hs-identifier hs-type">validatePatchFull</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">PatchFormat.PatchLocalIds'</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">BS.ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Unison.Sync.Types.html#EntityValidationError"><span class="hs-identifier hs-type">Share.EntityValidationError</span></a></span><span>
+</span><span id="line-66"></span><span id="validatePatchFull"><span class="annot"><span class="annottext">validatePatchFull :: Hash32
+-&gt; PatchLocalIds' Text Hash32 Hash32
+-&gt; ByteString
+-&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validatePatchFull"><span class="hs-identifier hs-var hs-var">validatePatchFull</span></a></span></span><span> </span><span id="local-6989586621680088449"><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088449"><span class="hs-identifier hs-var">expectedHash32</span></a></span></span><span> </span><span id="local-6989586621680088450"><span class="annot"><span class="annottext">PatchLocalIds' Text Hash32 Hash32
+</span><a href="#local-6989586621680088450"><span class="hs-identifier hs-var">localIds</span></a></span></span><span> </span><span id="local-6989586621680088451"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621680088451"><span class="hs-identifier hs-var">bytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-67"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680088452"><span class="annot"><span class="annottext">expectedHash :: Hash
+</span><a href="#local-6989586621680088452"><span class="hs-identifier hs-var hs-var">expectedHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Hash32 -&gt; Hash
+</span><span class="hs-identifier hs-var">Hash32.toHash</span></span><span> </span><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088449"><span class="hs-identifier hs-var">expectedHash32</span></a></span><span>
+</span><span id="line-68"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Get LocalPatch -&gt; ByteString -&gt; Either String LocalPatch
+forall a. Get a -&gt; ByteString -&gt; Either String a
+</span><span class="hs-identifier hs-var">runGetS</span></span><span> </span><span class="annot"><span class="annottext">Get LocalPatch
+forall (m :: * -&gt; *). MonadGet m =&gt; m LocalPatch
+</span><span class="hs-identifier hs-var">Serialization.getLocalPatch</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621680088451"><span class="hs-identifier hs-var">bytes</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-69"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621680088454"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621680088454"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">EntityValidationError -&gt; Maybe EntityValidationError
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(EntityValidationError -&gt; Maybe EntityValidationError)
+-&gt; EntityValidationError -&gt; Maybe EntityValidationError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Hash32 -&gt; EntityType -&gt; Text -&gt; EntityValidationError
+</span><a href="Unison.Sync.Types.html#InvalidByteEncoding"><span class="hs-identifier hs-var">Share.InvalidByteEncoding</span></a></span><span> </span><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088449"><span class="hs-identifier hs-var">expectedHash32</span></a></span><span> </span><span class="annot"><span class="annottext">EntityType
+</span><a href="Unison.Sync.Types.html#PatchType"><span class="hs-identifier hs-var">Share.PatchType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Text
+</span><span class="hs-identifier hs-var">Text.pack</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621680088454"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-70"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621680088458"><span class="annot"><span class="annottext">LocalPatch
+</span><a href="#local-6989586621680088458"><span class="hs-identifier hs-var">localPatch</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-71"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680088459"><span class="annot"><span class="annottext">localIds' :: PatchLocalIds' Text ComponentHash ComponentHash
+</span><a href="#local-6989586621680088459"><span class="hs-identifier hs-var hs-var">localIds'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-72"></span><span>            </span><span class="annot"><span class="annottext">PatchLocalIds' Text Hash32 Hash32
+</span><a href="#local-6989586621680088450"><span class="hs-identifier hs-var">localIds</span></a></span><span>
+</span><span id="line-73"></span><span>              </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="hs-identifier hs-var">PatchFormat.patchTextLookup</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-var">PatchFormat.patchTextLookup</span></span><span> </span><span class="annot"><a href="#local-6989586621680088450"><span class="hs-identifier hs-type">localIds</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-74"></span><span>                </span><span class="annot"><span class="hs-identifier hs-var">PatchFormat.patchHashLookup</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ComponentHash</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">.</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32.toHash</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="hs-identifier hs-var">PatchFormat.patchHashLookup</span></span><span> </span><span class="annot"><a href="#local-6989586621680088450"><span class="hs-identifier hs-type">localIds</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-75"></span><span>                </span><span class="annot"><span class="hs-identifier hs-var">PatchFormat.patchDefnLookup</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ComponentHash</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">.</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32.toHash</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="hs-identifier hs-var">PatchFormat.patchDefnLookup</span></span><span> </span><span class="annot"><a href="#local-6989586621680088450"><span class="hs-identifier hs-type">localIds</span></a></span><span>
+</span><span id="line-76"></span><span>              </span><span class="hs-special">}</span><span>
+</span><span id="line-77"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680088466"><span class="annot"><span class="annottext">actualHash :: PatchHash
+</span><a href="#local-6989586621680088466"><span class="hs-identifier hs-var hs-var">actualHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-78"></span><span>            </span><span class="annot"><span class="annottext">HashHandle
+-&gt; PatchLocalIds' Text ComponentHash ComponentHash
+-&gt; LocalPatch
+-&gt; PatchHash
+</span><span class="hs-identifier hs-var">HH.hashPatchFormatFull</span></span><span> </span><span class="annot"><span class="annottext">HashHandle
+</span><span class="hs-identifier hs-var">v2HashHandle</span></span><span> </span><span class="annot"><span class="annottext">PatchLocalIds' Text ComponentHash ComponentHash
+</span><a href="#local-6989586621680088459"><span class="hs-identifier hs-var">localIds'</span></a></span><span> </span><span class="annot"><span class="annottext">LocalPatch
+</span><a href="#local-6989586621680088458"><span class="hs-identifier hs-var">localPatch</span></a></span><span>
+</span><span id="line-79"></span><span>      </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">PatchHash
+</span><a href="#local-6989586621680088466"><span class="hs-identifier hs-var">actualHash</span></a></span><span> </span><span class="annot"><span class="annottext">PatchHash -&gt; PatchHash -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; PatchHash
+</span><span class="hs-identifier hs-var">PatchHash</span></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088452"><span class="hs-identifier hs-var">expectedHash</span></a></span><span>
+</span><span id="line-80"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Maybe EntityValidationError
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-81"></span><span>        </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">EntityValidationError -&gt; Maybe EntityValidationError
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(EntityValidationError -&gt; Maybe EntityValidationError)
+-&gt; EntityValidationError -&gt; Maybe EntityValidationError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">EntityType -&gt; HashMismatchForEntity -&gt; EntityValidationError
+</span><a href="Unison.Sync.Types.html#EntityHashMismatch"><span class="hs-identifier hs-var">Share.EntityHashMismatch</span></a></span><span> </span><span class="annot"><span class="annottext">EntityType
+</span><a href="Unison.Sync.Types.html#PatchType"><span class="hs-identifier hs-var">Share.PatchType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash -&gt; Hash -&gt; HashMismatchForEntity
+</span><a href="Unison.Sync.EntityValidation.html#mismatch"><span class="hs-identifier hs-var">mismatch</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088452"><span class="hs-identifier hs-var">expectedHash</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PatchHash -&gt; Hash
+</span><span class="hs-identifier hs-var">unPatchHash</span></span><span> </span><span class="annot"><span class="annottext">PatchHash
+</span><a href="#local-6989586621680088466"><span class="hs-identifier hs-var">actualHash</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-82"></span><span>
+</span><span id="line-83"></span><span class="annot"><a href="Unison.Sync.EntityValidation.html#validateBranchFull"><span class="hs-identifier hs-type">validateBranchFull</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-84"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-85"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">BranchFormat.BranchLocalIds'</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-86"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">BS.ByteString</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-87"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Unison.Sync.Types.html#EntityValidationError"><span class="hs-identifier hs-type">Share.EntityValidationError</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-88"></span><span id="validateBranchFull"><span class="annot"><span class="annottext">validateBranchFull :: Hash
+-&gt; BranchLocalIds' Text Hash32 Hash32 (Hash32, Hash32)
+-&gt; ByteString
+-&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validateBranchFull"><span class="hs-identifier hs-var hs-var">validateBranchFull</span></a></span></span><span> </span><span id="local-6989586621680088472"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088472"><span class="hs-identifier hs-var">expectedHash</span></a></span></span><span> </span><span id="local-6989586621680088473"><span class="annot"><span class="annottext">BranchLocalIds' Text Hash32 Hash32 (Hash32, Hash32)
+</span><a href="#local-6989586621680088473"><span class="hs-identifier hs-var">localIds</span></a></span></span><span> </span><span id="local-6989586621680088474"><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621680088474"><span class="hs-identifier hs-var">bytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-89"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Get LocalBranch -&gt; ByteString -&gt; Either String LocalBranch
+forall a. Get a -&gt; ByteString -&gt; Either String a
+</span><span class="hs-identifier hs-var">runGetS</span></span><span> </span><span class="annot"><span class="annottext">Get LocalBranch
+forall (m :: * -&gt; *). MonadGet m =&gt; m LocalBranch
+</span><span class="hs-identifier hs-var">Serialization.getLocalBranch</span></span><span> </span><span class="annot"><span class="annottext">ByteString
+</span><a href="#local-6989586621680088474"><span class="hs-identifier hs-var">bytes</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-90"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621680088476"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621680088476"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">EntityValidationError -&gt; Maybe EntityValidationError
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(EntityValidationError -&gt; Maybe EntityValidationError)
+-&gt; EntityValidationError -&gt; Maybe EntityValidationError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Hash32 -&gt; EntityType -&gt; Text -&gt; EntityValidationError
+</span><a href="Unison.Sync.Types.html#InvalidByteEncoding"><span class="hs-identifier hs-var">Share.InvalidByteEncoding</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash -&gt; Hash32
+</span><span class="hs-identifier hs-var">Hash32.fromHash</span></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088472"><span class="hs-identifier hs-var">expectedHash</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">EntityType
+</span><a href="Unison.Sync.Types.html#NamespaceType"><span class="hs-identifier hs-var">Share.NamespaceType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; Text
+</span><span class="hs-identifier hs-var">Text.pack</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621680088476"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-91"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621680088479"><span class="annot"><span class="annottext">LocalBranch
+</span><a href="#local-6989586621680088479"><span class="hs-identifier hs-var">localBranch</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-92"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680088480"><span class="annot"><span class="annottext">localIds' :: BranchLocalIds'
+  Text ComponentHash PatchHash (BranchHash, CausalHash)
+</span><a href="#local-6989586621680088480"><span class="hs-identifier hs-var hs-var">localIds'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-93"></span><span>            </span><span class="annot"><span class="annottext">BranchLocalIds' Text Hash32 Hash32 (Hash32, Hash32)
+</span><a href="#local-6989586621680088473"><span class="hs-identifier hs-var">localIds</span></a></span><span>
+</span><span id="line-94"></span><span>              </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="hs-identifier hs-var">BranchFormat.branchDefnLookup</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ComponentHash</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">.</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32.toHash</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="hs-identifier hs-var">BranchFormat.branchDefnLookup</span></span><span> </span><span class="annot"><a href="#local-6989586621680088473"><span class="hs-identifier hs-type">localIds</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-95"></span><span>                </span><span class="annot"><span class="hs-identifier hs-var">BranchFormat.branchPatchLookup</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">PatchHash</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">.</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32.toHash</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="hs-identifier hs-var">BranchFormat.branchPatchLookup</span></span><span> </span><span class="annot"><a href="#local-6989586621680088473"><span class="hs-identifier hs-type">localIds</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-96"></span><span>                </span><span class="annot"><span class="hs-identifier hs-var">BranchFormat.branchChildLookup</span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-97"></span><span>                  </span><span class="annot"><span class="hs-identifier hs-var">BranchFormat.branchChildLookup</span></span><span> </span><span class="annot"><a href="#local-6989586621680088473"><span class="hs-identifier hs-type">localIds</span></a></span><span>
+</span><span id="line-98"></span><span>                    </span><span class="annot"><span class="hs-operator hs-type">&lt;&amp;&gt;</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">bimap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">BranchHash</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">.</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32.toHash</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">CausalHash</span></span><span> </span><span class="annot"><span class="hs-operator hs-type">.</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32.toHash</span></span><span class="hs-special">)</span><span>
+</span><span id="line-99"></span><span>              </span><span class="hs-special">}</span><span>
+</span><span id="line-100"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680088488"><span class="annot"><span class="annottext">actualHash :: BranchHash
+</span><a href="#local-6989586621680088488"><span class="hs-identifier hs-var hs-var">actualHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-101"></span><span>            </span><span class="annot"><span class="annottext">HashHandle
+-&gt; BranchLocalIds'
+     Text ComponentHash PatchHash (BranchHash, CausalHash)
+-&gt; LocalBranch
+-&gt; BranchHash
+</span><span class="hs-identifier hs-var">HH.hashBranchFormatFull</span></span><span> </span><span class="annot"><span class="annottext">HashHandle
+</span><span class="hs-identifier hs-var">v2HashHandle</span></span><span> </span><span class="annot"><span class="annottext">BranchLocalIds'
+  Text ComponentHash PatchHash (BranchHash, CausalHash)
+</span><a href="#local-6989586621680088480"><span class="hs-identifier hs-var">localIds'</span></a></span><span> </span><span class="annot"><span class="annottext">LocalBranch
+</span><a href="#local-6989586621680088479"><span class="hs-identifier hs-var">localBranch</span></a></span><span>
+</span><span id="line-102"></span><span>      </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680088488"><span class="hs-identifier hs-var">actualHash</span></a></span><span> </span><span class="annot"><span class="annottext">BranchHash -&gt; BranchHash -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; BranchHash
+</span><span class="hs-identifier hs-var">BranchHash</span></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088472"><span class="hs-identifier hs-var">expectedHash</span></a></span><span>
+</span><span id="line-103"></span><span>        </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Maybe EntityValidationError
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-104"></span><span>        </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">EntityValidationError -&gt; Maybe EntityValidationError
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(EntityValidationError -&gt; Maybe EntityValidationError)
+-&gt; EntityValidationError -&gt; Maybe EntityValidationError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">EntityType -&gt; HashMismatchForEntity -&gt; EntityValidationError
+</span><a href="Unison.Sync.Types.html#EntityHashMismatch"><span class="hs-identifier hs-var">Share.EntityHashMismatch</span></a></span><span> </span><span class="annot"><span class="annottext">EntityType
+</span><a href="Unison.Sync.Types.html#NamespaceType"><span class="hs-identifier hs-var">Share.NamespaceType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash -&gt; Hash -&gt; HashMismatchForEntity
+</span><a href="Unison.Sync.EntityValidation.html#mismatch"><span class="hs-identifier hs-var">mismatch</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088472"><span class="hs-identifier hs-var">expectedHash</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">BranchHash -&gt; Hash
+</span><span class="hs-identifier hs-var">unBranchHash</span></span><span> </span><span class="annot"><span class="annottext">BranchHash
+</span><a href="#local-6989586621680088488"><span class="hs-identifier hs-var">actualHash</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-105"></span><span>
+</span><span id="line-106"></span><span class="annot"><a href="Unison.Sync.EntityValidation.html#validateTerm"><span class="hs-identifier hs-type">validateTerm</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">TermFormat.SyncLocallyIndexedComponent'</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Unison.Sync.Types.html#EntityValidationError"><span class="hs-identifier hs-type">Share.EntityValidationError</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-107"></span><span id="validateTerm"><span class="annot"><span class="annottext">validateTerm :: Hash
+-&gt; SyncLocallyIndexedComponent' Text Hash32
+-&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validateTerm"><span class="hs-identifier hs-var hs-var">validateTerm</span></a></span></span><span> </span><span id="local-6989586621680088491"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088491"><span class="hs-identifier hs-var">expectedHash</span></a></span></span><span> </span><span id="local-6989586621680088492"><span class="annot"><span class="annottext">SyncLocallyIndexedComponent' Text Hash32
+</span><a href="#local-6989586621680088492"><span class="hs-identifier hs-var">syncLocalComp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-108"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SyncLocallyIndexedComponent' Text Hash32
+-&gt; Either DecodeError (LocallyIndexedComponent' Text Hash32)
+forall t d.
+HasCallStack =&gt;
+SyncLocallyIndexedComponent' t d
+-&gt; Either DecodeError (LocallyIndexedComponent' t d)
+</span><span class="hs-identifier hs-var">Decode.unsyncTermComponent</span></span><span> </span><span class="annot"><span class="annottext">SyncLocallyIndexedComponent' Text Hash32
+</span><a href="#local-6989586621680088492"><span class="hs-identifier hs-var">syncLocalComp</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-109"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621680088494"><span class="annot"><span class="annottext">DecodeError
+</span><a href="#local-6989586621680088494"><span class="hs-identifier hs-var">decodeErr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">EntityValidationError -&gt; Maybe EntityValidationError
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash32 -&gt; EntityType -&gt; Text -&gt; EntityValidationError
+</span><a href="Unison.Sync.Types.html#InvalidByteEncoding"><span class="hs-identifier hs-var">Share.InvalidByteEncoding</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash -&gt; Hash32
+</span><span class="hs-identifier hs-var">Hash32.fromHash</span></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088491"><span class="hs-identifier hs-var">expectedHash</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">EntityType
+</span><a href="Unison.Sync.Types.html#TermComponentType"><span class="hs-identifier hs-var">Share.TermComponentType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">DecodeError -&gt; Text
+forall a. Show a =&gt; a -&gt; Text
+</span><span class="hs-identifier hs-var">tShow</span></span><span> </span><span class="annot"><span class="annottext">DecodeError
+</span><a href="#local-6989586621680088494"><span class="hs-identifier hs-var">decodeErr</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-110"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621680088497"><span class="annot"><span class="annottext">LocallyIndexedComponent' Text Hash32
+</span><a href="#local-6989586621680088497"><span class="hs-identifier hs-var">localComp</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-111"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">HashHandle -&gt; ComponentHash -&gt; HashTermFormat -&gt; Maybe HashMismatch
+</span><span class="hs-identifier hs-var">HH.verifyTermFormatHash</span></span><span> </span><span class="annot"><span class="annottext">HashHandle
+</span><span class="hs-identifier hs-var">v2HashHandle</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash -&gt; ComponentHash
+</span><span class="hs-identifier hs-var">ComponentHash</span></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088491"><span class="hs-identifier hs-var">expectedHash</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LocallyIndexedComponent' Text Hash32 -&gt; HashTermFormat
+forall t d. LocallyIndexedComponent' t d -&gt; TermFormat' t d
+</span><span class="hs-identifier hs-var">TermFormat.Term</span></span><span> </span><span class="annot"><span class="annottext">LocallyIndexedComponent' Text Hash32
+</span><a href="#local-6989586621680088497"><span class="hs-identifier hs-var">localComp</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-112"></span><span>        </span><span class="annot"><span class="annottext">Maybe HashMismatch
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe EntityValidationError
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-113"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">HH.HashMismatch</span></span><span> </span><span class="hs-special">{</span><span id="local-6989586621680088501"><span class="annot"><span class="annottext">Hash
+expectedHash :: Hash
+$sel:expectedHash:HashMismatch :: HashMismatch -&gt; Hash
+</span><a href="#local-6989586621680088501"><span class="hs-identifier hs-var hs-var">expectedHash</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680088503"><span class="annot"><span class="annottext">Hash
+actualHash :: Hash
+$sel:actualHash:HashMismatch :: HashMismatch -&gt; Hash
+</span><a href="#local-6989586621680088503"><span class="hs-identifier hs-var hs-var">actualHash</span></a></span></span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">EntityValidationError -&gt; Maybe EntityValidationError
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(EntityValidationError -&gt; Maybe EntityValidationError)
+-&gt; (HashMismatchForEntity -&gt; EntityValidationError)
+-&gt; HashMismatchForEntity
+-&gt; Maybe EntityValidationError
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">EntityType -&gt; HashMismatchForEntity -&gt; EntityValidationError
+</span><a href="Unison.Sync.Types.html#EntityHashMismatch"><span class="hs-identifier hs-var">Share.EntityHashMismatch</span></a></span><span> </span><span class="annot"><span class="annottext">EntityType
+</span><a href="Unison.Sync.Types.html#TermComponentType"><span class="hs-identifier hs-var">Share.TermComponentType</span></a></span><span> </span><span class="annot"><span class="annottext">(HashMismatchForEntity -&gt; Maybe EntityValidationError)
+-&gt; HashMismatchForEntity -&gt; Maybe EntityValidationError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Hash -&gt; HashMismatchForEntity
+</span><a href="Unison.Sync.EntityValidation.html#mismatch"><span class="hs-identifier hs-var">mismatch</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088501"><span class="hs-identifier hs-var">expectedHash</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088503"><span class="hs-identifier hs-var">actualHash</span></a></span><span>
+</span><span id="line-114"></span><span>
+</span><span id="line-115"></span><span class="annot"><a href="Unison.Sync.EntityValidation.html#validateDecl"><span class="hs-identifier hs-type">validateDecl</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">DeclFormat.SyncLocallyIndexedComponent'</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Unison.Sync.Types.html#EntityValidationError"><span class="hs-identifier hs-type">Share.EntityValidationError</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span id="validateDecl"><span class="annot"><span class="annottext">validateDecl :: Hash
+-&gt; SyncLocallyIndexedComponent' Text Hash32
+-&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validateDecl"><span class="hs-identifier hs-var hs-var">validateDecl</span></a></span></span><span> </span><span id="local-6989586621680088505"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088505"><span class="hs-identifier hs-var">expectedHash</span></a></span></span><span> </span><span id="local-6989586621680088506"><span class="annot"><span class="annottext">SyncLocallyIndexedComponent' Text Hash32
+</span><a href="#local-6989586621680088506"><span class="hs-identifier hs-var">syncLocalComp</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-117"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SyncLocallyIndexedComponent' Text Hash32
+-&gt; Either DecodeError (LocallyIndexedComponent' Text Hash32)
+forall t d.
+SyncLocallyIndexedComponent' t d
+-&gt; Either DecodeError (LocallyIndexedComponent' t d)
+</span><span class="hs-identifier hs-var">Decode.unsyncDeclComponent</span></span><span> </span><span class="annot"><span class="annottext">SyncLocallyIndexedComponent' Text Hash32
+</span><a href="#local-6989586621680088506"><span class="hs-identifier hs-var">syncLocalComp</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-118"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Left</span></span><span> </span><span id="local-6989586621680088508"><span class="annot"><span class="annottext">DecodeError
+</span><a href="#local-6989586621680088508"><span class="hs-identifier hs-var">decodeErr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">EntityValidationError -&gt; Maybe EntityValidationError
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash32 -&gt; EntityType -&gt; Text -&gt; EntityValidationError
+</span><a href="Unison.Sync.Types.html#InvalidByteEncoding"><span class="hs-identifier hs-var">Share.InvalidByteEncoding</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash -&gt; Hash32
+</span><span class="hs-identifier hs-var">Hash32.fromHash</span></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088505"><span class="hs-identifier hs-var">expectedHash</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">EntityType
+</span><a href="Unison.Sync.Types.html#DeclComponentType"><span class="hs-identifier hs-var">Share.DeclComponentType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">DecodeError -&gt; Text
+forall a. Show a =&gt; a -&gt; Text
+</span><span class="hs-identifier hs-var">tShow</span></span><span> </span><span class="annot"><span class="annottext">DecodeError
+</span><a href="#local-6989586621680088508"><span class="hs-identifier hs-var">decodeErr</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-119"></span><span>    </span><span class="annot"><span class="hs-identifier hs-type">Right</span></span><span> </span><span id="local-6989586621680088510"><span class="annot"><span class="annottext">LocallyIndexedComponent' Text Hash32
+</span><a href="#local-6989586621680088510"><span class="hs-identifier hs-var">localComp</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-120"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">HashHandle
+-&gt; ComponentHash -&gt; HashDeclFormat -&gt; Maybe DeclHashingError
+</span><span class="hs-identifier hs-var">HH.verifyDeclFormatHash</span></span><span> </span><span class="annot"><span class="annottext">HashHandle
+</span><span class="hs-identifier hs-var">v2HashHandle</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash -&gt; ComponentHash
+</span><span class="hs-identifier hs-var">ComponentHash</span></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088505"><span class="hs-identifier hs-var">expectedHash</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">LocallyIndexedComponent' Text Hash32 -&gt; HashDeclFormat
+forall text defn.
+LocallyIndexedComponent' text defn -&gt; DeclFormat' text defn
+</span><span class="hs-identifier hs-var">DeclFormat.Decl</span></span><span> </span><span class="annot"><span class="annottext">LocallyIndexedComponent' Text Hash32
+</span><a href="#local-6989586621680088510"><span class="hs-identifier hs-var">localComp</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-121"></span><span>        </span><span class="annot"><span class="annottext">Maybe DeclHashingError
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Maybe EntityValidationError
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-122"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">HH.DeclHashMismatch</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">HH.HashMismatch</span></span><span> </span><span class="hs-special">{</span><span id="local-6989586621680088514"><span class="annot"><span class="annottext">Hash
+$sel:expectedHash:HashMismatch :: HashMismatch -&gt; Hash
+expectedHash :: Hash
+</span><span class="hs-identifier hs-var hs-var">expectedHash</span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680088515"><span class="annot"><span class="annottext">Hash
+$sel:actualHash:HashMismatch :: HashMismatch -&gt; Hash
+actualHash :: Hash
+</span><span class="hs-identifier hs-var hs-var">actualHash</span></span></span><span class="hs-special">}</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">EntityValidationError -&gt; Maybe EntityValidationError
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(EntityValidationError -&gt; Maybe EntityValidationError)
+-&gt; (HashMismatchForEntity -&gt; EntityValidationError)
+-&gt; HashMismatchForEntity
+-&gt; Maybe EntityValidationError
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">EntityType -&gt; HashMismatchForEntity -&gt; EntityValidationError
+</span><a href="Unison.Sync.Types.html#EntityHashMismatch"><span class="hs-identifier hs-var">Share.EntityHashMismatch</span></a></span><span> </span><span class="annot"><span class="annottext">EntityType
+</span><a href="Unison.Sync.Types.html#DeclComponentType"><span class="hs-identifier hs-var">Share.DeclComponentType</span></a></span><span> </span><span class="annot"><span class="annottext">(HashMismatchForEntity -&gt; Maybe EntityValidationError)
+-&gt; HashMismatchForEntity -&gt; Maybe EntityValidationError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Hash -&gt; HashMismatchForEntity
+</span><a href="Unison.Sync.EntityValidation.html#mismatch"><span class="hs-identifier hs-var">mismatch</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088514"><span class="hs-identifier hs-var">expectedHash</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088515"><span class="hs-identifier hs-var">actualHash</span></a></span><span>
+</span><span id="line-123"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="annot"><span class="annottext">DeclHashingError
+</span><span class="hs-identifier hs-var">HH.DeclHashResolutionFailure</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">EntityValidationError -&gt; Maybe EntityValidationError
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(EntityValidationError -&gt; Maybe EntityValidationError)
+-&gt; EntityValidationError -&gt; Maybe EntityValidationError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Hash32 -&gt; EntityValidationError
+</span><a href="Unison.Sync.Types.html#HashResolutionFailure"><span class="hs-identifier hs-var">Share.HashResolutionFailure</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash -&gt; Hash32
+</span><span class="hs-identifier hs-var">Hash32.fromHash</span></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088505"><span class="hs-identifier hs-var">expectedHash</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-124"></span><span>
+</span><span id="line-125"></span><span class="annot"><a href="Unison.Sync.EntityValidation.html#validateCausal"><span class="hs-identifier hs-type">validateCausal</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Hash32</span></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="Unison.Sync.Types.html#EntityValidationError"><span class="hs-identifier hs-type">Share.EntityValidationError</span></a></span><span>
+</span><span id="line-126"></span><span id="validateCausal"><span class="annot"><span class="annottext">validateCausal :: Hash32 -&gt; Hash32 -&gt; [Hash32] -&gt; Maybe EntityValidationError
+</span><a href="Unison.Sync.EntityValidation.html#validateCausal"><span class="hs-identifier hs-var hs-var">validateCausal</span></a></span></span><span> </span><span id="local-6989586621680088518"><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088518"><span class="hs-identifier hs-var">expectedHash32</span></a></span></span><span> </span><span id="local-6989586621680088519"><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088519"><span class="hs-identifier hs-var">valueHash32</span></a></span></span><span> </span><span id="local-6989586621680088520"><span class="annot"><span class="annottext">[Hash32]
+</span><a href="#local-6989586621680088520"><span class="hs-identifier hs-var">parentHashes32</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-127"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680088521"><span class="annot"><span class="annottext">expectedHash :: Hash
+</span><a href="#local-6989586621680088521"><span class="hs-identifier hs-var hs-var">expectedHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Hash32 -&gt; Hash
+</span><span class="hs-identifier hs-var">Hash32.toHash</span></span><span> </span><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088518"><span class="hs-identifier hs-var">expectedHash32</span></a></span><span>
+</span><span id="line-128"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680088522"><span class="annot"><span class="annottext">branchHash :: Hash
+</span><a href="#local-6989586621680088522"><span class="hs-identifier hs-var hs-var">branchHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Hash32 -&gt; Hash
+</span><span class="hs-identifier hs-var">Hash32.toHash</span></span><span> </span><span class="annot"><span class="annottext">Hash32
+</span><a href="#local-6989586621680088519"><span class="hs-identifier hs-var">valueHash32</span></a></span><span>
+</span><span id="line-129"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680088523"><span class="annot"><span class="annottext">parents :: Set Hash
+</span><a href="#local-6989586621680088523"><span class="hs-identifier hs-var hs-var">parents</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Hash] -&gt; Set Hash
+forall a. Ord a =&gt; [a] -&gt; Set a
+</span><span class="hs-identifier hs-var">Set.fromList</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash32 -&gt; Hash
+</span><span class="hs-identifier hs-var">Hash32.toHash</span></span><span> </span><span class="annot"><span class="annottext">(Hash32 -&gt; Hash) -&gt; [Hash32] -&gt; [Hash]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">[Hash32]
+</span><a href="#local-6989586621680088520"><span class="hs-identifier hs-var">parentHashes32</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-130"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621680088525"><span class="annot"><span class="annottext">actualHash :: Hash
+</span><a href="#local-6989586621680088525"><span class="hs-identifier hs-var hs-var">actualHash</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Causal -&gt; Hash
+forall a. ContentAddressable a =&gt; a -&gt; Hash
+</span><span class="hs-identifier hs-var">H.contentHash</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">H.Causal</span></span><span> </span><span class="hs-special">{</span><span class="annot"><span class="annottext">Hash
+branchHash :: Hash
+branchHash :: Hash
+</span><a href="#local-6989586621680088522"><span class="hs-identifier hs-var hs-var">branchHash</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Set Hash
+parents :: Set Hash
+parents :: Set Hash
+</span><a href="#local-6989586621680088523"><span class="hs-identifier hs-var hs-var">parents</span></a></span><span class="hs-special">}</span><span class="hs-special">)</span><span>
+</span><span id="line-131"></span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088525"><span class="hs-identifier hs-var">actualHash</span></a></span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Hash -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088521"><span class="hs-identifier hs-var">expectedHash</span></a></span><span>
+</span><span id="line-132"></span><span>    </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Maybe EntityValidationError
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-133"></span><span>    </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">EntityValidationError -&gt; Maybe EntityValidationError
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(EntityValidationError -&gt; Maybe EntityValidationError)
+-&gt; EntityValidationError -&gt; Maybe EntityValidationError
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">EntityType -&gt; HashMismatchForEntity -&gt; EntityValidationError
+</span><a href="Unison.Sync.Types.html#EntityHashMismatch"><span class="hs-identifier hs-var">Share.EntityHashMismatch</span></a></span><span> </span><span class="annot"><span class="annottext">EntityType
+</span><a href="Unison.Sync.Types.html#CausalType"><span class="hs-identifier hs-var">Share.CausalType</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash -&gt; Hash -&gt; HashMismatchForEntity
+</span><a href="Unison.Sync.EntityValidation.html#mismatch"><span class="hs-identifier hs-var">mismatch</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088521"><span class="hs-identifier hs-var">expectedHash</span></a></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088525"><span class="hs-identifier hs-var">actualHash</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-134"></span><span>
+</span><span id="line-135"></span><span class="annot"><a href="Unison.Sync.EntityValidation.html#mismatch"><span class="hs-identifier hs-type">mismatch</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Hash</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Unison.Sync.Types.html#HashMismatchForEntity"><span class="hs-identifier hs-type">Share.HashMismatchForEntity</span></a></span><span>
+</span><span id="line-136"></span><span id="mismatch"><span class="annot"><span class="annottext">mismatch :: Hash -&gt; Hash -&gt; HashMismatchForEntity
+</span><a href="Unison.Sync.EntityValidation.html#mismatch"><span class="hs-identifier hs-var hs-var">mismatch</span></a></span></span><span> </span><span id="local-6989586621680088531"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088531"><span class="hs-identifier hs-var">supplied</span></a></span></span><span> </span><span id="local-6989586621680088532"><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088532"><span class="hs-identifier hs-var">computed</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-137"></span><span>  </span><span class="annot"><a href="Unison.Sync.Types.html#HashMismatchForEntity"><span class="hs-identifier hs-type">Share.HashMismatchForEntity</span></a></span><span>
+</span><span id="line-138"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">$sel:supplied:HashMismatchForEntity :: Hash32
+</span><a href="Unison.Sync.Types.html#%24sel%3Asupplied%3AHashMismatchForEntity"><span class="hs-identifier hs-var">supplied</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Hash32
+</span><span class="hs-identifier hs-var">Hash32.fromHash</span></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088531"><span class="hs-identifier hs-var">supplied</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-139"></span><span>      </span><span class="annot"><span class="annottext">$sel:computed:HashMismatchForEntity :: Hash32
+</span><a href="Unison.Sync.Types.html#%24sel%3Acomputed%3AHashMismatchForEntity"><span class="hs-identifier hs-var">computed</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Hash -&gt; Hash32
+</span><span class="hs-identifier hs-var">Hash32.fromHash</span></span><span> </span><span class="annot"><span class="annottext">Hash
+</span><a href="#local-6989586621680088532"><span class="hs-identifier hs-var">computed</span></a></span><span>
+</span><span id="line-140"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-141"></span></pre></body></html>
