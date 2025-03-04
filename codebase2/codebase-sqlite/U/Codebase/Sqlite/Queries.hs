@@ -159,7 +159,6 @@ module U.Codebase.Sqlite.Queries
     DependentsSelector (..),
     getDependentsForDependency,
     getDependentsForDependencyComponent,
-    getDependenciesForDependent,
     getDependencyIdsForDependent,
     getDependenciesBetweenTerms,
     getDirectDependenciesOfScope,
@@ -1712,23 +1711,6 @@ getDependentsForDependencyComponent dependency =
     isNotSelfReference = \case
       (C.Reference.Id oid1 _pos1) -> dependency /= oid1
 
--- | Get non-self dependencies of a user-defined dependent.
-getDependenciesForDependent :: S.Reference.Id -> Transaction [S.Reference]
-getDependenciesForDependent dependent@(C.Reference.Id oid0 _) =
-  fmap (filter isNotSelfReference) $
-    queryListRow
-      [sql|
-        SELECT dependency_builtin, dependency_object_id, dependency_component_index
-        FROM dependents_index
-        WHERE dependent_object_id IS @dependent
-          AND dependent_component_index IS @
-      |]
-  where
-    isNotSelfReference :: S.Reference -> Bool
-    isNotSelfReference = \case
-      ReferenceBuiltin _ -> True
-      ReferenceDerived (C.Reference.Id oid1 _) -> oid0 /= oid1
-
 -- | Get non-self, user-defined dependencies of a user-defined dependent.
 getDependencyIdsForDependent :: S.Reference.Id -> Transaction [S.Reference.Id]
 getDependencyIdsForDependent dependent@(C.Reference.Id oid0 _) =
@@ -1861,21 +1843,25 @@ getDependenciesBetweenTerms oid1 oid2 =
 {- ORMOLU_ENABLE -}
 
 getDirectDependenciesOfScope ::
+  (S.Reference -> Transaction Bool) ->
   DefnsF Set S.TermReferenceId S.TypeReferenceId ->
   Transaction (DefnsF Set S.TermReference S.TypeReference)
-getDirectDependenciesOfScope scope = do
+getDirectDependenciesOfScope isBuiltinType scope = do
   let tempTableName = [sql| temp_dependents |]
 
   -- Populate a temporary table with all of the references in `scope`
   createTemporaryTableOfReferenceIds tempTableName (Set.union scope.terms scope.types)
 
   -- Get their direct dependencies (tagged with object type)
+  --
+  -- Builtins don't have an object type – just a textual string. We have to figure out if it's a term or a type outside
+  -- of the codebase.
   dependencies0 <-
-    queryListRow @(S.Reference :. Only ObjectType)
+    queryListRow @(S.Reference :. Only (Maybe ObjectType))
       [sql|
         SELECT d.dependency_builtin, d.dependency_object_id, d.dependency_component_index, o.type_id
         FROM dependents_index d
-          JOIN object o ON d.dependency_object_id = o.id
+          LEFT JOIN object o ON d.dependency_object_id = o.id
         WHERE (d.dependent_object_id, d.dependent_component_index) IN (
           SELECT object_id, component_index
           FROM $tempTableName
@@ -1886,15 +1872,19 @@ getDirectDependenciesOfScope scope = do
   execute [sql| DROP TABLE $tempTableName |]
 
   -- Post-process the query result
-  let dependencies1 =
-        List.foldl'
-          ( \deps -> \case
-              dep :. Only TermComponent -> Defns (Set.insert dep deps.terms) deps.types
-              dep :. Only DeclComponent -> Defns deps.terms (Set.insert dep deps.types)
-              _ -> deps -- impossible; could error here
-          )
-          (Defns Set.empty Set.empty)
-          dependencies0
+  dependencies1 <-
+    Foldable.foldlM
+      ( \deps -> \case
+          dep :. Only (Just TermComponent) -> pure $! deps & over #terms (Set.insert dep)
+          dep :. Only (Just DeclComponent) -> pure $! deps & over #types (Set.insert dep)
+          dep :. Only Nothing ->
+            isBuiltinType dep <&> \case
+              False -> deps & over #terms (Set.insert dep)
+              True -> deps & over #types (Set.insert dep)
+          _ -> pure deps -- impossible; could error here
+      )
+      (Defns Set.empty Set.empty)
+      dependencies0
 
   pure dependencies1
 

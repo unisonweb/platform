@@ -33,7 +33,6 @@ import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.MonadUtils (getCurrentProjectBranch)
 import Unison.Cli.MonadUtils qualified as Cli
-import Unison.Cli.NameResolutionUtils (resolveHQToLabeledDependencies)
 import Unison.Cli.NamesUtils qualified as Cli
 import Unison.Cli.ProjectUtils qualified as ProjectUtils
 import Unison.Codebase qualified as Codebase
@@ -58,6 +57,7 @@ import Unison.Codebase.Editor.HandleInput.DebugSynhashTerm (handleDebugSynhashTe
 import Unison.Codebase.Editor.HandleInput.DeleteBranch (handleDeleteBranch)
 import Unison.Codebase.Editor.HandleInput.DeleteNamespace (getEndangeredDependents, handleDeleteNamespace)
 import Unison.Codebase.Editor.HandleInput.DeleteProject (handleDeleteProject)
+import Unison.Codebase.Editor.HandleInput.Dependencies (handleDependencies)
 import Unison.Codebase.Editor.HandleInput.Dependents (handleDependents)
 import Unison.Codebase.Editor.HandleInput.EditDependents (handleEditDependents)
 import Unison.Codebase.Editor.HandleInput.EditNamespace (handleEditNamespace)
@@ -118,13 +118,10 @@ import Unison.CommandLine.DisplayValues qualified as DisplayValues
 import Unison.CommandLine.InputPattern qualified as IP
 import Unison.CommandLine.InputPatterns qualified as IP
 import Unison.CommandLine.InputPatterns qualified as InputPatterns
-import Unison.ConstructorReference (GConstructorReference (..))
 import Unison.DataDeclaration qualified as DD
 import Unison.HashQualified qualified as HQ
 import Unison.HashQualifiedPrime qualified as HQ'
 import Unison.LabeledDependency (LabeledDependency)
-import Unison.LabeledDependency qualified as LD
-import Unison.LabeledDependency qualified as LabeledDependency
 import Unison.Name (Name)
 import Unison.Name qualified as Name
 import Unison.NameSegment qualified as NameSegment
@@ -169,7 +166,7 @@ import Unison.UnisonFile (TypecheckedUnisonFile)
 import Unison.UnisonFile qualified as UF
 import Unison.UnisonFile.Names qualified as UF
 import Unison.Util.Find qualified as Find
-import Unison.Util.List (nubOrdOn, uniqueBy)
+import Unison.Util.List (uniqueBy)
 import Unison.Util.Monoid qualified as Monoid
 import Unison.Util.Pretty qualified as P
 import Unison.Util.Pretty qualified as Pretty
@@ -1140,46 +1137,6 @@ handleFindI isVerbose fscope ws input = do
       Cli.setNumberedArgs $ fmap (SA.SearchResult searchRoot) results
       results' <- Cli.runTransaction (Backend.loadSearchResults codebase results)
       Cli.respond $ ListOfDefinitions fscope ppe isVerbose results'
-
-handleDependencies :: HQ.HashQualified Name -> Cli ()
-handleDependencies hq = do
-  Cli.Env {codebase} <- ask
-  -- todo: add flag to handle transitive efficiently
-  lds <- resolveHQToLabeledDependencies hq
-  names <- Cli.currentNames
-  let pped = PPED.makePPED (PPE.hqNamer 10 names) (PPE.suffixifyByHash names)
-  let suffixifiedPPE = PPED.suffixifiedPPE pped
-  when (null lds) do
-    Cli.returnEarly (LabeledReferenceNotFound hq)
-  results <- for (toList lds) \ld -> do
-    dependencies :: Set LabeledDependency <-
-      Cli.runTransaction do
-        let tp r@(Reference.DerivedId i) =
-              Codebase.getTypeDeclaration codebase i <&> \case
-                Nothing -> error $ "What happened to " ++ show i ++ "?"
-                Just decl ->
-                  Set.map LabeledDependency.TypeReference . Set.delete r . DD.typeDependencies $
-                    DD.asDataDecl decl
-            tp _ = pure mempty
-            tm r@(Referent.Ref (Reference.DerivedId i)) =
-              Codebase.getTerm codebase i <&> \case
-                Nothing -> error $ "What happened to " ++ show i ++ "?"
-                Just tm -> Set.delete (LabeledDependency.TermReferent r) (Term.labeledDependencies tm)
-            tm con@(Referent.Con (ConstructorReference (Reference.DerivedId i) cid) _ct) =
-              Codebase.getTypeDeclaration codebase i <&> \case
-                Nothing -> error $ "What happened to " ++ show i ++ "?"
-                Just decl -> case DD.typeOfConstructor (DD.asDataDecl decl) cid of
-                  Nothing -> error $ "What happened to " ++ show con ++ "?"
-                  Just tp -> Type.labeledDependencies tp
-            tm _ = pure mempty
-         in LD.fold tp tm ld
-    let types = [(PPE.typeName suffixifiedPPE r, r) | LabeledDependency.TypeReference r <- toList dependencies]
-    let terms = [(PPE.termName suffixifiedPPE r, r) | LabeledDependency.TermReferent r <- toList dependencies]
-    pure (types, terms)
-  let types = fmap fst . nubOrdOn snd . Name.sortByText (HQ.toText . fst) . join $ fst <$> results
-  let terms = fmap fst . nubOrdOn snd . Name.sortByText (HQ.toText . fst) . join $ snd <$> results
-  Cli.setNumberedArgs . map SA.HashQualified $ types <> terms
-  Cli.respond $ ListDependencies suffixifiedPPE lds types terms
 
 doDisplay :: OutputLocation -> Names -> Term Symbol () -> Cli ()
 doDisplay outputLoc names tm = do

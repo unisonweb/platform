@@ -63,13 +63,13 @@ scratch/main> dependencies q
 
     Types:
 
-    1. Nat
+    1. builtin.Nat
 
     Terms:
 
-    2. Nat.*
-    3. Nat.+
-    4. p
+    2. builtin.Nat.*
+    3. builtin.Nat.+
+    4. inside.p
 
   Tip: Try `view 4` to see the source of any numbered item in
        the above list.
@@ -80,8 +80,8 @@ scratch/main> dependencies B
 
     Types:
 
-    1. B
-    2. Int
+    1. builtin.Int
+    2. outside.B
 
   Tip: Try `view 2` to see the source of any numbered item in
        the above list.
@@ -92,17 +92,16 @@ scratch/main> dependencies d
 
     Types:
 
-    1. Boolean
-    2. Nat
+    1. builtin.Boolean
 
     Terms:
 
-    3. <
-    4. c
-    5. Nat.+
-    6. p
+    2. builtin.Nat.+
+    3. builtin.Universal.<
+    4. inside.p
+    5. outside.c
 
-  Tip: Try `view 6` to see the source of any numbered item in
+  Tip: Try `view 5` to see the source of any numbered item in
        the above list.
 
 scratch/main> dependents d
