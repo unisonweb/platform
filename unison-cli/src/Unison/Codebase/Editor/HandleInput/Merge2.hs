@@ -17,6 +17,7 @@ where
 
 import Control.Monad.Reader (ask)
 import Data.Algorithm.Diff qualified as Diff
+import Data.Foldable qualified as Foldable
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Semialign (zipWith)
@@ -58,6 +59,7 @@ import Unison.Codebase.Branch qualified as Branch
 import Unison.Codebase.Branch.Names qualified as Branch
 import Unison.Codebase.BranchUtil qualified as BranchUtil
 import Unison.Codebase.Editor.HandleInput.Branch qualified as HandleInput.Branch
+import Unison.Codebase.Editor.Output (Output)
 import Unison.Codebase.Editor.Output qualified as Output
 import Unison.Codebase.Editor.RemoteRepo (ReadShareLooseCode (..))
 import Unison.Codebase.Path (Path)
@@ -170,6 +172,13 @@ doMerge info = do
           then realDebugFunctions
           else fakeDebugFunctions
 
+  -- When debugging, don't bother with progress messages, so debug output is cleaner and doesn't disappear
+  let withRespondRegion :: ((Output -> Cli ()) -> Cli a) -> Cli a
+      withRespondRegion =
+        if Debug.shouldDebug Debug.Merge
+          then \f -> f \_output -> pure ()
+          else Cli.withRespondRegion
+
   let aliceBranchNames = ProjectUtils.justTheNames info.alice.projectAndBranch
   let mergeSource = MergeSourceOrTarget'Source info.bob.source
   let mergeTarget = MergeSourceOrTarget'Target aliceBranchNames
@@ -189,7 +198,7 @@ doMerge info = do
         _ <- Cli.updateAt info.description (PP.projectBranchRoot info.alice.projectAndBranch) (\_aliceBranch -> bobBranch)
         done (Output.MergeSuccessFastForward mergeSourceAndTarget)
 
-      Cli.withRespondRegion \respondRegion -> do
+      withRespondRegion \respondRegion -> do
         respondRegion (Output.Literal "Loading branches...")
 
         -- Load Alice/Bob/LCA causals
@@ -287,6 +296,8 @@ doMerge info = do
         liftIO (debugFunctions.debugDiffs blob1.diffsFromLCA)
 
         liftIO (debugFunctions.debugCombinedDiff blob1.diff)
+
+        liftIO (debugFunctions.debugHumanDiffs blob1.humanDiffsFromLCA)
 
         blob2 <-
           Merge.makeMergeblob2 blob1 & onLeft \err ->
@@ -704,6 +715,7 @@ data DebugFunctions = DebugFunctions
   { debugCausals :: Merge.TwoOrThreeWay (V2.CausalBranch Transaction) -> IO (),
     debugDiffs :: Merge.TwoWay (DefnsF3 (Map Name) Merge.DiffOp Merge.Synhashed Referent TypeReference) -> IO (),
     debugCombinedDiff :: DefnsF2 (Map Name) Merge.CombinedDiffOp Referent TypeReference -> IO (),
+    debugHumanDiffs :: Merge.TwoWay (DefnsF2 (Map Name) Merge.HumanDiffOp Referent TypeReference) -> IO (),
     debugPartitionedDiff ::
       Merge.TwoWay (DefnsF (Map Name) TermReferenceId TypeReferenceId) ->
       DefnsF Merge.Unconflicts Referent TypeReference ->
@@ -716,12 +728,13 @@ realDebugFunctions =
     { debugCausals = realDebugCausals,
       debugDiffs = realDebugDiffs,
       debugCombinedDiff = realDebugCombinedDiff,
+      debugHumanDiffs = realDebugHumanDiffs,
       debugPartitionedDiff = realDebugPartitionedDiff
     }
 
 fakeDebugFunctions :: DebugFunctions
 fakeDebugFunctions =
-  DebugFunctions mempty mempty mempty mempty
+  DebugFunctions mempty mempty mempty mempty mempty
 
 realDebugCausals :: Merge.TwoOrThreeWay (V2.CausalBranch Transaction) -> IO ()
 realDebugCausals causals = do
@@ -762,6 +775,87 @@ realDebugDiffs diffs = do
               Merge.DiffOp'Add x -> go Text.green "+" x
               Merge.DiffOp'Delete x -> go Text.red "-" x
               Merge.DiffOp'Update x -> go Text.yellow "%" x.new
+
+realDebugHumanDiffs :: Merge.TwoWay (DefnsF2 (Map Name) Merge.HumanDiffOp Referent TypeReference) -> IO ()
+realDebugHumanDiffs diffs = do
+  Text.putStrLn (Text.bold "\n=== LCA→Alice diff (humanized) ===")
+  renderDiff diffs.alice
+  Text.putStrLn (Text.bold "\n=== LCA→Bob diff (humanized) ===")
+  renderDiff diffs.bob
+  where
+    renderDiff :: DefnsF2 (Map Name) Merge.HumanDiffOp Referent TypeReference -> IO ()
+    renderDiff diff = do
+      renderThings referentLabel Referent.toText diff.terms
+      renderThings (const "type") Reference.toText diff.types
+
+    renderThings :: (ref -> Text) -> (ref -> Text) -> Map Name (Merge.HumanDiffOp ref) -> IO ()
+    renderThings label textify things =
+      for_ (Map.toList things) \(name, op) ->
+        Text.putStrLn case op of
+          Merge.HumanDiffOp'Add x ->
+            Text.green $
+              "add "
+                <> Text.italic (label x)
+                <> " "
+                <> Name.toText name
+                <> " "
+                <> textify x
+          Merge.HumanDiffOp'Delete x ->
+            Text.red $
+              "delete "
+                <> Text.italic (label x)
+                <> " "
+                <> Name.toText name
+                <> " "
+                <> textify x
+          Merge.HumanDiffOp'Update x ->
+            Text.yellow $
+              "update "
+                <> Text.italic (label x.old)
+                <> " "
+                <> Name.toText name
+                <> "\n  "
+                <> textify x.old
+                <> "\n  → "
+                <> textify x.new
+          Merge.HumanDiffOp'PropagatedUpdate x ->
+            Text.brightBlack $
+              "update (propagated) "
+                <> Text.italic (label x.old)
+                <> " "
+                <> Name.toText name
+                <> "\n  "
+                <> textify x.old
+                <> "\n  → "
+                <> textify x.new
+          Merge.HumanDiffOp'AliasOf x _ ->
+            Text.brightBlack $
+              "add (alias) "
+                <> Text.italic (label x)
+                <> " "
+                <> Name.toText name
+                <> " "
+                <> textify x
+          Merge.HumanDiffOp'RenamedFrom x oldNames ->
+            Text.magenta $
+              "rename "
+                <> Text.italic (label x)
+                <> " "
+                <> textify x
+                <> "\n  "
+                <> Text.unwords (map Name.toText (Foldable.toList oldNames))
+                <> "\n  → "
+                <> Name.toText name
+          Merge.HumanDiffOp'RenamedTo x newNames ->
+            Text.magenta $
+              "rename "
+                <> Text.italic (label x)
+                <> " "
+                <> textify x
+                <> "\n  "
+                <> Name.toText name
+                <> "\n  → "
+                <> Text.unwords (map Name.toText (Foldable.toList newNames))
 
 realDebugCombinedDiff :: DefnsF2 (Map Name) Merge.CombinedDiffOp Referent TypeReference -> IO ()
 realDebugCombinedDiff diff = do
