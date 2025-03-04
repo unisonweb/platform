@@ -26,6 +26,7 @@ module Unison.Merge
     DiffOp (..),
     EitherWay (..),
     EitherWayI (..),
+    HumanDiffOp (..),
     LibdepDiffOp (..),
     Synhashed (..),
     ThreeWay (..),
@@ -48,6 +49,7 @@ import Unison.Merge.DeclCoherencyCheck
 import Unison.Merge.DiffOp (DiffOp (..))
 import Unison.Merge.EitherWay (EitherWay (..))
 import Unison.Merge.EitherWayI (EitherWayI (..))
+import Unison.Merge.HumanDiffOp (HumanDiffOp (..))
 import Unison.Merge.Libdeps (LibdepDiffOp (..))
 import Unison.Merge.Mergeblob0 (Mergeblob0 (..), makeMergeblob0)
 import Unison.Merge.Mergeblob1 (Mergeblob1 (..), makeMergeblob1)
