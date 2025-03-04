@@ -122,7 +122,7 @@ $ UNISON_ENTITY_VALIDATION="false" ucm
 Allows regressing to sync version 1 when interacting with Share.
 
 ``` sh
-$ UNISON_SYNC_VALIDATION="1" ucm
+$ UNISON_SYNC_VERSION="1" ucm
 ```
 
 ### `UNISON_PULL_WORKERS`
@@ -170,7 +170,7 @@ Also, see the guide [here](https://www.unison-lang.org/learn/tooling/configurati
 The following configuration options can be provided within the `.unisonConfig` file,
 which exists within the codebase directory, or at `~/.unisonConfig` for your default codebase.
 
-```
+``` 
 # Attach myself as author and use BSD license for all of my contributions
 DefaultMetadata = [ ".metadata.authors.chrispenner"
                   , ".metadata.licenses.chrispenner" ]
