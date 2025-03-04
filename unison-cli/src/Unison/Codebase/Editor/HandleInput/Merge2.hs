@@ -843,9 +843,9 @@ realDebugHumanDiffs diffs = do
                 <> " "
                 <> textify x
                 <> "\n  "
-                <> Text.unwords (map Name.toText (Foldable.toList oldNames))
-                <> "\n  → "
                 <> Name.toText name
+                <> " ← "
+                <> Text.unwords (map Name.toText (Foldable.toList oldNames))
           Merge.HumanDiffOp'RenamedTo x newNames ->
             Text.magenta $
               "rename "
@@ -854,7 +854,7 @@ realDebugHumanDiffs diffs = do
                 <> textify x
                 <> "\n  "
                 <> Name.toText name
-                <> "\n  → "
+                <> " → "
                 <> Text.unwords (map Name.toText (Foldable.toList newNames))
 
 realDebugCombinedDiff :: DefnsF2 (Map Name) Merge.CombinedDiffOp Referent TypeReference -> IO ()
