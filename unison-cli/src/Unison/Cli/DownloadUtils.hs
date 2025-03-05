@@ -11,10 +11,13 @@ where
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (modifyTVar', newTVarIO, readTVar, readTVarIO)
 import Data.List.NonEmpty (pattern (:|))
+import Data.Set qualified as Set
 import System.Console.Regions qualified as Console.Regions
 import System.IO.Unsafe (unsafePerformIO)
 import U.Codebase.HashTags (CausalHash)
+import U.Codebase.Sqlite.Queries qualified as Q
 import U.Codebase.Sqlite.Queries qualified as Queries
+import U.Codebase.Sqlite.RemoteProjectBranch qualified as SqliteRPB
 import Unison.Cli.Monad (Cli)
 import Unison.Cli.Monad qualified as Cli
 import Unison.Cli.Share.Projects qualified as Share
@@ -77,9 +80,15 @@ downloadProjectBranchFromShare useSquashed branch =
             Cli.respond (Output.DownloadedEntities numDownloaded)
         SyncV2 -> do
           let branchRef = SyncV2.BranchRef (into @Text (ProjectAndBranch branch.projectName remoteProjectBranchName))
-          let downloadedCallback = \_ -> pure ()
           let shouldValidate = not $ Codeserver.isCustomCodeserver Codeserver.defaultCodeserver
-          result <- SyncV2.syncFromCodeserver shouldValidate Share.hardCodedBaseUrl branchRef causalHashJwt downloadedCallback
+          knownRemoteHash <- fmap (fromMaybe Set.empty) . Cli.runTransaction $ runMaybeT do
+            lastKnownCausalHashId <- SqliteRPB.lastKnownCausalHash <$> MaybeT (Q.loadRemoteBranch branch.projectId Share.hardCodedUri branch.branchId)
+            lastKnownCausalHash <- lift $ Q.expectCausalHash lastKnownCausalHashId
+            -- Check that we actually have this causal saved.
+            lift (Q.checkBranchExistsForCausalHash lastKnownCausalHash) >>= \case
+              True -> pure (Set.singleton lastKnownCausalHash)
+              False -> pure mempty
+          result <- SyncV2.syncFromCodeserver shouldValidate Share.hardCodedBaseUrl branchRef causalHashJwt knownRemoteHash
           result & onLeft \err0 -> do
             done case err0 of
               Share.SyncError pullErr ->

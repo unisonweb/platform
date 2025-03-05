@@ -146,6 +146,7 @@ module U.Codebase.Sqlite.Queries
     -- ** remote project branches
     loadRemoteBranch,
     ensureRemoteProjectBranch,
+    setRemoteProjectBranchLastKnownCausalHash,
     expectRemoteProjectBranchName,
     setRemoteProjectBranchName,
     insertBranchRemoteMapping,
@@ -257,6 +258,7 @@ module U.Codebase.Sqlite.Queries
     addProjectBranchReflogTable,
     addProjectBranchCausalHashIdColumn,
     addProjectBranchLastAccessedColumn,
+    trackLatestRemoteHead,
 
     -- ** schema version
     currentSchemaVersion,
@@ -421,7 +423,7 @@ type TextPathSegments = [Text]
 -- * main squeeze
 
 currentSchemaVersion :: SchemaVersion
-currentSchemaVersion = 18
+currentSchemaVersion = 19
 
 runCreateSql :: Transaction ()
 runCreateSql =
@@ -490,6 +492,10 @@ addProjectBranchCausalHashIdColumn =
 addProjectBranchLastAccessedColumn :: Transaction ()
 addProjectBranchLastAccessedColumn =
   executeStatements $(embedProjectStringFile "sql/015-add-project-branch-last-accessed.sql")
+
+trackLatestRemoteHead :: Transaction ()
+trackLatestRemoteHead =
+  executeStatements $(embedProjectStringFile "sql/016-track-latest-remote-head.sql")
 
 schemaVersion :: Transaction SchemaVersion
 schemaVersion =
@@ -4131,7 +4137,8 @@ loadRemoteBranch rpid host rbid =
         project_id,
         branch_id,
         host,
-        name
+        name,
+        last_known_causal_hash
       FROM
         remote_project_branch
       WHERE
@@ -4140,27 +4147,45 @@ loadRemoteBranch rpid host rbid =
         AND host = :host
     |]
 
-ensureRemoteProjectBranch :: RemoteProjectId -> URI -> RemoteProjectBranchId -> ProjectBranchName -> Transaction ()
-ensureRemoteProjectBranch rpid host rbid name =
+ensureRemoteProjectBranch :: RemoteProjectId -> URI -> RemoteProjectBranchId -> ProjectBranchName -> Maybe CausalHashId -> Transaction ()
+ensureRemoteProjectBranch rpid host rbid name lastKnownCausalHash =
   execute
     [sql|
       INSERT INTO remote_project_branch (
         project_id,
         host,
         branch_id,
-        name)
+        name,
+        last_known_causal_hash)
       VALUES (
         :rpid,
         :host,
         :rbid,
-        :name)
+        :name,
+        :lastKnownCausalHash
+        )
       ON CONFLICT (
         project_id,
         branch_id,
         host)
-        -- should this update the name instead?
-        DO NOTHING
+        DO UPDATE
+          SET name = :name,
+              last_known_causal_hash = :lastKnownCausalHash
         |]
+
+setRemoteProjectBranchLastKnownCausalHash :: URI -> RemoteProjectId -> RemoteProjectBranchId -> CausalHashId -> Transaction ()
+setRemoteProjectBranchLastKnownCausalHash host rpid rbid causalHashId =
+  execute
+    [sql|
+      UPDATE
+        remote_project_branch
+      SET
+        last_known_causal_hash = :causalHashId
+      WHERE
+        project_id = :rpid
+        AND branch_id = :rbid
+        AND host = :host
+    |]
 
 expectRemoteProjectBranchName :: URI -> RemoteProjectId -> RemoteProjectBranchId -> Transaction ProjectBranchName
 expectRemoteProjectBranchName host projectId branchId =
