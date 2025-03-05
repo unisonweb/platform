@@ -140,7 +140,7 @@ definitionLocation v uf =
     <|> dataDeclarations uf ^? ix v . _2 . to DD.annotation
     <|> effectDeclarations uf ^? ix v . _2 . to (DD.annotation . DD.toDataDecl)
 
--- Converts a file to a single let rec with a body of `()`, for
+-- | Converts a file to a single let rec with a body of `()`, for
 -- purposes of typechecking.
 typecheckingTerm :: (Var v, Monoid a) => UnisonFile v a -> Term v a
 typecheckingTerm uf =
