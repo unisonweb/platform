@@ -120,10 +120,10 @@ $ UNISON_ENTITY_VALIDATION="false" ucm
 
 ### `UNISON_SYNC_VERSION`
 
-Allows enabling the experimental Sync Version 2 protocol when downloading code from Share.
+Allows regressing to sync version 1 when interacting with Share.
 
 ```sh
-$ UNISON_ENTITY_VALIDATION="2" ucm
+$ UNISON_SYNC_VERSION="1" ucm
 ```
 
 ### `UNISON_PULL_WORKERS`
