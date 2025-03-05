@@ -377,7 +377,7 @@ topLevelComponent = TopLevelComponent . fmap (over _2 removeSyntheticTypeVars)
 -- generalize types stored in the notes.
 substituteSolved ::
   (Var v, Ord loc) =>
-  [Element v loc] ->
+  Map v (Monotype v loc) ->
   InfoNote v loc ->
   InfoNote v loc
 substituteSolved ctx (SolvedBlank b v t) =
@@ -473,7 +473,7 @@ scope' p (ErrorNote cause path) = ErrorNote cause (path `mappend` pure p)
 scope :: PathElement v loc -> M v loc a -> M v loc a
 scope p (MT m) = MT \ppe pmcSwitch datas effects env -> mapErrors (scope' p) (m ppe pmcSwitch datas effects env)
 
-newtype Context v loc = Context [(Element v loc, Info v loc)]
+data Context v loc = Context [(Element v loc, Info v loc)] (Map v (Monotype v loc))
 
 data Info v loc = Info
   { existentialVars :: Set v, -- set of existentials seen so far
@@ -484,14 +484,25 @@ data Info v loc = Info
   }
 
 -- | The empty context
-context0 :: Context v loc
-context0 = Context []
+context0 :: Ord v => Context v loc
+context0 = Context [] mempty
+
+context :: Ord v => [(Element v loc, Info v loc)] -> Context v loc
+context elems = Context elems (computeSolvedExistentials (fst <$> elems))
+
+computeSolvedExistentials :: Ord a => [Element a loc] -> Map a (Monotype a loc)
+computeSolvedExistentials elems =
+      elems & mapMaybe (\case
+        Solved _ v t -> Just (v, t)
+        _ -> Nothing
+                       )
+           & Map.fromList
 
 occursAnn :: (Var v) => (Ord loc) => TypeVar v loc -> Context v loc -> Bool
-occursAnn v (Context eis) = any p es
+occursAnn v (Context eis solved) = any p es
   where
     es = fst <$> eis
-    p (Ann _ ty) = v `Set.member` ABT.freeVars (applyCtx es ty)
+    p (Ann _ ty) = v `Set.member` ABT.freeVars (applyCtx solved ty)
     p _ = False
 
 -- | Focuses on the first element in the list that satisfies the predicate.
@@ -505,23 +516,23 @@ focusAt p xs = go [] xs
 -- | Delete from the end of this context up to and including
 -- the given `Element`. Returns `Nothing` if the element is not found.
 retract0 :: (Var v, Ord loc) => Element v loc -> Context v loc -> Maybe (Context v loc, [Element v loc])
-retract0 e (Context ctx) = case focusAt (\(e', _) -> e' == e) ctx of
+retract0 e (Context ctx _) = case focusAt (\(e', _) -> e' == e) ctx of
   Just (discarded, _, remaining) ->
     -- note: no need to recompute used variables; any suffix of the
     -- context snoc list is also a valid context
-    Just (Context remaining, map fst discarded)
+    Just (context remaining, map fst discarded)
   Nothing -> Nothing
 
 -- | Adds a marker to the end of the context, runs the `body` and then discards
 -- from the end of the context up to and including the marker. Returns the result
 -- of `body` and the discarded context (not including the marker), respectively.
 -- Freshened `markerHint` is used to create the marker.
-markThenRetract :: (Var v, Ord loc) => v -> M v loc a -> M v loc (a, [Element v loc])
+markThenRetract :: (Var v, Ord loc) => v -> M v loc a -> M v loc (a, [Element v loc], Map v (Monotype v loc))
 markThenRetract hint body =
   markThenCallWithRetract hint \retract -> adjustNotes do
     r <- body
-    ctx <- retract
-    pure ((r, ctx), substituteSolved ctx)
+    (ctx, solved) <- retract
+    pure ((r, ctx, solved), substituteSolved solved)
 
 markThenRetract0 :: (Var v, Ord loc) => v -> M v loc a -> M v loc ()
 markThenRetract0 markerHint body = () <$ markThenRetract markerHint body
@@ -529,14 +540,14 @@ markThenRetract0 markerHint body = () <$ markThenRetract markerHint body
 markThenCallWithRetract ::
   (Var v, Ord loc) =>
   v ->
-  (M v loc [Element v loc] -> M v loc a) ->
+  (M v loc ([Element v loc], Map v (Monotype v loc)) -> M v loc a) ->
   M v loc a
 markThenCallWithRetract hint k = do
   v <- freshenVar hint
   extendContext (Marker v)
   k (doRetract (Marker v))
   where
-    doRetract :: (Var v, Ord loc) => Element v loc -> M v loc [Element v loc]
+    doRetract :: (Var v, Ord loc) => Element v loc -> M v loc ([Element v loc], Map v (Monotype v loc))
     doRetract e = do
       ctx <- getContext
       case retract0 e ctx of
@@ -554,7 +565,7 @@ markThenCallWithRetract hint k = do
               inst = apply ctx
           Foldable.traverse_ go (solved ++ unsolved)
           setContext t
-          pure discarded
+          pure (discarded, computeSolvedExistentials discarded)
 
 -- unsolved' :: Context v loc -> [(B.Blank loc, v)]
 -- unsolved' (Context ctx) = [(b,v) | (Existential b v, _) <- ctx]
@@ -570,11 +581,11 @@ breakAt ::
   Element v loc ->
   Context v loc ->
   Maybe (Context v loc, Element v loc, [Element v loc])
-breakAt m (Context xs) =
+breakAt m (Context xs _) =
   case focusAt (\(e, _) -> e === m) xs of
     Just (r, m, l) ->
       -- l is a suffix of xs and is already a valid context
-      Just (Context l, fst m, map fst r)
+      Just (context l, fst m, map fst r)
     Nothing -> Nothing
   where
     Existential _ v === Existential _ v2 | v == v2 = True
@@ -649,7 +660,7 @@ appendContext = traverse_ extendContext
 markRetained :: (Var v, Ord loc) => Set v -> M v loc ()
 markRetained keep = setContext . marks =<< getContext
   where
-    marks (Context eis) = Context (fmap mark eis)
+    marks (Context eis _) = context (fmap mark eis)
     mark (Existential B.Blank v, i)
       | v `Set.member` keep = (Var (TypeVar.Existential B.Retain v), i)
     mark (Solved B.Blank v t, i)
@@ -747,14 +758,14 @@ wellformedType c t = case t of
 
 -- | Return the `Info` associated with the last element of the context, or the zero `Info`.
 info :: (Ord v) => Context v loc -> Info v loc
-info (Context []) = Info mempty mempty mempty mempty mempty
-info (Context ((_, i) : _)) = i
+info (Context [] _) = Info mempty mempty mempty mempty mempty
+info (Context ((_, i) : _) _) = i
 
 -- | Add an element onto the end of this `Context`. Takes `O(log N)` time,
 -- including updates to the accumulated `Info` value.
 -- Fail if the new context is not well formed (see Figure 7 of paper).
 extend' :: (Var v) => Element v loc -> Context v loc -> Either (CompilerBug v loc) (Context v loc)
-extend' e c@(Context ctx) = Context . (: ctx) . (e,) <$> i'
+extend' e c@(Context ctx _) = context . (: ctx) . (e,) <$> i'
   where
     Info es ses us uas vs = info c
     -- see figure 7
@@ -946,8 +957,8 @@ apply :: (Var v, Ord loc) => Context v loc -> Type v loc -> Type v loc
 apply ctx = apply' (solvedExistentials . info $ ctx)
 
 -- | Replace any existentials with their solution in the context (given as a list of elements)
-applyCtx :: (Var v, Ord loc) => [Element v loc] -> Type v loc -> Type v loc
-applyCtx elems = apply' $ Map.fromList [(v, sa) | Solved _ v sa <- elems]
+applyCtx :: (Var v, Ord loc) => Map v (Monotype v loc) -> Type v loc -> Type v loc
+applyCtx = apply'
 
 apply' :: (Var v, Ord loc) => Map v (Monotype v loc) -> Type v loc -> Type v loc
 apply' _ t | Set.null (Type.freeVars t) = t
@@ -1107,16 +1118,14 @@ synthesizeTop ::
   M v loc (Type v loc)
 synthesizeTop tm = do
   (ty, want) <- synthesize tm
-  ctx <- getContext
-  want <- substAndDefaultWanted want (out ctx)
+  ctx@(Context es solved) <- getContext
+  want <- substAndDefaultWanted want (fst <$> es) solved
   when (not $ null want) . failWith $ do
     AbilityCheckFailure
       []
       (Type.flattenEffects . snd =<< want)
       ctx
   applyM ty
-  where
-    out (Context es) = fmap fst es
 
 -- | Synthesize the type of the given term, updating the context in
 -- the process.  Also collect wanted abilities.
@@ -1222,11 +1231,11 @@ synthesizeWanted (Term.Let1Top' top binding e) = do
   pure (t, want)
 synthesizeWanted (Term.LetRecNamed' [] body) = synthesizeWanted body
 synthesizeWanted (Term.LetRecTop' isTop letrec) = do
-  ((t, want), ctx2) <- markThenRetract (Var.named "let-rec-marker") $ do
+  ((t, want), ctx2, solved2) <- markThenRetract (Var.named "let-rec-marker") $ do
     e <- annotateLetRecBindings isTop letrec
     synthesize e
-  want <- substAndDefaultWanted want ctx2
-  pure (generalizeExistentials ctx2 t, want)
+  want <- substAndDefaultWanted want ctx2 solved2
+  pure (generalizeExistentials ctx2 solved2 t, want)
 synthesizeWanted (Term.Handle' h body) = do
   -- To synthesize a handle block, we first synthesize the handler h,
   -- then push its allowed abilities onto the current ambient set when
@@ -1403,10 +1412,10 @@ synthesizeBinding top binding = do
       else
         if top
           then do
-            ctx <- retract
-            pure ((generalizeExistentials ctx tb, []), substituteSolved ctx)
+            (ctx, solved) <- retract
+            pure ((generalizeExistentials ctx solved tb, []), substituteSolved solved)
           else do
-            ctx <- retract
+            (ctx, solved) <- retract
             -- Note: this is conservative about what we avoid
             -- generalizing. Right now only TDNR causes variables to be
             -- retained. It might be possible to make this happen for any
@@ -1423,7 +1432,7 @@ synthesizeBinding top binding = do
                     | Solved b _ sa <- ctx,
                       retain b,
                       TypeVar.Existential _ v <-
-                        Set.toList . ABT.freeVars . applyCtx ctx $ Type.getPolytype sa
+                        Set.toList . ABT.freeVars . applyCtx solved $ Type.getPolytype sa
                   ]
                 keep = Set.fromList (erecs ++ srecs)
                 p (Existential _ v)
@@ -1433,8 +1442,8 @@ synthesizeBinding top binding = do
                 (repush, discard) = partitionEithers $ fmap p ctx
             appendContext repush
             markRetained keep
-            let tf = generalizeExistentials discard (applyCtx ctx tb)
-            pure ((tf, []), substituteSolved ctx)
+            let tf = generalizeExistentials discard (computeSolvedExistentials discard) (applyCtx solved tb)
+            pure ((tf, []), substituteSolved solved)
 
 getDataConstructorsAtType :: forall v loc. (Ord loc, Var v) => Type v loc -> M v loc (EnumeratedConstructors (TypeVar v loc) v loc)
 getDataConstructorsAtType t0 = do
@@ -1854,7 +1863,7 @@ annotateLetRecBindings isTop letrec =
     annotateLetRecBindings' useUserAnnotations = do
       (bindings, body) <- letrec freshenVar
       let vs = map fst bindings
-      ((bindings, bindingTypes), ctx2) <- markThenRetract Var.inferOther $ do
+      ((bindings, bindingTypes), ctx2, solved2) <- markThenRetract Var.inferOther $ do
         let f (v, binding) = case binding of
               -- If user has provided an annotation, we use that
               Term.Ann' e t | useUserAnnotations -> do
@@ -1889,7 +1898,7 @@ annotateLetRecBindings isTop letrec =
       -- compute generalized types `gt1, gt2 ...` for each binding `b1, b2...`;
       -- add annotations `v1 : gt1, v2 : gt2 ...` to the context
       let bindingArities = Term.arity <$> bindings
-          gen bindingType _arity = generalizeExistentials ctx2 bindingType
+          gen bindingType _arity = generalizeExistentials ctx2 solved2 bindingType
           bindingTypesGeneralized = zipWith gen bindingTypes bindingArities
           annotations = zipWith Ann vs bindingTypesGeneralized
       appendContext annotations
@@ -2065,12 +2074,12 @@ forcedData ty = Type.freeVars ty
 
 -- | Apply the context to the input type, then convert any unsolved existentials
 -- to universals.
-generalizeExistentials :: (Var v, Ord loc) => [Element v loc] -> Type v loc -> Type v loc
-generalizeExistentials ctx ty0 = generalizeP pred ctx ty
+generalizeExistentials :: (Var v, Ord loc) => [Element v loc] -> Map v (Monotype v loc) -> Type v loc -> Type v loc
+generalizeExistentials ctx solved ty0 = generalizeP pred ctx solved ty
   where
     gens = Set.fromList $ mapMaybe (fmap snd . existentialP) ctx
 
-    ty = discardCovariant gens $ applyCtx ctx ty0
+    ty = discardCovariant gens $ applyCtx solved ty0
     fvs = Type.freeVars ty
 
     pred e
@@ -2084,9 +2093,10 @@ generalizeP ::
   (Ord loc) =>
   (Element v loc -> Maybe (TypeVar v loc, v)) ->
   [Element v loc] ->
+    Map v (Monotype v loc) ->
   Type v loc ->
   Type v loc
-generalizeP p ctx0 ty = foldr gen (applyCtx ctx0 ty) ctx
+generalizeP p ctx0 solved ty = foldr gen (applyCtx solved ty) ctx
   where
     ctx = mapMaybe p ctx0
 
@@ -2125,12 +2135,12 @@ checkScoped ::
   M v loc (Type v loc, Wanted v loc)
 checkScoped e (Type.Forall' body) = do
   v <- ABT.freshen body freshenTypeVar
-  ((ty, want), pop) <- markThenRetract v $ do
+  ((ty, want), pop, popSolved) <- markThenRetract v $ do
     x <- extendUniversal v
     let e' = Term.substTypeVar (ABT.variable body) (universal' () x) e
     checkScoped e' (ABT.bindInheritAnnotation body (universal' () x))
-  want <- substAndDefaultWanted want pop
-  pure (generalizeP variableP pop ty, want)
+  want <- substAndDefaultWanted want pop popSolved
+  pure (generalizeP variableP pop popSolved ty, want)
 checkScoped e t = do
   t <- existentializeArrows t
   (t,) <$> check e t
@@ -2152,8 +2162,9 @@ markThenRetractWanted ::
   v ->
   M v loc (Wanted v loc) ->
   M v loc (Wanted v loc)
-markThenRetractWanted v m =
-  markThenRetract v m >>= uncurry substAndDefaultWanted
+markThenRetractWanted v m = do
+  (a, es, solved) <- markThenRetract v m
+  substAndDefaultWanted a es solved
 
 -- This function handles merging two sets of wanted abilities, along
 -- with some pruning of the set. This means that coalescing a list
@@ -2259,9 +2270,10 @@ substAndDefaultWanted ::
   (Ord loc) =>
   Wanted v loc ->
   [Element v loc] ->
+  Map v (Monotype v loc) ->
   M v loc (Wanted v loc)
-substAndDefaultWanted want ctx
-  | want <- (fmap . fmap) (applyCtx ctx) want,
+substAndDefaultWanted want ctx solved
+  | want <- (fmap . fmap) (applyCtx solved) want,
     want <- filter q want,
     repush <- filter keep ctx =
       appendContext repush *> coalesceWanted want []
@@ -3289,14 +3301,14 @@ synthesizeClosed' abilities term = do
   -- save current context, for restoration when done
   ctx0 <- getContext
   setContext context0
-  (t, ctx) <- markThenRetract (Var.named "start") $ do
+  (t, ctx, solved) <- markThenRetract (Var.named "start") $ do
     -- retract will cause notes to be written out for
     -- any `Blank`-tagged existentials passing out of scope
     (t, want) <- synthesize term
     scope (InSynthesize term) $
       t <$ subAbilities want abilities
   setContext ctx0 -- restore the initial context
-  pure $ generalizeExistentials ctx t
+  pure $ generalizeExistentials ctx solved t
 
 -- Check if the given typechecking action succeeds.
 succeeds :: M v loc a -> TotalM v loc Bool
@@ -3377,7 +3389,7 @@ instance (Var v) => Show (Element v loc) where
   show (Marker v) = "|" ++ Text.unpack (Var.name v) ++ "|"
 
 instance (Ord loc, Var v) => Show (Context v loc) where
-  show ctx@(Context es) = "Γ\n  " ++ (intercalate "\n  " . map (showElem ctx . fst)) (reverse es)
+  show ctx@(Context es _) = "Γ\n  " ++ (intercalate "\n  " . map (showElem ctx . fst)) (reverse es)
     where
       showElem _ctx (Var v) = case v of
         TypeVar.Universal x -> "@" <> show x
