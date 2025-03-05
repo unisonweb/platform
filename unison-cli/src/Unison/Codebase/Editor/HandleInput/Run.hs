@@ -130,11 +130,12 @@ getTerm' mainName =
       checkType :: Maybe (TypecheckedUnisonFile Symbol Ann) -> Type Symbol Ann -> (Type Symbol Ann -> Cli GetTermResult) -> Cli GetTermResult
       checkType mayTuf ty f = do
         Cli.Env {codebase, runtime} <- ask
+        let ufDeps = maybe mempty UF.externalTypeDependencies mayTuf
         case Typechecker.fitsScheme ty (Runtime.mainType runtime) of
           True -> do
             tlCodebase <-
               Cli.runTransaction $
-                Codebase.typeLookupForDependencies codebase Defns {terms = Set.empty, types = Type.dependencies ty}
+                Codebase.typeLookupForDependencies codebase Defns {terms = Set.empty, types = Type.dependencies ty <> ufDeps}
             let tlTuf = Monoid.fromMaybe (fmap UF.typecheckedToTypeLookup mayTuf)
             f $! synthesizeForce (tlTuf <> tlCodebase) ty
           False -> pure (TermHasBadType ty)

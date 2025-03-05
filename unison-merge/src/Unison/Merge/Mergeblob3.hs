@@ -335,7 +335,12 @@ makePrettyPrintEnv names libdepsNames lcaLibdeps =
   PPED.makePPED
     ( PPE.namer
         ( Names.preferring
-            (Names.preferring names.alice names.bob <> libdepsNames)
+            -- Here it might be slightly more comfortable to Alice if we prefer her names and _her_ libdeps, not the
+            -- combined Alice+Bob libdep, because that might bring in a Bob name that Alice isn't yet familiar with
+            -- (even though it will be in her merge result at the end). However, that would require a bit of simple
+            -- refactoring (just need to delay the combining of libdeps until at least here), and doesn't seem worth it
+            -- over this quick fix of just "prefer Alice + any libdep name over names that only Bob's project has".
+            (Names.preferring (names.alice <> libdepsNames) names.bob)
             (names.lca <> lcaLibdeps)
         )
     )
