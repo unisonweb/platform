@@ -1,6 +1,3 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE PolyKinds #-}
-{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Unison.LSP.Completion
@@ -331,7 +328,16 @@ completionItemResolveHandler message respond = do
                 pure $ (completion {_detail = Just renderedBuiltin, _documentation = Just doc} :: CompletionItem)
               Reference.DerivedId refId -> do
                 decl <- LSPQ.getTypeDeclaration fileUri refId
-                let renderedDecl = ": " <> (Text.pack . Pretty.toPlain typeWidth . Pretty.syntaxToColor $ DeclPrinter.prettyDecl pped ref (HQ.NameOnly relativeName) decl)
+                let renderedDecl =
+                      ": "
+                        <> ( Text.pack . Pretty.toPlain typeWidth . Pretty.syntaxToColor $
+                               DeclPrinter.prettyDecl
+                                 pped
+                                 DeclPrinter.RenderUniqueTypeGuids'No
+                                 ref
+                                 (HQ.NameOnly relativeName)
+                                 decl
+                           )
                 let doc = toMarkup (Text.unlines $ ["``` unison", Name.toText fullyQualifiedName, "```"] ++ renderedDocs)
                 pure $ (completion {_detail = Just renderedDecl, _documentation = Just doc} :: CompletionItem)
       _ -> empty

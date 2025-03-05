@@ -1,3 +1,4 @@
+{-# LANGUAGE ApplicativeDo #-}
 {-# LANGUAGE RecordWildCards #-}
 
 -- | This module handles parsing CLI arguments into 'Command's.

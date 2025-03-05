@@ -1,15 +1,7 @@
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveTraversable #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE ViewPatterns #-}
-
 module Unison.Server.Doc where
 
 import Control.Monad
-import Data.Aeson (ToJSON, FromJSON)
+import Data.Aeson (FromJSON, ToJSON)
 import Data.Foldable
 import Data.Functor
 import Data.Map qualified as Map
@@ -246,8 +238,20 @@ renderDoc pped doc = renderSpecial <$> doc
              in [Type (Reference.toText r, DO.BuiltinObject name)]
           FoundDecl r decl -> [Type (Reference.toText r, DO.UserObject (Src folded full))]
             where
-              full = formatPretty (DeclPrinter.prettyDecl pped r (PPE.typeName suffixifiedPPE r) decl)
-              folded = formatPretty (DeclPrinter.prettyDeclHeader (PPE.typeName suffixifiedPPE r) decl)
+              full =
+                formatPretty $
+                  DeclPrinter.prettyDecl
+                    pped
+                    DeclPrinter.RenderUniqueTypeGuids'No
+                    r
+                    (PPE.typeName suffixifiedPPE r)
+                    decl
+              folded =
+                formatPretty $
+                  DeclPrinter.prettyDeclHeader
+                    DeclPrinter.RenderUniqueTypeGuids'No
+                    (PPE.typeName suffixifiedPPE r)
+                    decl
         EvaluatedSrcTerm srcTerm -> case srcTerm of
           MissingBuiltinTypeSig r -> [(Type (Reference.toText r, DO.BuiltinObject "🆘 missing type signature"))]
           BuiltinTypeSig r typ -> [Type (Reference.toText r, DO.BuiltinObject (formatPrettyType suffixifiedPPE typ))]

@@ -1708,6 +1708,9 @@ scratch/main> project.delete scratch
 Previously, a merge branch would not include any dependents in the namespace, but that resulted in dependent unique
 types' GUIDs being regenerated.
 
+Later, we again omitted dependents from the namespace, and opted instead to include unque type guids in the Unison file
+for the user to copy/preserve.
+
 ``` ucm :hide
 scratch/main> builtins.mergeio lib.builtins
 ```
@@ -1734,8 +1737,8 @@ scratch/merge-bob-into-alice>
 ```
 
 ``` unison
-type Foo = Merged
-type Bar = MkBar Foo
+unique[d3cda11dgod7neehrvevpaocnuir4a93] type Foo = Merged
+unique[so3icscpte0d9g1n7ffo7pqf5bcb8ona] type Bar = MkBar Foo
 ```
 
 ``` ucm

@@ -135,7 +135,7 @@ watchDirectory dir allow = do
           readIORef pending >>= \case
             [] -> do
               -- open the gate
-              tryPutMVar gate ()
+              _ <- tryPutMVar gate ()
               -- this debounces the events, waits for 50ms pause
               -- in file change events
               events <- collectUntilPause queue 50000

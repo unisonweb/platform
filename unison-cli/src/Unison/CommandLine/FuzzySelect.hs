@@ -84,7 +84,7 @@ fuzzySelect opts intoSearchText choices =
       hSetBuffering stdin' NoBuffering
       result <- liftIO . UnliftIO.tryAny $ do
         -- Dump the search terms into fzf's stdin
-        traverse (Text.hPutStrLn stdin') searchTexts
+        traverse_ (Text.hPutStrLn stdin') searchTexts
         -- Wire up the interactive terminal to fzf now that the inputs have been loaded.
         hDuplicateTo stdin stdin'
         void $ Proc.waitForProcess procHandle

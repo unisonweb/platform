@@ -206,10 +206,10 @@ incrementalBranchRelativePathParser =
       case (ea, eb) of
         (Left aerr, Left berr) -> Megaparsec.parseError $ aerr <> berr
         (Left _, Right (blen, b)) -> do
-          Megaparsec.takeP Nothing blen
+          _ <- Megaparsec.takeP Nothing blen
           pure $ That b
         (Right (alen, a), Left _) -> do
-          Megaparsec.takeP Nothing alen
+          _ <- Megaparsec.takeP Nothing alen
           pure $ This a
         (Right (_, a), Right (_, b)) -> pure $ These a b
     observeParse = Megaparsec.observing . Megaparsec.lookAhead . Megaparsec.try . fmap (first Text.length) . Megaparsec.match

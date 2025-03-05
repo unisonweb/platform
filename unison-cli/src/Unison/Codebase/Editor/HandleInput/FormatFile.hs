@@ -78,7 +78,7 @@ formatFile makePPEDForFile formattingWidth currentPath inputParsedFile inputType
         -- Doesn't work unless we alter it before building the pped
         -- let deterministicDecl = decl & Decl.declAsDataDecl_ . Decl.constructors_ %~ sortOn (view _1)
         pure $
-          (tldAnn, DeclPrinter.prettyDecl biasedPPED (Reference.DerivedId ref) hqName decl)
+          (tldAnn, DeclPrinter.prettyDecl biasedPPED DeclPrinter.RenderUniqueTypeGuids'No (Reference.DerivedId ref) hqName decl)
             & over _2 Pretty.syntaxToColor
   formattedTerms <-
     (FileSummary.termsBySymbol fileSummary)

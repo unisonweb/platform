@@ -1,5 +1,4 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE ApplicativeDo #-}
 {-# LANGUAGE MultiWayIf #-}
 
 module Unison.Server.Backend
@@ -516,7 +515,7 @@ typeDeclHeader code ppe r = case Reference.toId r of
       Just decl ->
         DisplayObject.UserObject $
           Syntax.convertElement
-            <$> Pretty.render defaultWidth (DeclPrinter.prettyDeclHeader name decl)
+            <$> Pretty.render defaultWidth (DeclPrinter.prettyDeclHeader DeclPrinter.RenderUniqueTypeGuids'No name decl)
   Nothing ->
     pure (DisplayObject.BuiltinObject (formatTypeName ppe r))
   where
@@ -1193,7 +1192,7 @@ typesToSyntax suff width ppe0 types =
             MissingObject sh -> MissingObject sh
             UserObject d ->
               UserObject . Pretty.render width $
-                DeclPrinter.prettyDecl ppe0 r n d
+                DeclPrinter.prettyDecl ppe0 DeclPrinter.RenderUniqueTypeGuids'No r n d
   where
     ppeDecl =
       if suffixified suff
@@ -1222,7 +1221,7 @@ typeToSyntaxHeader width hqName obj =
     MissingObject sh -> MissingObject sh
     UserObject d ->
       UserObject . Pretty.render width $
-        DeclPrinter.prettyDeclHeader hqName d
+        DeclPrinter.prettyDeclHeader DeclPrinter.RenderUniqueTypeGuids'No hqName d
 
 loadSearchResults ::
   Codebase m Symbol Ann ->

@@ -1190,10 +1190,10 @@ scratch/alice> merge /bob
 
 ``` unison :added-by-ucm scratch.u
 -- scratch/alice
-type Foo = MkFoo Nat Nat
+unique[fi7g5op8060hgklmccbo6880764hofpt] type Foo = MkFoo Nat Nat
 
 -- scratch/bob
-type Foo = MkFoo Nat Text
+unique[fi7g5op8060hgklmccbo6880764hofpt] type Foo = MkFoo Nat Text
 
 ```
 
@@ -1275,10 +1275,10 @@ scratch/alice> merge /bob
 
 ``` unison :added-by-ucm scratch.u
 -- scratch/alice
-type Foo = Baz Nat Nat | Qux Text
+unique[u4pf0dgg7rhsm3nrpehu05kas1v5e8ta] type Foo = Baz Nat Nat | Qux Text
 
 -- scratch/bob
-type Foo = BobQux Text | Baz Nat
+unique[u4pf0dgg7rhsm3nrpehu05kas1v5e8ta] type Foo = BobQux Text | Baz Nat
 
 ```
 
@@ -1360,10 +1360,10 @@ scratch/alice> merge bob
 
 ``` unison :added-by-ucm scratch.u
 -- scratch/alice
-type Foo = Qux Text | Alice Nat
+unique[ds3fpucph9dr78geuhpfa4bnk95b8prj] type Foo = Qux Text | Alice Nat
 
 -- scratch/bob
-type Foo = Bob Text | Baz Nat
+unique[ds3fpucph9dr78geuhpfa4bnk95b8prj] type Foo = Bob Text | Baz Nat
 
 ```
 
@@ -1445,7 +1445,7 @@ my.cool.thing : Nat
 my.cool.thing = 17
 
 -- scratch/bob
-ability my.cool where
+unique[vefv45s0um1en0c1u49iiobn1mbgvm2j] ability my.cool where
   thing : Nat ->{cool} Nat
 
 ```
@@ -1543,10 +1543,10 @@ Foo.Bar : Nat
 Foo.Bar = 17
 
 -- scratch/alice
-type Foo = Alice Nat
+unique[q9d1rl3aatgsa0cndefhert8i6ps1ol7] type Foo = Alice Nat
 
 -- scratch/bob
-type Foo = Bar Nat Nat
+unique[kluar3l6itvegkkqpfs6kfkuvcafpi82] type Foo = Bar Nat Nat
 
 ```
 
@@ -1668,7 +1668,7 @@ Foo.Bar.Hello : Nat
 Foo.Bar.Hello = 18
 
 -- scratch/bob
-type Foo.Bar = Hello Nat Nat | Baz Nat
+unique[qojim9a3gql6vnobmtg4igivas3kfu8c] type Foo.Bar = Hello Nat Nat | Baz Nat
 
 ```
 
@@ -1754,11 +1754,11 @@ scratch/alice> merge bob
 
 ``` unison :added-by-ucm scratch.u
 -- scratch/alice
-type Foo
+unique[o01s0262qu1ks4ssh1cmhg9ccquqohp0] type Foo
   = Bar
 
 -- scratch/bob
-type Foo
+unique[oq0v4am69v0kagaiup424s24fktd08mj] type Foo
   = Bar
 
 -- The definitions below are not conflicted, but they each depend on one or more
@@ -1881,8 +1881,7 @@ foo = "alice and bobs foo"
   do an `add` or `update`, here's how your codebase would
   change:
 
-    ⍟ These names already exist. You can `update` them to your
-      new definition:
+    ⍟ These new definitions are ok to `add`:
     
       foo : Text
 ```
@@ -3302,6 +3301,9 @@ scratch/main> project.delete scratch
 Previously, a merge branch would not include any dependents in the namespace, but that resulted in dependent unique
 types' GUIDs being regenerated.
 
+Later, we again omitted dependents from the namespace, and opted instead to include unque type guids in the Unison file
+for the user to copy/preserve.
+
 ``` ucm :hide
 scratch/main> builtins.mergeio lib.builtins
 ```
@@ -3389,17 +3391,17 @@ scratch/alice> merge /bob
 
 ``` unison :added-by-ucm scratch.u
 -- scratch/alice
-type Foo
+unique[d3cda11dgod7neehrvevpaocnuir4a93] type Foo
   = Alice
 
 -- scratch/bob
-type Foo
+unique[d3cda11dgod7neehrvevpaocnuir4a93] type Foo
   = Bob
 
 -- The definitions below are not conflicted, but they each depend on one or more
 -- conflicted definitions above.
 
-type Bar
+unique[so3icscpte0d9g1n7ffo7pqf5bcb8ona] type Bar
   = MkBar Foo
 
 ```
@@ -3408,15 +3410,21 @@ type Bar
 ```
 
 ``` unison
-type Foo = Merged
-type Bar = MkBar Foo
+unique[d3cda11dgod7neehrvevpaocnuir4a93] type Foo = Merged
+unique[so3icscpte0d9g1n7ffo7pqf5bcb8ona] type Bar = MkBar Foo
 ```
 
 ``` ucm :added-by-ucm
   Loading changes detected in scratch.u.
 
-  I found and typechecked the definitions in scratch.u. This
-  file has been previously added to the codebase.
+  I found and typechecked these definitions in scratch.u. If you
+  do an `add` or `update`, here's how your codebase would
+  change:
+
+    ⍟ These new definitions are ok to `add`:
+    
+      type Bar
+      type Foo
 ```
 
 ``` ucm

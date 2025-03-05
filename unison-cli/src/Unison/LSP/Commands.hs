@@ -1,8 +1,3 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE PolyKinds #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE TypeOperators #-}
-
 module Unison.LSP.Commands where
 
 import Control.Lens hiding (List)
@@ -63,18 +58,19 @@ executeCommandHandler m respond =
     let cmd = m ^. params . command
     let args = m ^. params . arguments
     let invalidCmdErr = throwError $ Msg.ResponseError (InR ErrorCodes_InvalidParams) "Invalid command" Nothing
-    case cmd of
-      "replaceText" -> case args of
-        Just [Aeson.fromJSON -> Aeson.Success (TextReplacement range description replacementText fileUri)] -> do
-          let params =
-                ApplyWorkspaceEditParams
-                  (Just description)
-                  (WorkspaceEdit (Just ((Map.singleton fileUri [TextEdit range replacementText]))) Nothing Nothing)
-          lift
-            ( sendRequest Msg.SMethod_WorkspaceApplyEdit params $ \case
-                Left err -> Debug.debugM Debug.LSP "Error applying workspace edit" err
-                Right _ -> pure ()
-            )
+    _ <-
+      case cmd of
+        "replaceText" -> case args of
+          Just [Aeson.fromJSON -> Aeson.Success (TextReplacement range description replacementText fileUri)] -> do
+            let params =
+                  ApplyWorkspaceEditParams
+                    (Just description)
+                    (WorkspaceEdit (Just ((Map.singleton fileUri [TextEdit range replacementText]))) Nothing Nothing)
+            lift
+              ( sendRequest Msg.SMethod_WorkspaceApplyEdit params $ \case
+                  Left err -> Debug.debugM Debug.LSP "Error applying workspace edit" err
+                  Right _ -> pure ()
+              )
+          _ -> invalidCmdErr
         _ -> invalidCmdErr
-      _ -> invalidCmdErr
     pure $ InL Aeson.Null

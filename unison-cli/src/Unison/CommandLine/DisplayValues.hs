@@ -1,6 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ViewPatterns #-}
-
 module Unison.CommandLine.DisplayValues where
 
 import Data.Map qualified as Map
@@ -335,7 +332,15 @@ displayDoc pped terms typeOf evaluated types = go
       let ppe = PPE.declarationPPE pped r
        in types r >>= \case
             Nothing -> pure $ "😶  Missing type source for: " <> typeName ppe r
-            Just ty -> pure . P.syntaxToColor $ P.group $ DP.prettyDecl pped r (PPE.typeName ppe r) ty
+            Just ty ->
+              pure . P.syntaxToColor $
+                P.group $
+                  DP.prettyDecl
+                    pped
+                    DP.RenderUniqueTypeGuids'No
+                    r
+                    (PPE.typeName ppe r)
+                    ty
 
 termName :: PPE.PrettyPrintEnv -> Referent -> Pretty
 termName ppe r =

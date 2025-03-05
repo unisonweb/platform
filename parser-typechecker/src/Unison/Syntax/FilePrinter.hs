@@ -43,9 +43,10 @@ renderDefnsForUnisonFile ::
   (Var v, Monoid a) =>
   DeclNameLookup ->
   PrettyPrintEnvDecl ->
+  DeclPrinter.RenderUniqueTypeGuids ->
   DefnsF (Map Name) (Term v a, Type v a) (TypeReferenceId, Decl v a) ->
   DefnsF (Map Name) (Pretty ColorText) (Pretty ColorText)
-renderDefnsForUnisonFile declNameLookup ppe defns =
+renderDefnsForUnisonFile declNameLookup ppe guid defns =
   let (types, accessorNames) = Writer.runWriter (Map.traverseWithKey renderType defns.types)
    in Defns
         { terms = Map.mapMaybeWithKey (renderTerm accessorNames) defns.terms,
@@ -60,6 +61,7 @@ renderDefnsForUnisonFile declNameLookup ppe defns =
           -- we just delete all term names out and add back the constructors...
           -- probably no need to wipe out the suffixified side but we do it anyway
           (setPpedToConstructorNames declNameLookup name ref ppe)
+          guid
           (Reference.fromId ref)
           (HQ.NameOnly name)
           typ

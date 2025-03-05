@@ -108,8 +108,9 @@ projectCreate tryDownloadingBase maybeProjectName = do
                 Share.GetProjectBranchResponseBranchNotFound -> done Nothing
                 Share.GetProjectBranchResponseProjectNotFound -> done Nothing
                 Share.GetProjectBranchResponseSuccess branch -> pure branch
-            downloadProjectBranchFromShare Share.NoSquashedHead baseLatestReleaseBranch
-              & onLeftM (Cli.returnEarly . Output.ShareError)
+            _hash <-
+              downloadProjectBranchFromShare Share.NoSquashedHead baseLatestReleaseBranch
+                & onLeftM (Cli.returnEarly . Output.ShareError)
             Cli.Env {codebase} <- ask
             baseLatestReleaseBranchObject <-
               liftIO $

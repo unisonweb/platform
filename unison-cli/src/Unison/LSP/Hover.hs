@@ -1,6 +1,3 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE PolyKinds #-}
-
 module Unison.LSP.Hover where
 
 import Control.Lens hiding (List)
@@ -96,7 +93,9 @@ hoverInfo uri pos =
           LD.TypeReference ref@(Reference.DerivedId refId) -> do
             nameAtCursor <- MaybeT . pure $ Name.parseText symAtCursor
             decl <- LSPQ.getTypeDeclaration uri refId
-            let typ = Text.pack . Pretty.toPlain prettyWidth . Pretty.syntaxToColor $ DeclPrinter.prettyDecl pped ref (HQ.NameOnly nameAtCursor) decl
+            let typ =
+                  Text.pack . Pretty.toPlain prettyWidth . Pretty.syntaxToColor $
+                    DeclPrinter.prettyDecl pped DeclPrinter.RenderUniqueTypeGuids'No ref (HQ.NameOnly nameAtCursor) decl
             pure typ
           LD.TermReferent ref -> do
             typ <- LSPQ.getTypeOfReferent uri ref

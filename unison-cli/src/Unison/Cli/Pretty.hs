@@ -297,7 +297,7 @@ prettyDeclTriple ::
 prettyDeclTriple (name, _, displayDecl) = case displayDecl of
   BuiltinObject _ -> P.hiBlack "builtin " <> P.hiBlue "type " <> P.blue (P.syntaxToColor $ prettyHashQualified name)
   MissingObject _ -> mempty -- these need to be handled elsewhere
-  UserObject decl -> P.syntaxToColor $ DeclPrinter.prettyDeclHeader name decl
+  UserObject decl -> P.syntaxToColor $ DeclPrinter.prettyDeclHeader DeclPrinter.RenderUniqueTypeGuids'No name decl
 
 prettyDeclPair ::
   (Var v) =>
@@ -385,10 +385,24 @@ prettyUnisonFile ppe uf@(UF.UnisonFileId datas effects terms watches) =
 
     prettyEffectDecl :: (v, (Reference.Id, DD.EffectDeclaration v a)) -> (a, P.Pretty P.ColorText)
     prettyEffectDecl (n, (r, et)) =
-      (DD.annotation . DD.toDataDecl $ et, st $ DeclPrinter.prettyDecl ppe' (rd r) (hqv n) (Left et))
+      ( DD.annotation . DD.toDataDecl $ et,
+        st $
+          DeclPrinter.prettyDecl
+            ppe'
+            DeclPrinter.RenderUniqueTypeGuids'No
+            (rd r)
+            (hqv n)
+            (Left et)
+      )
     prettyDataDecl :: (v, (Reference.Id, DD.DataDeclaration v a)) -> Writer (Set AccessorName) (a, P.Pretty P.ColorText)
     prettyDataDecl (n, (r, dt)) =
-      (DD.annotation dt,) . st <$> DeclPrinter.prettyDeclW ppe' (rd r) (hqv n) (Right dt)
+      (DD.annotation dt,) . st
+        <$> DeclPrinter.prettyDeclW
+          ppe'
+          DeclPrinter.RenderUniqueTypeGuids'No
+          (rd r)
+          (hqv n)
+          (Right dt)
     prettyTerm :: Set AccessorName -> v -> (a, Term v a) -> Maybe (a, P.Pretty P.ColorText)
     prettyTerm skip n (a, tm) =
       if traceMember isMember then Nothing else Just (a, pb hq tm)
@@ -447,7 +461,13 @@ prettyType pped (n, r, dt) =
   case dt of
     MissingObject r -> missingDefinitionMsg n r
     BuiltinObject _ -> builtin n
-    UserObject decl -> DeclPrinter.prettyDecl (PPED.biasTo (maybeToList $ HQ.toName n) $ pped) r n decl
+    UserObject decl ->
+      DeclPrinter.prettyDecl
+        (PPED.biasTo (maybeToList $ HQ.toName n) $ pped)
+        DeclPrinter.RenderUniqueTypeGuids'No
+        r
+        n
+        decl
   where
     builtin n = P.wrap $ "--" <> prettyHashQualified n <> " is built-in."
 

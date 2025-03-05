@@ -2652,7 +2652,7 @@ displayDefinitions' ppe0 types terms = P.syntaxToColor $ P.sep "\n\n" (prettyTyp
       case dt of
         MissingObject r -> missing n r
         BuiltinObject _ -> builtin n
-        UserObject decl -> DeclPrinter.prettyDecl ppe0 r n decl
+        UserObject decl -> DeclPrinter.prettyDecl ppe0 DeclPrinter.RenderUniqueTypeGuids'No r n decl
     builtin n = P.wrap $ "--" <> prettyHashQualified n <> " is built-in."
     missing n r =
       P.wrap
@@ -3447,7 +3447,7 @@ showDiffNamespace sn ppe oldPath newPath OBD.BranchDiffOutput {..} =
     prettyDecl hq =
       maybe
         (P.red "type not found")
-        (P.syntaxToColor . DeclPrinter.prettyDeclOrBuiltinHeader (HQ'.toHQ hq))
+        (P.syntaxToColor . DeclPrinter.prettyDeclOrBuiltinHeader DeclPrinter.RenderUniqueTypeGuids'No (HQ'.toHQ hq))
     phq' :: _ -> Pretty = P.syntaxToColor . prettyHashQualified'
 
     -- DeclPrinter.prettyDeclHeader : HQ -> Either

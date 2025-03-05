@@ -5,6 +5,7 @@ module Unison.Syntax.DeclPrinter
     prettyDeclOrBuiltinHeader,
     getFieldAndAccessorNames,
     AccessorName,
+    RenderUniqueTypeGuids (..),
   )
 where
 
@@ -46,44 +47,53 @@ type SyntaxText = S.SyntaxText' Reference
 
 type AccessorName = Name
 
+-- | Should we render unique type guids? Usually no, but in `merge` it's helpful.
+data RenderUniqueTypeGuids
+  = RenderUniqueTypeGuids'No
+  | RenderUniqueTypeGuids'Yes
+
 prettyDeclW ::
   (Var v) =>
   PrettyPrintEnvDecl ->
+  RenderUniqueTypeGuids ->
   TypeReference ->
   HQ.HashQualified Name ->
   DD.Decl v a ->
   Writer (Set AccessorName) (Pretty SyntaxText)
-prettyDeclW ppe r hq = \case
-  Left e -> pure $ prettyEffectDecl ppe r hq e
-  Right dd -> prettyDataDecl ppe r hq dd
+prettyDeclW ppe guid r hq = \case
+  Left e -> pure $ prettyEffectDecl ppe guid r hq e
+  Right dd -> prettyDataDecl ppe guid r hq dd
 
 prettyDecl ::
   (Var v) =>
   PrettyPrintEnvDecl ->
+  RenderUniqueTypeGuids ->
   TypeReference ->
   HQ.HashQualified Name ->
   DD.Decl v a ->
   Pretty SyntaxText
-prettyDecl ppe r hq d = fst . runWriter $ prettyDeclW ppe r hq d
+prettyDecl ppe guid r hq d = fst . runWriter $ prettyDeclW ppe guid r hq d
 
 prettyEffectDecl ::
   (Var v) =>
   PrettyPrintEnvDecl ->
+  RenderUniqueTypeGuids ->
   TypeReference ->
   HQ.HashQualified Name ->
   EffectDeclaration v a ->
   Pretty SyntaxText
-prettyEffectDecl ppe r name = prettyGADT ppe CT.Effect r name . toDataDecl
+prettyEffectDecl ppe guid r name = prettyGADT ppe guid CT.Effect r name . toDataDecl
 
 prettyGADT ::
   (Var v) =>
   PrettyPrintEnvDecl ->
+  RenderUniqueTypeGuids ->
   CT.ConstructorType ->
   TypeReference ->
   HQ.HashQualified Name ->
   DataDeclaration v a ->
   Pretty SyntaxText
-prettyGADT env ctorType r name dd =
+prettyGADT env guid ctorType r name dd =
   header <> P.newline <> P.indentN 2 constructors
   where
     constructors = P.lines (constructor <$> zip [0 ..] (DD.constructors' dd))
@@ -91,7 +101,7 @@ prettyGADT env ctorType r name dd =
       prettyPattern (PPED.unsuffixifiedPPE env) ctorType name (ConstructorReference r n)
         <> fmt S.TypeAscriptionColon " :"
           `P.hang` TypePrinter.prettySyntax (PPED.suffixifiedPPE env) t
-    header = prettyEffectHeader name (DD.EffectDeclaration dd) <> fmt S.ControlKeyword " where"
+    header = prettyEffectHeader guid name (DD.EffectDeclaration dd) <> fmt S.ControlKeyword " where"
 
 prettyPattern ::
   PrettyPrintEnv ->
@@ -114,11 +124,12 @@ prettyPattern env ctorType namespace ref =
 prettyDataDecl ::
   (Var v) =>
   PrettyPrintEnvDecl ->
+  RenderUniqueTypeGuids ->
   TypeReference ->
   HQ.HashQualified Name ->
   DataDeclaration v a ->
   Writer (Set AccessorName) (Pretty SyntaxText)
-prettyDataDecl (PrettyPrintEnvDecl unsuffixifiedPPE suffixifiedPPE) r name dd =
+prettyDataDecl (PrettyPrintEnvDecl unsuffixifiedPPE suffixifiedPPE) guid r name dd =
   (header <>) . P.sep (fmt S.DelimiterChar (" | " `P.orElse` "\n  | "))
     <$> constructor `traverse` zip [0 ..] (DD.constructors' dd)
   where
@@ -157,7 +168,7 @@ prettyDataDecl (PrettyPrintEnvDecl unsuffixifiedPPE suffixifiedPPE) r name dd =
         fmt (S.TypeReference r) (prettyName fname)
           <> fmt S.TypeAscriptionColon " :"
             `P.hang` runPretty suffixifiedPPE (TypePrinter.prettyRaw Map.empty (-1) typ)
-    header = prettyDataHeader name dd <> fmt S.DelimiterChar (" = " `P.orElse` "\n  = ")
+    header = prettyDataHeader guid name dd <> fmt S.DelimiterChar (" = " `P.orElse` "\n  = ")
 
 -- This function determines if a data declaration "looks like a record", and if so, returns both its auto-generated
 -- accessor names (such as "Pt.x.set") and field names (such as "x"). Because we generate three accessors per field,
@@ -256,18 +267,17 @@ getFieldAndAccessorNames env r hqTypename dd = do
         )
     else Nothing
 
-prettyModifier :: DD.Modifier -> Pretty SyntaxText
-prettyModifier DD.Structural = fmt S.DataTypeModifier "structural"
-prettyModifier (DD.Unique _uid) = mempty -- don't print anything since 'unique' is the default
--- leaving this comment for the historical record so the syntax for uid is not forgotten
--- fmt S.DataTypeModifier "unique" -- <> ("[" <> P.text uid <> "] ")
+prettyModifier :: RenderUniqueTypeGuids -> DD.Modifier -> Pretty SyntaxText
+prettyModifier _ DD.Structural = fmt S.DataTypeModifier "structural"
+prettyModifier RenderUniqueTypeGuids'No (DD.Unique _guid) = mempty
+prettyModifier RenderUniqueTypeGuids'Yes (DD.Unique guid) = fmt S.DataTypeModifier "unique" <> ("[" <> P.text guid <> "]")
 
 prettyDataHeader ::
-  (Var v) => HQ.HashQualified Name -> DD.DataDeclaration v a -> Pretty SyntaxText
-prettyDataHeader name dd =
+  (Var v) => RenderUniqueTypeGuids -> HQ.HashQualified Name -> DD.DataDeclaration v a -> Pretty SyntaxText
+prettyDataHeader guid name dd =
   P.sepNonEmpty
     " "
-    [ prettyModifier (DD.modifier dd),
+    [ prettyModifier guid (DD.modifier dd),
       fmt S.DataTypeKeyword "type",
       styleHashQualified'' (fmt $ S.HashQualifier name) name,
       P.sep " " (fmt S.DataTypeParams . P.text . Var.name <$> DD.bound dd)
@@ -275,13 +285,14 @@ prettyDataHeader name dd =
 
 prettyEffectHeader ::
   (Var v) =>
+  RenderUniqueTypeGuids ->
   HQ.HashQualified Name ->
   DD.EffectDeclaration v a ->
   Pretty SyntaxText
-prettyEffectHeader name ed =
+prettyEffectHeader guid name ed =
   P.sepNonEmpty
     " "
-    [ prettyModifier (DD.modifier (DD.toDataDecl ed)),
+    [ prettyModifier guid (DD.modifier (DD.toDataDecl ed)),
       fmt S.DataTypeKeyword "ability",
       styleHashQualified'' (fmt $ S.HashQualifier name) name,
       P.sep
@@ -291,21 +302,24 @@ prettyEffectHeader name ed =
 
 prettyDeclHeader ::
   (Var v) =>
+  RenderUniqueTypeGuids ->
   HQ.HashQualified Name ->
   Either (DD.EffectDeclaration v a) (DD.DataDeclaration v a) ->
   Pretty SyntaxText
-prettyDeclHeader name (Left e) = prettyEffectHeader name e
-prettyDeclHeader name (Right d) = prettyDataHeader name d
+prettyDeclHeader guid name = \case
+  Left e -> prettyEffectHeader guid name e
+  Right d -> prettyDataHeader guid name d
 
 prettyDeclOrBuiltinHeader ::
   (Var v) =>
+  RenderUniqueTypeGuids ->
   HQ.HashQualified Name ->
   DD.DeclOrBuiltin v a ->
   Pretty SyntaxText
-prettyDeclOrBuiltinHeader name (DD.Builtin ctype) = case ctype of
-  CT.Data -> fmt S.DataTypeKeyword "builtin type " <> styleHashQualified'' (fmt $ S.HashQualifier name) name
-  CT.Effect -> fmt S.DataTypeKeyword "builtin ability " <> styleHashQualified'' (fmt $ S.HashQualifier name) name
-prettyDeclOrBuiltinHeader name (DD.Decl e) = prettyDeclHeader name e
+prettyDeclOrBuiltinHeader guid name = \case
+  DD.Builtin CT.Data -> fmt S.DataTypeKeyword "builtin type " <> styleHashQualified'' (fmt $ S.HashQualifier name) name
+  DD.Builtin CT.Effect -> fmt S.DataTypeKeyword "builtin ability " <> styleHashQualified'' (fmt $ S.HashQualifier name) name
+  DD.Decl e -> prettyDeclHeader guid name e
 
 fmt :: S.Element r -> Pretty (S.SyntaxText' r) -> Pretty (S.SyntaxText' r)
 fmt = P.withSyntax

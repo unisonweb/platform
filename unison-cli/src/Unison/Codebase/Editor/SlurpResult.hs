@@ -137,7 +137,7 @@ pretty isPast ppe sr =
             n -> [P.shown n <> " more"]
       okType v = (plus <>) $ case UF.lookupDecl v (originalFile sr) of
         Just (_, dd) ->
-          P.syntaxToColor (DeclPrinter.prettyDeclHeader (HQ.unsafeFromVar v) dd)
+          P.syntaxToColor (DeclPrinter.prettyDeclHeader DeclPrinter.RenderUniqueTypeGuids'No (HQ.unsafeFromVar v) dd)
             <> if null aliases
               then mempty
               else P.newline <> P.indentN 2 (P.lines aliases)
@@ -225,7 +225,7 @@ pretty isPast ppe sr =
               Just (_, dd) ->
                 ( prettyStatus status,
                   P.syntaxToColor $
-                    DeclPrinter.prettyDeclHeader (HQ.unsafeFromVar v) dd
+                    DeclPrinter.prettyDeclHeader DeclPrinter.RenderUniqueTypeGuids'No (HQ.unsafeFromVar v) dd
                 )
               Nothing ->
                 ( prettyStatus status,
