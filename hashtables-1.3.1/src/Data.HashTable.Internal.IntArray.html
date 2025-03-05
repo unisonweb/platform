@@ -1,0 +1,240 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE CPP          #-}</span><span>
+</span><span id="line-3"></span><span class="hs-pragma">{-# LANGUAGE MagicHash    #-}</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Data.HashTable.Internal.IntArray</span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#IntArray"><span class="hs-identifier">IntArray</span></a></span><span>
+</span><span id="line-7"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#Elem"><span class="hs-identifier">Elem</span></a></span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#elemMask"><span class="hs-identifier">elemMask</span></a></span><span>
+</span><span id="line-9"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#primWordToElem"><span class="hs-identifier">primWordToElem</span></a></span><span>
+</span><span id="line-10"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#elemToInt"><span class="hs-identifier">elemToInt</span></a></span><span>
+</span><span id="line-11"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#elemToInt%23"><span class="hs-identifier">elemToInt#</span></a></span><span>
+</span><span id="line-12"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#newArray"><span class="hs-identifier">newArray</span></a></span><span>
+</span><span id="line-13"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#readArray"><span class="hs-identifier">readArray</span></a></span><span>
+</span><span id="line-14"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#writeArray"><span class="hs-identifier">writeArray</span></a></span><span>
+</span><span id="line-15"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#length"><span class="hs-identifier">length</span></a></span><span>
+</span><span id="line-16"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#toPtr"><span class="hs-identifier">toPtr</span></a></span><span>
+</span><span id="line-17"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Control.Monad.ST</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Bits</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Primitive.ByteArray</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">A</span></span><span class="hs-cpp">
+#if !MIN_VERSION_primitive(0,7,0)
+</span><span class="hs-keyword">import</span><span>           </span><span class="hs-identifier">Data.Primitive.Types</span><span>     </span><span class="hs-special">(</span><span class="hs-identifier">Addr</span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">GHC.Exts</span></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">GHC.Word</span></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Prelude</span></span><span>                  </span><span class="hs-keyword">hiding</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">length</span></span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span class="hs-cpp">
+
+
+#ifdef BOUNDS_CHECKING
+</span><span class="hs-cpp">#define BOUNDS_MSG(sz,i) concat [ &quot;[&quot;, __FILE__, &quot;:&quot;,                         \
+                                  show (__LINE__ :: Int),                     \
+                                  &quot;] bounds check exceeded: &quot;,                \
+                                  &quot;size was &quot;, show (sz), &quot; i was &quot;, show (i) ]
+</span><span class="hs-cpp">
+#define BOUNDS_CHECK(arr,i) let sz = (A.sizeofMutableByteArray (arr)          \
+                                      `div` wordSizeInBytes) in               \
+                            if (i) &lt; 0 || (i) &gt;= sz                           \
+                              then error (BOUNDS_MSG(sz,(i)))                 \
+                              else return ()
+</span><span class="hs-cpp">#else
+</span><span class="hs-cpp">#define BOUNDS_CHECK(arr,i)
+</span><span class="hs-cpp">#endif
+</span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-49"></span><span class="hs-keyword">newtype</span><span> </span><span id="IntArray"><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#IntArray"><span class="hs-identifier hs-var">IntArray</span></a></span></span><span> </span><span id="local-6989586621679082446"><span class="annot"><a href="#local-6989586621679082446"><span class="hs-identifier hs-type">s</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="IA"><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#IA"><span class="hs-identifier hs-var">IA</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">A.MutableByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679082446"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-50"></span><span class="hs-keyword">type</span><span> </span><span id="Elem"><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#Elem"><span class="hs-identifier hs-var">Elem</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word16</span></span><span>
+</span><span id="line-51"></span><span>
+</span><span id="line-52"></span><span>
+</span><span id="line-53"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-54"></span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#primWordToElem"><span class="hs-identifier hs-type">primWordToElem</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word#</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#Elem"><span class="hs-identifier hs-type">Elem</span></a></span><span>
+</span><span id="line-55"></span><span id="primWordToElem"><span class="annot"><span class="annottext">primWordToElem :: Word# -&gt; Elem
+</span><a href="Data.HashTable.Internal.IntArray.html#primWordToElem"><span class="hs-identifier hs-var hs-var">primWordToElem</span></a></span></span><span> </span><span id="local-6989586621679082484"><span class="annot"><span class="annottext">Word#
+</span><a href="#local-6989586621679082484"><span class="hs-identifier hs-var">w#</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word16# -&gt; Elem
+</span><span class="hs-identifier hs-var">W16#</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word# -&gt; Word16#
+</span><a href="Data.HashTable.Internal.IntArray.html#wordToWord16Compat%23"><span class="hs-identifier hs-var">wordToWord16Compat#</span></a></span><span> </span><span class="annot"><span class="annottext">Word#
+</span><a href="#local-6989586621679082484"><span class="hs-identifier hs-var">w#</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-56"></span><span>
+</span><span id="line-57"></span><span>
+</span><span id="line-58"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-59"></span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#elemToInt"><span class="hs-identifier hs-type">elemToInt</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#Elem"><span class="hs-identifier hs-type">Elem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-60"></span><span id="elemToInt"><span class="annot"><span class="annottext">elemToInt :: Elem -&gt; Int
+</span><a href="Data.HashTable.Internal.IntArray.html#elemToInt"><span class="hs-identifier hs-var hs-var">elemToInt</span></a></span></span><span> </span><span id="local-6989586621679082487"><span class="annot"><span class="annottext">Elem
+</span><a href="#local-6989586621679082487"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679082488"><span class="annot"><span class="annottext">i# :: Int#
+</span><a href="#local-6989586621679082488"><span class="hs-identifier hs-var hs-var">i#</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Elem -&gt; Int#
+</span><a href="Data.HashTable.Internal.IntArray.html#elemToInt%23"><span class="hs-identifier hs-var">elemToInt#</span></a></span><span> </span><span class="annot"><span class="annottext">Elem
+</span><a href="#local-6989586621679082487"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-61"></span><span>              </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int# -&gt; Int
+</span><span class="hs-identifier hs-var">I#</span></span><span> </span><span class="annot"><span class="annottext">Int#
+</span><a href="#local-6989586621679082488"><span class="hs-identifier hs-var">i#</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-65"></span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#elemToInt%23"><span class="hs-identifier hs-type">elemToInt#</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#Elem"><span class="hs-identifier hs-type">Elem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int#</span></span><span>
+</span><span id="line-66"></span><span id="elemToInt%23"><span class="annot"><span class="annottext">elemToInt# :: Elem -&gt; Int#
+</span><a href="Data.HashTable.Internal.IntArray.html#elemToInt%23"><span class="hs-identifier hs-var hs-var">elemToInt#</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">W16#</span></span><span> </span><span id="local-6989586621679082489"><span class="annot"><span class="annottext">Word16#
+</span><a href="#local-6989586621679082489"><span class="hs-identifier hs-var">w#</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word# -&gt; Int#
+</span><span class="hs-identifier hs-var">word2Int#</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Word16# -&gt; Word#
+</span><a href="Data.HashTable.Internal.IntArray.html#word16ToWordCompat%23"><span class="hs-identifier hs-var">word16ToWordCompat#</span></a></span><span> </span><span class="annot"><span class="annottext">Word16#
+</span><a href="#local-6989586621679082489"><span class="hs-identifier hs-var">w#</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-67"></span><span>
+</span><span id="line-68"></span><span>
+</span><span id="line-69"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-70"></span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#elemMask"><span class="hs-identifier hs-type">elemMask</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-71"></span><span id="elemMask"><span class="annot"><span class="annottext">elemMask :: Int
+</span><a href="Data.HashTable.Internal.IntArray.html#elemMask"><span class="hs-identifier hs-var hs-var">elemMask</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0xffff</span></span><span>
+</span><span id="line-72"></span><span>
+</span><span id="line-73"></span><span>
+</span><span id="line-74"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-75"></span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#wordSizeInBytes"><span class="hs-identifier hs-type">wordSizeInBytes</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-76"></span><span id="wordSizeInBytes"><span class="annot"><span class="annottext">wordSizeInBytes :: Int
+</span><a href="Data.HashTable.Internal.IntArray.html#wordSizeInBytes"><span class="hs-identifier hs-var hs-var">wordSizeInBytes</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Elem -&gt; Int
+forall b. FiniteBits b =&gt; b -&gt; Int
+</span><span class="hs-identifier hs-var">finiteBitSize</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Elem
+</span><span class="hs-number">0</span></span><span class="hs-glyph">::</span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#Elem"><span class="hs-identifier hs-type">Elem</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`div`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">8</span></span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span>
+</span><span id="line-79"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-80"></span><span class="annot"><span class="hs-comment">-- | Cache line size, in bytes</span></span><span>
+</span><span id="line-81"></span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#cacheLineSize"><span class="hs-identifier hs-type">cacheLineSize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-82"></span><span id="cacheLineSize"><span class="annot"><span class="annottext">cacheLineSize :: Int
+</span><a href="Data.HashTable.Internal.IntArray.html#cacheLineSize"><span class="hs-identifier hs-var hs-var">cacheLineSize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">64</span></span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span>
+</span><span id="line-85"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-86"></span><span id="local-6989586621679082429"><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#newArray"><span class="hs-identifier hs-type">newArray</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ST</span></span><span> </span><span class="annot"><a href="#local-6989586621679082429"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#IntArray"><span class="hs-identifier hs-type">IntArray</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679082429"><span class="hs-identifier hs-type">s</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-87"></span><span id="newArray"><span class="annot"><span class="annottext">newArray :: forall s. Int -&gt; ST s (IntArray s)
+</span><a href="Data.HashTable.Internal.IntArray.html#newArray"><span class="hs-identifier hs-var hs-var">newArray</span></a></span></span><span> </span><span id="local-6989586621679082504"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679082504"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-88"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679082506"><span class="annot"><span class="annottext">sz :: Int
+</span><a href="#local-6989586621679082506"><span class="hs-identifier hs-var hs-var">sz</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679082504"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.HashTable.Internal.IntArray.html#wordSizeInBytes"><span class="hs-identifier hs-var">wordSizeInBytes</span></a></span><span>
+</span><span id="line-89"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679082508"><span class="annot"><span class="annottext">MutableByteArray s
+</span><a href="#local-6989586621679082508"><span class="hs-identifier hs-var">arr</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; ST s (MutableByteArray (PrimState (ST s)))
+forall (m :: * -&gt; *).
+PrimMonad m =&gt;
+Int -&gt; Int -&gt; m (MutableByteArray (PrimState m))
+</span><span class="hs-identifier hs-var">A.newAlignedPinnedByteArray</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679082506"><span class="hs-identifier hs-var">sz</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.HashTable.Internal.IntArray.html#cacheLineSize"><span class="hs-identifier hs-var">cacheLineSize</span></a></span><span>
+</span><span id="line-90"></span><span>    </span><span class="annot"><span class="annottext">MutableByteArray (PrimState (ST s))
+-&gt; Int -&gt; Int -&gt; Word8 -&gt; ST s ()
+forall (m :: * -&gt; *).
+PrimMonad m =&gt;
+MutableByteArray (PrimState m) -&gt; Int -&gt; Int -&gt; Word8 -&gt; m ()
+</span><span class="hs-identifier hs-var">A.fillByteArray</span></span><span> </span><span class="annot"><span class="annottext">MutableByteArray s
+MutableByteArray (PrimState (ST s))
+</span><a href="#local-6989586621679082508"><span class="hs-identifier hs-var">arr</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679082506"><span class="hs-identifier hs-var">sz</span></a></span><span> </span><span class="annot"><span class="annottext">Word8
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-91"></span><span>    </span><span class="annot"><span class="annottext">IntArray s -&gt; ST s (IntArray s)
+forall a. a -&gt; ST s a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(IntArray s -&gt; ST s (IntArray s))
+-&gt; IntArray s -&gt; ST s (IntArray s)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">MutableByteArray s -&gt; IntArray s
+forall s. MutableByteArray s -&gt; IntArray s
+</span><a href="Data.HashTable.Internal.IntArray.html#IA"><span class="hs-identifier hs-var">IA</span></a></span><span> </span><span class="annot"><span class="annottext">MutableByteArray s
+</span><a href="#local-6989586621679082508"><span class="hs-identifier hs-var">arr</span></a></span><span>
+</span><span id="line-92"></span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-95"></span><span id="local-6989586621679082447"><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#readArray"><span class="hs-identifier hs-type">readArray</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#IntArray"><span class="hs-identifier hs-type">IntArray</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679082447"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ST</span></span><span> </span><span class="annot"><a href="#local-6989586621679082447"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#Elem"><span class="hs-identifier hs-type">Elem</span></a></span></span><span>
+</span><span id="line-96"></span><span id="readArray"><span class="annot"><span class="annottext">readArray :: forall s. IntArray s -&gt; Int -&gt; ST s Elem
+</span><a href="Data.HashTable.Internal.IntArray.html#readArray"><span class="hs-identifier hs-var hs-var">readArray</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#IA"><span class="hs-identifier hs-type">IA</span></a></span><span> </span><span id="local-6989586621679082515"><span class="annot"><span class="annottext">MutableByteArray s
+</span><a href="#local-6989586621679082515"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679082516"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679082516"><span class="hs-identifier hs-var">idx</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-97"></span><span>    </span><span class="hs-identifier">BOUNDS_CHECK</span><span class="hs-special">(</span><span class="hs-identifier">a</span><span class="hs-special">,</span><span class="hs-identifier">idx</span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span>    </span><span class="annot"><span class="annottext">MutableByteArray (PrimState (ST s)) -&gt; Int -&gt; ST s Elem
+forall a (m :: * -&gt; *).
+(Prim a, PrimMonad m) =&gt;
+MutableByteArray (PrimState m) -&gt; Int -&gt; m a
+</span><span class="hs-identifier hs-var">A.readByteArray</span></span><span> </span><span class="annot"><span class="annottext">MutableByteArray s
+MutableByteArray (PrimState (ST s))
+</span><a href="#local-6989586621679082515"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679082516"><span class="hs-identifier hs-var">idx</span></a></span><span>
+</span><span id="line-99"></span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-102"></span><span id="local-6989586621679082452"><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#writeArray"><span class="hs-identifier hs-type">writeArray</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#IntArray"><span class="hs-identifier hs-type">IntArray</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679082452"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#Elem"><span class="hs-identifier hs-type">Elem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ST</span></span><span> </span><span class="annot"><a href="#local-6989586621679082452"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-103"></span><span id="writeArray"><span class="annot"><span class="annottext">writeArray :: forall s. IntArray s -&gt; Int -&gt; Elem -&gt; ST s ()
+</span><a href="Data.HashTable.Internal.IntArray.html#writeArray"><span class="hs-identifier hs-var hs-var">writeArray</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#IA"><span class="hs-identifier hs-type">IA</span></a></span><span> </span><span id="local-6989586621679082520"><span class="annot"><span class="annottext">MutableByteArray s
+</span><a href="#local-6989586621679082520"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679082521"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679082521"><span class="hs-identifier hs-var">idx</span></a></span></span><span> </span><span id="local-6989586621679082522"><span class="annot"><span class="annottext">Elem
+</span><a href="#local-6989586621679082522"><span class="hs-identifier hs-var">val</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-104"></span><span>    </span><span class="hs-identifier">BOUNDS_CHECK</span><span class="hs-special">(</span><span class="hs-identifier">a</span><span class="hs-special">,</span><span class="hs-identifier">idx</span><span class="hs-special">)</span><span>
+</span><span id="line-105"></span><span>    </span><span class="annot"><span class="annottext">MutableByteArray (PrimState (ST s)) -&gt; Int -&gt; Elem -&gt; ST s ()
+forall a (m :: * -&gt; *).
+(Prim a, PrimMonad m) =&gt;
+MutableByteArray (PrimState m) -&gt; Int -&gt; a -&gt; m ()
+</span><span class="hs-identifier hs-var">A.writeByteArray</span></span><span> </span><span class="annot"><span class="annottext">MutableByteArray s
+MutableByteArray (PrimState (ST s))
+</span><a href="#local-6989586621679082520"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679082521"><span class="hs-identifier hs-var">idx</span></a></span><span> </span><span class="annot"><span class="annottext">Elem
+</span><a href="#local-6989586621679082522"><span class="hs-identifier hs-var">val</span></a></span><span>
+</span><span id="line-106"></span><span>
+</span><span id="line-107"></span><span>
+</span><span id="line-108"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-109"></span><span id="local-6989586621679082456"><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#length"><span class="hs-identifier hs-type">length</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#IntArray"><span class="hs-identifier hs-type">IntArray</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679082456"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span></span><span>
+</span><span id="line-110"></span><span id="length"><span class="annot"><span class="annottext">length :: forall s. IntArray s -&gt; Int
+</span><a href="Data.HashTable.Internal.IntArray.html#length"><span class="hs-identifier hs-var hs-var">length</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#IA"><span class="hs-identifier hs-type">IA</span></a></span><span> </span><span id="local-6989586621679082525"><span class="annot"><span class="annottext">MutableByteArray s
+</span><a href="#local-6989586621679082525"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableByteArray s -&gt; Int
+forall s. MutableByteArray s -&gt; Int
+</span><span class="hs-identifier hs-var">A.sizeofMutableByteArray</span></span><span> </span><span class="annot"><span class="annottext">MutableByteArray s
+</span><a href="#local-6989586621679082525"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Integral a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">`div`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Data.HashTable.Internal.IntArray.html#wordSizeInBytes"><span class="hs-identifier hs-var">wordSizeInBytes</span></a></span><span>
+</span><span id="line-111"></span><span>
+</span><span id="line-112"></span><span>
+</span><span id="line-113"></span><span class="hs-comment">------------------------------------------------------------------------------</span><span>
+</span><span id="line-114"></span><span id="local-6989586621679082459"><span id="local-6989586621679082460"><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#toPtr"><span class="hs-identifier hs-type">toPtr</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#IntArray"><span class="hs-identifier hs-type">IntArray</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679082459"><span class="hs-identifier hs-type">s</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="#local-6989586621679082460"><span class="hs-identifier hs-type">a</span></a></span></span></span><span>
+</span><span id="line-115"></span><span id="toPtr"><span class="annot"><span class="annottext">toPtr :: forall s a. IntArray s -&gt; Ptr a
+</span><a href="Data.HashTable.Internal.IntArray.html#toPtr"><span class="hs-identifier hs-var hs-var">toPtr</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#IA"><span class="hs-identifier hs-type">IA</span></a></span><span> </span><span id="local-6989586621679082527"><span class="annot"><span class="annottext">MutableByteArray s
+</span><a href="#local-6989586621679082527"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Addr# -&gt; Ptr a
+forall a. Addr# -&gt; Ptr a
+</span><span class="hs-identifier hs-var">Ptr</span></span><span> </span><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679082529"><span class="hs-identifier hs-var">a#</span></a></span><span>
+</span><span id="line-116"></span><span>  </span><span class="hs-keyword">where</span><span class="hs-cpp">
+#if MIN_VERSION_primitive(0,7,0)
+</span><span>    </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679082529"><span class="annot"><span class="annottext">Addr#
+</span><a href="#local-6989586621679082529"><span class="hs-identifier hs-var">a#</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MutableByteArray s -&gt; Ptr Word8
+forall s. MutableByteArray s -&gt; Ptr Word8
+</span><span class="hs-identifier hs-var">A.mutableByteArrayContents</span></span><span> </span><span class="annot"><span class="annottext">MutableByteArray s
+</span><a href="#local-6989586621679082527"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-cpp">
+#else
+</span><span>    </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="hs-identifier">Addr</span><span> </span><span class="hs-glyph">!</span><span class="hs-identifier">a#</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">A.mutableByteArrayContents</span><span> </span><span class="hs-identifier">a</span><span class="hs-cpp">
+#endif
+</span><span class="hs-cpp">
+#if MIN_VERSION_base(4,16,0)
+</span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#word16ToWordCompat%23"><span class="hs-identifier hs-type">word16ToWordCompat#</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word16#</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word#</span></span><span>
+</span><span id="line-125"></span><span id="word16ToWordCompat%23"><span class="annot"><span class="annottext">word16ToWordCompat# :: Word16# -&gt; Word#
+</span><a href="Data.HashTable.Internal.IntArray.html#word16ToWordCompat%23"><span class="hs-identifier hs-var hs-var">word16ToWordCompat#</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word16# -&gt; Word#
+</span><span class="hs-identifier hs-var">word16ToWord#</span></span><span>
+</span><span id="line-126"></span><span>
+</span><span id="line-127"></span><span class="annot"><a href="Data.HashTable.Internal.IntArray.html#wordToWord16Compat%23"><span class="hs-identifier hs-type">wordToWord16Compat#</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word#</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word16#</span></span><span>
+</span><span id="line-128"></span><span id="wordToWord16Compat%23"><span class="annot"><span class="annottext">wordToWord16Compat# :: Word# -&gt; Word16#
+</span><a href="Data.HashTable.Internal.IntArray.html#wordToWord16Compat%23"><span class="hs-identifier hs-var hs-var">wordToWord16Compat#</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Word# -&gt; Word16#
+</span><span class="hs-identifier hs-var">wordToWord16#</span></span><span class="hs-cpp">
+#else
+</span><span class="hs-identifier">word16ToWordCompat#</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">Word#</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">Word#</span><span>
+</span><span id="line-131"></span><span class="hs-identifier">word16ToWordCompat#</span><span> </span><span class="hs-identifier">x</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">x</span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span class="hs-identifier">wordToWord16Compat#</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">Word#</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">Word#</span><span>
+</span><span id="line-134"></span><span class="hs-identifier">wordToWord16Compat#</span><span> </span><span class="hs-identifier">x</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">x</span><span class="hs-cpp">
+#endif
+</span></pre></body></html>

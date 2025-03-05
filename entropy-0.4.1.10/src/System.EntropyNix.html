@@ -1,0 +1,263 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP, ForeignFunctionInterface, BangPatterns, ScopedTypeVariables #-}</span><span>
+</span><span id="line-2"></span><span class="annot"><span class="hs-comment">{-|
+ Maintainer: Thomas.DuBuisson@gmail.com
+ Stability: beta
+ Portability: portable
+
+ Obtain entropy from system sources or x86 RDRAND when available.
+
+-}</span></span><span>
+</span><span id="line-10"></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">System.EntropyNix</span><span>
+</span><span id="line-12"></span><span>        </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="System.EntropyNix.html#CryptHandle"><span class="hs-identifier">CryptHandle</span></a></span><span>
+</span><span id="line-13"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="System.EntropyNix.html#openHandle"><span class="hs-identifier">openHandle</span></a></span><span>
+</span><span id="line-14"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="System.EntropyNix.html#hGetEntropy"><span class="hs-identifier">hGetEntropy</span></a></span><span>
+</span><span id="line-15"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="System.EntropyNix.html#closeHandle"><span class="hs-identifier">closeHandle</span></a></span><span>
+</span><span id="line-16"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="System.EntropyNix.html#hardwareRandom"><span class="hs-identifier">hardwareRandom</span></a></span><span>
+</span><span id="line-17"></span><span>        </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-18"></span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">liftM</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">when</span></span><span class="hs-special">)</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.IO.Error</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">mkIOError</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">eofErrorType</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">ioeSetErrorString</span></span><span class="hs-special">)</span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.IO.Unsafe</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Bits</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">xor</span></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">allocaBytes</span></span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.C.Error</span></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Foreign.C.Types</span></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteString.Internal</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span class="hs-cpp">
+
+#ifdef arch_i386
+</span><span class="hs-comment">-- See .cabal wrt GCC 4.8.2 asm compilation bug</span><span class="hs-cpp">
+#undef HAVE_RDRAND
+</span><span class="hs-cpp">#endif
+</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.Posix</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">openFd</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">closeFd</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">fdReadBuf</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">OpenMode</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">defaultFileFlags</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">Fd</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">OpenFileFlags</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span>
+</span><span id="line-39"></span><span class="annot"><a href="System.EntropyNix.html#source"><span class="hs-identifier hs-type">source</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">FilePath</span></span><span>
+</span><span id="line-40"></span><span id="source"><span class="annot"><span class="annottext">source :: FilePath
+</span><a href="System.EntropyNix.html#source"><span class="hs-identifier hs-var hs-var">source</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;/dev/urandom&quot;</span></span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="annot"><span class="hs-comment">-- |Handle for manual resource management</span></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">data</span><span> </span><span id="CryptHandle"><span class="annot"><a href="System.EntropyNix.html#CryptHandle"><span class="hs-identifier hs-var">CryptHandle</span></a></span></span><span>
+</span><span id="line-44"></span><span>    </span><span class="hs-glyph">=</span><span> </span><span id="CH"><span class="annot"><a href="System.EntropyNix.html#CH"><span class="hs-identifier hs-var">CH</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Fd</span></span><span class="hs-cpp">
+#ifdef HAVE_GETRANDOM
+</span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="hs-identifier">UseGetRandom</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- | Get random values from the hardware RNG or return Nothing if no</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- supported hardware RNG is available.</span><span>
+</span><span id="line-51"></span><span class="hs-comment">--</span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- Supported hardware:</span><span>
+</span><span id="line-53"></span><span class="hs-comment">--      * RDRAND</span><span>
+</span><span id="line-54"></span><span class="hs-comment">--      * Patches welcome</span><span>
+</span><span id="line-55"></span><span class="annot"><a href="System.EntropyNix.html#hardwareRandom"><span class="hs-identifier hs-type">hardwareRandom</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span class="hs-special">)</span><span class="hs-cpp">
+#ifdef HAVE_RDRAND
+</span><span class="hs-identifier">hardwareRandom</span><span> </span><span class="hs-identifier">n</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-58"></span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-identifier">b</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">cpuHasRdRand</span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-keyword">if</span><span> </span><span class="hs-identifier">b</span><span> </span><span class="hs-keyword">then</span><span> </span><span class="hs-identifier">Just</span><span> </span><span class="hs-operator">&lt;$&gt;</span><span> </span><span class="hs-identifier">B.create</span><span> </span><span class="hs-identifier">n</span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="hs-identifier">ptr</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-60"></span><span>                      </span><span class="hs-keyword">do</span><span> </span><span class="hs-identifier">r</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">c_get_rand_bytes</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">castPtr</span><span> </span><span class="hs-identifier">ptr</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">fromIntegral</span><span> </span><span class="hs-identifier">n</span><span class="hs-special">)</span><span>
+</span><span id="line-61"></span><span>                         </span><span class="hs-identifier">when</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">r</span><span> </span><span class="hs-operator">/=</span><span> </span><span class="hs-number">0</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">fail</span><span> </span><span class="hs-string">&quot;RDRand failed to gather entropy&quot;</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>     </span><span class="hs-keyword">else</span><span> </span><span class="hs-identifier">pure</span><span> </span><span class="hs-identifier">Nothing</span><span class="hs-cpp">
+#else
+</span><span id="hardwareRandom"><span class="annot"><span class="annottext">hardwareRandom :: Int -&gt; IO (Maybe ByteString)
+</span><a href="System.EntropyNix.html#hardwareRandom"><span class="hs-identifier hs-var hs-var">hardwareRandom</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe ByteString -&gt; IO (Maybe ByteString)
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">Maybe ByteString
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-67"></span><span class="annot"><span class="hs-comment">-- |Open a `CryptHandle`</span></span><span>
+</span><span id="line-68"></span><span class="annot"><a href="System.EntropyNix.html#openHandle"><span class="hs-identifier hs-type">openHandle</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="System.EntropyNix.html#CryptHandle"><span class="hs-identifier hs-type">CryptHandle</span></a></span><span>
+</span><span id="line-69"></span><span id="openHandle"><span class="annot"><span class="annottext">openHandle :: IO CryptHandle
+</span><a href="System.EntropyNix.html#openHandle"><span class="hs-identifier hs-var hs-var">openHandle</span></a></span></span><span> </span><span class="hs-glyph">=</span><span class="hs-cpp">
+#ifdef HAVE_GETRANDOM
+</span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="hs-identifier">systemHasGetRandom</span><span> </span><span class="hs-keyword">then</span><span> </span><span class="hs-identifier">return</span><span> </span><span class="hs-identifier">UseGetRandom</span><span> </span><span class="hs-keyword">else</span><span class="hs-cpp">
+#endif
+</span><span>  </span><span class="annot"><span class="annottext">(Fd -&gt; CryptHandle) -&gt; IO Fd -&gt; IO CryptHandle
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">Fd -&gt; CryptHandle
+</span><a href="System.EntropyNix.html#CH"><span class="hs-identifier hs-var">CH</span></a></span><span> </span><span class="annot"><span class="annottext">IO Fd
+</span><a href="System.EntropyNix.html#openRandomFile"><span class="hs-identifier hs-var">openRandomFile</span></a></span><span>
+</span><span id="line-74"></span><span>
+</span><span id="line-75"></span><span class="annot"><a href="System.EntropyNix.html#openRandomFile"><span class="hs-identifier hs-type">openRandomFile</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Fd</span></span><span>
+</span><span id="line-76"></span><span id="openRandomFile"><span class="annot"><span class="annottext">openRandomFile :: IO Fd
+</span><a href="System.EntropyNix.html#openRandomFile"><span class="hs-identifier hs-var hs-var">openRandomFile</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-77"></span><span>  </span><span class="annot"><span class="annottext">CInt -&gt; IO CInt
+forall a. a -&gt; IO a
+</span><span class="hs-identifier hs-var">evaluate</span></span><span> </span><span class="annot"><span class="annottext">CInt
+</span><a href="System.EntropyNix.html#ensurePoolInitialized"><span class="hs-identifier hs-var">ensurePoolInitialized</span></a></span><span class="hs-cpp">
+#if MIN_VERSION_unix(2,8,0)
+</span><span>  </span><span class="annot"><span class="annottext">FilePath -&gt; OpenMode -&gt; OpenFileFlags -&gt; IO Fd
+</span><span class="hs-identifier hs-var">openFd</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><a href="System.EntropyNix.html#source"><span class="hs-identifier hs-var">source</span></a></span><span> </span><span class="annot"><span class="annottext">OpenMode
+</span><span class="hs-identifier hs-var">ReadOnly</span></span><span> </span><span class="annot"><span class="annottext">OpenFileFlags
+</span><span class="hs-identifier hs-var">defaultFileFlags</span></span><span> </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="hs-identifier hs-var">creat</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Nothing</span></span><span> </span><span class="hs-special">}</span><span class="hs-cpp">
+#else
+</span><span>  </span><span class="hs-identifier">openFd</span><span> </span><span class="hs-identifier">source</span><span> </span><span class="hs-identifier">ReadOnly</span><span> </span><span class="hs-identifier">Nothing</span><span> </span><span class="hs-identifier">defaultFileFlags</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-84"></span><span class="annot"><span class="hs-comment">-- |Close the `CryptHandle`</span></span><span>
+</span><span id="line-85"></span><span class="annot"><a href="System.EntropyNix.html#closeHandle"><span class="hs-identifier hs-type">closeHandle</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="System.EntropyNix.html#CryptHandle"><span class="hs-identifier hs-type">CryptHandle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-86"></span><span id="closeHandle"><span class="annot"><span class="annottext">closeHandle :: CryptHandle -&gt; IO ()
+</span><a href="System.EntropyNix.html#closeHandle"><span class="hs-identifier hs-var hs-var">closeHandle</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="System.EntropyNix.html#CH"><span class="hs-identifier hs-type">CH</span></a></span><span> </span><span id="local-6989586621679042324"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679042324"><span class="hs-identifier hs-var">h</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Fd -&gt; IO ()
+</span><span class="hs-identifier hs-var">closeFd</span></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679042324"><span class="hs-identifier hs-var">h</span></a></span><span class="hs-cpp">
+#ifdef HAVE_GETRANDOM
+</span><span class="hs-identifier">closeHandle</span><span> </span><span class="hs-identifier">UseGetRandom</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">return</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-91"></span><span class="annot"><span class="hs-comment">-- |Read random data from a `CryptHandle`</span></span><span>
+</span><span id="line-92"></span><span class="annot"><a href="System.EntropyNix.html#hGetEntropy"><span class="hs-identifier hs-type">hGetEntropy</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="System.EntropyNix.html#CryptHandle"><span class="hs-identifier hs-type">CryptHandle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span>
+</span><span id="line-93"></span><span id="hGetEntropy"><span class="annot"><span class="annottext">hGetEntropy :: CryptHandle -&gt; Int -&gt; IO ByteString
+</span><a href="System.EntropyNix.html#hGetEntropy"><span class="hs-identifier hs-var hs-var">hGetEntropy</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="System.EntropyNix.html#CH"><span class="hs-identifier hs-type">CH</span></a></span><span> </span><span id="local-6989586621679042325"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679042325"><span class="hs-identifier hs-var">h</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679042326"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042326"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Fd -&gt; Int -&gt; IO ByteString
+</span><a href="System.EntropyNix.html#fdReadBS"><span class="hs-identifier hs-var">fdReadBS</span></a></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679042325"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042326"><span class="hs-identifier hs-var">n</span></a></span><span class="hs-cpp">
+#ifdef HAVE_GETRANDOM
+</span><span class="hs-identifier">hGetEntropy</span><span> </span><span class="hs-identifier">UseGetRandom</span><span> </span><span class="hs-identifier">n</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-96"></span><span>  </span><span class="hs-identifier">bs</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">B.createUptoN</span><span> </span><span class="hs-identifier">n</span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="hs-identifier">ptr</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-97"></span><span>    </span><span class="hs-identifier">r</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-identifier">c_entropy_getrandom</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">castPtr</span><span> </span><span class="hs-identifier">ptr</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">fromIntegral</span><span> </span><span class="hs-identifier">n</span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span>    </span><span class="hs-identifier">return</span><span> </span><span class="hs-operator">$</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="hs-identifier">r</span><span> </span><span class="hs-operator">==</span><span> </span><span class="hs-number">0</span><span> </span><span class="hs-keyword">then</span><span> </span><span class="hs-identifier">n</span><span> </span><span class="hs-keyword">else</span><span> </span><span class="hs-number">0</span><span class="hs-special">)</span><span>
+</span><span id="line-99"></span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="hs-identifier">B.length</span><span> </span><span class="hs-identifier">bs</span><span> </span><span class="hs-operator">==</span><span> </span><span class="hs-identifier">n</span><span> </span><span class="hs-keyword">then</span><span> </span><span class="hs-identifier">return</span><span> </span><span class="hs-identifier">bs</span><span>
+</span><span id="line-100"></span><span>  </span><span class="hs-comment">-- getrandom somehow failed. Fall back on /dev/urandom instead.</span><span>
+</span><span id="line-101"></span><span>  </span><span class="hs-keyword">else</span><span> </span><span class="hs-identifier">bracket</span><span> </span><span class="hs-identifier">openRandomFile</span><span> </span><span class="hs-identifier">closeFd</span><span> </span><span class="hs-operator">$</span><span> </span><span class="hs-identifier">flip</span><span> </span><span class="hs-identifier">fdReadBS</span><span> </span><span class="hs-identifier">n</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-104"></span><span class="annot"><a href="System.EntropyNix.html#fdReadBS"><span class="hs-identifier hs-type">fdReadBS</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Fd</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">B.ByteString</span></span><span>
+</span><span id="line-105"></span><span id="fdReadBS"><span class="annot"><span class="annottext">fdReadBS :: Fd -&gt; Int -&gt; IO ByteString
+</span><a href="System.EntropyNix.html#fdReadBS"><span class="hs-identifier hs-var hs-var">fdReadBS</span></a></span></span><span> </span><span id="local-6989586621679042328"><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679042328"><span class="hs-identifier hs-var">fd</span></a></span></span><span> </span><span id="local-6989586621679042329"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042329"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-106"></span><span>    </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Any -&gt; IO ByteString) -&gt; IO ByteString
+forall a b. Int -&gt; (Ptr a -&gt; IO b) -&gt; IO b
+</span><span class="hs-identifier hs-var">allocaBytes</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042329"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Any -&gt; IO ByteString) -&gt; IO ByteString)
+-&gt; (Ptr Any -&gt; IO ByteString) -&gt; IO ByteString
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679042330"><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679042330"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Any -&gt; Int -&gt; IO ByteString
+forall {a}. Ptr a -&gt; Int -&gt; IO ByteString
+</span><a href="#local-6989586621679042331"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679042330"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042329"><span class="hs-identifier hs-var">n</span></a></span><span>
+</span><span id="line-107"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-108"></span><span> </span><span id="local-6989586621679042331"><span class="annot"><span class="annottext">go :: Ptr a -&gt; Int -&gt; IO ByteString
+</span><a href="#local-6989586621679042331"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679042355"><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679042355"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CStringLen -&gt; IO ByteString
+</span><span class="hs-identifier hs-var">B.packCStringLen</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr a -&gt; Ptr CChar
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679042355"><span class="hs-identifier hs-var">buf</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042329"><span class="hs-identifier hs-var">n</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-109"></span><span> </span><span class="annot"><a href="#local-6989586621679042331"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621679042358"><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679042358"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span id="local-6989586621679042359"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042359"><span class="hs-identifier hs-var">cnt</span></a></span></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042359"><span class="hs-identifier hs-var">cnt</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042329"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-110"></span><span>        </span><span id="local-6989586621679042361"><span class="annot"><span class="annottext">ByteCount
+</span><a href="#local-6989586621679042361"><span class="hs-identifier hs-var">rc</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Fd -&gt; Ptr Word8 -&gt; ByteCount -&gt; IO ByteCount
+</span><span class="hs-identifier hs-var">fdReadBuf</span></span><span> </span><span class="annot"><span class="annottext">Fd
+</span><a href="#local-6989586621679042328"><span class="hs-identifier hs-var">fd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr a -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-identifier hs-var">plusPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679042358"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042329"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042359"><span class="hs-identifier hs-var">cnt</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; ByteCount
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042359"><span class="hs-identifier hs-var">cnt</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-111"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">ByteCount
+</span><a href="#local-6989586621679042361"><span class="hs-identifier hs-var">rc</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-112"></span><span>            </span><span class="annot"><span class="annottext">ByteCount
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IOError -&gt; IO ByteString
+forall a. IOError -&gt; IO a
+</span><span class="hs-identifier hs-var">ioError</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IOError -&gt; FilePath -&gt; IOError
+</span><span class="hs-identifier hs-var">ioeSetErrorString</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IOErrorType
+-&gt; FilePath -&gt; Maybe Handle -&gt; Maybe FilePath -&gt; IOError
+</span><span class="hs-identifier hs-var">mkIOError</span></span><span> </span><span class="annot"><span class="annottext">IOErrorType
+</span><span class="hs-identifier hs-var">eofErrorType</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;fdRead&quot;</span></span><span> </span><span class="annot"><span class="annottext">Maybe Handle
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="annot"><span class="annottext">Maybe FilePath
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;EOF&quot;</span></span><span class="hs-special">)</span><span>
+</span><span id="line-113"></span><span>            </span><span id="local-6989586621679042364"><span class="annot"><span class="annottext">ByteCount
+</span><a href="#local-6989586621679042364"><span class="hs-identifier hs-var">n'</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr a -&gt; Int -&gt; IO ByteString
+</span><a href="#local-6989586621679042331"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><a href="#local-6989586621679042358"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679042359"><span class="hs-identifier hs-var">cnt</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">ByteCount -&gt; Int
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">ByteCount
+</span><a href="#local-6989586621679042364"><span class="hs-identifier hs-var">n'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-114"></span><span> </span><span class="annot"><a href="#local-6989586621679042331"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr a
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IO ByteString
+forall a. HasCallStack =&gt; FilePath -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;Impossible!  The count of bytes left to read is greater than the request or less than zero!&quot;</span></span><span class="hs-cpp">
+
+#ifdef HAVE_GETRANDOM
+</span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">ccall</span><span> </span><span class="hs-keyword">unsafe</span><span> </span><span class="hs-string">&quot;system_has_getrandom&quot;</span><span>
+</span><span id="line-118"></span><span>   </span><span class="hs-identifier">c_system_has_getrandom</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">IO</span><span> </span><span class="hs-identifier">CInt</span><span>
+</span><span id="line-119"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">ccall</span><span> </span><span class="hs-keyword">safe</span><span> </span><span class="hs-string">&quot;entropy_getrandom&quot;</span><span>
+</span><span id="line-120"></span><span>  </span><span class="hs-identifier">c_entropy_getrandom</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">Ptr</span><span> </span><span class="hs-identifier">CUChar</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">CSize</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">IO</span><span> </span><span class="hs-identifier">CInt</span><span>
+</span><span id="line-121"></span><span>
+</span><span id="line-122"></span><span class="hs-comment">-- NOINLINE and unsafePerformIO are not totally necessary as getrandom will be</span><span>
+</span><span id="line-123"></span><span class="hs-comment">-- consistently either present or not, but it is cheaper not to check multiple</span><span>
+</span><span id="line-124"></span><span class="hs-comment">-- times.</span><span>
+</span><span id="line-125"></span><span class="hs-identifier">systemHasGetRandom</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">Bool</span><span>
+</span><span id="line-126"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="hs-pragma">systemHasGetRandom</span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-127"></span><span class="hs-identifier">systemHasGetRandom</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">unsafePerformIO</span><span> </span><span class="hs-operator">$</span><span> </span><span class="hs-identifier">fmap</span><span> </span><span class="hs-special">(</span><span class="hs-operator">/=</span><span> </span><span class="hs-number">0</span><span class="hs-special">)</span><span> </span><span class="hs-identifier">c_system_has_getrandom</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-130"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">safe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;ensure_pool_initialized&quot;</span></span><span>
+</span><span id="line-131"></span><span>   </span><span id="c_ensure_pool_initialized"><span class="annot"><a href="System.EntropyNix.html#c_ensure_pool_initialized"><span class="hs-identifier hs-var">c_ensure_pool_initialized</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">CInt</span></span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span class="hs-comment">-- Similarly to systemHasGetRandom, NOINLINE is just an optimization.</span><span>
+</span><span id="line-134"></span><span class="annot"><a href="System.EntropyNix.html#ensurePoolInitialized"><span class="hs-identifier hs-type">ensurePoolInitialized</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">CInt</span></span><span>
+</span><span id="line-135"></span><span class="hs-pragma">{-# NOINLINE</span><span> </span><span class="annot"><a href="System.EntropyNix.html#ensurePoolInitialized"><span class="hs-pragma hs-type">ensurePoolInitialized</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-136"></span><span id="ensurePoolInitialized"><span class="annot"><span class="annottext">ensurePoolInitialized :: CInt
+</span><a href="System.EntropyNix.html#ensurePoolInitialized"><span class="hs-identifier hs-var hs-var">ensurePoolInitialized</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO CInt -&gt; CInt
+forall a. IO a -&gt; a
+</span><span class="hs-identifier hs-var">unsafePerformIO</span></span><span> </span><span class="annot"><span class="annottext">(IO CInt -&gt; CInt) -&gt; IO CInt -&gt; CInt
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">FilePath -&gt; IO CInt -&gt; IO CInt
+forall a. (Eq a, Num a) =&gt; FilePath -&gt; IO a -&gt; IO a
+</span><span class="hs-identifier hs-var">throwErrnoIfMinus1</span></span><span> </span><span class="annot"><span class="annottext">FilePath
+</span><span class="hs-string">&quot;ensurePoolInitialized&quot;</span></span><span> </span><span class="annot"><span class="annottext">(IO CInt -&gt; IO CInt) -&gt; IO CInt -&gt; IO CInt
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IO CInt
+</span><a href="System.EntropyNix.html#c_ensure_pool_initialized"><span class="hs-identifier hs-var">c_ensure_pool_initialized</span></a></span><span class="hs-cpp">
+
+#ifdef HAVE_RDRAND
+</span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">ccall</span><span> </span><span class="hs-keyword">unsafe</span><span> </span><span class="hs-string">&quot;cpu_has_rdrand&quot;</span><span>
+</span><span id="line-140"></span><span>   </span><span class="hs-identifier">c_cpu_has_rdrand</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">IO</span><span> </span><span class="hs-identifier">CInt</span><span>
+</span><span id="line-141"></span><span>
+</span><span id="line-142"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">ccall</span><span> </span><span class="hs-keyword">unsafe</span><span> </span><span class="hs-string">&quot;get_rand_bytes&quot;</span><span>
+</span><span id="line-143"></span><span>  </span><span class="hs-identifier">c_get_rand_bytes</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">Ptr</span><span> </span><span class="hs-identifier">CUChar</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">CSize</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-identifier">IO</span><span> </span><span class="hs-identifier">CInt</span><span>
+</span><span id="line-144"></span><span>
+</span><span id="line-145"></span><span class="hs-identifier">cpuHasRdRand</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-identifier">IO</span><span> </span><span class="hs-identifier">Bool</span><span>
+</span><span id="line-146"></span><span class="hs-identifier">cpuHasRdRand</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="hs-operator">/=</span><span> </span><span class="hs-number">0</span><span class="hs-special">)</span><span> </span><span class="hs-special">`</span><span class="hs-identifier">fmap</span><span class="hs-special">`</span><span> </span><span class="hs-identifier">c_cpu_has_rdrand</span><span class="hs-cpp">
+#endif
+</span></pre></body></html>

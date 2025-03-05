@@ -1,0 +1,637 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE RecordWildCards    #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE BangPatterns       #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- | This module provides the ability to create reapers: dedicated cleanup</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- threads. These threads will automatically spawn and die based on the</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- presence of a workload to process on. Example uses include:</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- * Killing long-running jobs</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- * Closing unused connections in a connection pool</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- * Pruning a cache of old items (see example below)</span><span>
+</span><span id="line-11"></span><span class="hs-comment">--</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- For real-world usage, search the &lt;https://github.com/yesodweb/wai WAI family of packages&gt;</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- for imports of &quot;Control.Reaper&quot;.</span><span>
+</span><span id="line-14"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Control.Reaper</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-15"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Example: Regularly cleaning a cache</span></span><span>
+</span><span id="line-16"></span><span>      </span><span class="annot"><span class="hs-comment">-- $example1</span></span><span>
+</span><span id="line-17"></span><span>
+</span><span id="line-18"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Settings</span></span><span>
+</span><span id="line-19"></span><span>      </span><span class="annot"><a href="Control.Reaper.html#ReaperSettings"><span class="hs-identifier">ReaperSettings</span></a></span><span>
+</span><span id="line-20"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Reaper.html#defaultReaperSettings"><span class="hs-identifier">defaultReaperSettings</span></a></span><span>
+</span><span id="line-21"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Accessors</span></span><span>
+</span><span id="line-22"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Reaper.html#reaperAction"><span class="hs-identifier">reaperAction</span></a></span><span>
+</span><span id="line-23"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Reaper.html#reaperDelay"><span class="hs-identifier">reaperDelay</span></a></span><span>
+</span><span id="line-24"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Reaper.html#reaperCons"><span class="hs-identifier">reaperCons</span></a></span><span>
+</span><span id="line-25"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Reaper.html#reaperNull"><span class="hs-identifier">reaperNull</span></a></span><span>
+</span><span id="line-26"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Reaper.html#reaperEmpty"><span class="hs-identifier">reaperEmpty</span></a></span><span>
+</span><span id="line-27"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Type</span></span><span>
+</span><span id="line-28"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Reaper.html#Reaper"><span class="hs-identifier">Reaper</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Creation</span></span><span>
+</span><span id="line-30"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Reaper.html#mkReaper"><span class="hs-identifier">mkReaper</span></a></span><span>
+</span><span id="line-31"></span><span>      </span><span class="annot"><span class="hs-comment">-- * Helper</span></span><span>
+</span><span id="line-32"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Reaper.html#mkListAction"><span class="hs-identifier">mkListAction</span></a></span><span>
+</span><span id="line-33"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.AutoUpdate.Util.html"><span class="hs-identifier">Control.AutoUpdate.Util</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">atomicModifyIORef'</span></span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Concurrent</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">forkIO</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">threadDelay</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">killThread</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">ThreadId</span></span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">mask_</span></span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">IORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">newIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">readIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">writeIORef</span></span><span class="hs-special">)</span><span>
+</span><span id="line-39"></span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- | Settings for creating a reaper. This type has two parameters:</span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- @workload@ gives the entire workload, whereas @item@ gives an</span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- individual piece of the queue. A common approach is to have @workload@</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- be a list of @item@s. This is encouraged by 'defaultReaperSettings' and</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- 'mkListAction'.</span><span>
+</span><span id="line-45"></span><span class="hs-comment">--</span><span>
+</span><span id="line-46"></span><span class="hs-comment">-- @since 0.1.1</span><span>
+</span><span id="line-47"></span><span class="hs-keyword">data</span><span> </span><span id="ReaperSettings"><span class="annot"><a href="Control.Reaper.html#ReaperSettings"><span class="hs-identifier hs-var">ReaperSettings</span></a></span></span><span> </span><span id="local-6989586621679029528"><span class="annot"><a href="#local-6989586621679029528"><span class="hs-identifier hs-type">workload</span></a></span></span><span> </span><span id="local-6989586621679029529"><span class="annot"><a href="#local-6989586621679029529"><span class="hs-identifier hs-type">item</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="ReaperSettings"><span class="annot"><a href="Control.Reaper.html#ReaperSettings"><span class="hs-identifier hs-var">ReaperSettings</span></a></span></span><span>
+</span><span id="line-48"></span><span>    </span><span class="hs-special">{</span><span> </span><span id="reaperAction"><span class="annot"><span class="annottext">forall workload item.
+ReaperSettings workload item
+-&gt; workload -&gt; IO (workload -&gt; workload)
+</span><a href="Control.Reaper.html#reaperAction"><span class="hs-identifier hs-var hs-var">reaperAction</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679029528"><span class="hs-identifier hs-type">workload</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679029528"><span class="hs-identifier hs-type">workload</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679029528"><span class="hs-identifier hs-type">workload</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span>    </span><span class="hs-comment">-- ^ The action to perform on a workload. The result of this is a</span><span>
+</span><span id="line-50"></span><span>    </span><span class="hs-comment">-- \&quot;workload modifying\&quot; function. In the common case of using lists,</span><span>
+</span><span id="line-51"></span><span>    </span><span class="hs-comment">-- the result should be a difference list that prepends the remaining</span><span>
+</span><span id="line-52"></span><span>    </span><span class="hs-comment">-- workload to the temporary workload. The temporary workload here</span><span>
+</span><span id="line-53"></span><span>    </span><span class="hs-comment">-- refers to items added to the workload while the reaper action is</span><span>
+</span><span id="line-54"></span><span>    </span><span class="hs-comment">-- running. For help with setting up such an action, see 'mkListAction'.</span><span>
+</span><span id="line-55"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-56"></span><span>    </span><span class="hs-comment">-- Default: do nothing with the workload, and then prepend it to the</span><span>
+</span><span id="line-57"></span><span>    </span><span class="hs-comment">-- temporary workload. This is incredibly useless; you should</span><span>
+</span><span id="line-58"></span><span>    </span><span class="hs-comment">-- definitely override this default.</span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-60"></span><span>    </span><span class="hs-comment">-- @since 0.1.1</span><span>
+</span><span id="line-61"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="reaperDelay"><span class="annot"><span class="annottext">forall workload item. ReaperSettings workload item -&gt; Int
+</span><a href="Control.Reaper.html#reaperDelay"><span class="hs-identifier hs-var hs-var">reaperDelay</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-62"></span><span>    </span><span class="hs-comment">-- ^ Number of microseconds to delay between calls of 'reaperAction'.</span><span>
+</span><span id="line-63"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-64"></span><span>    </span><span class="hs-comment">-- Default: 30 seconds.</span><span>
+</span><span id="line-65"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-66"></span><span>    </span><span class="hs-comment">-- @since 0.1.1</span><span>
+</span><span id="line-67"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="reaperCons"><span class="annot"><span class="annottext">forall workload item.
+ReaperSettings workload item -&gt; item -&gt; workload -&gt; workload
+</span><a href="Control.Reaper.html#reaperCons"><span class="hs-identifier hs-var hs-var">reaperCons</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679029529"><span class="hs-identifier hs-type">item</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679029528"><span class="hs-identifier hs-type">workload</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679029528"><span class="hs-identifier hs-type">workload</span></a></span><span>
+</span><span id="line-68"></span><span>    </span><span class="hs-comment">-- ^ Add an item onto a workload.</span><span>
+</span><span id="line-69"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-70"></span><span>    </span><span class="hs-comment">-- Default: list consing.</span><span>
+</span><span id="line-71"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-72"></span><span>    </span><span class="hs-comment">-- @since 0.1.1</span><span>
+</span><span id="line-73"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="reaperNull"><span class="annot"><span class="annottext">forall workload item.
+ReaperSettings workload item -&gt; workload -&gt; Bool
+</span><a href="Control.Reaper.html#reaperNull"><span class="hs-identifier hs-var hs-var">reaperNull</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679029528"><span class="hs-identifier hs-type">workload</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-74"></span><span>    </span><span class="hs-comment">-- ^ Check if a workload is empty, in which case the worker thread</span><span>
+</span><span id="line-75"></span><span>    </span><span class="hs-comment">-- will shut down.</span><span>
+</span><span id="line-76"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-77"></span><span>    </span><span class="hs-comment">-- Default: 'null'.</span><span>
+</span><span id="line-78"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-79"></span><span>    </span><span class="hs-comment">-- @since 0.1.1</span><span>
+</span><span id="line-80"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="reaperEmpty"><span class="annot"><span class="annottext">forall workload item. ReaperSettings workload item -&gt; workload
+</span><a href="Control.Reaper.html#reaperEmpty"><span class="hs-identifier hs-var hs-var">reaperEmpty</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679029528"><span class="hs-identifier hs-type">workload</span></a></span><span>
+</span><span id="line-81"></span><span>    </span><span class="hs-comment">-- ^ An empty workload.</span><span>
+</span><span id="line-82"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-83"></span><span>    </span><span class="hs-comment">-- Default: empty list.</span><span>
+</span><span id="line-84"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-85"></span><span>    </span><span class="hs-comment">-- @since 0.1.1</span><span>
+</span><span id="line-86"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-87"></span><span>
+</span><span id="line-88"></span><span class="hs-comment">-- | Default @ReaperSettings@ value, biased towards having a list of work</span><span>
+</span><span id="line-89"></span><span class="hs-comment">-- items.</span><span>
+</span><span id="line-90"></span><span class="hs-comment">--</span><span>
+</span><span id="line-91"></span><span class="hs-comment">-- @since 0.1.1</span><span>
+</span><span id="line-92"></span><span id="local-6989586621679029541"><span class="annot"><a href="Control.Reaper.html#defaultReaperSettings"><span class="hs-identifier hs-type">defaultReaperSettings</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Control.Reaper.html#ReaperSettings"><span class="hs-identifier hs-type">ReaperSettings</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621679029541"><span class="hs-identifier hs-type">item</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><a href="#local-6989586621679029541"><span class="hs-identifier hs-type">item</span></a></span></span><span>
+</span><span id="line-93"></span><span id="defaultReaperSettings"><span class="annot"><span class="annottext">defaultReaperSettings :: forall item. ReaperSettings [item] item
+</span><a href="Control.Reaper.html#defaultReaperSettings"><span class="hs-identifier hs-var hs-var">defaultReaperSettings</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Control.Reaper.html#ReaperSettings"><span class="hs-identifier hs-type">ReaperSettings</span></a></span><span>
+</span><span id="line-94"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">reaperAction :: [item] -&gt; IO ([item] -&gt; [item])
+</span><a href="Control.Reaper.html#reaperAction"><span class="hs-identifier hs-var">reaperAction</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679029623"><span class="annot"><span class="annottext">[item]
+</span><a href="#local-6989586621679029623"><span class="hs-identifier hs-var">wl</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">([item] -&gt; [item]) -&gt; IO ([item] -&gt; [item])
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[item]
+</span><a href="#local-6989586621679029623"><span class="hs-identifier hs-var">wl</span></a></span><span> </span><span class="annot"><span class="annottext">[item] -&gt; [item] -&gt; [item]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span class="hs-special">)</span><span>
+</span><span id="line-95"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">reaperDelay :: Int
+</span><a href="Control.Reaper.html#reaperDelay"><span class="hs-identifier hs-var">reaperDelay</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">30000000</span></span><span>
+</span><span id="line-96"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">reaperCons :: item -&gt; [item] -&gt; [item]
+</span><a href="Control.Reaper.html#reaperCons"><span class="hs-identifier hs-var">reaperCons</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="hs-glyph">:</span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">reaperNull :: [item] -&gt; Bool
+</span><a href="Control.Reaper.html#reaperNull"><span class="hs-identifier hs-var">reaperNull</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[item] -&gt; Bool
+forall a. [a] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><span class="hs-identifier hs-var">null</span></span><span>
+</span><span id="line-98"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">reaperEmpty :: [item]
+</span><a href="Control.Reaper.html#reaperEmpty"><span class="hs-identifier hs-var">reaperEmpty</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-99"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span class="annot"><span class="hs-comment">-- | A data structure to hold reaper APIs.</span></span><span>
+</span><span id="line-102"></span><span class="hs-keyword">data</span><span> </span><span id="Reaper"><span class="annot"><a href="Control.Reaper.html#Reaper"><span class="hs-identifier hs-var">Reaper</span></a></span></span><span> </span><span id="local-6989586621679029549"><span class="annot"><a href="#local-6989586621679029549"><span class="hs-identifier hs-type">workload</span></a></span></span><span> </span><span id="local-6989586621679029550"><span class="annot"><a href="#local-6989586621679029550"><span class="hs-identifier hs-type">item</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Reaper"><span class="annot"><a href="Control.Reaper.html#Reaper"><span class="hs-identifier hs-var">Reaper</span></a></span></span><span> </span><span class="hs-special">{</span><span>
+</span><span id="line-103"></span><span>    </span><span class="annot"><span class="hs-comment">-- | Adding an item to the workload</span></span><span>
+</span><span id="line-104"></span><span>    </span><span id="reaperAdd"><span class="annot"><span class="annottext">forall workload item. Reaper workload item -&gt; item -&gt; IO ()
+</span><a href="Control.Reaper.html#reaperAdd"><span class="hs-identifier hs-var hs-var">reaperAdd</span></a></span></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679029550"><span class="hs-identifier hs-type">item</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-105"></span><span>    </span><span class="annot"><span class="hs-comment">-- | Reading workload.</span></span><span>
+</span><span id="line-106"></span><span>  </span><span class="hs-special">,</span><span> </span><span id="reaperRead"><span class="annot"><span class="annottext">forall workload item. Reaper workload item -&gt; IO workload
+</span><a href="Control.Reaper.html#reaperRead"><span class="hs-identifier hs-var hs-var">reaperRead</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679029549"><span class="hs-identifier hs-type">workload</span></a></span><span>
+</span><span id="line-107"></span><span>    </span><span class="hs-comment">-- | Stopping the reaper thread if exists.</span><span>
+</span><span id="line-108"></span><span>    </span><span class="hs-comment">--   The current workload is returned.</span><span>
+</span><span id="line-109"></span><span>  </span><span class="hs-special">,</span><span> </span><span id="reaperStop"><span class="annot"><span class="annottext">forall workload item. Reaper workload item -&gt; IO workload
+</span><a href="Control.Reaper.html#reaperStop"><span class="hs-identifier hs-var hs-var">reaperStop</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679029549"><span class="hs-identifier hs-type">workload</span></a></span><span>
+</span><span id="line-110"></span><span>    </span><span class="annot"><span class="hs-comment">-- | Killing the reaper thread immediately if exists.</span></span><span>
+</span><span id="line-111"></span><span>  </span><span class="hs-special">,</span><span> </span><span id="reaperKill"><span class="annot"><span class="annottext">forall workload item. Reaper workload item -&gt; IO ()
+</span><a href="Control.Reaper.html#reaperKill"><span class="hs-identifier hs-var hs-var">reaperKill</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-112"></span><span>  </span><span class="hs-special">}</span><span>
+</span><span id="line-113"></span><span>
+</span><span id="line-114"></span><span class="annot"><span class="hs-comment">-- | State of reaper.</span></span><span>
+</span><span id="line-115"></span><span class="hs-keyword">data</span><span> </span><span id="State"><span class="annot"><a href="Control.Reaper.html#State"><span class="hs-identifier hs-var">State</span></a></span></span><span> </span><span id="local-6989586621679029567"><span class="annot"><a href="#local-6989586621679029567"><span class="hs-identifier hs-type">workload</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="NoReaper"><span class="annot"><a href="Control.Reaper.html#NoReaper"><span class="hs-identifier hs-var">NoReaper</span></a></span></span><span>           </span><span class="annot"><span class="hs-comment">-- ^ No reaper thread</span></span><span>
+</span><span id="line-116"></span><span>                    </span><span class="hs-glyph">|</span><span> </span><span id="Workload"><span class="annot"><a href="Control.Reaper.html#Workload"><span class="hs-identifier hs-var">Workload</span></a></span></span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="#local-6989586621679029567"><span class="hs-identifier hs-type">workload</span></a></span><span>  </span><span class="annot"><span class="hs-comment">-- ^ The current jobs</span></span><span>
+</span><span id="line-117"></span><span>
+</span><span id="line-118"></span><span class="hs-comment">-- | Create a reaper addition function. This function can be used to add</span><span>
+</span><span id="line-119"></span><span class="hs-comment">-- new items to the workload. Spawning of reaper threads will be handled</span><span>
+</span><span id="line-120"></span><span class="hs-comment">-- for you automatically.</span><span>
+</span><span id="line-121"></span><span class="hs-comment">--</span><span>
+</span><span id="line-122"></span><span class="hs-comment">-- @since 0.1.1</span><span>
+</span><span id="line-123"></span><span id="local-6989586621679029560"><span id="local-6989586621679029561"><span class="annot"><a href="Control.Reaper.html#mkReaper"><span class="hs-identifier hs-type">mkReaper</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Control.Reaper.html#ReaperSettings"><span class="hs-identifier hs-type">ReaperSettings</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029560"><span class="hs-identifier hs-type">workload</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029561"><span class="hs-identifier hs-type">item</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Reaper.html#Reaper"><span class="hs-identifier hs-type">Reaper</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029560"><span class="hs-identifier hs-type">workload</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029561"><span class="hs-identifier hs-type">item</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-124"></span><span id="mkReaper"><span class="annot"><span class="annottext">mkReaper :: forall workload item.
+ReaperSettings workload item -&gt; IO (Reaper workload item)
+</span><a href="Control.Reaper.html#mkReaper"><span class="hs-identifier hs-var hs-var">mkReaper</span></a></span></span><span> </span><span id="local-6989586621679029634"><span class="annot"><span class="annottext">settings :: ReaperSettings workload item
+</span><a href="#local-6989586621679029634"><span class="hs-identifier hs-var">settings</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="Control.Reaper.html#ReaperSettings"><span class="hs-identifier hs-type">ReaperSettings</span></a></span><span class="hs-special">{</span><span id="local-6989586621679029635"><span id="local-6989586621679029636"><span id="local-6989586621679029637"><span id="local-6989586621679029638"><span id="local-6989586621679029639"><span class="annot"><span class="annottext">workload
+Int
+workload -&gt; Bool
+workload -&gt; IO (workload -&gt; workload)
+item -&gt; workload -&gt; workload
+reaperAction :: forall workload item.
+ReaperSettings workload item
+-&gt; workload -&gt; IO (workload -&gt; workload)
+reaperDelay :: forall workload item. ReaperSettings workload item -&gt; Int
+reaperCons :: forall workload item.
+ReaperSettings workload item -&gt; item -&gt; workload -&gt; workload
+reaperNull :: forall workload item.
+ReaperSettings workload item -&gt; workload -&gt; Bool
+reaperEmpty :: forall workload item. ReaperSettings workload item -&gt; workload
+reaperAction :: workload -&gt; IO (workload -&gt; workload)
+reaperDelay :: Int
+reaperCons :: item -&gt; workload -&gt; workload
+reaperNull :: workload -&gt; Bool
+reaperEmpty :: workload
+</span><a href="Control.Reaper.html#reaperAction"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-125"></span><span>    </span><span id="local-6989586621679029640"><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029640"><span class="hs-identifier hs-var">stateRef</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">State workload -&gt; IO (IORef (State workload))
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">State workload
+forall workload. State workload
+</span><a href="Control.Reaper.html#NoReaper"><span class="hs-identifier hs-var">NoReaper</span></a></span><span>
+</span><span id="line-126"></span><span>    </span><span id="local-6989586621679029641"><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029641"><span class="hs-identifier hs-var">tidRef</span></a></span></span><span>   </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Maybe ThreadId -&gt; IO (IORef (Maybe ThreadId))
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="annot"><span class="annottext">Maybe ThreadId
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-127"></span><span>    </span><span class="annot"><span class="annottext">Reaper workload item -&gt; IO (Reaper workload item)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><a href="Control.Reaper.html#Reaper"><span class="hs-identifier hs-type">Reaper</span></a></span><span> </span><span class="hs-special">{</span><span>
+</span><span id="line-128"></span><span>        </span><span class="annot"><span class="annottext">reaperAdd :: item -&gt; IO ()
+</span><a href="Control.Reaper.html#reaperAdd"><span class="hs-identifier hs-var">reaperAdd</span></a></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ReaperSettings workload item
+-&gt; IORef (State workload)
+-&gt; IORef (Maybe ThreadId)
+-&gt; item
+-&gt; IO ()
+forall workload item.
+ReaperSettings workload item
+-&gt; IORef (State workload)
+-&gt; IORef (Maybe ThreadId)
+-&gt; item
+-&gt; IO ()
+</span><a href="Control.Reaper.html#add"><span class="hs-identifier hs-var">add</span></a></span><span> </span><span class="annot"><span class="annottext">ReaperSettings workload item
+</span><a href="#local-6989586621679029634"><span class="hs-identifier hs-var">settings</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029640"><span class="hs-identifier hs-var">stateRef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029641"><span class="hs-identifier hs-var">tidRef</span></a></span><span>
+</span><span id="line-129"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">reaperRead :: IO workload
+</span><a href="Control.Reaper.html#reaperRead"><span class="hs-identifier hs-var">reaperRead</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef (State workload) -&gt; IO workload
+</span><a href="#local-6989586621679029643"><span class="hs-identifier hs-var">readRef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029640"><span class="hs-identifier hs-var">stateRef</span></a></span><span>
+</span><span id="line-130"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">reaperStop :: IO workload
+</span><a href="Control.Reaper.html#reaperStop"><span class="hs-identifier hs-var">reaperStop</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef (State workload) -&gt; IO workload
+</span><a href="#local-6989586621679029644"><span class="hs-identifier hs-var">stop</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029640"><span class="hs-identifier hs-var">stateRef</span></a></span><span>
+</span><span id="line-131"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">reaperKill :: IO ()
+</span><a href="Control.Reaper.html#reaperKill"><span class="hs-identifier hs-var">reaperKill</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef (Maybe ThreadId) -&gt; IO ()
+</span><a href="#local-6989586621679029645"><span class="hs-identifier hs-var">kill</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029641"><span class="hs-identifier hs-var">tidRef</span></a></span><span>
+</span><span id="line-132"></span><span>      </span><span class="hs-special">}</span><span>
+</span><span id="line-133"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-134"></span><span>    </span><span id="local-6989586621679029643"><span class="annot"><span class="annottext">readRef :: IORef (State workload) -&gt; IO workload
+</span><a href="#local-6989586621679029643"><span class="hs-identifier hs-var hs-var">readRef</span></a></span></span><span> </span><span id="local-6989586621679029649"><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029649"><span class="hs-identifier hs-var">stateRef</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-135"></span><span>        </span><span id="local-6989586621679029650"><span class="annot"><span class="annottext">State workload
+</span><a href="#local-6989586621679029650"><span class="hs-identifier hs-var">mx</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef (State workload) -&gt; IO (State workload)
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029649"><span class="hs-identifier hs-var">stateRef</span></a></span><span>
+</span><span id="line-136"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">State workload
+</span><a href="#local-6989586621679029650"><span class="hs-identifier hs-var">mx</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-137"></span><span>            </span><span class="annot"><span class="annottext">State workload
+</span><a href="Control.Reaper.html#NoReaper"><span class="hs-identifier hs-var">NoReaper</span></a></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">workload -&gt; IO workload
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029639"><span class="hs-identifier hs-var">reaperEmpty</span></a></span><span>
+</span><span id="line-138"></span><span>            </span><span class="annot"><a href="Control.Reaper.html#Workload"><span class="hs-identifier hs-type">Workload</span></a></span><span> </span><span id="local-6989586621679029651"><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029651"><span class="hs-identifier hs-var">wl</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">workload -&gt; IO workload
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029651"><span class="hs-identifier hs-var">wl</span></a></span><span>
+</span><span id="line-139"></span><span>    </span><span id="local-6989586621679029644"><span class="annot"><span class="annottext">stop :: IORef (State workload) -&gt; IO workload
+</span><a href="#local-6989586621679029644"><span class="hs-identifier hs-var hs-var">stop</span></a></span></span><span> </span><span id="local-6989586621679029652"><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029652"><span class="hs-identifier hs-var">stateRef</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+-&gt; (State workload -&gt; (State workload, workload)) -&gt; IO workload
+forall a b. IORef a -&gt; (a -&gt; (a, b)) -&gt; IO b
+</span><span class="hs-identifier hs-var">atomicModifyIORef'</span></span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029652"><span class="hs-identifier hs-var">stateRef</span></a></span><span> </span><span class="annot"><span class="annottext">((State workload -&gt; (State workload, workload)) -&gt; IO workload)
+-&gt; (State workload -&gt; (State workload, workload)) -&gt; IO workload
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679029653"><span class="annot"><span class="annottext">State workload
+</span><a href="#local-6989586621679029653"><span class="hs-identifier hs-var">mx</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-140"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">State workload
+</span><a href="#local-6989586621679029653"><span class="hs-identifier hs-var">mx</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-141"></span><span>            </span><span class="annot"><span class="annottext">State workload
+</span><a href="Control.Reaper.html#NoReaper"><span class="hs-identifier hs-var">NoReaper</span></a></span><span>   </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">State workload
+forall workload. State workload
+</span><a href="Control.Reaper.html#NoReaper"><span class="hs-identifier hs-var">NoReaper</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029639"><span class="hs-identifier hs-var">reaperEmpty</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-142"></span><span>            </span><span class="annot"><a href="Control.Reaper.html#Workload"><span class="hs-identifier hs-type">Workload</span></a></span><span> </span><span id="local-6989586621679029654"><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029654"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">workload -&gt; State workload
+forall workload. workload -&gt; State workload
+</span><a href="Control.Reaper.html#Workload"><span class="hs-identifier hs-var">Workload</span></a></span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029639"><span class="hs-identifier hs-var">reaperEmpty</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029654"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-143"></span><span>    </span><span id="local-6989586621679029645"><span class="annot"><span class="annottext">kill :: IORef (Maybe ThreadId) -&gt; IO ()
+</span><a href="#local-6989586621679029645"><span class="hs-identifier hs-var hs-var">kill</span></a></span></span><span> </span><span id="local-6989586621679029657"><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029657"><span class="hs-identifier hs-var">tidRef</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-144"></span><span>        </span><span id="local-6989586621679029658"><span class="annot"><span class="annottext">Maybe ThreadId
+</span><a href="#local-6989586621679029658"><span class="hs-identifier hs-var">mtid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef (Maybe ThreadId) -&gt; IO (Maybe ThreadId)
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029657"><span class="hs-identifier hs-var">tidRef</span></a></span><span>
+</span><span id="line-145"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe ThreadId
+</span><a href="#local-6989586621679029658"><span class="hs-identifier hs-var">mtid</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-146"></span><span>            </span><span class="annot"><span class="annottext">Maybe ThreadId
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-147"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679029659"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679029659"><span class="hs-identifier hs-var">tid</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; IO ()
+</span><span class="hs-identifier hs-var">killThread</span></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679029659"><span class="hs-identifier hs-var">tid</span></a></span><span>
+</span><span id="line-148"></span><span>
+</span><span id="line-149"></span><span id="local-6989586621679029569"><span id="local-6989586621679029570"><span class="annot"><a href="Control.Reaper.html#add"><span class="hs-identifier hs-type">add</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Control.Reaper.html#ReaperSettings"><span class="hs-identifier hs-type">ReaperSettings</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029569"><span class="hs-identifier hs-type">workload</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029570"><span class="hs-identifier hs-type">item</span></a></span><span>
+</span><span id="line-150"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Reaper.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029569"><span class="hs-identifier hs-type">workload</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ThreadId</span></span><span class="hs-special">)</span><span>
+</span><span id="line-151"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679029570"><span class="hs-identifier hs-type">item</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-152"></span><span id="add"><span class="annot"><span class="annottext">add :: forall workload item.
+ReaperSettings workload item
+-&gt; IORef (State workload)
+-&gt; IORef (Maybe ThreadId)
+-&gt; item
+-&gt; IO ()
+</span><a href="Control.Reaper.html#add"><span class="hs-identifier hs-var hs-var">add</span></a></span></span><span> </span><span id="local-6989586621679029661"><span class="annot"><span class="annottext">settings :: ReaperSettings workload item
+</span><a href="#local-6989586621679029661"><span class="hs-identifier hs-var">settings</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="Control.Reaper.html#ReaperSettings"><span class="hs-identifier hs-type">ReaperSettings</span></a></span><span class="hs-special">{</span><span id="local-6989586621679029662"><span id="local-6989586621679029663"><span id="local-6989586621679029664"><span id="local-6989586621679029665"><span id="local-6989586621679029666"><span class="annot"><span class="annottext">workload
+Int
+workload -&gt; Bool
+workload -&gt; IO (workload -&gt; workload)
+item -&gt; workload -&gt; workload
+reaperAction :: forall workload item.
+ReaperSettings workload item
+-&gt; workload -&gt; IO (workload -&gt; workload)
+reaperDelay :: forall workload item. ReaperSettings workload item -&gt; Int
+reaperCons :: forall workload item.
+ReaperSettings workload item -&gt; item -&gt; workload -&gt; workload
+reaperNull :: forall workload item.
+ReaperSettings workload item -&gt; workload -&gt; Bool
+reaperEmpty :: forall workload item. ReaperSettings workload item -&gt; workload
+reaperAction :: workload -&gt; IO (workload -&gt; workload)
+reaperDelay :: Int
+reaperCons :: item -&gt; workload -&gt; workload
+reaperNull :: workload -&gt; Bool
+reaperEmpty :: workload
+</span><a href="Control.Reaper.html#reaperAction"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679029667"><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029667"><span class="hs-identifier hs-var">stateRef</span></a></span></span><span> </span><span id="local-6989586621679029668"><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029668"><span class="hs-identifier hs-var">tidRef</span></a></span></span><span> </span><span id="local-6989586621679029669"><span class="annot"><span class="annottext">item
+</span><a href="#local-6989586621679029669"><span class="hs-identifier hs-var">item</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-153"></span><span>    </span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+forall a. IO a -&gt; IO a
+</span><span class="hs-identifier hs-var">mask_</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-154"></span><span>      </span><span id="local-6989586621679029670"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679029670"><span class="hs-identifier hs-var">next</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+-&gt; (State workload -&gt; (State workload, IO ())) -&gt; IO (IO ())
+forall a b. IORef a -&gt; (a -&gt; (a, b)) -&gt; IO b
+</span><span class="hs-identifier hs-var">atomicModifyIORef'</span></span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029667"><span class="hs-identifier hs-var">stateRef</span></a></span><span> </span><span class="annot"><span class="annottext">State workload -&gt; (State workload, IO ())
+</span><a href="#local-6989586621679029671"><span class="hs-identifier hs-var">cons</span></a></span><span>
+</span><span id="line-155"></span><span>      </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679029670"><span class="hs-identifier hs-var">next</span></a></span><span>
+</span><span id="line-156"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-157"></span><span>    </span><span id="local-6989586621679029671"><span class="annot"><span class="annottext">cons :: State workload -&gt; (State workload, IO ())
+</span><a href="#local-6989586621679029671"><span class="hs-identifier hs-var hs-var">cons</span></a></span></span><span> </span><span class="annot"><span class="annottext">State workload
+</span><a href="Control.Reaper.html#NoReaper"><span class="hs-identifier hs-var">NoReaper</span></a></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679029673"><span class="annot"><span class="annottext">wl :: workload
+</span><a href="#local-6989586621679029673"><span class="hs-identifier hs-var hs-var">wl</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">item -&gt; workload -&gt; workload
+</span><a href="#local-6989586621679029664"><span class="hs-identifier hs-var">reaperCons</span></a></span><span> </span><span class="annot"><span class="annottext">item
+</span><a href="#local-6989586621679029669"><span class="hs-identifier hs-var">item</span></a></span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029666"><span class="hs-identifier hs-var">reaperEmpty</span></a></span><span>
+</span><span id="line-158"></span><span>                         </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">workload -&gt; State workload
+forall workload. workload -&gt; State workload
+</span><a href="Control.Reaper.html#Workload"><span class="hs-identifier hs-var">Workload</span></a></span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029673"><span class="hs-identifier hs-var">wl</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ReaperSettings workload item
+-&gt; IORef (State workload) -&gt; IORef (Maybe ThreadId) -&gt; IO ()
+forall workload item.
+ReaperSettings workload item
+-&gt; IORef (State workload) -&gt; IORef (Maybe ThreadId) -&gt; IO ()
+</span><a href="Control.Reaper.html#spawn"><span class="hs-identifier hs-var">spawn</span></a></span><span> </span><span class="annot"><span class="annottext">ReaperSettings workload item
+</span><a href="#local-6989586621679029661"><span class="hs-identifier hs-var">settings</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029667"><span class="hs-identifier hs-var">stateRef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029668"><span class="hs-identifier hs-var">tidRef</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-159"></span><span>    </span><span class="annot"><a href="#local-6989586621679029671"><span class="hs-identifier hs-var">cons</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Reaper.html#Workload"><span class="hs-identifier hs-type">Workload</span></a></span><span> </span><span id="local-6989586621679029675"><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029675"><span class="hs-identifier hs-var">wl</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679029676"><span class="annot"><span class="annottext">wl' :: workload
+</span><a href="#local-6989586621679029676"><span class="hs-identifier hs-var hs-var">wl'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">item -&gt; workload -&gt; workload
+</span><a href="#local-6989586621679029664"><span class="hs-identifier hs-var">reaperCons</span></a></span><span> </span><span class="annot"><span class="annottext">item
+</span><a href="#local-6989586621679029669"><span class="hs-identifier hs-var">item</span></a></span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029675"><span class="hs-identifier hs-var">wl</span></a></span><span>
+</span><span id="line-160"></span><span>                         </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">workload -&gt; State workload
+forall workload. workload -&gt; State workload
+</span><a href="Control.Reaper.html#Workload"><span class="hs-identifier hs-var">Workload</span></a></span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029676"><span class="hs-identifier hs-var">wl'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-161"></span><span>
+</span><span id="line-162"></span><span id="local-6989586621679029580"><span id="local-6989586621679029581"><span class="annot"><a href="Control.Reaper.html#spawn"><span class="hs-identifier hs-type">spawn</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Control.Reaper.html#ReaperSettings"><span class="hs-identifier hs-type">ReaperSettings</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029580"><span class="hs-identifier hs-type">workload</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029581"><span class="hs-identifier hs-type">item</span></a></span><span>
+</span><span id="line-163"></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Reaper.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029580"><span class="hs-identifier hs-type">workload</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ThreadId</span></span><span class="hs-special">)</span><span>
+</span><span id="line-164"></span><span>      </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-165"></span><span id="spawn"><span class="annot"><span class="annottext">spawn :: forall workload item.
+ReaperSettings workload item
+-&gt; IORef (State workload) -&gt; IORef (Maybe ThreadId) -&gt; IO ()
+</span><a href="Control.Reaper.html#spawn"><span class="hs-identifier hs-var hs-var">spawn</span></a></span></span><span> </span><span id="local-6989586621679029678"><span class="annot"><span class="annottext">ReaperSettings workload item
+</span><a href="#local-6989586621679029678"><span class="hs-identifier hs-var">settings</span></a></span></span><span> </span><span id="local-6989586621679029679"><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029679"><span class="hs-identifier hs-var">stateRef</span></a></span></span><span> </span><span id="local-6989586621679029680"><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029680"><span class="hs-identifier hs-var">tidRef</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-166"></span><span>    </span><span id="local-6989586621679029681"><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679029681"><span class="hs-identifier hs-var">tid</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO ThreadId
+</span><span class="hs-identifier hs-var">forkIO</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ThreadId) -&gt; IO () -&gt; IO ThreadId
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ReaperSettings workload item
+-&gt; IORef (State workload) -&gt; IORef (Maybe ThreadId) -&gt; IO ()
+forall workload item.
+ReaperSettings workload item
+-&gt; IORef (State workload) -&gt; IORef (Maybe ThreadId) -&gt; IO ()
+</span><a href="Control.Reaper.html#reaper"><span class="hs-identifier hs-var">reaper</span></a></span><span> </span><span class="annot"><span class="annottext">ReaperSettings workload item
+</span><a href="#local-6989586621679029678"><span class="hs-identifier hs-var">settings</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029679"><span class="hs-identifier hs-var">stateRef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029680"><span class="hs-identifier hs-var">tidRef</span></a></span><span>
+</span><span id="line-167"></span><span>    </span><span class="annot"><span class="annottext">IORef (Maybe ThreadId) -&gt; Maybe ThreadId -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029680"><span class="hs-identifier hs-var">tidRef</span></a></span><span> </span><span class="annot"><span class="annottext">(Maybe ThreadId -&gt; IO ()) -&gt; Maybe ThreadId -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ThreadId -&gt; Maybe ThreadId
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">ThreadId
+</span><a href="#local-6989586621679029681"><span class="hs-identifier hs-var">tid</span></a></span><span>
+</span><span id="line-168"></span><span>
+</span><span id="line-169"></span><span id="local-6989586621679029683"><span id="local-6989586621679029684"><span class="annot"><a href="Control.Reaper.html#reaper"><span class="hs-identifier hs-type">reaper</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Control.Reaper.html#ReaperSettings"><span class="hs-identifier hs-type">ReaperSettings</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029683"><span class="hs-identifier hs-type">workload</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029684"><span class="hs-identifier hs-type">item</span></a></span><span>
+</span><span id="line-170"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Reaper.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679029683"><span class="hs-identifier hs-type">workload</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ThreadId</span></span><span class="hs-special">)</span><span>
+</span><span id="line-171"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-172"></span><span id="reaper"><span class="annot"><span class="annottext">reaper :: forall workload item.
+ReaperSettings workload item
+-&gt; IORef (State workload) -&gt; IORef (Maybe ThreadId) -&gt; IO ()
+</span><a href="Control.Reaper.html#reaper"><span class="hs-identifier hs-var hs-var">reaper</span></a></span></span><span> </span><span id="local-6989586621679029689"><span class="annot"><span class="annottext">settings :: ReaperSettings workload item
+</span><a href="#local-6989586621679029689"><span class="hs-identifier hs-var">settings</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="Control.Reaper.html#ReaperSettings"><span class="hs-identifier hs-type">ReaperSettings</span></a></span><span class="hs-special">{</span><span id="local-6989586621679029690"><span id="local-6989586621679029691"><span id="local-6989586621679029692"><span id="local-6989586621679029693"><span id="local-6989586621679029694"><span class="annot"><span class="annottext">workload
+Int
+workload -&gt; Bool
+workload -&gt; IO (workload -&gt; workload)
+item -&gt; workload -&gt; workload
+reaperAction :: forall workload item.
+ReaperSettings workload item
+-&gt; workload -&gt; IO (workload -&gt; workload)
+reaperDelay :: forall workload item. ReaperSettings workload item -&gt; Int
+reaperCons :: forall workload item.
+ReaperSettings workload item -&gt; item -&gt; workload -&gt; workload
+reaperNull :: forall workload item.
+ReaperSettings workload item -&gt; workload -&gt; Bool
+reaperEmpty :: forall workload item. ReaperSettings workload item -&gt; workload
+reaperAction :: workload -&gt; IO (workload -&gt; workload)
+reaperDelay :: Int
+reaperCons :: item -&gt; workload -&gt; workload
+reaperNull :: workload -&gt; Bool
+reaperEmpty :: workload
+</span><a href="Control.Reaper.html#reaperAction"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679029695"><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029695"><span class="hs-identifier hs-var">stateRef</span></a></span></span><span> </span><span id="local-6989586621679029696"><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029696"><span class="hs-identifier hs-var">tidRef</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-173"></span><span>    </span><span class="annot"><span class="annottext">Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">threadDelay</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679029691"><span class="hs-identifier hs-var">reaperDelay</span></a></span><span>
+</span><span id="line-174"></span><span>    </span><span class="hs-comment">-- Getting the current jobs. Push an empty job to the reference.</span><span>
+</span><span id="line-175"></span><span>    </span><span id="local-6989586621679029697"><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029697"><span class="hs-identifier hs-var">wl</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+-&gt; (State workload -&gt; (State workload, workload)) -&gt; IO workload
+forall a b. IORef a -&gt; (a -&gt; (a, b)) -&gt; IO b
+</span><span class="hs-identifier hs-var">atomicModifyIORef'</span></span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029695"><span class="hs-identifier hs-var">stateRef</span></a></span><span> </span><span class="annot"><span class="annottext">State workload -&gt; (State workload, workload)
+forall {b}. State b -&gt; (State workload, b)
+</span><a href="#local-6989586621679029698"><span class="hs-identifier hs-var">swapWithEmpty</span></a></span><span>
+</span><span id="line-176"></span><span>    </span><span class="hs-comment">-- Do the jobs. A function to merge the left jobs and</span><span>
+</span><span id="line-177"></span><span>    </span><span class="hs-comment">-- new jobs is returned.</span><span>
+</span><span id="line-178"></span><span>    </span><span class="hs-glyph">!</span><span id="local-6989586621679029699"><span class="annot"><span class="annottext">workload -&gt; workload
+</span><a href="#local-6989586621679029699"><span class="hs-identifier hs-var">merge</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">workload -&gt; IO (workload -&gt; workload)
+</span><a href="#local-6989586621679029690"><span class="hs-identifier hs-var">reaperAction</span></a></span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029697"><span class="hs-identifier hs-var">wl</span></a></span><span>
+</span><span id="line-179"></span><span>    </span><span class="hs-comment">-- Merging the left jobs and new jobs.</span><span>
+</span><span id="line-180"></span><span>    </span><span class="hs-comment">-- If there is no jobs, this thread finishes.</span><span>
+</span><span id="line-181"></span><span>    </span><span id="local-6989586621679029700"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679029700"><span class="hs-identifier hs-var">next</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+-&gt; (State workload -&gt; (State workload, IO ())) -&gt; IO (IO ())
+forall a b. IORef a -&gt; (a -&gt; (a, b)) -&gt; IO b
+</span><span class="hs-identifier hs-var">atomicModifyIORef'</span></span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029695"><span class="hs-identifier hs-var">stateRef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(workload -&gt; workload) -&gt; State workload -&gt; (State workload, IO ())
+forall {workload}.
+(workload -&gt; workload) -&gt; State workload -&gt; (State workload, IO ())
+</span><a href="#local-6989586621679029701"><span class="hs-identifier hs-var">check</span></a></span><span> </span><span class="annot"><span class="annottext">workload -&gt; workload
+</span><a href="#local-6989586621679029699"><span class="hs-identifier hs-var">merge</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-182"></span><span>    </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679029700"><span class="hs-identifier hs-var">next</span></a></span><span>
+</span><span id="line-183"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-184"></span><span>    </span><span id="local-6989586621679029698"><span class="annot"><span class="annottext">swapWithEmpty :: State b -&gt; (State workload, b)
+</span><a href="#local-6989586621679029698"><span class="hs-identifier hs-var hs-var">swapWithEmpty</span></a></span></span><span> </span><span class="annot"><span class="annottext">State b
+</span><a href="Control.Reaper.html#NoReaper"><span class="hs-identifier hs-var">NoReaper</span></a></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; (State workload, b)
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Control.Reaper.reaper: unexpected NoReaper (1)&quot;</span></span><span>
+</span><span id="line-185"></span><span>    </span><span class="annot"><a href="#local-6989586621679029698"><span class="hs-identifier hs-var">swapWithEmpty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Reaper.html#Workload"><span class="hs-identifier hs-type">Workload</span></a></span><span> </span><span id="local-6989586621679029705"><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679029705"><span class="hs-identifier hs-var">wl</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">workload -&gt; State workload
+forall workload. workload -&gt; State workload
+</span><a href="Control.Reaper.html#Workload"><span class="hs-identifier hs-var">Workload</span></a></span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029694"><span class="hs-identifier hs-var">reaperEmpty</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">b
+</span><a href="#local-6989586621679029705"><span class="hs-identifier hs-var">wl</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-186"></span><span>
+</span><span id="line-187"></span><span>    </span><span id="local-6989586621679029701"><span class="annot"><span class="annottext">check :: (workload -&gt; workload) -&gt; State workload -&gt; (State workload, IO ())
+</span><a href="#local-6989586621679029701"><span class="hs-identifier hs-var hs-var">check</span></a></span></span><span> </span><span class="annot"><span class="annottext">workload -&gt; workload
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">State workload
+</span><a href="Control.Reaper.html#NoReaper"><span class="hs-identifier hs-var">NoReaper</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; (State workload, IO ())
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;Control.Reaper.reaper: unexpected NoReaper (2)&quot;</span></span><span>
+</span><span id="line-188"></span><span>    </span><span class="annot"><a href="#local-6989586621679029701"><span class="hs-identifier hs-var">check</span></a></span><span> </span><span id="local-6989586621679029708"><span class="annot"><span class="annottext">workload -&gt; workload
+</span><a href="#local-6989586621679029708"><span class="hs-identifier hs-var">merge</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Reaper.html#Workload"><span class="hs-identifier hs-type">Workload</span></a></span><span> </span><span id="local-6989586621679029709"><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029709"><span class="hs-identifier hs-var">wl</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-189"></span><span>      </span><span class="hs-comment">-- If there is no job, reaper is terminated.</span><span>
+</span><span id="line-190"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">workload -&gt; Bool
+</span><a href="#local-6989586621679029693"><span class="hs-identifier hs-var">reaperNull</span></a></span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029710"><span class="hs-identifier hs-var">wl'</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">State workload
+forall workload. State workload
+</span><a href="Control.Reaper.html#NoReaper"><span class="hs-identifier hs-var">NoReaper</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IORef (Maybe ThreadId) -&gt; Maybe ThreadId -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><span class="hs-identifier hs-var">writeIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029696"><span class="hs-identifier hs-var">tidRef</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe ThreadId
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">)</span><span>
+</span><span id="line-191"></span><span>      </span><span class="hs-comment">-- If there are jobs, carry them out.</span><span>
+</span><span id="line-192"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">workload -&gt; State workload
+forall workload. workload -&gt; State workload
+</span><a href="Control.Reaper.html#Workload"><span class="hs-identifier hs-var">Workload</span></a></span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029710"><span class="hs-identifier hs-var">wl'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">ReaperSettings workload item
+-&gt; IORef (State workload) -&gt; IORef (Maybe ThreadId) -&gt; IO ()
+forall workload item.
+ReaperSettings workload item
+-&gt; IORef (State workload) -&gt; IORef (Maybe ThreadId) -&gt; IO ()
+</span><a href="Control.Reaper.html#reaper"><span class="hs-identifier hs-var">reaper</span></a></span><span> </span><span class="annot"><span class="annottext">ReaperSettings workload item
+</span><a href="#local-6989586621679029689"><span class="hs-identifier hs-var">settings</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (State workload)
+</span><a href="#local-6989586621679029695"><span class="hs-identifier hs-var">stateRef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (Maybe ThreadId)
+</span><a href="#local-6989586621679029696"><span class="hs-identifier hs-var">tidRef</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-193"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-194"></span><span>        </span><span id="local-6989586621679029710"><span class="annot"><span class="annottext">wl' :: workload
+</span><a href="#local-6989586621679029710"><span class="hs-identifier hs-var hs-var">wl'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">workload -&gt; workload
+</span><a href="#local-6989586621679029708"><span class="hs-identifier hs-var">merge</span></a></span><span> </span><span class="annot"><span class="annottext">workload
+</span><a href="#local-6989586621679029709"><span class="hs-identifier hs-var">wl</span></a></span><span>
+</span><span id="line-195"></span><span>
+</span><span id="line-196"></span><span class="hs-comment">-- | A helper function for creating 'reaperAction' functions. You would</span><span>
+</span><span id="line-197"></span><span class="hs-comment">-- provide this function with a function to process a single work item and</span><span>
+</span><span id="line-198"></span><span class="hs-comment">-- return either a new work item, or @Nothing@ if the work item is</span><span>
+</span><span id="line-199"></span><span class="hs-comment">-- expired.</span><span>
+</span><span id="line-200"></span><span class="hs-comment">--</span><span>
+</span><span id="line-201"></span><span class="hs-comment">-- @since 0.1.1</span><span>
+</span><span id="line-202"></span><span id="local-6989586621679029592"><span id="local-6989586621679029593"><span class="annot"><a href="Control.Reaper.html#mkListAction"><span class="hs-identifier hs-type">mkListAction</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679029592"><span class="hs-identifier hs-type">item</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="#local-6989586621679029593"><span class="hs-identifier hs-type">item'</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-203"></span><span>             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621679029592"><span class="hs-identifier hs-type">item</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-204"></span><span>             </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621679029593"><span class="hs-identifier hs-type">item'</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621679029593"><span class="hs-identifier hs-type">item'</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-205"></span><span id="mkListAction"><span class="annot"><span class="annottext">mkListAction :: forall item item'.
+(item -&gt; IO (Maybe item')) -&gt; [item] -&gt; IO ([item'] -&gt; [item'])
+</span><a href="Control.Reaper.html#mkListAction"><span class="hs-identifier hs-var hs-var">mkListAction</span></a></span></span><span> </span><span id="local-6989586621679029711"><span class="annot"><span class="annottext">item -&gt; IO (Maybe item')
+</span><a href="#local-6989586621679029711"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-206"></span><span>    </span><span class="annot"><span class="annottext">([item'] -&gt; [item']) -&gt; [item] -&gt; IO ([item'] -&gt; [item'])
+forall {c}. ([item'] -&gt; c) -&gt; [item] -&gt; IO ([item'] -&gt; c)
+</span><a href="#local-6989586621679029712"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[item'] -&gt; [item']
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span>
+</span><span id="line-207"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-208"></span><span>    </span><span id="local-6989586621679029712"><span class="annot"><span class="annottext">go :: ([item'] -&gt; c) -&gt; [item] -&gt; IO ([item'] -&gt; c)
+</span><a href="#local-6989586621679029712"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679029716"><span class="annot"><span class="annottext">[item'] -&gt; c
+</span><a href="#local-6989586621679029716"><span class="hs-identifier hs-var">front</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">([item'] -&gt; c) -&gt; IO ([item'] -&gt; c)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">[item'] -&gt; c
+</span><a href="#local-6989586621679029716"><span class="hs-identifier hs-var">front</span></a></span><span>
+</span><span id="line-209"></span><span>    </span><span class="annot"><a href="#local-6989586621679029712"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679029717"><span class="annot"><span class="annottext">[item'] -&gt; c
+</span><a href="#local-6989586621679029717"><span class="hs-identifier hs-var">front</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679029718"><span class="annot"><span class="annottext">item
+</span><a href="#local-6989586621679029718"><span class="hs-identifier hs-var">x</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621679029719"><span class="annot"><span class="annottext">[item]
+</span><a href="#local-6989586621679029719"><span class="hs-identifier hs-var">xs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-210"></span><span>        </span><span id="local-6989586621679029720"><span class="annot"><span class="annottext">Maybe item'
+</span><a href="#local-6989586621679029720"><span class="hs-identifier hs-var">my</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">item -&gt; IO (Maybe item')
+</span><a href="#local-6989586621679029711"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">item
+</span><a href="#local-6989586621679029718"><span class="hs-identifier hs-var">x</span></a></span><span>
+</span><span id="line-211"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679029721"><span class="annot"><span class="annottext">front' :: [item'] -&gt; c
+</span><a href="#local-6989586621679029721"><span class="hs-identifier hs-var hs-var">front'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-212"></span><span>                </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe item'
+</span><a href="#local-6989586621679029720"><span class="hs-identifier hs-var">my</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-213"></span><span>                    </span><span class="annot"><span class="annottext">Maybe item'
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[item'] -&gt; c
+</span><a href="#local-6989586621679029717"><span class="hs-identifier hs-var">front</span></a></span><span>
+</span><span id="line-214"></span><span>                    </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679029722"><span class="annot"><span class="annottext">item'
+</span><a href="#local-6989586621679029722"><span class="hs-identifier hs-var">y</span></a></span></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[item'] -&gt; c
+</span><a href="#local-6989586621679029717"><span class="hs-identifier hs-var">front</span></a></span><span> </span><span class="annot"><span class="annottext">([item'] -&gt; c) -&gt; ([item'] -&gt; [item']) -&gt; [item'] -&gt; c
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">item'
+</span><a href="#local-6989586621679029722"><span class="hs-identifier hs-var">y</span></a></span><span class="annot"><span class="annottext">item' -&gt; [item'] -&gt; [item']
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="hs-special">)</span><span>
+</span><span id="line-215"></span><span>        </span><span class="annot"><span class="annottext">([item'] -&gt; c) -&gt; [item] -&gt; IO ([item'] -&gt; c)
+</span><a href="#local-6989586621679029712"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[item'] -&gt; c
+</span><a href="#local-6989586621679029721"><span class="hs-identifier hs-var">front'</span></a></span><span> </span><span class="annot"><span class="annottext">[item]
+</span><a href="#local-6989586621679029719"><span class="hs-identifier hs-var">xs</span></a></span><span>
+</span><span id="line-216"></span><span>
+</span><span id="line-217"></span><span class="hs-comment">-- $example1</span><span>
+</span><span id="line-218"></span><span class="hs-comment">-- In this example code, we use a 'Data.Map.Strict.Map' to cache fibonacci numbers, and a 'Reaper' to prune the cache.</span><span>
+</span><span id="line-219"></span><span class="hs-comment">--</span><span>
+</span><span id="line-220"></span><span class="hs-comment">-- The @main@ function first creates a 'Reaper', with fields to initialize the</span><span>
+</span><span id="line-221"></span><span class="hs-comment">-- cache ('reaperEmpty'), add items to it ('reaperCons'), and prune it ('reaperAction').</span><span>
+</span><span id="line-222"></span><span class="hs-comment">-- The reaper will run every two seconds ('reaperDelay'), but will stop running while</span><span>
+</span><span id="line-223"></span><span class="hs-comment">-- 'reaperNull' is true.</span><span>
+</span><span id="line-224"></span><span class="hs-comment">--</span><span>
+</span><span id="line-225"></span><span class="hs-comment">-- @main@ then loops infinitely ('Control.Monad.forever'). Each second it calculates the fibonacci number</span><span>
+</span><span id="line-226"></span><span class="hs-comment">-- for a value between 30 and 34, first trying the cache ('reaperRead' and 'Data.Map.Strict.lookup'),</span><span>
+</span><span id="line-227"></span><span class="hs-comment">-- then falling back to manually calculating it (@fib@)</span><span>
+</span><span id="line-228"></span><span class="hs-comment">-- and updating the cache with the result ('reaperAdd')</span><span>
+</span><span id="line-229"></span><span class="hs-comment">--</span><span>
+</span><span id="line-230"></span><span class="hs-comment">-- @clean@ simply removes items cached for more than 10 seconds.</span><span>
+</span><span id="line-231"></span><span class="hs-comment">-- This function is where you would perform IO-related cleanup,</span><span>
+</span><span id="line-232"></span><span class="hs-comment">-- like killing threads or closing connections, if that was the purpose of your reaper.</span><span>
+</span><span id="line-233"></span><span class="hs-comment">--</span><span>
+</span><span id="line-234"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-235"></span><span class="hs-comment">-- module Main where</span><span>
+</span><span id="line-236"></span><span class="hs-comment">--</span><span>
+</span><span id="line-237"></span><span class="hs-comment">-- import &quot;Data.Time&quot; (UTCTime, getCurrentTime, diffUTCTime)</span><span>
+</span><span id="line-238"></span><span class="hs-comment">-- import &quot;Control.Reaper&quot;</span><span>
+</span><span id="line-239"></span><span class="hs-comment">-- import &quot;Control.Concurrent&quot; (threadDelay)</span><span>
+</span><span id="line-240"></span><span class="hs-comment">-- import &quot;Data.Map.Strict&quot; (Map)</span><span>
+</span><span id="line-241"></span><span class="hs-comment">-- import qualified &quot;Data.Map.Strict&quot; as Map</span><span>
+</span><span id="line-242"></span><span class="hs-comment">-- import &quot;Control.Monad&quot; (forever)</span><span>
+</span><span id="line-243"></span><span class="hs-comment">-- import &quot;System.Random&quot; (getStdRandom, randomR)</span><span>
+</span><span id="line-244"></span><span class="hs-comment">--</span><span>
+</span><span id="line-245"></span><span class="hs-comment">-- fib :: 'Int' -&gt; 'Int'</span><span>
+</span><span id="line-246"></span><span class="hs-comment">-- fib 0 = 0</span><span>
+</span><span id="line-247"></span><span class="hs-comment">-- fib 1 = 1</span><span>
+</span><span id="line-248"></span><span class="hs-comment">-- fib n = fib (n-1) + fib (n-2)</span><span>
+</span><span id="line-249"></span><span class="hs-comment">--</span><span>
+</span><span id="line-250"></span><span class="hs-comment">-- type Cache = 'Data.Map.Strict.Map' 'Int' ('Int', 'Data.Time.Clock.UTCTime')</span><span>
+</span><span id="line-251"></span><span class="hs-comment">--</span><span>
+</span><span id="line-252"></span><span class="hs-comment">-- main :: IO ()</span><span>
+</span><span id="line-253"></span><span class="hs-comment">-- main = do</span><span>
+</span><span id="line-254"></span><span class="hs-comment">--   reaper &lt;- 'mkReaper' 'defaultReaperSettings'</span><span>
+</span><span id="line-255"></span><span class="hs-comment">--     { 'reaperEmpty' = Map.'Data.Map.Strict.empty'</span><span>
+</span><span id="line-256"></span><span class="hs-comment">--     , 'reaperCons' = \\(k, v, time) workload -&gt; Map.'Data.Map.Strict.insert' k (v, time) workload</span><span>
+</span><span id="line-257"></span><span class="hs-comment">--     , 'reaperAction' = clean</span><span>
+</span><span id="line-258"></span><span class="hs-comment">--     , 'reaperDelay' = 1000000 * 2 -- Clean every 2 seconds</span><span>
+</span><span id="line-259"></span><span class="hs-comment">--     , 'reaperNull' = Map.'Data.Map.Strict.null'</span><span>
+</span><span id="line-260"></span><span class="hs-comment">--     }</span><span>
+</span><span id="line-261"></span><span class="hs-comment">--   forever $ do</span><span>
+</span><span id="line-262"></span><span class="hs-comment">--     fibArg &lt;- 'System.Random.getStdRandom' ('System.Random.randomR' (30,34))</span><span>
+</span><span id="line-263"></span><span class="hs-comment">--     cache &lt;- 'reaperRead' reaper</span><span>
+</span><span id="line-264"></span><span class="hs-comment">--     let cachedResult = Map.'Data.Map.Strict.lookup' fibArg cache</span><span>
+</span><span id="line-265"></span><span class="hs-comment">--     case cachedResult of</span><span>
+</span><span id="line-266"></span><span class="hs-comment">--       'Just' (fibResult, _createdAt) -&gt; 'putStrLn' $ &quot;Found in cache: `fib &quot; ++ 'show' fibArg ++ &quot;` &quot; ++ 'show' fibResult</span><span>
+</span><span id="line-267"></span><span class="hs-comment">--       'Nothing' -&gt; do</span><span>
+</span><span id="line-268"></span><span class="hs-comment">--         let fibResult = fib fibArg</span><span>
+</span><span id="line-269"></span><span class="hs-comment">--         'putStrLn' $ &quot;Calculating `fib &quot; ++ 'show' fibArg ++ &quot;` &quot; ++ 'show' fibResult</span><span>
+</span><span id="line-270"></span><span class="hs-comment">--         time &lt;- 'Data.Time.Clock.getCurrentTime'</span><span>
+</span><span id="line-271"></span><span class="hs-comment">--         ('reaperAdd' reaper) (fibArg, fibResult, time)</span><span>
+</span><span id="line-272"></span><span class="hs-comment">--     'threadDelay' 1000000 -- 1 second</span><span>
+</span><span id="line-273"></span><span class="hs-comment">--</span><span>
+</span><span id="line-274"></span><span class="hs-comment">-- -- Remove items &gt; 10 seconds old</span><span>
+</span><span id="line-275"></span><span class="hs-comment">-- clean :: Cache -&gt; IO (Cache -&gt; Cache)</span><span>
+</span><span id="line-276"></span><span class="hs-comment">-- clean oldMap = do</span><span>
+</span><span id="line-277"></span><span class="hs-comment">--   currentTime &lt;- 'Data.Time.Clock.getCurrentTime'</span><span>
+</span><span id="line-278"></span><span class="hs-comment">--   let pruned = Map.'Data.Map.Strict.filter' (\\(_, createdAt) -&gt; currentTime \`diffUTCTime\` createdAt &lt; 10.0) oldMap</span><span>
+</span><span id="line-279"></span><span class="hs-comment">--   return (\\newData -&gt; Map.'Data.Map.Strict.union' pruned newData)</span><span>
+</span><span id="line-280"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-281"></span></pre></body></html>

@@ -1,0 +1,318 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- | Kind inference for Unison</span><span>
+</span><span id="line-2"></span><span class="hs-comment">--</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- Unison has Type, -&gt;, and Ability kinds</span><span>
+</span><span id="line-4"></span><span class="hs-comment">--</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- An algorithm sketch: First break all decls into strongly connected</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- components in reverse topological order. Then, for each component,</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- generate kind constraints that arise from the constructors in the</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- decl to discover constraints on the decl vars. These constraints</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- are then given to a constraint solver that determines a unique kind</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- for each type variable. Unconstrained variables are defaulted to</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- kind Type (just like Haskell 98). This is done by 'inferDecls'.</span><span>
+</span><span id="line-12"></span><span class="hs-comment">--</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- Afterwards, the 'SolveState' holds the kinds of all decls and we</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- can check that type annotations in terms that may mention the</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- decls are well-kinded with 'kindCheckAnnotations'.</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Unison.KindInference</span><span>
+</span><span id="line-17"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Unison.KindInference.html#inferDecls"><span class="hs-identifier">inferDecls</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-18"></span><span>    </span><span class="annot"><a href="Unison.KindInference.html#kindCheckAnnotations"><span class="hs-identifier">kindCheckAnnotations</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-19"></span><span>    </span><span class="annot"><a href="Unison.KindInference.Error.html#KindError"><span class="hs-identifier">KindError</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-20"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-22"></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Foldable</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">foldlM</span></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Graph</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">flattenSCC</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">stronglyConnCompR</span></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List.NonEmpty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">NonEmpty</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Map</span></span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Codebase.BuiltinAnnotation.html"><span class="hs-identifier">Unison.Codebase.BuiltinAnnotation</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.Codebase.BuiltinAnnotation.html#BuiltinAnnotation"><span class="hs-identifier">BuiltinAnnotation</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.DataDeclaration</span></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.KindInference.Generate.html"><span class="hs-identifier">Unison.KindInference.Generate</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.KindInference.Generate.html#declComponentConstraints"><span class="hs-identifier">declComponentConstraints</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.KindInference.Generate.html#termConstraints"><span class="hs-identifier">termConstraints</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.KindInference.Solve.html"><span class="hs-identifier">Unison.KindInference.Solve</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.KindInference.Error.html#KindError"><span class="hs-identifier">KindError</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.KindInference.Solve.html#defaultUnconstrainedVars"><span class="hs-identifier">defaultUnconstrainedVars</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.KindInference.Solve.html#initialState"><span class="hs-identifier">initialState</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.KindInference.Solve.html#step"><span class="hs-identifier">step</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.KindInference.Solve.html#verify"><span class="hs-identifier">verify</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.KindInference.Solve.Monad.html"><span class="hs-identifier">Unison.KindInference.Solve.Monad</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.KindInference.Solve.Monad.html#Env"><span class="hs-identifier">Env</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.KindInference.Solve.Monad.html#SolveState"><span class="hs-identifier">SolveState</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.KindInference.Solve.Monad.html#run"><span class="hs-identifier">run</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.KindInference.Solve.Monad.html#runGen"><span class="hs-identifier">runGen</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Prelude</span></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.PrettyPrintEnv.html"><span class="hs-identifier">Unison.PrettyPrintEnv</span></a></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">PrettyPrintEnv</span></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Reference</span></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Term</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Term</span></span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Var</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Var</span></span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="annot"><span class="hs-comment">-- | Check that all annotations in a term are well-kinded</span></span><span>
+</span><span id="line-39"></span><span class="annot"><a href="Unison.KindInference.html#kindCheckAnnotations"><span class="hs-identifier hs-type">kindCheckAnnotations</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-40"></span><span>  </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621680533680"><span class="annot"><a href="#local-6989586621680533680"><span class="hs-identifier hs-type">v</span></a></span></span><span> </span><span id="local-6989586621680533682"><span class="annot"><a href="#local-6989586621680533682"><span class="hs-identifier hs-type">loc</span></a></span></span><span class="hs-operator">.</span><span>
+</span><span id="line-41"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Var.Var</span></span><span> </span><span class="annot"><a href="#local-6989586621680533680"><span class="hs-identifier hs-type">v</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ord</span></span><span> </span><span class="annot"><a href="#local-6989586621680533682"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Show</span></span><span> </span><span class="annot"><a href="#local-6989586621680533682"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.Codebase.BuiltinAnnotation.html#BuiltinAnnotation"><span class="hs-identifier hs-type">BuiltinAnnotation</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533682"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-42"></span><span>  </span><span class="annot"><a href="Unison.PrettyPrintEnv.html#PrettyPrintEnv"><span class="hs-identifier hs-type">PrettyPrintEnv.PrettyPrintEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-43"></span><span>  </span><span class="annot"><a href="Unison.KindInference.Solve.Monad.html#SolveState"><span class="hs-identifier hs-type">SolveState</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533680"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533682"><span class="hs-identifier hs-type">loc</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-44"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Term.Term</span></span><span> </span><span class="annot"><a href="#local-6989586621680533680"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533682"><span class="hs-identifier hs-type">loc</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-45"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">NonEmpty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.KindInference.Error.html#KindError"><span class="hs-identifier hs-type">KindError</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533680"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533682"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-46"></span><span id="kindCheckAnnotations"><span class="annot"><span class="annottext">kindCheckAnnotations :: forall v loc.
+(Var v, Ord loc, Show loc, BuiltinAnnotation loc) =&gt;
+PrettyPrintEnv
+-&gt; SolveState v loc
+-&gt; Term v loc
+-&gt; Either (NonEmpty (KindError v loc)) ()
+</span><a href="Unison.KindInference.html#kindCheckAnnotations"><span class="hs-identifier hs-var hs-var">kindCheckAnnotations</span></a></span></span><span> </span><span id="local-6989586621680533796"><span class="annot"><span class="annottext">PrettyPrintEnv
+</span><a href="#local-6989586621680533796"><span class="hs-identifier hs-var">ppe</span></a></span></span><span> </span><span id="local-6989586621680533797"><span class="annot"><span class="annottext">SolveState v loc
+</span><a href="#local-6989586621680533797"><span class="hs-identifier hs-var">st</span></a></span></span><span> </span><span id="local-6989586621680533798"><span class="annot"><span class="annottext">Term v loc
+</span><a href="#local-6989586621680533798"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-47"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621680533799"><span class="annot"><span class="annottext">[GeneratedConstraint v loc]
+</span><a href="#local-6989586621680533799"><span class="hs-identifier hs-var">cs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680533800"><span class="annot"><span class="annottext">SolveState v loc
+</span><a href="#local-6989586621680533800"><span class="hs-identifier hs-var">st'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Env
+-&gt; SolveState v loc
+-&gt; Solve v loc [GeneratedConstraint v loc]
+-&gt; ([GeneratedConstraint v loc], SolveState v loc)
+forall v loc a.
+Env -&gt; SolveState v loc -&gt; Solve v loc a -&gt; (a, SolveState v loc)
+</span><a href="Unison.KindInference.Solve.Monad.html#run"><span class="hs-identifier hs-var">run</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621680533801"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">SolveState v loc
+</span><a href="#local-6989586621680533797"><span class="hs-identifier hs-var">st</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Gen v loc [GeneratedConstraint v loc]
+-&gt; Solve v loc [GeneratedConstraint v loc]
+forall v loc a. Var v =&gt; Gen v loc a -&gt; Solve v loc a
+</span><a href="Unison.KindInference.Solve.Monad.html#runGen"><span class="hs-identifier hs-var">runGen</span></a></span><span> </span><span class="annot"><span class="annottext">(Gen v loc [GeneratedConstraint v loc]
+ -&gt; Solve v loc [GeneratedConstraint v loc])
+-&gt; Gen v loc [GeneratedConstraint v loc]
+-&gt; Solve v loc [GeneratedConstraint v loc]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Term v loc -&gt; Gen v loc [GeneratedConstraint v loc]
+forall v loc.
+(Var v, Ord loc) =&gt;
+Term v loc -&gt; Gen v loc [GeneratedConstraint v loc]
+</span><a href="Unison.KindInference.Generate.html#termConstraints"><span class="hs-identifier hs-var">termConstraints</span></a></span><span> </span><span class="annot"><span class="annottext">Term v loc
+</span><a href="#local-6989586621680533798"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-48"></span><span>      </span><span id="local-6989586621680533801"><span class="annot"><span class="annottext">env :: Env
+</span><a href="#local-6989586621680533801"><span class="hs-identifier hs-var hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrettyPrintEnv -&gt; Env
+</span><a href="Unison.KindInference.Solve.Monad.html#Env"><span class="hs-identifier hs-var">Env</span></a></span><span> </span><span class="annot"><span class="annottext">PrettyPrintEnv
+</span><a href="#local-6989586621680533796"><span class="hs-identifier hs-var">ppe</span></a></span><span>
+</span><span id="line-49"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Env
+-&gt; SolveState v loc
+-&gt; [GeneratedConstraint v loc]
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+forall v loc.
+(Var v, Ord loc, Show loc) =&gt;
+Env
+-&gt; SolveState v loc
+-&gt; [GeneratedConstraint v loc]
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+</span><a href="Unison.KindInference.Solve.html#step"><span class="hs-identifier hs-var">step</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621680533801"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">SolveState v loc
+</span><a href="#local-6989586621680533800"><span class="hs-identifier hs-var">st'</span></a></span><span> </span><span class="annot"><span class="annottext">[GeneratedConstraint v loc]
+</span><a href="#local-6989586621680533799"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">Either (NonEmpty (KindError v loc)) (SolveState v loc)
+-&gt; () -&gt; Either (NonEmpty (KindError v loc)) ()
+forall (f :: * -&gt; *) a b. Functor f =&gt; f a -&gt; b -&gt; f b
+</span><span class="hs-operator hs-var">$&gt;</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-50"></span><span>
+</span><span id="line-51"></span><span class="annot"><span class="hs-comment">-- | Infer the kinds of all decl vars</span></span><span>
+</span><span id="line-52"></span><span class="annot"><a href="Unison.KindInference.html#inferDecls"><span class="hs-identifier hs-type">inferDecls</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621680533711"><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span></span><span> </span><span id="local-6989586621680533712"><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span></span><span class="hs-operator">.</span><span>
+</span><span id="line-54"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Var.Var</span></span><span> </span><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Unison.Codebase.BuiltinAnnotation.html#BuiltinAnnotation"><span class="hs-identifier hs-type">BuiltinAnnotation</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ord</span></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Show</span></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-55"></span><span>  </span><span class="annot"><a href="Unison.PrettyPrintEnv.html#PrettyPrintEnv"><span class="hs-identifier hs-type">PrettyPrintEnv.PrettyPrintEnv</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-56"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Map</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Reference</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Decl</span></span><span> </span><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-57"></span><span>  </span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">NonEmpty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.KindInference.Error.html#KindError"><span class="hs-identifier hs-type">KindError</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.KindInference.Solve.Monad.html#SolveState"><span class="hs-identifier hs-type">SolveState</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-58"></span><span id="inferDecls"><span class="annot"><span class="annottext">inferDecls :: forall v loc.
+(Var v, BuiltinAnnotation loc, Ord loc, Show loc) =&gt;
+PrettyPrintEnv
+-&gt; Map Reference (Decl v loc)
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+</span><a href="Unison.KindInference.html#inferDecls"><span class="hs-identifier hs-var hs-var">inferDecls</span></a></span></span><span> </span><span id="local-6989586621680533831"><span class="annot"><span class="annottext">PrettyPrintEnv
+</span><a href="#local-6989586621680533831"><span class="hs-identifier hs-var">ppe</span></a></span></span><span> </span><span id="local-6989586621680533832"><span class="annot"><span class="annottext">Map Reference (Decl v loc)
+</span><a href="#local-6989586621680533832"><span class="hs-identifier hs-var">declMap</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="annot"><a href="#local-6989586621680533833"><span class="hs-identifier hs-type">components</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Reference</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Decl</span></span><span> </span><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">]</span><span>
+</span><span id="line-60"></span><span>      </span><span id="local-6989586621680533833"><span class="annot"><span class="annottext">components :: [[(Reference, Decl v loc)]]
+</span><a href="#local-6989586621680533833"><span class="hs-identifier hs-var hs-var">components</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Map Reference (Decl v loc) -&gt; [[(Reference, Decl v loc)]]
+forall v a.
+Ord v =&gt;
+Map Reference (Decl v a) -&gt; [[(Reference, Decl v a)]]
+</span><a href="Unison.KindInference.html#intoComponents"><span class="hs-identifier hs-var">intoComponents</span></a></span><span> </span><span class="annot"><span class="annottext">Map Reference (Decl v loc)
+</span><a href="#local-6989586621680533832"><span class="hs-identifier hs-var">declMap</span></a></span><span>
+</span><span id="line-61"></span><span>
+</span><span id="line-62"></span><span>      </span><span id="local-6989586621680533835"><span class="annot"><span class="annottext">env :: Env
+</span><a href="#local-6989586621680533835"><span class="hs-identifier hs-var hs-var">env</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PrettyPrintEnv -&gt; Env
+</span><a href="Unison.KindInference.Solve.Monad.html#Env"><span class="hs-identifier hs-var">Env</span></a></span><span> </span><span class="annot"><span class="annottext">PrettyPrintEnv
+</span><a href="#local-6989586621680533831"><span class="hs-identifier hs-var">ppe</span></a></span><span>
+</span><span id="line-63"></span><span>
+</span><span id="line-64"></span><span>      </span><span class="annot"><a href="#local-6989586621680533836"><span class="hs-identifier hs-type">handleComponent</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-65"></span><span>        </span><span class="annot"><a href="Unison.KindInference.Solve.Monad.html#SolveState"><span class="hs-identifier hs-type">SolveState</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-66"></span><span>        </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Reference</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Decl</span></span><span> </span><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-67"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">NonEmpty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.KindInference.Error.html#KindError"><span class="hs-identifier hs-type">KindError</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.KindInference.Solve.Monad.html#SolveState"><span class="hs-identifier hs-type">SolveState</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span>      </span><span id="local-6989586621680533836"><span class="annot"><span class="annottext">handleComponent :: SolveState v loc
+-&gt; [(Reference, Decl v loc)]
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+</span><a href="#local-6989586621680533836"><span class="hs-identifier hs-var hs-var">handleComponent</span></a></span></span><span> </span><span id="local-6989586621680533837"><span class="annot"><span class="annottext">SolveState v loc
+</span><a href="#local-6989586621680533837"><span class="hs-identifier hs-var">s</span></a></span></span><span> </span><span id="local-6989586621680533838"><span class="annot"><span class="annottext">[(Reference, Decl v loc)]
+</span><a href="#local-6989586621680533838"><span class="hs-identifier hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-69"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621680533839"><span class="annot"><span class="annottext">[GeneratedConstraint v loc]
+</span><a href="#local-6989586621680533839"><span class="hs-identifier hs-var">cs</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680533840"><span class="annot"><span class="annottext">SolveState v loc
+</span><a href="#local-6989586621680533840"><span class="hs-identifier hs-var">st</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Env
+-&gt; SolveState v loc
+-&gt; Solve v loc [GeneratedConstraint v loc]
+-&gt; ([GeneratedConstraint v loc], SolveState v loc)
+forall v loc a.
+Env -&gt; SolveState v loc -&gt; Solve v loc a -&gt; (a, SolveState v loc)
+</span><a href="Unison.KindInference.Solve.Monad.html#run"><span class="hs-identifier hs-var">run</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621680533835"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">SolveState v loc
+</span><a href="#local-6989586621680533837"><span class="hs-identifier hs-var">s</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Gen v loc [GeneratedConstraint v loc]
+-&gt; Solve v loc [GeneratedConstraint v loc]
+forall v loc a. Var v =&gt; Gen v loc a -&gt; Solve v loc a
+</span><a href="Unison.KindInference.Solve.Monad.html#runGen"><span class="hs-identifier hs-var">runGen</span></a></span><span> </span><span class="annot"><span class="annottext">(Gen v loc [GeneratedConstraint v loc]
+ -&gt; Solve v loc [GeneratedConstraint v loc])
+-&gt; Gen v loc [GeneratedConstraint v loc]
+-&gt; Solve v loc [GeneratedConstraint v loc]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[(Reference, Decl v loc)] -&gt; Gen v loc [GeneratedConstraint v loc]
+forall v loc.
+(Var v, Ord loc) =&gt;
+[(Reference, Decl v loc)] -&gt; Gen v loc [GeneratedConstraint v loc]
+</span><a href="Unison.KindInference.Generate.html#declComponentConstraints"><span class="hs-identifier hs-var">declComponentConstraints</span></a></span><span> </span><span class="annot"><span class="annottext">[(Reference, Decl v loc)]
+</span><a href="#local-6989586621680533838"><span class="hs-identifier hs-var">c</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-70"></span><span>         </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Env
+-&gt; SolveState v loc
+-&gt; [GeneratedConstraint v loc]
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+forall v loc.
+(Var v, Ord loc, Show loc) =&gt;
+Env
+-&gt; SolveState v loc
+-&gt; [GeneratedConstraint v loc]
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+</span><a href="Unison.KindInference.Solve.html#step"><span class="hs-identifier hs-var">step</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621680533835"><span class="hs-identifier hs-var">env</span></a></span><span> </span><span class="annot"><span class="annottext">SolveState v loc
+</span><a href="#local-6989586621680533840"><span class="hs-identifier hs-var">st</span></a></span><span> </span><span class="annot"><span class="annottext">[GeneratedConstraint v loc]
+</span><a href="#local-6989586621680533839"><span class="hs-identifier hs-var">cs</span></a></span><span>
+</span><span id="line-71"></span><span>
+</span><span id="line-72"></span><span>      </span><span class="annot"><a href="#local-6989586621680533841"><span class="hs-identifier hs-type">handleComponents</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-73"></span><span>        </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Reference</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Decl</span></span><span> </span><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-74"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">NonEmpty</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.KindInference.Error.html#KindError"><span class="hs-identifier hs-type">KindError</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.KindInference.Solve.Monad.html#SolveState"><span class="hs-identifier hs-type">SolveState</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533711"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533712"><span class="hs-identifier hs-type">loc</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-75"></span><span>      </span><span id="local-6989586621680533841"><span class="annot"><span class="annottext">handleComponents :: [[(Reference, Decl v loc)]]
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+</span><a href="#local-6989586621680533841"><span class="hs-identifier hs-var hs-var">handleComponents</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SolveState v loc
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+forall v loc.
+Var v =&gt;
+SolveState v loc
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+</span><a href="Unison.KindInference.Solve.html#verify"><span class="hs-identifier hs-var">verify</span></a></span><span> </span><span class="annot"><span class="annottext">(SolveState v loc
+ -&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc))
+-&gt; ([[(Reference, Decl v loc)]]
+    -&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc))
+-&gt; [[(Reference, Decl v loc)]]
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+forall (m :: * -&gt; *) b c a.
+Monad m =&gt;
+(b -&gt; m c) -&gt; (a -&gt; m b) -&gt; a -&gt; m c
+</span><span class="hs-operator hs-var">&lt;=&lt;</span></span><span> </span><span class="annot"><span class="annottext">(SolveState v loc
+ -&gt; [(Reference, Decl v loc)]
+ -&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc))
+-&gt; SolveState v loc
+-&gt; [[(Reference, Decl v loc)]]
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+forall (t :: * -&gt; *) (m :: * -&gt; *) b a.
+(Foldable t, Monad m) =&gt;
+(b -&gt; a -&gt; m b) -&gt; b -&gt; t a -&gt; m b
+</span><span class="hs-identifier hs-var">foldlM</span></span><span> </span><span class="annot"><span class="annottext">SolveState v loc
+-&gt; [(Reference, Decl v loc)]
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+</span><a href="#local-6989586621680533843"><span class="hs-identifier hs-var">phi</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Env -&gt; SolveState v loc
+forall v loc.
+(BuiltinAnnotation loc, Show loc, Ord loc, Var v) =&gt;
+Env -&gt; SolveState v loc
+</span><a href="Unison.KindInference.Solve.html#initialState"><span class="hs-identifier hs-var">initialState</span></a></span><span> </span><span class="annot"><span class="annottext">Env
+</span><a href="#local-6989586621680533835"><span class="hs-identifier hs-var">env</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-76"></span><span>        </span><span class="hs-keyword">where</span><span>
+</span><span id="line-77"></span><span>          </span><span id="local-6989586621680533843"><span class="annot"><span class="annottext">phi :: SolveState v loc
+-&gt; [(Reference, Decl v loc)]
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+</span><a href="#local-6989586621680533843"><span class="hs-identifier hs-var hs-var">phi</span></a></span></span><span> </span><span id="local-6989586621680533844"><span class="annot"><span class="annottext">SolveState v loc
+</span><a href="#local-6989586621680533844"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span id="local-6989586621680533845"><span class="annot"><span class="annottext">[(Reference, Decl v loc)]
+</span><a href="#local-6989586621680533845"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SolveState v loc
+-&gt; [(Reference, Decl v loc)]
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+</span><a href="#local-6989586621680533836"><span class="hs-identifier hs-var">handleComponent</span></a></span><span> </span><span class="annot"><span class="annottext">SolveState v loc
+</span><a href="#local-6989586621680533844"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">[(Reference, Decl v loc)]
+</span><a href="#local-6989586621680533845"><span class="hs-identifier hs-var">a</span></a></span><span>
+</span><span id="line-78"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">SolveState v loc -&gt; SolveState v loc
+forall v loc. Var v =&gt; SolveState v loc -&gt; SolveState v loc
+</span><a href="Unison.KindInference.Solve.html#defaultUnconstrainedVars"><span class="hs-identifier hs-var">defaultUnconstrainedVars</span></a></span><span> </span><span class="annot"><span class="annottext">(SolveState v loc -&gt; SolveState v loc)
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">[[(Reference, Decl v loc)]]
+-&gt; Either (NonEmpty (KindError v loc)) (SolveState v loc)
+</span><a href="#local-6989586621680533841"><span class="hs-identifier hs-var">handleComponents</span></a></span><span> </span><span class="annot"><span class="annottext">[[(Reference, Decl v loc)]]
+</span><a href="#local-6989586621680533833"><span class="hs-identifier hs-var">components</span></a></span><span>
+</span><span id="line-79"></span><span>
+</span><span id="line-80"></span><span class="hs-comment">-- | Break the decls into strongly connected components in reverse</span><span>
+</span><span id="line-81"></span><span class="hs-comment">-- topological order</span><span>
+</span><span id="line-82"></span><span class="annot"><a href="Unison.KindInference.html#intoComponents"><span class="hs-identifier hs-type">intoComponents</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621680533722"><span class="annot"><a href="#local-6989586621680533722"><span class="hs-identifier hs-type">v</span></a></span></span><span> </span><span id="local-6989586621680533723"><span class="annot"><a href="#local-6989586621680533723"><span class="hs-identifier hs-type">a</span></a></span></span><span class="hs-operator">.</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Ord</span></span><span> </span><span class="annot"><a href="#local-6989586621680533722"><span class="hs-identifier hs-type">v</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Map</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Reference</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Decl</span></span><span> </span><span class="annot"><a href="#local-6989586621680533722"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533723"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Reference</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Decl</span></span><span> </span><span class="annot"><a href="#local-6989586621680533722"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533723"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">]</span><span>
+</span><span id="line-83"></span><span id="intoComponents"><span class="annot"><span class="annottext">intoComponents :: forall v a.
+Ord v =&gt;
+Map Reference (Decl v a) -&gt; [[(Reference, Decl v a)]]
+</span><a href="Unison.KindInference.html#intoComponents"><span class="hs-identifier hs-var hs-var">intoComponents</span></a></span></span><span> </span><span id="local-6989586621680533859"><span class="annot"><span class="annottext">Map Reference (Decl v a)
+</span><a href="#local-6989586621680533859"><span class="hs-identifier hs-var">declMap</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span class="annot"><a href="#local-6989586621680533860"><span class="hs-identifier hs-type">graphInput</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Decl</span></span><span> </span><span class="annot"><a href="#local-6989586621680533722"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533723"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Reference</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Reference</span></span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-85"></span><span>      </span><span id="local-6989586621680533860"><span class="annot"><span class="annottext">graphInput :: [(Decl v a, Reference, [Reference])]
+</span><a href="#local-6989586621680533860"><span class="hs-identifier hs-var hs-var">graphInput</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Reference
+ -&gt; Decl v a
+ -&gt; [(Decl v a, Reference, [Reference])]
+ -&gt; [(Decl v a, Reference, [Reference])])
+-&gt; [(Decl v a, Reference, [Reference])]
+-&gt; Map Reference (Decl v a)
+-&gt; [(Decl v a, Reference, [Reference])]
+forall k a b. (k -&gt; a -&gt; b -&gt; b) -&gt; b -&gt; Map k a -&gt; b
+</span><span class="hs-identifier hs-var">Map.foldrWithKey</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621680533862"><span class="annot"><span class="annottext">Reference
+</span><a href="#local-6989586621680533862"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span id="local-6989586621680533863"><span class="annot"><span class="annottext">Decl v a
+</span><a href="#local-6989586621680533863"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621680533864"><span class="annot"><span class="annottext">[(Decl v a, Reference, [Reference])]
+</span><a href="#local-6989586621680533864"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Decl v a
+</span><a href="#local-6989586621680533863"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Reference
+</span><a href="#local-6989586621680533862"><span class="hs-identifier hs-var">k</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Decl v a -&gt; [Reference]
+</span><a href="#local-6989586621680533865"><span class="hs-identifier hs-var">declReferences</span></a></span><span> </span><span class="annot"><span class="annottext">Decl v a
+</span><a href="#local-6989586621680533863"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(Decl v a, Reference, [Reference])
+-&gt; [(Decl v a, Reference, [Reference])]
+-&gt; [(Decl v a, Reference, [Reference])]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[(Decl v a, Reference, [Reference])]
+</span><a href="#local-6989586621680533864"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">Map Reference (Decl v a)
+</span><a href="#local-6989586621680533859"><span class="hs-identifier hs-var">declMap</span></a></span><span>
+</span><span id="line-86"></span><span>   </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">((Decl v a, Reference, [Reference]) -&gt; (Reference, Decl v a))
+-&gt; [(Decl v a, Reference, [Reference])] -&gt; [(Reference, Decl v a)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621680533866"><span class="annot"><span class="annottext">Decl v a
+</span><a href="#local-6989586621680533866"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621680533867"><span class="annot"><span class="annottext">Reference
+</span><a href="#local-6989586621680533867"><span class="hs-identifier hs-var">b</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[Reference]
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Reference
+</span><a href="#local-6989586621680533867"><span class="hs-identifier hs-var">b</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Decl v a
+</span><a href="#local-6989586621680533866"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([(Decl v a, Reference, [Reference])] -&gt; [(Reference, Decl v a)])
+-&gt; (SCC (Decl v a, Reference, [Reference])
+    -&gt; [(Decl v a, Reference, [Reference])])
+-&gt; SCC (Decl v a, Reference, [Reference])
+-&gt; [(Reference, Decl v a)]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">SCC (Decl v a, Reference, [Reference])
+-&gt; [(Decl v a, Reference, [Reference])]
+forall vertex. SCC vertex -&gt; [vertex]
+</span><span class="hs-identifier hs-var">flattenSCC</span></span><span> </span><span class="annot"><span class="annottext">(SCC (Decl v a, Reference, [Reference]) -&gt; [(Reference, Decl v a)])
+-&gt; [SCC (Decl v a, Reference, [Reference])]
+-&gt; [[(Reference, Decl v a)]]
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">[(Decl v a, Reference, [Reference])]
+-&gt; [SCC (Decl v a, Reference, [Reference])]
+forall key node.
+Ord key =&gt;
+[(node, key, [key])] -&gt; [SCC (node, key, [key])]
+</span><span class="hs-identifier hs-var">stronglyConnCompR</span></span><span> </span><span class="annot"><span class="annottext">[(Decl v a, Reference, [Reference])]
+</span><a href="#local-6989586621680533860"><span class="hs-identifier hs-var">graphInput</span></a></span><span>
+</span><span id="line-87"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-88"></span><span>    </span><span class="annot"><a href="#local-6989586621680533865"><span class="hs-identifier hs-type">declReferences</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Decl</span></span><span> </span><span class="annot"><a href="#local-6989586621680533722"><span class="hs-identifier hs-type">v</span></a></span><span> </span><span class="annot"><a href="#local-6989586621680533723"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">Reference</span></span><span class="hs-special">]</span><span>
+</span><span id="line-89"></span><span>    </span><span id="local-6989586621680533865"><span class="annot"><span class="annottext">declReferences :: Decl v a -&gt; [Reference]
+</span><a href="#local-6989586621680533865"><span class="hs-identifier hs-var hs-var">declReferences</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Set Reference -&gt; [Reference]
+forall a. Set a -&gt; [a]
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; [a]
+</span><span class="hs-identifier hs-var">toList</span></span><span> </span><span class="annot"><span class="annottext">(Set Reference -&gt; [Reference])
+-&gt; (Decl v a -&gt; Set Reference) -&gt; Decl v a -&gt; [Reference]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">DataDeclaration v a -&gt; Set Reference
+forall v a. Ord v =&gt; DataDeclaration v a -&gt; Set Reference
+</span><span class="hs-identifier hs-var">typeDependencies</span></span><span> </span><span class="annot"><span class="annottext">(DataDeclaration v a -&gt; Set Reference)
+-&gt; (Decl v a -&gt; DataDeclaration v a) -&gt; Decl v a -&gt; Set Reference
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Decl v a -&gt; DataDeclaration v a
+forall v a. Decl v a -&gt; DataDeclaration v a
+</span><span class="hs-identifier hs-var">asDataDecl</span></span><span>
+</span><span id="line-90"></span></pre></body></html>

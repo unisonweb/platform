@@ -1,0 +1,310 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE Safe #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-3"></span><span>
+</span><span id="line-4"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Module      :  Control.Concurrent.QSem</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- Copyright   :  (c) The University of Glasgow 2001</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- License     :  BSD-style (see the file libraries/base/LICENSE)</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- </span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- Maintainer  :  libraries@haskell.org</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- Stability   :  stable</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- Portability :  non-portable (concurrency)</span><span>
+</span><span id="line-13"></span><span class="hs-comment">--</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- Simple quantity semaphores.</span><span>
+</span><span id="line-15"></span><span class="hs-comment">--</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-----------------------------------------------------------------------------</span><span>
+</span><span id="line-17"></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Control.Concurrent.QSem</span><span>
+</span><span id="line-19"></span><span>        </span><span class="hs-special">(</span><span> </span><span class="annot"><span class="hs-comment">-- * Simple Quantity Semaphores</span></span><span>
+</span><span id="line-20"></span><span>          </span><span class="annot"><a href="Control.Concurrent.QSem.html#QSem"><span class="hs-identifier">QSem</span></a></span><span class="hs-special">,</span><span>         </span><span class="hs-comment">-- abstract</span><span>
+</span><span id="line-21"></span><span>          </span><span class="annot"><a href="Control.Concurrent.QSem.html#newQSem"><span class="hs-identifier">newQSem</span></a></span><span class="hs-special">,</span><span>      </span><span class="hs-comment">-- :: Int  -&gt; IO QSem</span><span>
+</span><span id="line-22"></span><span>          </span><span class="annot"><a href="Control.Concurrent.QSem.html#waitQSem"><span class="hs-identifier">waitQSem</span></a></span><span class="hs-special">,</span><span>     </span><span class="hs-comment">-- :: QSem -&gt; IO ()</span><span>
+</span><span id="line-23"></span><span>          </span><span class="annot"><a href="Control.Concurrent.QSem.html#signalQSem"><span class="hs-identifier">signalQSem</span></a></span><span>    </span><span class="hs-comment">-- :: QSem -&gt; IO ()</span><span>
+</span><span id="line-24"></span><span>        </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-25"></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.Concurrent.MVar.html"><span class="hs-identifier">Control.Concurrent.MVar</span></a></span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.MVar.html#MVar"><span class="hs-identifier">MVar</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.MVar.html#newEmptyMVar"><span class="hs-identifier">newEmptyMVar</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.MVar.html#takeMVar"><span class="hs-identifier">takeMVar</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.MVar.html#tryTakeMVar"><span class="hs-identifier">tryTakeMVar</span></a></span><span>
+</span><span id="line-27"></span><span>                          </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.MVar.html#putMVar"><span class="hs-identifier">putMVar</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.MVar.html#newMVar"><span class="hs-identifier">newMVar</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.MVar.html#tryPutMVar"><span class="hs-identifier">tryPutMVar</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.Exception.html"><span class="hs-identifier">Control.Exception</span></a></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Maybe.html"><span class="hs-identifier">Data.Maybe</span></a></span><span>
+</span><span id="line-30"></span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- | 'QSem' is a quantity semaphore in which the resource is acquired</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- and released in units of one. It provides guaranteed FIFO ordering</span><span>
+</span><span id="line-33"></span><span class="hs-comment">-- for satisfying blocked `waitQSem` calls.</span><span>
+</span><span id="line-34"></span><span class="hs-comment">--</span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- The pattern</span><span>
+</span><span id="line-36"></span><span class="hs-comment">--</span><span>
+</span><span id="line-37"></span><span class="hs-comment">-- &gt;   bracket_ waitQSem signalQSem (...)</span><span>
+</span><span id="line-38"></span><span class="hs-comment">--</span><span>
+</span><span id="line-39"></span><span class="hs-comment">-- is safe; it never loses a unit of the resource.</span><span>
+</span><span id="line-40"></span><span class="hs-comment">--</span><span>
+</span><span id="line-41"></span><span class="hs-keyword">newtype</span><span> </span><span id="QSem"><span class="annot"><a href="Control.Concurrent.QSem.html#QSem"><span class="hs-identifier hs-var">QSem</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="QSem"><span class="annot"><a href="Control.Concurrent.QSem.html#QSem"><span class="hs-identifier hs-var">QSem</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.MVar.html#MVar"><span class="hs-identifier hs-type">MVar</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.MVar.html#MVar"><span class="hs-identifier hs-type">MVar</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.MVar.html#MVar"><span class="hs-identifier hs-type">MVar</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- The semaphore state (i, xs, ys):</span><span>
+</span><span id="line-44"></span><span class="hs-comment">--</span><span>
+</span><span id="line-45"></span><span class="hs-comment">--   i is the current resource value</span><span>
+</span><span id="line-46"></span><span class="hs-comment">--</span><span>
+</span><span id="line-47"></span><span class="hs-comment">--   (xs,ys) is the queue of blocked threads, where the queue is</span><span>
+</span><span id="line-48"></span><span class="hs-comment">--           given by xs ++ reverse ys.  We can enqueue new blocked threads</span><span>
+</span><span id="line-49"></span><span class="hs-comment">--           by consing onto ys, and dequeue by removing from the head of xs.</span><span>
+</span><span id="line-50"></span><span class="hs-comment">--</span><span>
+</span><span id="line-51"></span><span class="hs-comment">-- A blocked thread is represented by an empty (MVar ()).  To unblock</span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- the thread, we put () into the MVar.</span><span>
+</span><span id="line-53"></span><span class="hs-comment">--</span><span>
+</span><span id="line-54"></span><span class="hs-comment">-- A thread can dequeue itself by also putting () into the MVar, which</span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- it must do if it receives an exception while blocked in waitQSem.</span><span>
+</span><span id="line-56"></span><span class="hs-comment">-- This means that when unblocking a thread in signalQSem we must</span><span>
+</span><span id="line-57"></span><span class="hs-comment">-- first check whether the MVar is already full; the MVar lock on the</span><span>
+</span><span id="line-58"></span><span class="hs-comment">-- semaphore itself resolves race conditions between signalQSem and a</span><span>
+</span><span id="line-59"></span><span class="hs-comment">-- thread attempting to dequeue itself.</span><span>
+</span><span id="line-60"></span><span>
+</span><span id="line-61"></span><span class="hs-comment">-- |Build a new 'QSem' with a supplied initial quantity.</span><span>
+</span><span id="line-62"></span><span class="hs-comment">--  The initial quantity must be at least 0.</span><span>
+</span><span id="line-63"></span><span class="annot"><a href="Control.Concurrent.QSem.html#newQSem"><span class="hs-identifier hs-type">newQSem</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="Control.Concurrent.QSem.html#QSem"><span class="hs-identifier hs-type">QSem</span></a></span><span>
+</span><span id="line-64"></span><span id="newQSem"><span class="annot"><span class="annottext">newQSem :: Int -&gt; IO QSem
+</span><a href="Control.Concurrent.QSem.html#newQSem"><span class="hs-identifier hs-var hs-var">newQSem</span></a></span></span><span> </span><span id="local-6989586621679688118"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688118"><span class="hs-identifier hs-var">initial</span></a></span></span><span>
+</span><span id="line-65"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688118"><span class="hs-identifier hs-var">initial</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3C/GHC.Classes.html#%3C"><span class="hs-operator hs-var">&lt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO QSem
+forall a. String -&gt; IO a
+forall (m :: * -&gt; *) a. MonadFail m =&gt; String -&gt; m a
+</span><a href="Control.Monad.Fail.html#fail"><span class="hs-identifier hs-var">fail</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;newQSem: Initial quantity must be non-negative&quot;</span></span><span>
+</span><span id="line-66"></span><span>  </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-67"></span><span>      </span><span id="local-6989586621679688120"><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688120"><span class="hs-identifier hs-var">sem</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Int, [MVar ()], [MVar ()])
+-&gt; IO (MVar (Int, [MVar ()], [MVar ()]))
+forall a. a -&gt; IO (MVar a)
+</span><a href="GHC.MVar.html#newMVar"><span class="hs-identifier hs-var">newMVar</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688118"><span class="hs-identifier hs-var">initial</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-68"></span><span>      </span><span class="annot"><span class="annottext">QSem -&gt; IO QSem
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()]) -&gt; QSem
+</span><a href="Control.Concurrent.QSem.html#QSem"><span class="hs-identifier hs-var">QSem</span></a></span><span> </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688120"><span class="hs-identifier hs-var">sem</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-69"></span><span>
+</span><span id="line-70"></span><span class="annot"><span class="hs-comment">-- |Wait for a unit to become available</span></span><span>
+</span><span id="line-71"></span><span class="annot"><a href="Control.Concurrent.QSem.html#waitQSem"><span class="hs-identifier hs-type">waitQSem</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Control.Concurrent.QSem.html#QSem"><span class="hs-identifier hs-type">QSem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-72"></span><span id="waitQSem"><span class="annot"><span class="annottext">waitQSem :: QSem -&gt; IO ()
+</span><a href="Control.Concurrent.QSem.html#waitQSem"><span class="hs-identifier hs-var hs-var">waitQSem</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Concurrent.QSem.html#QSem"><span class="hs-identifier hs-type">QSem</span></a></span><span> </span><span id="local-6989586621679688121"><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688121"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-73"></span><span>  </span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+forall a. IO a -&gt; IO a
+</span><a href="GHC.IO.html#mask_"><span class="hs-identifier hs-var">mask_</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-74"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621679688123"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688123"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679688124"><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688124"><span class="hs-identifier hs-var">b1</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679688125"><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688125"><span class="hs-identifier hs-var">b2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()]) -&gt; IO (Int, [MVar ()], [MVar ()])
+forall a. MVar a -&gt; IO a
+</span><a href="GHC.MVar.html#takeMVar"><span class="hs-identifier hs-var">takeMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688121"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-75"></span><span>    </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688123"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-76"></span><span>       </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-77"></span><span>         </span><span id="local-6989586621679688126"><span class="annot"><span class="annottext">MVar ()
+</span><a href="#local-6989586621679688126"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO (MVar ())
+forall a. IO (MVar a)
+</span><a href="GHC.MVar.html#newEmptyMVar"><span class="hs-identifier hs-var">newEmptyMVar</span></a></span><span>
+</span><span id="line-78"></span><span>         </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+-&gt; (Int, [MVar ()], [MVar ()]) -&gt; IO ()
+forall a. MVar a -&gt; a -&gt; IO ()
+</span><a href="GHC.MVar.html#putMVar"><span class="hs-identifier hs-var">putMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688121"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688123"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688124"><span class="hs-identifier hs-var">b1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">MVar ()
+</span><a href="#local-6989586621679688126"><span class="hs-identifier hs-var">b</span></a></span><span class="annot"><span class="annottext">MVar () -&gt; [MVar ()] -&gt; [MVar ()]
+forall a. a -&gt; [a] -&gt; [a]
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#%3A/GHC.Types.html#%3A"><span class="hs-glyph hs-var">:</span></a></span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688125"><span class="hs-identifier hs-var">b2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-79"></span><span>         </span><span class="annot"><span class="annottext">MVar () -&gt; IO ()
+</span><a href="#local-6989586621679688127"><span class="hs-identifier hs-var">wait</span></a></span><span> </span><span class="annot"><span class="annottext">MVar ()
+</span><a href="#local-6989586621679688126"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-80"></span><span>       </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-81"></span><span>         </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679688130"><span class="annot"><span class="annottext">z :: Int
+</span><a href="#local-6989586621679688130"><span class="hs-identifier hs-var hs-var">z</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688123"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="GHC.Num.html#-"><span class="hs-glyph hs-var">-</span></a></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-82"></span><span>         </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+-&gt; (Int, [MVar ()], [MVar ()]) -&gt; IO ()
+forall a. MVar a -&gt; a -&gt; IO ()
+</span><a href="GHC.MVar.html#putMVar"><span class="hs-identifier hs-var">putMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688121"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688130"><span class="hs-identifier hs-var">z</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688124"><span class="hs-identifier hs-var">b1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688125"><span class="hs-identifier hs-var">b2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-83"></span><span>         </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-85"></span><span>    </span><span id="local-6989586621679688127"><span class="annot"><span class="annottext">wait :: MVar () -&gt; IO ()
+</span><a href="#local-6989586621679688127"><span class="hs-identifier hs-var hs-var">wait</span></a></span></span><span> </span><span id="local-6989586621679688136"><span class="annot"><span class="annottext">MVar ()
+</span><a href="#local-6989586621679688136"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">MVar () -&gt; IO ()
+forall a. MVar a -&gt; IO a
+</span><a href="GHC.MVar.html#takeMVar"><span class="hs-identifier hs-var">takeMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar ()
+</span><a href="#local-6989586621679688136"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO () -&gt; IO ()
+forall a b. IO a -&gt; IO b -&gt; IO a
+</span><a href="Control.Exception.Base.html#onException"><span class="hs-operator hs-var">`onException`</span></a></span><span>
+</span><span id="line-86"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+forall a. IO a -&gt; IO a
+</span><a href="GHC.IO.html#uninterruptibleMask_"><span class="hs-identifier hs-var">uninterruptibleMask_</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-comment">-- Note [signal uninterruptible]</span><span>
+</span><span id="line-87"></span><span>                   </span><span class="hs-special">(</span><span id="local-6989586621679688139"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688139"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679688140"><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688140"><span class="hs-identifier hs-var">b1</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679688141"><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688141"><span class="hs-identifier hs-var">b2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()]) -&gt; IO (Int, [MVar ()], [MVar ()])
+forall a. MVar a -&gt; IO a
+</span><a href="GHC.MVar.html#takeMVar"><span class="hs-identifier hs-var">takeMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688121"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-88"></span><span>                   </span><span id="local-6989586621679688142"><span class="annot"><span class="annottext">Maybe ()
+</span><a href="#local-6989586621679688142"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MVar () -&gt; IO (Maybe ())
+forall a. MVar a -&gt; IO (Maybe a)
+</span><a href="GHC.MVar.html#tryTakeMVar"><span class="hs-identifier hs-var">tryTakeMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar ()
+</span><a href="#local-6989586621679688136"><span class="hs-identifier hs-var">b</span></a></span><span>
+</span><span id="line-89"></span><span>                   </span><span id="local-6989586621679688143"><span class="annot"><span class="annottext">(Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688143"><span class="hs-identifier hs-var">r'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Maybe () -&gt; Bool
+forall a. Maybe a -&gt; Bool
+</span><a href="Data.Maybe.html#isJust"><span class="hs-identifier hs-var">isJust</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe ()
+</span><a href="#local-6989586621679688142"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-90"></span><span>                            </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">(Int, [MVar ()], [MVar ()]) -&gt; IO (Int, [MVar ()], [MVar ()])
+</span><a href="Control.Concurrent.QSem.html#signal"><span class="hs-identifier hs-var">signal</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688139"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688140"><span class="hs-identifier hs-var">b1</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688141"><span class="hs-identifier hs-var">b2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-91"></span><span>                            </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="annot"><span class="annottext">MVar () -&gt; () -&gt; IO ()
+forall a. MVar a -&gt; a -&gt; IO ()
+</span><a href="GHC.MVar.html#putMVar"><span class="hs-identifier hs-var">putMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar ()
+</span><a href="#local-6989586621679688136"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">(Int, [MVar ()], [MVar ()]) -&gt; IO (Int, [MVar ()], [MVar ()])
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688139"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688140"><span class="hs-identifier hs-var">b1</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688141"><span class="hs-identifier hs-var">b2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-92"></span><span>                   </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+-&gt; (Int, [MVar ()], [MVar ()]) -&gt; IO ()
+forall a. MVar a -&gt; a -&gt; IO ()
+</span><a href="GHC.MVar.html#putMVar"><span class="hs-identifier hs-var">putMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688121"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688143"><span class="hs-identifier hs-var">r'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span>
+</span><span id="line-94"></span><span class="annot"><span class="hs-comment">-- |Signal that a unit of the 'QSem' is available</span></span><span>
+</span><span id="line-95"></span><span class="annot"><a href="Control.Concurrent.QSem.html#signalQSem"><span class="hs-identifier hs-type">signalQSem</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Control.Concurrent.QSem.html#QSem"><span class="hs-identifier hs-type">QSem</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-96"></span><span id="signalQSem"><span class="annot"><span class="annottext">signalQSem :: QSem -&gt; IO ()
+</span><a href="Control.Concurrent.QSem.html#signalQSem"><span class="hs-identifier hs-var hs-var">signalQSem</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Concurrent.QSem.html#QSem"><span class="hs-identifier hs-type">QSem</span></a></span><span> </span><span id="local-6989586621679688146"><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688146"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-97"></span><span>  </span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+forall a. IO a -&gt; IO a
+</span><a href="GHC.IO.html#uninterruptibleMask_"><span class="hs-identifier hs-var">uninterruptibleMask_</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-comment">-- Note [signal uninterruptible]</span><span>
+</span><span id="line-98"></span><span>    </span><span id="local-6989586621679688147"><span class="annot"><span class="annottext">(Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688147"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()]) -&gt; IO (Int, [MVar ()], [MVar ()])
+forall a. MVar a -&gt; IO a
+</span><a href="GHC.MVar.html#takeMVar"><span class="hs-identifier hs-var">takeMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688146"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-99"></span><span>    </span><span id="local-6989586621679688148"><span class="annot"><span class="annottext">(Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688148"><span class="hs-identifier hs-var">r'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(Int, [MVar ()], [MVar ()]) -&gt; IO (Int, [MVar ()], [MVar ()])
+</span><a href="Control.Concurrent.QSem.html#signal"><span class="hs-identifier hs-var">signal</span></a></span><span> </span><span class="annot"><span class="annottext">(Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688147"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-100"></span><span>    </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+-&gt; (Int, [MVar ()], [MVar ()]) -&gt; IO ()
+forall a. MVar a -&gt; a -&gt; IO ()
+</span><a href="GHC.MVar.html#putMVar"><span class="hs-identifier hs-var">putMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar (Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688146"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="annot"><span class="annottext">(Int, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688148"><span class="hs-identifier hs-var">r'</span></a></span><span>
+</span><span id="line-101"></span><span>
+</span><span id="line-102"></span><span class="hs-comment">-- Note [signal uninterruptible]</span><span>
+</span><span id="line-103"></span><span class="hs-comment">-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</span><span>
+</span><span id="line-104"></span><span class="hs-comment">--   If we have</span><span>
+</span><span id="line-105"></span><span class="hs-comment">--</span><span>
+</span><span id="line-106"></span><span class="hs-comment">--      bracket waitQSem signalQSem (...)</span><span>
+</span><span id="line-107"></span><span class="hs-comment">--</span><span>
+</span><span id="line-108"></span><span class="hs-comment">--   and an exception arrives at the signalQSem, then we must not lose</span><span>
+</span><span id="line-109"></span><span class="hs-comment">--   the resource.  The signalQSem is masked by bracket, but taking</span><span>
+</span><span id="line-110"></span><span class="hs-comment">--   the MVar might block, and so it would be interruptible.  Hence we</span><span>
+</span><span id="line-111"></span><span class="hs-comment">--   need an uninterruptibleMask here.</span><span>
+</span><span id="line-112"></span><span class="hs-comment">--</span><span>
+</span><span id="line-113"></span><span class="hs-comment">--   This isn't ideal: during high contention, some threads won't be</span><span>
+</span><span id="line-114"></span><span class="hs-comment">--   interruptible.  The QSemSTM implementation has better behaviour</span><span>
+</span><span id="line-115"></span><span class="hs-comment">--   here, but it performs much worse than this one in some</span><span>
+</span><span id="line-116"></span><span class="hs-comment">--   benchmarks.</span><span>
+</span><span id="line-117"></span><span>
+</span><span id="line-118"></span><span class="annot"><a href="Control.Concurrent.QSem.html#signal"><span class="hs-identifier hs-type">signal</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span class="hs-special">,</span><span class="hs-special">[</span><span class="annot"><a href="GHC.MVar.html#MVar"><span class="hs-identifier hs-type">MVar</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">,</span><span class="hs-special">[</span><span class="annot"><a href="GHC.MVar.html#MVar"><span class="hs-identifier hs-type">MVar</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span class="hs-special">,</span><span class="hs-special">[</span><span class="annot"><a href="GHC.MVar.html#MVar"><span class="hs-identifier hs-type">MVar</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">,</span><span class="hs-special">[</span><span class="annot"><a href="GHC.MVar.html#MVar"><span class="hs-identifier hs-type">MVar</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-119"></span><span id="signal"><span class="annot"><span class="annottext">signal :: (Int, [MVar ()], [MVar ()]) -&gt; IO (Int, [MVar ()], [MVar ()])
+</span><a href="Control.Concurrent.QSem.html#signal"><span class="hs-identifier hs-var hs-var">signal</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679688149"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688149"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679688150"><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688150"><span class="hs-identifier hs-var">a1</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679688151"><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688151"><span class="hs-identifier hs-var">a2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-120"></span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688149"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-121"></span><span>   </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">[MVar ()] -&gt; [MVar ()] -&gt; IO (Int, [MVar ()], [MVar ()])
+forall {a}.
+Num a =&gt;
+[MVar ()] -&gt; [MVar ()] -&gt; IO (a, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688152"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688150"><span class="hs-identifier hs-var">a1</span></a></span><span> </span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688151"><span class="hs-identifier hs-var">a2</span></a></span><span>
+</span><span id="line-122"></span><span>   </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679688155"><span class="annot"><span class="annottext">z :: Int
+</span><a href="#local-6989586621679688155"><span class="hs-identifier hs-var hs-var">z</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688149"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">(Int, [MVar ()], [MVar ()]) -&gt; IO (Int, [MVar ()], [MVar ()])
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679688155"><span class="hs-identifier hs-var">z</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688150"><span class="hs-identifier hs-var">a1</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688151"><span class="hs-identifier hs-var">a2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-124"></span><span>   </span><span id="local-6989586621679688152"><span class="annot"><span class="annottext">loop :: [MVar ()] -&gt; [MVar ()] -&gt; IO (a, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688152"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(a, [MVar ()], [MVar ()]) -&gt; IO (a, [MVar ()], [MVar ()])
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">1</span></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-125"></span><span>   </span><span class="annot"><a href="#local-6989586621679688152"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span id="local-6989586621679688163"><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688163"><span class="hs-identifier hs-var">b2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[MVar ()] -&gt; [MVar ()] -&gt; IO (a, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688152"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[MVar ()] -&gt; [MVar ()]
+forall a. [a] -&gt; [a]
+</span><a href="GHC.List.html#reverse"><span class="hs-identifier hs-var">reverse</span></a></span><span> </span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688163"><span class="hs-identifier hs-var">b2</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-126"></span><span>   </span><span class="annot"><a href="#local-6989586621679688152"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679688165"><span class="annot"><span class="annottext">MVar ()
+</span><a href="#local-6989586621679688165"><span class="hs-identifier hs-var">b</span></a></span></span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#%3A/GHC.Types.html#%3A"><span class="hs-glyph hs-type">:</span></a></span><span id="local-6989586621679688166"><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688166"><span class="hs-identifier hs-var">bs</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679688167"><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688167"><span class="hs-identifier hs-var">b2</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-127"></span><span>     </span><span id="local-6989586621679688168"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679688168"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">MVar () -&gt; () -&gt; IO Bool
+forall a. MVar a -&gt; a -&gt; IO Bool
+</span><a href="GHC.MVar.html#tryPutMVar"><span class="hs-identifier hs-var">tryPutMVar</span></a></span><span> </span><span class="annot"><span class="annottext">MVar ()
+</span><a href="#local-6989586621679688165"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-128"></span><span>     </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679688168"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">(a, [MVar ()], [MVar ()]) -&gt; IO (a, [MVar ()], [MVar ()])
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><span class="hs-number">0</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688166"><span class="hs-identifier hs-var">bs</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688167"><span class="hs-identifier hs-var">b2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-129"></span><span>          </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">[MVar ()] -&gt; [MVar ()] -&gt; IO (a, [MVar ()], [MVar ()])
+</span><a href="#local-6989586621679688152"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688166"><span class="hs-identifier hs-var">bs</span></a></span><span> </span><span class="annot"><span class="annottext">[MVar ()]
+</span><a href="#local-6989586621679688167"><span class="hs-identifier hs-var">b2</span></a></span><span>
+</span><span id="line-130"></span></pre></body></html>

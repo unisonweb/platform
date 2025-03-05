@@ -1,0 +1,1187 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">GHC.Core.Opt.Exitify</span><span> </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Core.Opt.Exitify.html#exitifyProgram"><span class="hs-identifier">exitifyProgram</span></a></span><span> </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">{-
+Note [Exitification]
+~~~~~~~~~~~~~~~~~~~~
+
+This module implements Exitification. The goal is to pull as much code out of
+recursive functions as possible, as the simplifier is better at inlining into
+call-sites that are not in recursive functions.
+
+Example:
+
+  let t = foo bar
+  joinrec go 0     x y = t (x*x)
+          go (n-1) x y = jump go (n-1) (x+y)
+  in &#8230;
+
+We&#8217;d like to inline `t`, but that does not happen: Because t is a thunk and is
+used in a recursive function, doing so might lose sharing in general. In
+this case, however, `t` is on the _exit path_ of `go`, so called at most once.
+How do we make this clearly visible to the simplifier?
+
+A code path (i.e., an expression in a tail-recursive position) in a recursive
+function is an exit path if it does not contain a recursive call. We can bind
+this expression outside the recursive function, as a join-point.
+
+Example result:
+
+  let t = foo bar
+  join exit x = t (x*x)
+  joinrec go 0     x y = jump exit x
+          go (n-1) x y = jump go (n-1) (x+y)
+  in &#8230;
+
+Now `t` is no longer in a recursive function, and good things happen!
+-}</span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Prelude.html"><span class="hs-identifier">GHC.Prelude</span></a></span><span>
+</span><span id="line-39"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Var.html"><span class="hs-identifier">GHC.Types.Var</span></a></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Id.html"><span class="hs-identifier">GHC.Types.Id</span></a></span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Id.Info.html"><span class="hs-identifier">GHC.Types.Id.Info</span></a></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Core.html"><span class="hs-identifier">GHC.Core</span></a></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Core.Utils.html"><span class="hs-identifier">GHC.Core.Utils</span></a></span><span>
+</span><span id="line-44"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Monad.State.Strict.html"><span class="hs-identifier">GHC.Utils.Monad.State.Strict</span></a></span><span>
+</span><span id="line-45"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Builtin.Uniques.html"><span class="hs-identifier">GHC.Builtin.Uniques</span></a></span><span>
+</span><span id="line-46"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Var.Set.html"><span class="hs-identifier">GHC.Types.Var.Set</span></a></span><span>
+</span><span id="line-47"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Types.Var.Env.html"><span class="hs-identifier">GHC.Types.Var.Env</span></a></span><span>
+</span><span id="line-48"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Core.FVs.html"><span class="hs-identifier">GHC.Core.FVs</span></a></span><span>
+</span><span id="line-49"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Data.FastString.html"><span class="hs-identifier">GHC.Data.FastString</span></a></span><span>
+</span><span id="line-50"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Core.Type.html"><span class="hs-identifier">GHC.Core.Type</span></a></span><span>
+</span><span id="line-51"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html"><span class="hs-identifier">GHC.Utils.Misc</span></a></span><span class="hs-special">(</span><span> </span><span class="annot"><a href="GHC.Utils.Misc.html#mapSnd"><span class="hs-identifier">mapSnd</span></a></span><span> </span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span>
+</span><span id="line-53"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.Bifunctor.html#/Data.Bifunctor.html"><span class="hs-identifier">Data.Bifunctor</span></a></span><span>
+</span><span id="line-54"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Monad.html#/Control.Monad.html"><span class="hs-identifier">Control.Monad</span></a></span><span>
+</span><span id="line-55"></span><span>
+</span><span id="line-56"></span><span class="hs-comment">-- | Traverses the AST, simply to find all joinrecs and call 'exitify' on them.</span><span>
+</span><span id="line-57"></span><span class="hs-comment">-- The really interesting function is exitifyRec</span><span>
+</span><span id="line-58"></span><span class="annot"><a href="GHC.Core.Opt.Exitify.html#exitifyProgram"><span class="hs-identifier hs-type">exitifyProgram</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreProgram"><span class="hs-identifier hs-type">CoreProgram</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreProgram"><span class="hs-identifier hs-type">CoreProgram</span></a></span><span>
+</span><span id="line-59"></span><span id="exitifyProgram"><span class="annot"><span class="annottext">exitifyProgram :: CoreProgram -&gt; CoreProgram
+</span><a href="GHC.Core.Opt.Exitify.html#exitifyProgram"><span class="hs-identifier hs-var hs-var">exitifyProgram</span></a></span></span><span> </span><span id="local-6989586621681634302"><span class="annot"><span class="annottext">CoreProgram
+</span><a href="#local-6989586621681634302"><span class="hs-identifier hs-var">binds</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Bind JoinId -&gt; Bind JoinId) -&gt; CoreProgram -&gt; CoreProgram
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">Bind JoinId -&gt; Bind JoinId
+</span><a href="#local-6989586621681634303"><span class="hs-identifier hs-var">goTopLvl</span></a></span><span> </span><span class="annot"><span class="annottext">CoreProgram
+</span><a href="#local-6989586621681634302"><span class="hs-identifier hs-var">binds</span></a></span><span>
+</span><span id="line-60"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-61"></span><span>    </span><span id="local-6989586621681634303"><span class="annot"><span class="annottext">goTopLvl :: Bind JoinId -&gt; Bind JoinId
+</span><a href="#local-6989586621681634303"><span class="hs-identifier hs-var hs-var">goTopLvl</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#NonRec"><span class="hs-identifier hs-type">NonRec</span></a></span><span> </span><span id="local-6989586621681634305"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634305"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621681634306"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634306"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; CoreExpr -&gt; Bind JoinId
+forall b. b -&gt; Expr b -&gt; Bind b
+</span><a href="GHC.Core.html#NonRec"><span class="hs-identifier hs-var">NonRec</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634305"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634308"><span class="hs-identifier hs-var">in_scope_toplvl</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634306"><span class="hs-identifier hs-var">e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>    </span><span class="annot"><a href="#local-6989586621681634303"><span class="hs-identifier hs-var">goTopLvl</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Rec"><span class="hs-identifier hs-type">Rec</span></a></span><span> </span><span id="local-6989586621681634310"><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634310"><span class="hs-identifier hs-var">pairs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)] -&gt; Bind JoinId
+forall b. [(b, Expr b)] -&gt; Bind b
+</span><a href="GHC.Core.html#Rec"><span class="hs-identifier hs-var">Rec</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((JoinId, CoreExpr) -&gt; (JoinId, CoreExpr))
+-&gt; [(JoinId, CoreExpr)] -&gt; [(JoinId, CoreExpr)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(CoreExpr -&gt; CoreExpr) -&gt; (JoinId, CoreExpr) -&gt; (JoinId, CoreExpr)
+forall b c a. (b -&gt; c) -&gt; (a, b) -&gt; (a, c)
+forall (p :: * -&gt; * -&gt; *) b c a.
+Bifunctor p =&gt;
+(b -&gt; c) -&gt; p a b -&gt; p a c
+</span><a href="../../base-4.18.2.1/src/Data.Bifunctor.html#second/Data.Bifunctor.html#second"><span class="hs-identifier hs-var">second</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634308"><span class="hs-identifier hs-var">in_scope_toplvl</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634310"><span class="hs-identifier hs-var">pairs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span>      </span><span class="hs-comment">-- Top-level bindings are never join points</span><span>
+</span><span id="line-64"></span><span>
+</span><span id="line-65"></span><span>    </span><span id="local-6989586621681634308"><span class="annot"><span class="annottext">in_scope_toplvl :: InScopeSet
+</span><a href="#local-6989586621681634308"><span class="hs-identifier hs-var hs-var">in_scope_toplvl</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="GHC.Types.Var.Env.html#emptyInScopeSet"><span class="hs-identifier hs-var">emptyInScopeSet</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreProgram -&gt; InScopeSet
+</span><a href="GHC.Core.Utils.html#extendInScopeSetBndrs"><span class="hs-operator hs-var">`extendInScopeSetBndrs`</span></a></span><span> </span><span class="annot"><span class="annottext">CoreProgram
+</span><a href="#local-6989586621681634302"><span class="hs-identifier hs-var">binds</span></a></span><span>
+</span><span id="line-66"></span><span>
+</span><span id="line-67"></span><span>    </span><span class="annot"><a href="#local-6989586621681634307"><span class="hs-identifier hs-type">go</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Var.Env.html#InScopeSet"><span class="hs-identifier hs-type">InScopeSet</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span>
+</span><span id="line-68"></span><span>    </span><span id="local-6989586621681634307"><span class="annot"><span class="annottext">go :: InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><span class="hs-identifier">_</span></span><span>    </span><span id="local-6989586621681634314"><span class="annot"><span class="annottext">e :: CoreExpr
+</span><a href="#local-6989586621681634314"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634314"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-69"></span><span>    </span><span class="annot"><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><span class="hs-identifier">_</span></span><span>    </span><span id="local-6989586621681634316"><span class="annot"><span class="annottext">e :: CoreExpr
+</span><a href="#local-6989586621681634316"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Lit"><span class="hs-identifier hs-type">Lit</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634316"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-70"></span><span>    </span><span class="annot"><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><span class="hs-identifier">_</span></span><span>    </span><span id="local-6989586621681634318"><span class="annot"><span class="annottext">e :: CoreExpr
+</span><a href="#local-6989586621681634318"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634318"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-71"></span><span>    </span><span class="annot"><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><span class="hs-identifier">_</span></span><span>    </span><span id="local-6989586621681634320"><span class="annot"><span class="annottext">e :: CoreExpr
+</span><a href="#local-6989586621681634320"><span class="hs-identifier hs-var">e</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Coercion"><span class="hs-identifier hs-type">Coercion</span></a></span><span> </span><span class="hs-special">{</span><span class="hs-special">}</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634320"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-72"></span><span>    </span><span class="annot"><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681634322"><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634322"><span class="hs-identifier hs-var">in_scope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Cast"><span class="hs-identifier hs-type">Cast</span></a></span><span> </span><span id="local-6989586621681634324"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634324"><span class="hs-identifier hs-var">e'</span></a></span></span><span> </span><span id="local-6989586621681634325"><span class="annot"><span class="annottext">CoercionR
+</span><a href="#local-6989586621681634325"><span class="hs-identifier hs-var">c</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; CoercionR -&gt; CoreExpr
+forall b. Expr b -&gt; CoercionR -&gt; Expr b
+</span><a href="GHC.Core.html#Cast"><span class="hs-identifier hs-var">Cast</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634322"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634324"><span class="hs-identifier hs-var">e'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoercionR
+</span><a href="#local-6989586621681634325"><span class="hs-identifier hs-var">c</span></a></span><span>
+</span><span id="line-73"></span><span>    </span><span class="annot"><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681634326"><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634326"><span class="hs-identifier hs-var">in_scope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Tick"><span class="hs-identifier hs-type">Tick</span></a></span><span> </span><span id="local-6989586621681634328"><span class="annot"><span class="annottext">CoreTickish
+</span><a href="#local-6989586621681634328"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621681634329"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634329"><span class="hs-identifier hs-var">e'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreTickish -&gt; CoreExpr -&gt; CoreExpr
+forall b. CoreTickish -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#Tick"><span class="hs-identifier hs-var">Tick</span></a></span><span> </span><span class="annot"><span class="annottext">CoreTickish
+</span><a href="#local-6989586621681634328"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634326"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634329"><span class="hs-identifier hs-var">e'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-74"></span><span>    </span><span class="annot"><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681634330"><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634330"><span class="hs-identifier hs-var">in_scope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#App"><span class="hs-identifier hs-type">App</span></a></span><span> </span><span id="local-6989586621681634332"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634332"><span class="hs-identifier hs-var">e1</span></a></span></span><span> </span><span id="local-6989586621681634333"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634333"><span class="hs-identifier hs-var">e2</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; CoreExpr -&gt; CoreExpr
+forall b. Expr b -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#App"><span class="hs-identifier hs-var">App</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634330"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634332"><span class="hs-identifier hs-var">e1</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634330"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634333"><span class="hs-identifier hs-var">e2</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-75"></span><span>
+</span><span id="line-76"></span><span>    </span><span class="annot"><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681634334"><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634334"><span class="hs-identifier hs-var">in_scope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Lam"><span class="hs-identifier hs-type">Lam</span></a></span><span> </span><span id="local-6989586621681634336"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634336"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span id="local-6989586621681634337"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634337"><span class="hs-identifier hs-var">e'</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-77"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; CoreExpr -&gt; CoreExpr
+forall b. b -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#Lam"><span class="hs-identifier hs-var">Lam</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634336"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634338"><span class="hs-identifier hs-var">in_scope'</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634337"><span class="hs-identifier hs-var">e'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-78"></span><span>      </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621681634338"><span class="annot"><span class="annottext">in_scope' :: InScopeSet
+</span><a href="#local-6989586621681634338"><span class="hs-identifier hs-var hs-var">in_scope'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634334"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet -&gt; JoinId -&gt; InScopeSet
+</span><a href="GHC.Types.Var.Env.html#extendInScopeSet"><span class="hs-operator hs-var">`extendInScopeSet`</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634336"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-79"></span><span>
+</span><span id="line-80"></span><span>    </span><span class="annot"><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681634340"><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634340"><span class="hs-identifier hs-var">in_scope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Case"><span class="hs-identifier hs-type">Case</span></a></span><span> </span><span id="local-6989586621681634342"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634342"><span class="hs-identifier hs-var">scrut</span></a></span></span><span> </span><span id="local-6989586621681634343"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634343"><span class="hs-identifier hs-var">bndr</span></a></span></span><span> </span><span id="local-6989586621681634344"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681634344"><span class="hs-identifier hs-var">ty</span></a></span></span><span> </span><span id="local-6989586621681634345"><span class="annot"><span class="annottext">[Alt JoinId]
+</span><a href="#local-6989586621681634345"><span class="hs-identifier hs-var">alts</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-81"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; JoinId -&gt; Type -&gt; [Alt JoinId] -&gt; CoreExpr
+forall b. Expr b -&gt; b -&gt; Type -&gt; [Alt b] -&gt; Expr b
+</span><a href="GHC.Core.html#Case"><span class="hs-identifier hs-var">Case</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634340"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634342"><span class="hs-identifier hs-var">scrut</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634343"><span class="hs-identifier hs-var">bndr</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681634344"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Alt JoinId -&gt; Alt JoinId) -&gt; [Alt JoinId] -&gt; [Alt JoinId]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">Alt JoinId -&gt; Alt JoinId
+</span><a href="#local-6989586621681634346"><span class="hs-identifier hs-var">go_alt</span></a></span><span> </span><span class="annot"><span class="annottext">[Alt JoinId]
+</span><a href="#local-6989586621681634345"><span class="hs-identifier hs-var">alts</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-82"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-83"></span><span>        </span><span id="local-6989586621681634347"><span class="annot"><span class="annottext">in_scope1 :: InScopeSet
+</span><a href="#local-6989586621681634347"><span class="hs-identifier hs-var hs-var">in_scope1</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634340"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet -&gt; JoinId -&gt; InScopeSet
+</span><a href="GHC.Types.Var.Env.html#extendInScopeSet"><span class="hs-operator hs-var">`extendInScopeSet`</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634343"><span class="hs-identifier hs-var">bndr</span></a></span><span>
+</span><span id="line-84"></span><span>        </span><span id="local-6989586621681634346"><span class="annot"><span class="annottext">go_alt :: Alt JoinId -&gt; Alt JoinId
+</span><a href="#local-6989586621681634346"><span class="hs-identifier hs-var hs-var">go_alt</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Alt"><span class="hs-identifier hs-type">Alt</span></a></span><span> </span><span id="local-6989586621681634349"><span class="annot"><span class="annottext">AltCon
+</span><a href="#local-6989586621681634349"><span class="hs-identifier hs-var">dc</span></a></span></span><span> </span><span id="local-6989586621681634350"><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634350"><span class="hs-identifier hs-var">pats</span></a></span></span><span> </span><span id="local-6989586621681634351"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634351"><span class="hs-identifier hs-var">rhs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AltCon -&gt; [JoinId] -&gt; CoreExpr -&gt; Alt JoinId
+forall b. AltCon -&gt; [b] -&gt; Expr b -&gt; Alt b
+</span><a href="GHC.Core.html#Alt"><span class="hs-identifier hs-var">Alt</span></a></span><span> </span><span class="annot"><span class="annottext">AltCon
+</span><a href="#local-6989586621681634349"><span class="hs-identifier hs-var">dc</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634350"><span class="hs-identifier hs-var">pats</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634352"><span class="hs-identifier hs-var">in_scope'</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634351"><span class="hs-identifier hs-var">rhs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-85"></span><span>           </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621681634352"><span class="annot"><span class="annottext">in_scope' :: InScopeSet
+</span><a href="#local-6989586621681634352"><span class="hs-identifier hs-var hs-var">in_scope'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634347"><span class="hs-identifier hs-var">in_scope1</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet -&gt; [JoinId] -&gt; InScopeSet
+</span><a href="GHC.Types.Var.Env.html#extendInScopeSetList"><span class="hs-operator hs-var">`extendInScopeSetList`</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634350"><span class="hs-identifier hs-var">pats</span></a></span><span>
+</span><span id="line-86"></span><span>
+</span><span id="line-87"></span><span>    </span><span class="annot"><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681634354"><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634354"><span class="hs-identifier hs-var">in_scope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#NonRec"><span class="hs-identifier hs-type">NonRec</span></a></span><span> </span><span id="local-6989586621681634356"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634356"><span class="hs-identifier hs-var">bndr</span></a></span></span><span> </span><span id="local-6989586621681634357"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634357"><span class="hs-identifier hs-var">rhs</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621681634358"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634358"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-88"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bind JoinId -&gt; CoreExpr -&gt; CoreExpr
+forall b. Bind b -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">JoinId -&gt; CoreExpr -&gt; Bind JoinId
+forall b. b -&gt; Expr b -&gt; Bind b
+</span><a href="GHC.Core.html#NonRec"><span class="hs-identifier hs-var">NonRec</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634356"><span class="hs-identifier hs-var">bndr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634354"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634357"><span class="hs-identifier hs-var">rhs</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634359"><span class="hs-identifier hs-var">in_scope'</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634358"><span class="hs-identifier hs-var">body</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-89"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-90"></span><span>        </span><span id="local-6989586621681634359"><span class="annot"><span class="annottext">in_scope' :: InScopeSet
+</span><a href="#local-6989586621681634359"><span class="hs-identifier hs-var hs-var">in_scope'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634354"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet -&gt; JoinId -&gt; InScopeSet
+</span><a href="GHC.Types.Var.Env.html#extendInScopeSet"><span class="hs-operator hs-var">`extendInScopeSet`</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634356"><span class="hs-identifier hs-var">bndr</span></a></span><span>
+</span><span id="line-91"></span><span>
+</span><span id="line-92"></span><span>    </span><span class="annot"><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681634360"><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634360"><span class="hs-identifier hs-var">in_scope</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Let"><span class="hs-identifier hs-type">Let</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Rec"><span class="hs-identifier hs-type">Rec</span></a></span><span> </span><span id="local-6989586621681634361"><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634361"><span class="hs-identifier hs-var">pairs</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621681634362"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634362"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-93"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681634363"><span class="hs-identifier hs-var">is_join_rec</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreProgram -&gt; CoreExpr -&gt; CoreExpr
+forall b. [Bind b] -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#mkLets"><span class="hs-identifier hs-var">mkLets</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; [(JoinId, CoreExpr)] -&gt; CoreProgram
+</span><a href="GHC.Core.Opt.Exitify.html#exitifyRec"><span class="hs-identifier hs-var">exitifyRec</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634366"><span class="hs-identifier hs-var">in_scope'</span></a></span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634367"><span class="hs-identifier hs-var">pairs'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634368"><span class="hs-identifier hs-var">body'</span></a></span><span>
+</span><span id="line-94"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bind JoinId -&gt; CoreExpr -&gt; CoreExpr
+forall b. Bind b -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)] -&gt; Bind JoinId
+forall b. [(b, Expr b)] -&gt; Bind b
+</span><a href="GHC.Core.html#Rec"><span class="hs-identifier hs-var">Rec</span></a></span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634367"><span class="hs-identifier hs-var">pairs'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634368"><span class="hs-identifier hs-var">body'</span></a></span><span>
+</span><span id="line-95"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-96"></span><span>        </span><span id="local-6989586621681634363"><span class="annot"><span class="annottext">is_join_rec :: Bool
+</span><a href="#local-6989586621681634363"><span class="hs-identifier hs-var hs-var">is_join_rec</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((JoinId, CoreExpr) -&gt; Bool) -&gt; [(JoinId, CoreExpr)] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#any/Data.Foldable.html#any"><span class="hs-identifier hs-var">any</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">JoinId -&gt; Bool
+</span><a href="GHC.Types.Id.html#isJoinId"><span class="hs-identifier hs-var">isJoinId</span></a></span><span> </span><span class="annot"><span class="annottext">(JoinId -&gt; Bool)
+-&gt; ((JoinId, CoreExpr) -&gt; JoinId) -&gt; (JoinId, CoreExpr) -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">(JoinId, CoreExpr) -&gt; JoinId
+forall a b. (a, b) -&gt; a
+</span><a href="../../base-4.18.2.1/src/Data.Tuple.html#fst/Data.Tuple.html#fst"><span class="hs-identifier hs-var">fst</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634361"><span class="hs-identifier hs-var">pairs</span></a></span><span>
+</span><span id="line-97"></span><span>        </span><span id="local-6989586621681634366"><span class="annot"><span class="annottext">in_scope' :: InScopeSet
+</span><a href="#local-6989586621681634366"><span class="hs-identifier hs-var hs-var">in_scope'</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634360"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet -&gt; Bind JoinId -&gt; InScopeSet
+</span><a href="GHC.Core.Utils.html#extendInScopeSetBind"><span class="hs-operator hs-var">`extendInScopeSetBind`</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)] -&gt; Bind JoinId
+forall b. [(b, Expr b)] -&gt; Bind b
+</span><a href="GHC.Core.html#Rec"><span class="hs-identifier hs-var">Rec</span></a></span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634361"><span class="hs-identifier hs-var">pairs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-98"></span><span>        </span><span id="local-6989586621681634367"><span class="annot"><span class="annottext">pairs' :: [(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634367"><span class="hs-identifier hs-var hs-var">pairs'</span></a></span></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(CoreExpr -&gt; CoreExpr)
+-&gt; [(JoinId, CoreExpr)] -&gt; [(JoinId, CoreExpr)]
+forall (f :: * -&gt; *) b c a.
+Functor f =&gt;
+(b -&gt; c) -&gt; f (a, b) -&gt; f (a, c)
+</span><a href="GHC.Utils.Misc.html#mapSnd"><span class="hs-identifier hs-var">mapSnd</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634366"><span class="hs-identifier hs-var">in_scope'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634361"><span class="hs-identifier hs-var">pairs</span></a></span><span>
+</span><span id="line-99"></span><span>        </span><span id="local-6989586621681634368"><span class="annot"><span class="annottext">body' :: CoreExpr
+</span><a href="#local-6989586621681634368"><span class="hs-identifier hs-var hs-var">body'</span></a></span></span><span>       </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InScopeSet -&gt; CoreExpr -&gt; CoreExpr
+</span><a href="#local-6989586621681634307"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634366"><span class="hs-identifier hs-var">in_scope'</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634362"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span>
+</span><span id="line-102"></span><span class="annot"><span class="hs-comment">-- | State Monad used inside `exitify`</span></span><span>
+</span><span id="line-103"></span><span class="hs-keyword">type</span><span> </span><span id="ExitifyM"><span class="annot"><a href="GHC.Core.Opt.Exitify.html#ExitifyM"><span class="hs-identifier hs-var">ExitifyM</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>  </span><span class="annot"><a href="GHC.Utils.Monad.State.Strict.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Var.html#JoinId"><span class="hs-identifier hs-type">JoinId</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-104"></span><span>
+</span><span id="line-105"></span><span class="hs-comment">-- | Given a recursive group of a joinrec, identifies &#8220;exit paths&#8221; and binds them as</span><span>
+</span><span id="line-106"></span><span class="hs-comment">--   join-points outside the joinrec.</span><span>
+</span><span id="line-107"></span><span class="annot"><a href="GHC.Core.Opt.Exitify.html#exitifyRec"><span class="hs-identifier hs-type">exitifyRec</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Var.Env.html#InScopeSet"><span class="hs-identifier hs-type">InScopeSet</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Types.Var.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span class="hs-special">,</span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Core.html#CoreBind"><span class="hs-identifier hs-type">CoreBind</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-108"></span><span id="exitifyRec"><span class="annot"><span class="annottext">exitifyRec :: InScopeSet -&gt; [(JoinId, CoreExpr)] -&gt; CoreProgram
+</span><a href="GHC.Core.Opt.Exitify.html#exitifyRec"><span class="hs-identifier hs-var hs-var">exitifyRec</span></a></span></span><span> </span><span id="local-6989586621681634376"><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634376"><span class="hs-identifier hs-var">in_scope</span></a></span></span><span> </span><span id="local-6989586621681634377"><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634377"><span class="hs-identifier hs-var">pairs</span></a></span></span><span>
+</span><span id="line-109"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; CoreExpr -&gt; Bind JoinId
+forall b. b -&gt; Expr b -&gt; Bind b
+</span><a href="GHC.Core.html#NonRec"><span class="hs-identifier hs-var">NonRec</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634378"><span class="hs-identifier hs-var">xid</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634379"><span class="hs-identifier hs-var">rhs</span></a></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681634378"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634378"><span class="hs-identifier hs-var">xid</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681634379"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634379"><span class="hs-identifier hs-var">rhs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634380"><span class="hs-identifier hs-var">exits</span></a></span><span> </span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">CoreProgram -&gt; CoreProgram -&gt; CoreProgram
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)] -&gt; Bind JoinId
+forall b. [(b, Expr b)] -&gt; Bind b
+</span><a href="GHC.Core.html#Rec"><span class="hs-identifier hs-var">Rec</span></a></span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634381"><span class="hs-identifier hs-var">pairs'</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-110"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-111"></span><span>    </span><span class="hs-comment">-- We need the set of free variables of many subexpressions here, so</span><span>
+</span><span id="line-112"></span><span>    </span><span class="hs-comment">-- annotate the AST with them</span><span>
+</span><span id="line-113"></span><span>    </span><span class="hs-comment">-- see Note [Calculating free variables]</span><span>
+</span><span id="line-114"></span><span>    </span><span id="local-6989586621681634382"><span class="annot"><span class="annottext">ann_pairs :: [(JoinId, CoreExprWithFVs)]
+</span><a href="#local-6989586621681634382"><span class="hs-identifier hs-var hs-var">ann_pairs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((JoinId, CoreExpr) -&gt; (JoinId, CoreExprWithFVs))
+-&gt; [(JoinId, CoreExpr)] -&gt; [(JoinId, CoreExprWithFVs)]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(CoreExpr -&gt; CoreExprWithFVs)
+-&gt; (JoinId, CoreExpr) -&gt; (JoinId, CoreExprWithFVs)
+forall b c a. (b -&gt; c) -&gt; (a, b) -&gt; (a, c)
+forall (p :: * -&gt; * -&gt; *) b c a.
+Bifunctor p =&gt;
+(b -&gt; c) -&gt; p a b -&gt; p a c
+</span><a href="../../base-4.18.2.1/src/Data.Bifunctor.html#second/Data.Bifunctor.html#second"><span class="hs-identifier hs-var">second</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; CoreExprWithFVs
+</span><a href="GHC.Core.FVs.html#freeVars"><span class="hs-identifier hs-var">freeVars</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634377"><span class="hs-identifier hs-var">pairs</span></a></span><span>
+</span><span id="line-115"></span><span>
+</span><span id="line-116"></span><span>    </span><span class="hs-comment">-- Which are the recursive calls?</span><span>
+</span><span id="line-117"></span><span>    </span><span id="local-6989586621681634384"><span class="annot"><span class="annottext">recursive_calls :: VarSet
+</span><a href="#local-6989586621681634384"><span class="hs-identifier hs-var hs-var">recursive_calls</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; VarSet
+</span><a href="GHC.Types.Var.Set.html#mkVarSet"><span class="hs-identifier hs-var">mkVarSet</span></a></span><span> </span><span class="annot"><span class="annottext">([JoinId] -&gt; VarSet) -&gt; [JoinId] -&gt; VarSet
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">((JoinId, CoreExpr) -&gt; JoinId) -&gt; [(JoinId, CoreExpr)] -&gt; [JoinId]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">(JoinId, CoreExpr) -&gt; JoinId
+forall a b. (a, b) -&gt; a
+</span><a href="../../base-4.18.2.1/src/Data.Tuple.html#fst/Data.Tuple.html#fst"><span class="hs-identifier hs-var">fst</span></a></span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634377"><span class="hs-identifier hs-var">pairs</span></a></span><span>
+</span><span id="line-118"></span><span>
+</span><span id="line-119"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621681634381"><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634381"><span class="hs-identifier hs-var">pairs'</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681634380"><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634380"><span class="hs-identifier hs-var">exits</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">State [(JoinId, CoreExpr)] [(JoinId, CoreExpr)]
+-&gt; [(JoinId, CoreExpr)]
+-&gt; ([(JoinId, CoreExpr)], [(JoinId, CoreExpr)])
+forall s a. State s a -&gt; s -&gt; (a, s)
+</span><a href="GHC.Utils.Monad.State.Strict.html#runState"><span class="hs-operator hs-var">`runState`</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(State [(JoinId, CoreExpr)] [(JoinId, CoreExpr)]
+ -&gt; ([(JoinId, CoreExpr)], [(JoinId, CoreExpr)]))
+-&gt; State [(JoinId, CoreExpr)] [(JoinId, CoreExpr)]
+-&gt; ([(JoinId, CoreExpr)], [(JoinId, CoreExpr)])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-120"></span><span>        </span><span class="annot"><span class="annottext">[(JoinId, CoreExprWithFVs)]
+-&gt; ((JoinId, CoreExprWithFVs)
+    -&gt; State [(JoinId, CoreExpr)] (JoinId, CoreExpr))
+-&gt; State [(JoinId, CoreExpr)] [(JoinId, CoreExpr)]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m (t b)
+</span><a href="../../base-4.18.2.1/src/Data.Traversable.html#forM/Data.Traversable.html#forM"><span class="hs-identifier hs-var">forM</span></a></span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExprWithFVs)]
+</span><a href="#local-6989586621681634382"><span class="hs-identifier hs-var">ann_pairs</span></a></span><span> </span><span class="annot"><span class="annottext">(((JoinId, CoreExprWithFVs)
+  -&gt; State [(JoinId, CoreExpr)] (JoinId, CoreExpr))
+ -&gt; State [(JoinId, CoreExpr)] [(JoinId, CoreExpr)])
+-&gt; ((JoinId, CoreExprWithFVs)
+    -&gt; State [(JoinId, CoreExpr)] (JoinId, CoreExpr))
+-&gt; State [(JoinId, CoreExpr)] [(JoinId, CoreExpr)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621681634388"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634388"><span class="hs-identifier hs-var">x</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681634389"><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634389"><span class="hs-identifier hs-var">rhs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-121"></span><span>            </span><span class="hs-comment">-- go past the lambdas of the join point</span><span>
+</span><span id="line-122"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681634390"><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634390"><span class="hs-identifier hs-var">args</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681634391"><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634391"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; CoreExprWithFVs -&gt; ([JoinId], CoreExprWithFVs)
+forall bndr annot.
+Int -&gt; AnnExpr bndr annot -&gt; ([bndr], AnnExpr bndr annot)
+</span><a href="GHC.Core.html#collectNAnnBndrs"><span class="hs-identifier hs-var">collectNAnnBndrs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">JoinId -&gt; Int
+</span><a href="GHC.Types.Id.html#idJoinArity"><span class="hs-identifier hs-var">idJoinArity</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634388"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634389"><span class="hs-identifier hs-var">rhs</span></a></span><span>
+</span><span id="line-123"></span><span>            </span><span id="local-6989586621681634394"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634394"><span class="hs-identifier hs-var">body'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; CoreExprWithFVs -&gt; ExitifyM CoreExpr
+</span><a href="#local-6989586621681634395"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634390"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634391"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-124"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681634396"><span class="annot"><span class="annottext">rhs' :: CoreExpr
+</span><a href="#local-6989586621681634396"><span class="hs-identifier hs-var hs-var">rhs'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; CoreExpr -&gt; CoreExpr
+forall b. [b] -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#mkLams"><span class="hs-identifier hs-var">mkLams</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634390"><span class="hs-identifier hs-var">args</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634394"><span class="hs-identifier hs-var">body'</span></a></span><span>
+</span><span id="line-125"></span><span>            </span><span class="annot"><span class="annottext">(JoinId, CoreExpr) -&gt; State [(JoinId, CoreExpr)] (JoinId, CoreExpr)
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634388"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634396"><span class="hs-identifier hs-var">rhs'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-126"></span><span>
+</span><span id="line-127"></span><span>    </span><span class="hs-comment">---------------------</span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-comment">-- 'go' is the main working function.</span><span>
+</span><span id="line-129"></span><span>    </span><span class="hs-comment">-- It goes through the RHS (tail-call positions only),</span><span>
+</span><span id="line-130"></span><span>    </span><span class="hs-comment">-- checks if there are no more recursive calls, if so, abstracts over</span><span>
+</span><span id="line-131"></span><span>    </span><span class="hs-comment">-- variables bound on the way and lifts it out as a join point.</span><span>
+</span><span id="line-132"></span><span>    </span><span class="hs-comment">--</span><span>
+</span><span id="line-133"></span><span>    </span><span class="hs-comment">-- ExitifyM is a state monad to keep track of floated binds</span><span>
+</span><span id="line-134"></span><span>    </span><span class="annot"><a href="#local-6989586621681634395"><span class="hs-identifier hs-type">go</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.Var.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span class="hs-special">]</span><span>           </span><span class="hs-comment">-- Variables that are in-scope here, but</span><span>
+</span><span id="line-135"></span><span>                          </span><span class="hs-comment">-- not in scope at the joinrec; that is,</span><span>
+</span><span id="line-136"></span><span>                          </span><span class="hs-comment">-- we must potentially abstract over them.</span><span>
+</span><span id="line-137"></span><span>                          </span><span class="hs-comment">-- Invariant: they are kept in dependency order</span><span>
+</span><span id="line-138"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.FVs.html#CoreExprWithFVs"><span class="hs-identifier hs-type">CoreExprWithFVs</span></a></span><span> </span><span class="hs-comment">-- Current expression in tail position</span><span>
+</span><span id="line-139"></span><span>       </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.Opt.Exitify.html#ExitifyM"><span class="hs-identifier hs-type">ExitifyM</span></a></span><span> </span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span>
+</span><span id="line-140"></span><span>
+</span><span id="line-141"></span><span>    </span><span class="hs-comment">-- We first look at the expression (no matter what it shape is)</span><span>
+</span><span id="line-142"></span><span>    </span><span class="hs-comment">-- and determine if we can turn it into a exit join point</span><span>
+</span><span id="line-143"></span><span>    </span><span id="local-6989586621681634395"><span class="annot"><span class="annottext">go :: [JoinId] -&gt; CoreExprWithFVs -&gt; ExitifyM CoreExpr
+</span><a href="#local-6989586621681634395"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621681634398"><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634398"><span class="hs-identifier hs-var">captured</span></a></span></span><span> </span><span id="local-6989586621681634399"><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634399"><span class="hs-identifier hs-var">ann_e</span></a></span></span><span>
+</span><span id="line-144"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="hs-comment">-- An exit expression has no recursive calls</span><span>
+</span><span id="line-145"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681634400"><span class="annot"><span class="annottext">fvs :: VarSet
+</span><a href="#local-6989586621681634400"><span class="hs-identifier hs-var hs-var">fvs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">DVarSet -&gt; VarSet
+</span><a href="GHC.Types.Var.Set.html#dVarSetToVarSet"><span class="hs-identifier hs-var">dVarSetToVarSet</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CoreExprWithFVs -&gt; DVarSet
+</span><a href="GHC.Core.FVs.html#freeVarsOf"><span class="hs-identifier hs-var">freeVarsOf</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634399"><span class="hs-identifier hs-var">ann_e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-146"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">VarSet -&gt; VarSet -&gt; Bool
+</span><a href="GHC.Types.Var.Set.html#disjointVarSet"><span class="hs-identifier hs-var">disjointVarSet</span></a></span><span> </span><span class="annot"><span class="annottext">VarSet
+</span><a href="#local-6989586621681634400"><span class="hs-identifier hs-var">fvs</span></a></span><span> </span><span class="annot"><span class="annottext">VarSet
+</span><a href="#local-6989586621681634384"><span class="hs-identifier hs-var">recursive_calls</span></a></span><span>
+</span><span id="line-147"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; CoreExpr -&gt; VarSet -&gt; ExitifyM CoreExpr
+</span><a href="#local-6989586621681634404"><span class="hs-identifier hs-var">go_exit</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634398"><span class="hs-identifier hs-var">captured</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CoreExprWithFVs -&gt; CoreExpr
+forall bndr annot. AnnExpr bndr annot -&gt; Expr bndr
+</span><a href="GHC.Core.html#deAnnotate"><span class="hs-identifier hs-var">deAnnotate</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634399"><span class="hs-identifier hs-var">ann_e</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">VarSet
+</span><a href="#local-6989586621681634400"><span class="hs-identifier hs-var">fvs</span></a></span><span>
+</span><span id="line-148"></span><span>
+</span><span id="line-149"></span><span>    </span><span class="hs-comment">-- We could not turn it into a exit join point. So now recurse</span><span>
+</span><span id="line-150"></span><span>    </span><span class="hs-comment">-- into all expression where eligible exit join points might sit,</span><span>
+</span><span id="line-151"></span><span>    </span><span class="hs-comment">-- i.e. into all tail-call positions:</span><span>
+</span><span id="line-152"></span><span>
+</span><span id="line-153"></span><span>    </span><span class="hs-comment">-- Case right hand sides are in tail-call position</span><span>
+</span><span id="line-154"></span><span>    </span><span class="annot"><a href="#local-6989586621681634395"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681634406"><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634406"><span class="hs-identifier hs-var">captured</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">DVarSet
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.html#AnnCase"><span class="hs-identifier hs-type">AnnCase</span></a></span><span> </span><span id="local-6989586621681634408"><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634408"><span class="hs-identifier hs-var">scrut</span></a></span></span><span> </span><span id="local-6989586621681634409"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634409"><span class="hs-identifier hs-var">bndr</span></a></span></span><span> </span><span id="local-6989586621681634410"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681634410"><span class="hs-identifier hs-var">ty</span></a></span></span><span> </span><span id="local-6989586621681634411"><span class="annot"><span class="annottext">[AnnAlt JoinId DVarSet]
+</span><a href="#local-6989586621681634411"><span class="hs-identifier hs-var">alts</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-155"></span><span>        </span><span id="local-6989586621681634412"><span class="annot"><span class="annottext">[Alt JoinId]
+</span><a href="#local-6989586621681634412"><span class="hs-identifier hs-var">alts'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[AnnAlt JoinId DVarSet]
+-&gt; (AnnAlt JoinId DVarSet
+    -&gt; State [(JoinId, CoreExpr)] (Alt JoinId))
+-&gt; State [(JoinId, CoreExpr)] [Alt JoinId]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m (t b)
+</span><a href="../../base-4.18.2.1/src/Data.Traversable.html#forM/Data.Traversable.html#forM"><span class="hs-identifier hs-var">forM</span></a></span><span> </span><span class="annot"><span class="annottext">[AnnAlt JoinId DVarSet]
+</span><a href="#local-6989586621681634411"><span class="hs-identifier hs-var">alts</span></a></span><span> </span><span class="annot"><span class="annottext">((AnnAlt JoinId DVarSet -&gt; State [(JoinId, CoreExpr)] (Alt JoinId))
+ -&gt; State [(JoinId, CoreExpr)] [Alt JoinId])
+-&gt; (AnnAlt JoinId DVarSet
+    -&gt; State [(JoinId, CoreExpr)] (Alt JoinId))
+-&gt; State [(JoinId, CoreExpr)] [Alt JoinId]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#AnnAlt"><span class="hs-identifier hs-type">AnnAlt</span></a></span><span> </span><span id="local-6989586621681634414"><span class="annot"><span class="annottext">AltCon
+</span><a href="#local-6989586621681634414"><span class="hs-identifier hs-var">dc</span></a></span></span><span> </span><span id="local-6989586621681634415"><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634415"><span class="hs-identifier hs-var">pats</span></a></span></span><span> </span><span id="local-6989586621681634416"><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634416"><span class="hs-identifier hs-var">rhs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-156"></span><span>            </span><span id="local-6989586621681634417"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634417"><span class="hs-identifier hs-var">rhs'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; CoreExprWithFVs -&gt; ExitifyM CoreExpr
+</span><a href="#local-6989586621681634395"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634406"><span class="hs-identifier hs-var">captured</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; [JoinId] -&gt; [JoinId]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634409"><span class="hs-identifier hs-var">bndr</span></a></span><span class="hs-special">]</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; [JoinId] -&gt; [JoinId]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634415"><span class="hs-identifier hs-var">pats</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634416"><span class="hs-identifier hs-var">rhs</span></a></span><span>
+</span><span id="line-157"></span><span>            </span><span class="annot"><span class="annottext">Alt JoinId -&gt; State [(JoinId, CoreExpr)] (Alt JoinId)
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">AltCon -&gt; [JoinId] -&gt; CoreExpr -&gt; Alt JoinId
+forall b. AltCon -&gt; [b] -&gt; Expr b -&gt; Alt b
+</span><a href="GHC.Core.html#Alt"><span class="hs-identifier hs-var">Alt</span></a></span><span> </span><span class="annot"><span class="annottext">AltCon
+</span><a href="#local-6989586621681634414"><span class="hs-identifier hs-var">dc</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634415"><span class="hs-identifier hs-var">pats</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634417"><span class="hs-identifier hs-var">rhs'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-158"></span><span>        </span><span class="annot"><span class="annottext">CoreExpr -&gt; ExitifyM CoreExpr
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(CoreExpr -&gt; ExitifyM CoreExpr) -&gt; CoreExpr -&gt; ExitifyM CoreExpr
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; JoinId -&gt; Type -&gt; [Alt JoinId] -&gt; CoreExpr
+forall b. Expr b -&gt; b -&gt; Type -&gt; [Alt b] -&gt; Expr b
+</span><a href="GHC.Core.html#Case"><span class="hs-identifier hs-var">Case</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CoreExprWithFVs -&gt; CoreExpr
+forall bndr annot. AnnExpr bndr annot -&gt; Expr bndr
+</span><a href="GHC.Core.html#deAnnotate"><span class="hs-identifier hs-var">deAnnotate</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634408"><span class="hs-identifier hs-var">scrut</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634409"><span class="hs-identifier hs-var">bndr</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681634410"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="annot"><span class="annottext">[Alt JoinId]
+</span><a href="#local-6989586621681634412"><span class="hs-identifier hs-var">alts'</span></a></span><span>
+</span><span id="line-159"></span><span>
+</span><span id="line-160"></span><span>    </span><span class="annot"><a href="#local-6989586621681634395"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621681634418"><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634418"><span class="hs-identifier hs-var">captured</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">DVarSet
+</span><span class="hs-identifier">_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="GHC.Core.html#AnnLet"><span class="hs-identifier hs-type">AnnLet</span></a></span><span> </span><span id="local-6989586621681634420"><span class="annot"><span class="annottext">AnnBind JoinId DVarSet
+</span><a href="#local-6989586621681634420"><span class="hs-identifier hs-var">ann_bind</span></a></span></span><span> </span><span id="local-6989586621681634421"><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634421"><span class="hs-identifier hs-var">body</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-161"></span><span>        </span><span class="hs-comment">-- join point, RHS and body are in tail-call position</span><span>
+</span><span id="line-162"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="GHC.Core.html#AnnNonRec"><span class="hs-identifier hs-type">AnnNonRec</span></a></span><span> </span><span id="local-6989586621681634423"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634423"><span class="hs-identifier hs-var">j</span></a></span></span><span> </span><span id="local-6989586621681634424"><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634424"><span class="hs-identifier hs-var">rhs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">AnnBind JoinId DVarSet
+</span><a href="#local-6989586621681634420"><span class="hs-identifier hs-var">ann_bind</span></a></span><span>
+</span><span id="line-163"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621681634425"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681634425"><span class="hs-identifier hs-var">join_arity</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; Maybe Int
+</span><a href="GHC.Types.Id.html#isJoinId_maybe"><span class="hs-identifier hs-var">isJoinId_maybe</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634423"><span class="hs-identifier hs-var">j</span></a></span><span>
+</span><span id="line-164"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681634427"><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634427"><span class="hs-identifier hs-var">params</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681634428"><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634428"><span class="hs-identifier hs-var">join_body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; CoreExprWithFVs -&gt; ([JoinId], CoreExprWithFVs)
+forall bndr annot.
+Int -&gt; AnnExpr bndr annot -&gt; ([bndr], AnnExpr bndr annot)
+</span><a href="GHC.Core.html#collectNAnnBndrs"><span class="hs-identifier hs-var">collectNAnnBndrs</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681634425"><span class="hs-identifier hs-var">join_arity</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634424"><span class="hs-identifier hs-var">rhs</span></a></span><span>
+</span><span id="line-165"></span><span>             </span><span id="local-6989586621681634429"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634429"><span class="hs-identifier hs-var">join_body'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; CoreExprWithFVs -&gt; ExitifyM CoreExpr
+</span><a href="#local-6989586621681634395"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634418"><span class="hs-identifier hs-var">captured</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; [JoinId] -&gt; [JoinId]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634427"><span class="hs-identifier hs-var">params</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634428"><span class="hs-identifier hs-var">join_body</span></a></span><span>
+</span><span id="line-166"></span><span>             </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681634430"><span class="annot"><span class="annottext">rhs' :: CoreExpr
+</span><a href="#local-6989586621681634430"><span class="hs-identifier hs-var hs-var">rhs'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; CoreExpr -&gt; CoreExpr
+forall b. [b] -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#mkLams"><span class="hs-identifier hs-var">mkLams</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634427"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634429"><span class="hs-identifier hs-var">join_body'</span></a></span><span>
+</span><span id="line-167"></span><span>             </span><span id="local-6989586621681634431"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634431"><span class="hs-identifier hs-var">body'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; CoreExprWithFVs -&gt; ExitifyM CoreExpr
+</span><a href="#local-6989586621681634395"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634418"><span class="hs-identifier hs-var">captured</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; [JoinId] -&gt; [JoinId]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634423"><span class="hs-identifier hs-var">j</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634421"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-168"></span><span>             </span><span class="annot"><span class="annottext">CoreExpr -&gt; ExitifyM CoreExpr
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(CoreExpr -&gt; ExitifyM CoreExpr) -&gt; CoreExpr -&gt; ExitifyM CoreExpr
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Bind JoinId -&gt; CoreExpr -&gt; CoreExpr
+forall b. Bind b -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">JoinId -&gt; CoreExpr -&gt; Bind JoinId
+forall b. b -&gt; Expr b -&gt; Bind b
+</span><a href="GHC.Core.html#NonRec"><span class="hs-identifier hs-var">NonRec</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634423"><span class="hs-identifier hs-var">j</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634430"><span class="hs-identifier hs-var">rhs'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634431"><span class="hs-identifier hs-var">body'</span></a></span><span>
+</span><span id="line-169"></span><span>
+</span><span id="line-170"></span><span>        </span><span class="hs-comment">-- rec join point, RHSs and body are in tail-call position</span><span>
+</span><span id="line-171"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><a href="GHC.Core.html#AnnRec"><span class="hs-identifier hs-type">AnnRec</span></a></span><span> </span><span id="local-6989586621681634433"><span class="annot"><span class="annottext">[(JoinId, CoreExprWithFVs)]
+</span><a href="#local-6989586621681634433"><span class="hs-identifier hs-var">pairs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">AnnBind JoinId DVarSet
+</span><a href="#local-6989586621681634420"><span class="hs-identifier hs-var">ann_bind</span></a></span><span>
+</span><span id="line-172"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; Bool
+</span><a href="GHC.Types.Id.html#isJoinId"><span class="hs-identifier hs-var">isJoinId</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(JoinId, CoreExprWithFVs) -&gt; JoinId
+forall a b. (a, b) -&gt; a
+</span><a href="../../base-4.18.2.1/src/Data.Tuple.html#fst/Data.Tuple.html#fst"><span class="hs-identifier hs-var">fst</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(JoinId, CoreExprWithFVs)] -&gt; (JoinId, CoreExprWithFVs)
+forall a. HasCallStack =&gt; [a] -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#head/GHC.List.html#head"><span class="hs-identifier hs-var">head</span></a></span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExprWithFVs)]
+</span><a href="#local-6989586621681634433"><span class="hs-identifier hs-var">pairs</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-173"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681634435"><span class="annot"><span class="annottext">js :: [JoinId]
+</span><a href="#local-6989586621681634435"><span class="hs-identifier hs-var hs-var">js</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((JoinId, CoreExprWithFVs) -&gt; JoinId)
+-&gt; [(JoinId, CoreExprWithFVs)] -&gt; [JoinId]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">(JoinId, CoreExprWithFVs) -&gt; JoinId
+forall a b. (a, b) -&gt; a
+</span><a href="../../base-4.18.2.1/src/Data.Tuple.html#fst/Data.Tuple.html#fst"><span class="hs-identifier hs-var">fst</span></a></span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExprWithFVs)]
+</span><a href="#local-6989586621681634433"><span class="hs-identifier hs-var">pairs</span></a></span><span>
+</span><span id="line-174"></span><span>             </span><span id="local-6989586621681634436"><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634436"><span class="hs-identifier hs-var">pairs'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExprWithFVs)]
+-&gt; ((JoinId, CoreExprWithFVs)
+    -&gt; State [(JoinId, CoreExpr)] (JoinId, CoreExpr))
+-&gt; State [(JoinId, CoreExpr)] [(JoinId, CoreExpr)]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Traversable t, Monad m) =&gt;
+t a -&gt; (a -&gt; m b) -&gt; m (t b)
+</span><a href="../../base-4.18.2.1/src/Data.Traversable.html#forM/Data.Traversable.html#forM"><span class="hs-identifier hs-var">forM</span></a></span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExprWithFVs)]
+</span><a href="#local-6989586621681634433"><span class="hs-identifier hs-var">pairs</span></a></span><span> </span><span class="annot"><span class="annottext">(((JoinId, CoreExprWithFVs)
+  -&gt; State [(JoinId, CoreExpr)] (JoinId, CoreExpr))
+ -&gt; State [(JoinId, CoreExpr)] [(JoinId, CoreExpr)])
+-&gt; ((JoinId, CoreExprWithFVs)
+    -&gt; State [(JoinId, CoreExpr)] (JoinId, CoreExpr))
+-&gt; State [(JoinId, CoreExpr)] [(JoinId, CoreExpr)]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621681634437"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634437"><span class="hs-identifier hs-var">j</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621681634438"><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634438"><span class="hs-identifier hs-var">rhs</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-175"></span><span>                 </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681634439"><span class="annot"><span class="annottext">join_arity :: Int
+</span><a href="#local-6989586621681634439"><span class="hs-identifier hs-var hs-var">join_arity</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; Int
+</span><a href="GHC.Types.Id.html#idJoinArity"><span class="hs-identifier hs-var">idJoinArity</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634437"><span class="hs-identifier hs-var">j</span></a></span><span>
+</span><span id="line-176"></span><span>                     </span><span class="hs-special">(</span><span id="local-6989586621681634440"><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634440"><span class="hs-identifier hs-var">params</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681634441"><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634441"><span class="hs-identifier hs-var">join_body</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; CoreExprWithFVs -&gt; ([JoinId], CoreExprWithFVs)
+forall bndr annot.
+Int -&gt; AnnExpr bndr annot -&gt; ([bndr], AnnExpr bndr annot)
+</span><a href="GHC.Core.html#collectNAnnBndrs"><span class="hs-identifier hs-var">collectNAnnBndrs</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681634439"><span class="hs-identifier hs-var">join_arity</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634438"><span class="hs-identifier hs-var">rhs</span></a></span><span>
+</span><span id="line-177"></span><span>                 </span><span id="local-6989586621681634442"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634442"><span class="hs-identifier hs-var">join_body'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; CoreExprWithFVs -&gt; ExitifyM CoreExpr
+</span><a href="#local-6989586621681634395"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634418"><span class="hs-identifier hs-var">captured</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; [JoinId] -&gt; [JoinId]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634435"><span class="hs-identifier hs-var">js</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; [JoinId] -&gt; [JoinId]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634440"><span class="hs-identifier hs-var">params</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634441"><span class="hs-identifier hs-var">join_body</span></a></span><span>
+</span><span id="line-178"></span><span>                 </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681634443"><span class="annot"><span class="annottext">rhs' :: CoreExpr
+</span><a href="#local-6989586621681634443"><span class="hs-identifier hs-var hs-var">rhs'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; CoreExpr -&gt; CoreExpr
+forall b. [b] -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#mkLams"><span class="hs-identifier hs-var">mkLams</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634440"><span class="hs-identifier hs-var">params</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634442"><span class="hs-identifier hs-var">join_body'</span></a></span><span>
+</span><span id="line-179"></span><span>                 </span><span class="annot"><span class="annottext">(JoinId, CoreExpr) -&gt; State [(JoinId, CoreExpr)] (JoinId, CoreExpr)
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634437"><span class="hs-identifier hs-var">j</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634443"><span class="hs-identifier hs-var">rhs'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-180"></span><span>             </span><span id="local-6989586621681634444"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634444"><span class="hs-identifier hs-var">body'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; CoreExprWithFVs -&gt; ExitifyM CoreExpr
+</span><a href="#local-6989586621681634395"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634418"><span class="hs-identifier hs-var">captured</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; [JoinId] -&gt; [JoinId]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634435"><span class="hs-identifier hs-var">js</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634421"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-181"></span><span>             </span><span class="annot"><span class="annottext">CoreExpr -&gt; ExitifyM CoreExpr
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(CoreExpr -&gt; ExitifyM CoreExpr) -&gt; CoreExpr -&gt; ExitifyM CoreExpr
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Bind JoinId -&gt; CoreExpr -&gt; CoreExpr
+forall b. Bind b -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)] -&gt; Bind JoinId
+forall b. [(b, Expr b)] -&gt; Bind b
+</span><a href="GHC.Core.html#Rec"><span class="hs-identifier hs-var">Rec</span></a></span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634436"><span class="hs-identifier hs-var">pairs'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634444"><span class="hs-identifier hs-var">body'</span></a></span><span>
+</span><span id="line-182"></span><span>
+</span><span id="line-183"></span><span>        </span><span class="hs-comment">-- normal Let, only the body is in tail-call position</span><span>
+</span><span id="line-184"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>
+</span><span id="line-185"></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621681634445"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634445"><span class="hs-identifier hs-var">body'</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; CoreExprWithFVs -&gt; ExitifyM CoreExpr
+</span><a href="#local-6989586621681634395"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634418"><span class="hs-identifier hs-var">captured</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; [JoinId] -&gt; [JoinId]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">Bind JoinId -&gt; [JoinId]
+forall b. Bind b -&gt; [b]
+</span><a href="GHC.Core.html#bindersOf"><span class="hs-identifier hs-var">bindersOf</span></a></span><span> </span><span class="annot"><span class="annottext">Bind JoinId
+</span><a href="#local-6989586621681634447"><span class="hs-identifier hs-var">bind</span></a></span><span> </span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634421"><span class="hs-identifier hs-var">body</span></a></span><span>
+</span><span id="line-186"></span><span>             </span><span class="annot"><span class="annottext">CoreExpr -&gt; ExitifyM CoreExpr
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(CoreExpr -&gt; ExitifyM CoreExpr) -&gt; CoreExpr -&gt; ExitifyM CoreExpr
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Bind JoinId -&gt; CoreExpr -&gt; CoreExpr
+forall b. Bind b -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#Let"><span class="hs-identifier hs-var">Let</span></a></span><span> </span><span class="annot"><span class="annottext">Bind JoinId
+</span><a href="#local-6989586621681634447"><span class="hs-identifier hs-var">bind</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634445"><span class="hs-identifier hs-var">body'</span></a></span><span>
+</span><span id="line-187"></span><span>      </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621681634447"><span class="annot"><span class="annottext">bind :: Bind JoinId
+</span><a href="#local-6989586621681634447"><span class="hs-identifier hs-var hs-var">bind</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">AnnBind JoinId DVarSet -&gt; Bind JoinId
+forall b annot. AnnBind b annot -&gt; Bind b
+</span><a href="GHC.Core.html#deAnnBind"><span class="hs-identifier hs-var">deAnnBind</span></a></span><span> </span><span class="annot"><span class="annottext">AnnBind JoinId DVarSet
+</span><a href="#local-6989586621681634420"><span class="hs-identifier hs-var">ann_bind</span></a></span><span>
+</span><span id="line-188"></span><span>
+</span><span id="line-189"></span><span>    </span><span class="hs-comment">-- Cannot be turned into an exit join point, but also has no</span><span>
+</span><span id="line-190"></span><span>    </span><span class="hs-comment">-- tail-call subexpression. Nothing to do here.</span><span>
+</span><span id="line-191"></span><span>    </span><span class="annot"><a href="#local-6989586621681634395"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621681634449"><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634449"><span class="hs-identifier hs-var">ann_e</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; ExitifyM CoreExpr
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CoreExprWithFVs -&gt; CoreExpr
+forall bndr annot. AnnExpr bndr annot -&gt; Expr bndr
+</span><a href="GHC.Core.html#deAnnotate"><span class="hs-identifier hs-var">deAnnotate</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExprWithFVs
+</span><a href="#local-6989586621681634449"><span class="hs-identifier hs-var">ann_e</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-192"></span><span>
+</span><span id="line-193"></span><span>    </span><span class="hs-comment">---------------------</span><span>
+</span><span id="line-194"></span><span>    </span><span class="annot"><a href="#local-6989586621681634404"><span class="hs-identifier hs-type">go_exit</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="GHC.Types.Var.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span class="hs-special">]</span><span>      </span><span class="hs-comment">-- Variables captured locally</span><span>
+</span><span id="line-195"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span>   </span><span class="hs-comment">-- An exit expression</span><span>
+</span><span id="line-196"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Var.Set.html#VarSet"><span class="hs-identifier hs-type">VarSet</span></a></span><span>     </span><span class="hs-comment">-- Free vars of the expression</span><span>
+</span><span id="line-197"></span><span>            </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.Opt.Exitify.html#ExitifyM"><span class="hs-identifier hs-type">ExitifyM</span></a></span><span> </span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span>
+</span><span id="line-198"></span><span>    </span><span class="hs-comment">-- go_exit deals with a tail expression that is floatable</span><span>
+</span><span id="line-199"></span><span>    </span><span class="hs-comment">-- out as an exit point; that is, it mentions no recursive calls</span><span>
+</span><span id="line-200"></span><span>    </span><span id="local-6989586621681634404"><span class="annot"><span class="annottext">go_exit :: [JoinId] -&gt; CoreExpr -&gt; VarSet -&gt; ExitifyM CoreExpr
+</span><a href="#local-6989586621681634404"><span class="hs-identifier hs-var hs-var">go_exit</span></a></span></span><span> </span><span id="local-6989586621681634450"><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634450"><span class="hs-identifier hs-var">captured</span></a></span></span><span> </span><span id="local-6989586621681634451"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634451"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span id="local-6989586621681634452"><span class="annot"><span class="annottext">VarSet
+</span><a href="#local-6989586621681634452"><span class="hs-identifier hs-var">fvs</span></a></span></span><span>
+</span><span id="line-201"></span><span>      </span><span class="hs-comment">-- Do not touch an expression that is already a join jump where all arguments</span><span>
+</span><span id="line-202"></span><span>      </span><span class="hs-comment">-- are captured variables. See Note [Idempotency]</span><span>
+</span><span id="line-203"></span><span>      </span><span class="hs-comment">-- But _do_ float join jumps with interesting arguments.</span><span>
+</span><span id="line-204"></span><span>      </span><span class="hs-comment">-- See Note [Jumps can be interesting]</span><span>
+</span><span id="line-205"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621681634453"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634453"><span class="hs-identifier hs-var">f</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681634454"><span class="annot"><span class="annottext">[CoreExpr]
+</span><a href="#local-6989586621681634454"><span class="hs-identifier hs-var">args</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; (CoreExpr, [CoreExpr])
+forall b. Expr b -&gt; (Expr b, [Expr b])
+</span><a href="GHC.Core.html#collectArgs"><span class="hs-identifier hs-var">collectArgs</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634451"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-206"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; Bool
+</span><a href="GHC.Types.Id.html#isJoinId"><span class="hs-identifier hs-var">isJoinId</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634453"><span class="hs-identifier hs-var">f</span></a></span><span>
+</span><span id="line-207"></span><span>      </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">(CoreExpr -&gt; Bool) -&gt; [CoreExpr] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#all/Data.Foldable.html#all"><span class="hs-identifier hs-var">all</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; Bool
+</span><a href="#local-6989586621681634457"><span class="hs-identifier hs-var">isCapturedVarArg</span></a></span><span> </span><span class="annot"><span class="annottext">[CoreExpr]
+</span><a href="#local-6989586621681634454"><span class="hs-identifier hs-var">args</span></a></span><span>
+</span><span id="line-208"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; ExitifyM CoreExpr
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634451"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-209"></span><span>
+</span><span id="line-210"></span><span>      </span><span class="hs-comment">-- Do not touch a boring expression (see Note [Interesting expression])</span><span>
+</span><span id="line-211"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681634459"><span class="hs-identifier hs-var">is_interesting</span></a></span><span>
+</span><span id="line-212"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; ExitifyM CoreExpr
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634451"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-213"></span><span>
+</span><span id="line-214"></span><span>      </span><span class="hs-comment">-- Cannot float out if local join points are used, as</span><span>
+</span><span id="line-215"></span><span>      </span><span class="hs-comment">-- we cannot abstract over them</span><span>
+</span><span id="line-216"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681634460"><span class="hs-identifier hs-var">captures_join_points</span></a></span><span>
+</span><span id="line-217"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; ExitifyM CoreExpr
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634451"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-218"></span><span>
+</span><span id="line-219"></span><span>      </span><span class="hs-comment">-- We have something to float out!</span><span>
+</span><span id="line-220"></span><span>      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>
+</span><span id="line-221"></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-special">{</span><span> </span><span class="hs-comment">-- Assemble the RHS of the exit join point</span><span>
+</span><span id="line-222"></span><span>             </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681634461"><span class="annot"><span class="annottext">rhs :: CoreExpr
+</span><a href="#local-6989586621681634461"><span class="hs-identifier hs-var hs-var">rhs</span></a></span></span><span>   </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; CoreExpr -&gt; CoreExpr
+forall b. [b] -&gt; Expr b -&gt; Expr b
+</span><a href="GHC.Core.html#mkLams"><span class="hs-identifier hs-var">mkLams</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634462"><span class="hs-identifier hs-var">abs_vars</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634451"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-223"></span><span>                 </span><span id="local-6989586621681634463"><span class="annot"><span class="annottext">avoid :: InScopeSet
+</span><a href="#local-6989586621681634463"><span class="hs-identifier hs-var hs-var">avoid</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634376"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet -&gt; [JoinId] -&gt; InScopeSet
+</span><a href="GHC.Types.Var.Env.html#extendInScopeSetList"><span class="hs-operator hs-var">`extendInScopeSetList`</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634450"><span class="hs-identifier hs-var">captured</span></a></span><span>
+</span><span id="line-224"></span><span>             </span><span class="hs-comment">-- Remember this binding under a suitable name</span><span>
+</span><span id="line-225"></span><span>           </span><span class="hs-special">;</span><span> </span><span id="local-6989586621681634464"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634464"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">InScopeSet -&gt; Int -&gt; CoreExpr -&gt; ExitifyM JoinId
+</span><a href="GHC.Core.Opt.Exitify.html#addExit"><span class="hs-identifier hs-var">addExit</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634463"><span class="hs-identifier hs-var">avoid</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[JoinId] -&gt; Int
+forall a. [a] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#length/Data.Foldable.html#length"><span class="hs-identifier hs-var">length</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634462"><span class="hs-identifier hs-var">abs_vars</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634461"><span class="hs-identifier hs-var">rhs</span></a></span><span>
+</span><span id="line-226"></span><span>             </span><span class="hs-comment">-- And jump to it from here</span><span>
+</span><span id="line-227"></span><span>           </span><span class="hs-special">;</span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; ExitifyM CoreExpr
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(CoreExpr -&gt; ExitifyM CoreExpr) -&gt; CoreExpr -&gt; ExitifyM CoreExpr
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr -&gt; [JoinId] -&gt; CoreExpr
+forall b. Expr b -&gt; [JoinId] -&gt; Expr b
+</span><a href="GHC.Core.html#mkVarApps"><span class="hs-identifier hs-var">mkVarApps</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">JoinId -&gt; CoreExpr
+forall b. JoinId -&gt; Expr b
+</span><a href="GHC.Core.html#Var"><span class="hs-identifier hs-var">Var</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634464"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634462"><span class="hs-identifier hs-var">abs_vars</span></a></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-228"></span><span>
+</span><span id="line-229"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-230"></span><span>        </span><span class="hs-comment">-- Used to detect exit expressions that are already proper exit jumps</span><span>
+</span><span id="line-231"></span><span>        </span><span id="local-6989586621681634457"><span class="annot"><span class="annottext">isCapturedVarArg :: CoreExpr -&gt; Bool
+</span><a href="#local-6989586621681634457"><span class="hs-identifier hs-var hs-var">isCapturedVarArg</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="GHC.Core.html#Var"><span class="hs-identifier hs-type">Var</span></a></span><span> </span><span id="local-6989586621681634468"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634468"><span class="hs-identifier hs-var">v</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634468"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; [JoinId] -&gt; Bool
+forall a. Eq a =&gt; a -&gt; [a] -&gt; Bool
+forall (t :: * -&gt; *) a. (Foldable t, Eq a) =&gt; a -&gt; t a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#elem/Data.Foldable.html#elem"><span class="hs-operator hs-var">`elem`</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634450"><span class="hs-identifier hs-var">captured</span></a></span><span>
+</span><span id="line-232"></span><span>        </span><span class="annot"><a href="#local-6989586621681634457"><span class="hs-identifier hs-var">isCapturedVarArg</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-233"></span><span>
+</span><span id="line-234"></span><span>        </span><span class="hs-comment">-- An interesting exit expression has free, non-imported</span><span>
+</span><span id="line-235"></span><span>        </span><span class="hs-comment">-- variables from outside the recursive group</span><span>
+</span><span id="line-236"></span><span>        </span><span class="hs-comment">-- See Note [Interesting expression]</span><span>
+</span><span id="line-237"></span><span>        </span><span id="local-6989586621681634459"><span class="annot"><span class="annottext">is_interesting :: Bool
+</span><a href="#local-6989586621681634459"><span class="hs-identifier hs-var hs-var">is_interesting</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(JoinId -&gt; Bool) -&gt; VarSet -&gt; Bool
+</span><a href="GHC.Types.Var.Set.html#anyVarSet"><span class="hs-identifier hs-var">anyVarSet</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; Bool
+</span><a href="GHC.Types.Var.html#isLocalId"><span class="hs-identifier hs-var">isLocalId</span></a></span><span> </span><span class="annot"><span class="annottext">(VarSet -&gt; Bool) -&gt; VarSet -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span>
+</span><span id="line-238"></span><span>                         </span><span class="annot"><span class="annottext">VarSet
+</span><a href="#local-6989586621681634452"><span class="hs-identifier hs-var">fvs</span></a></span><span> </span><span class="annot"><span class="annottext">VarSet -&gt; VarSet -&gt; VarSet
+</span><a href="GHC.Types.Var.Set.html#minusVarSet"><span class="hs-operator hs-var">`minusVarSet`</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId] -&gt; VarSet
+</span><a href="GHC.Types.Var.Set.html#mkVarSet"><span class="hs-identifier hs-var">mkVarSet</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634450"><span class="hs-identifier hs-var">captured</span></a></span><span>
+</span><span id="line-239"></span><span>
+</span><span id="line-240"></span><span>        </span><span class="hs-comment">-- The arguments of this exit join point</span><span>
+</span><span id="line-241"></span><span>        </span><span class="hs-comment">-- See Note [Picking arguments to abstract over]</span><span>
+</span><span id="line-242"></span><span>        </span><span id="local-6989586621681634462"><span class="annot"><span class="annottext">abs_vars :: [JoinId]
+</span><a href="#local-6989586621681634462"><span class="hs-identifier hs-var hs-var">abs_vars</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(VarSet, [JoinId]) -&gt; [JoinId]
+forall a b. (a, b) -&gt; b
+</span><a href="../../base-4.18.2.1/src/Data.Tuple.html#snd/Data.Tuple.html#snd"><span class="hs-identifier hs-var">snd</span></a></span><span> </span><span class="annot"><span class="annottext">((VarSet, [JoinId]) -&gt; [JoinId]) -&gt; (VarSet, [JoinId]) -&gt; [JoinId]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">(JoinId -&gt; (VarSet, [JoinId]) -&gt; (VarSet, [JoinId]))
+-&gt; (VarSet, [JoinId]) -&gt; [JoinId] -&gt; (VarSet, [JoinId])
+forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; [a] -&gt; b
+forall (t :: * -&gt; *) a b.
+Foldable t =&gt;
+(a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#foldr/Data.Foldable.html#foldr"><span class="hs-identifier hs-var">foldr</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; (VarSet, [JoinId]) -&gt; (VarSet, [JoinId])
+</span><a href="#local-6989586621681634475"><span class="hs-identifier hs-var">pick</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VarSet
+</span><a href="#local-6989586621681634452"><span class="hs-identifier hs-var">fvs</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634450"><span class="hs-identifier hs-var">captured</span></a></span><span>
+</span><span id="line-243"></span><span>          </span><span class="hs-keyword">where</span><span>
+</span><span id="line-244"></span><span>            </span><span id="local-6989586621681634475"><span class="annot"><span class="annottext">pick :: JoinId -&gt; (VarSet, [JoinId]) -&gt; (VarSet, [JoinId])
+</span><a href="#local-6989586621681634475"><span class="hs-identifier hs-var hs-var">pick</span></a></span></span><span> </span><span id="local-6989586621681634476"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634476"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621681634477"><span class="annot"><span class="annottext">VarSet
+</span><a href="#local-6989586621681634477"><span class="hs-identifier hs-var">fvs'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681634478"><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634478"><span class="hs-identifier hs-var">acc</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634476"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; VarSet -&gt; Bool
+</span><a href="GHC.Types.Var.Set.html#elemVarSet"><span class="hs-operator hs-var">`elemVarSet`</span></a></span><span> </span><span class="annot"><span class="annottext">VarSet
+</span><a href="#local-6989586621681634477"><span class="hs-identifier hs-var">fvs'</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VarSet
+</span><a href="#local-6989586621681634477"><span class="hs-identifier hs-var">fvs'</span></a></span><span> </span><span class="annot"><span class="annottext">VarSet -&gt; JoinId -&gt; VarSet
+</span><a href="GHC.Types.Var.Set.html#delVarSet"><span class="hs-operator hs-var">`delVarSet`</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634476"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; JoinId
+</span><a href="#local-6989586621681634481"><span class="hs-identifier hs-var">zap</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634476"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; [JoinId] -&gt; [JoinId]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634478"><span class="hs-identifier hs-var">acc</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-245"></span><span>                               </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>           </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">VarSet
+</span><a href="#local-6989586621681634477"><span class="hs-identifier hs-var">fvs'</span></a></span><span class="hs-special">,</span><span>               </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634478"><span class="hs-identifier hs-var">acc</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-246"></span><span>
+</span><span id="line-247"></span><span>        </span><span class="hs-comment">-- We are going to abstract over these variables, so we must</span><span>
+</span><span id="line-248"></span><span>        </span><span class="hs-comment">-- zap any IdInfo they have; see #15005</span><span>
+</span><span id="line-249"></span><span>        </span><span class="hs-comment">-- cf. GHC.Core.Opt.SetLevels.abstractVars</span><span>
+</span><span id="line-250"></span><span>        </span><span id="local-6989586621681634481"><span class="annot"><span class="annottext">zap :: JoinId -&gt; JoinId
+</span><a href="#local-6989586621681634481"><span class="hs-identifier hs-var hs-var">zap</span></a></span></span><span> </span><span id="local-6989586621681634482"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634482"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; Bool
+</span><a href="GHC.Types.Var.html#isId"><span class="hs-identifier hs-var">isId</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634482"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; IdInfo -&gt; JoinId
+</span><a href="GHC.Types.Id.html#setIdInfo"><span class="hs-identifier hs-var">setIdInfo</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634482"><span class="hs-identifier hs-var">v</span></a></span><span> </span><span class="annot"><span class="annottext">IdInfo
+</span><a href="GHC.Types.Id.Info.html#vanillaIdInfo"><span class="hs-identifier hs-var">vanillaIdInfo</span></a></span><span>
+</span><span id="line-251"></span><span>              </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634482"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-252"></span><span>
+</span><span id="line-253"></span><span>        </span><span class="hs-comment">-- We cannot abstract over join points</span><span>
+</span><span id="line-254"></span><span>        </span><span id="local-6989586621681634460"><span class="annot"><span class="annottext">captures_join_points :: Bool
+</span><a href="#local-6989586621681634460"><span class="hs-identifier hs-var hs-var">captures_join_points</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(JoinId -&gt; Bool) -&gt; [JoinId] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; (a -&gt; Bool) -&gt; t a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#any/Data.Foldable.html#any"><span class="hs-identifier hs-var">any</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId -&gt; Bool
+</span><a href="GHC.Types.Id.html#isJoinId"><span class="hs-identifier hs-var">isJoinId</span></a></span><span> </span><span class="annot"><span class="annottext">[JoinId]
+</span><a href="#local-6989586621681634462"><span class="hs-identifier hs-var">abs_vars</span></a></span><span>
+</span><span id="line-255"></span><span>
+</span><span id="line-256"></span><span>
+</span><span id="line-257"></span><span class="hs-comment">-- Picks a new unique, which is disjoint from</span><span>
+</span><span id="line-258"></span><span class="hs-comment">--  * the free variables of the whole joinrec</span><span>
+</span><span id="line-259"></span><span class="hs-comment">--  * any bound variables (captured)</span><span>
+</span><span id="line-260"></span><span class="hs-comment">--  * any exit join points created so far.</span><span>
+</span><span id="line-261"></span><span class="annot"><a href="GHC.Core.Opt.Exitify.html#mkExitJoinId"><span class="hs-identifier hs-type">mkExitJoinId</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Var.Env.html#InScopeSet"><span class="hs-identifier hs-type">InScopeSet</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.TyCo.Rep.html#Type"><span class="hs-identifier hs-type">Type</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Basic.html#JoinArity"><span class="hs-identifier hs-type">JoinArity</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.Opt.Exitify.html#ExitifyM"><span class="hs-identifier hs-type">ExitifyM</span></a></span><span> </span><span class="annot"><a href="GHC.Types.Var.html#JoinId"><span class="hs-identifier hs-type">JoinId</span></a></span><span>
+</span><span id="line-262"></span><span id="mkExitJoinId"><span class="annot"><span class="annottext">mkExitJoinId :: InScopeSet -&gt; Type -&gt; Int -&gt; ExitifyM JoinId
+</span><a href="GHC.Core.Opt.Exitify.html#mkExitJoinId"><span class="hs-identifier hs-var hs-var">mkExitJoinId</span></a></span></span><span> </span><span id="local-6989586621681634488"><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634488"><span class="hs-identifier hs-var">in_scope</span></a></span></span><span> </span><span id="local-6989586621681634489"><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681634489"><span class="hs-identifier hs-var">ty</span></a></span></span><span> </span><span id="local-6989586621681634490"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681634490"><span class="hs-identifier hs-var">join_arity</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-263"></span><span>    </span><span id="local-6989586621681634491"><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634491"><span class="hs-identifier hs-var">fs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">State [(JoinId, CoreExpr)] [(JoinId, CoreExpr)]
+forall s. State s s
+</span><a href="GHC.Utils.Monad.State.Strict.html#get"><span class="hs-identifier hs-var">get</span></a></span><span>
+</span><span id="line-264"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681634493"><span class="annot"><span class="annottext">avoid :: InScopeSet
+</span><a href="#local-6989586621681634493"><span class="hs-identifier hs-var hs-var">avoid</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634488"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet -&gt; [JoinId] -&gt; InScopeSet
+</span><a href="GHC.Types.Var.Env.html#extendInScopeSetList"><span class="hs-operator hs-var">`extendInScopeSetList`</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((JoinId, CoreExpr) -&gt; JoinId) -&gt; [(JoinId, CoreExpr)] -&gt; [JoinId]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#map/GHC.Base.html#map"><span class="hs-identifier hs-var">map</span></a></span><span> </span><span class="annot"><span class="annottext">(JoinId, CoreExpr) -&gt; JoinId
+forall a b. (a, b) -&gt; a
+</span><a href="../../base-4.18.2.1/src/Data.Tuple.html#fst/Data.Tuple.html#fst"><span class="hs-identifier hs-var">fst</span></a></span><span> </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634491"><span class="hs-identifier hs-var">fs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-265"></span><span>                         </span><span class="annot"><span class="annottext">InScopeSet -&gt; JoinId -&gt; InScopeSet
+</span><a href="GHC.Types.Var.Env.html#extendInScopeSet"><span class="hs-operator hs-var">`extendInScopeSet`</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634494"><span class="hs-identifier hs-var">exit_id_tmpl</span></a></span><span> </span><span class="hs-comment">-- just cosmetics</span><span>
+</span><span id="line-266"></span><span>    </span><span class="annot"><span class="annottext">JoinId -&gt; ExitifyM JoinId
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">InScopeSet -&gt; JoinId -&gt; JoinId
+</span><a href="GHC.Types.Var.Env.html#uniqAway"><span class="hs-identifier hs-var">uniqAway</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634493"><span class="hs-identifier hs-var">avoid</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634494"><span class="hs-identifier hs-var">exit_id_tmpl</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-267"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-268"></span><span>    </span><span id="local-6989586621681634494"><span class="annot"><span class="annottext">exit_id_tmpl :: JoinId
+</span><a href="#local-6989586621681634494"><span class="hs-identifier hs-var hs-var">exit_id_tmpl</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">FastString -&gt; Unique -&gt; Type -&gt; Type -&gt; JoinId
+</span><a href="GHC.Types.Id.html#mkSysLocal"><span class="hs-identifier hs-var">mkSysLocal</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">String -&gt; FastString
+</span><a href="GHC.Data.FastString.html#fsLit"><span class="hs-identifier hs-var">fsLit</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;exit&quot;</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Unique
+</span><a href="GHC.Builtin.Uniques.html#initExitJoinUnique"><span class="hs-identifier hs-var">initExitJoinUnique</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="GHC.Core.Type.html#ManyTy"><span class="hs-identifier hs-var">ManyTy</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681634489"><span class="hs-identifier hs-var">ty</span></a></span><span>
+</span><span id="line-269"></span><span>                    </span><span class="annot"><span class="annottext">JoinId -&gt; Int -&gt; JoinId
+</span><a href="GHC.Types.Id.html#asJoinId"><span class="hs-operator hs-var">`asJoinId`</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681634490"><span class="hs-identifier hs-var">join_arity</span></a></span><span>
+</span><span id="line-270"></span><span>
+</span><span id="line-271"></span><span class="annot"><a href="GHC.Core.Opt.Exitify.html#addExit"><span class="hs-identifier hs-type">addExit</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="GHC.Types.Var.Env.html#InScopeSet"><span class="hs-identifier hs-type">InScopeSet</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Types.Basic.html#JoinArity"><span class="hs-identifier hs-type">JoinArity</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.html#CoreExpr"><span class="hs-identifier hs-type">CoreExpr</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="GHC.Core.Opt.Exitify.html#ExitifyM"><span class="hs-identifier hs-type">ExitifyM</span></a></span><span> </span><span class="annot"><a href="GHC.Types.Var.html#JoinId"><span class="hs-identifier hs-type">JoinId</span></a></span><span>
+</span><span id="line-272"></span><span id="addExit"><span class="annot"><span class="annottext">addExit :: InScopeSet -&gt; Int -&gt; CoreExpr -&gt; ExitifyM JoinId
+</span><a href="GHC.Core.Opt.Exitify.html#addExit"><span class="hs-identifier hs-var hs-var">addExit</span></a></span></span><span> </span><span id="local-6989586621681634501"><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634501"><span class="hs-identifier hs-var">in_scope</span></a></span></span><span> </span><span id="local-6989586621681634502"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681634502"><span class="hs-identifier hs-var">join_arity</span></a></span></span><span> </span><span id="local-6989586621681634503"><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634503"><span class="hs-identifier hs-var">rhs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-273"></span><span>    </span><span class="hs-comment">-- Pick a suitable name</span><span>
+</span><span id="line-274"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681634504"><span class="annot"><span class="annottext">ty :: Type
+</span><a href="#local-6989586621681634504"><span class="hs-identifier hs-var hs-var">ty</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(() :: Constraint) =&gt; CoreExpr -&gt; Type
+CoreExpr -&gt; Type
+</span><a href="GHC.Core.Utils.html#exprType"><span class="hs-identifier hs-var">exprType</span></a></span><span> </span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634503"><span class="hs-identifier hs-var">rhs</span></a></span><span>
+</span><span id="line-275"></span><span>    </span><span id="local-6989586621681634506"><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634506"><span class="hs-identifier hs-var">v</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">InScopeSet -&gt; Type -&gt; Int -&gt; ExitifyM JoinId
+</span><a href="GHC.Core.Opt.Exitify.html#mkExitJoinId"><span class="hs-identifier hs-var">mkExitJoinId</span></a></span><span> </span><span class="annot"><span class="annottext">InScopeSet
+</span><a href="#local-6989586621681634501"><span class="hs-identifier hs-var">in_scope</span></a></span><span> </span><span class="annot"><span class="annottext">Type
+</span><a href="#local-6989586621681634504"><span class="hs-identifier hs-var">ty</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681634502"><span class="hs-identifier hs-var">join_arity</span></a></span><span>
+</span><span id="line-276"></span><span>    </span><span id="local-6989586621681634507"><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634507"><span class="hs-identifier hs-var">fs</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">State [(JoinId, CoreExpr)] [(JoinId, CoreExpr)]
+forall s. State s s
+</span><a href="GHC.Utils.Monad.State.Strict.html#get"><span class="hs-identifier hs-var">get</span></a></span><span>
+</span><span id="line-277"></span><span>    </span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)] -&gt; State [(JoinId, CoreExpr)] ()
+forall s. s -&gt; State s ()
+</span><a href="GHC.Utils.Monad.State.Strict.html#put"><span class="hs-identifier hs-var">put</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634506"><span class="hs-identifier hs-var">v</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">CoreExpr
+</span><a href="#local-6989586621681634503"><span class="hs-identifier hs-var">rhs</span></a></span><span class="hs-special">)</span><span class="annot"><span class="annottext">(JoinId, CoreExpr) -&gt; [(JoinId, CoreExpr)] -&gt; [(JoinId, CoreExpr)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="annot"><span class="annottext">[(JoinId, CoreExpr)]
+</span><a href="#local-6989586621681634507"><span class="hs-identifier hs-var">fs</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-278"></span><span>    </span><span class="annot"><span class="annottext">JoinId -&gt; ExitifyM JoinId
+forall a. a -&gt; State [(JoinId, CoreExpr)] a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">JoinId
+</span><a href="#local-6989586621681634506"><span class="hs-identifier hs-var">v</span></a></span><span>
+</span><span id="line-279"></span><span>
+</span><span id="line-280"></span><span class="hs-comment">{-
+Note [Interesting expression]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+We do not want this to happen:
+
+  joinrec go 0     x y = x
+          go (n-1) x y = jump go (n-1) (x+y)
+  in &#8230;
+==&gt;
+  join exit x = x
+  joinrec go 0     x y = jump exit x
+          go (n-1) x y = jump go (n-1) (x+y)
+  in &#8230;
+
+because the floated exit path (`x`) is simply a parameter of `go`; there are
+not useful interactions exposed this way.
+
+Neither do we want this to happen
+
+  joinrec go 0     x y = x+x
+          go (n-1) x y = jump go (n-1) (x+y)
+  in &#8230;
+==&gt;
+  join exit x = x+x
+  joinrec go 0     x y = jump exit x
+          go (n-1) x y = jump go (n-1) (x+y)
+  in &#8230;
+
+where the floated expression `x+x` is a bit more complicated, but still not
+interesting.
+
+Expressions are interesting when they move an occurrence of a variable outside
+the recursive `go` that can benefit from being obviously called once, for example:
+ * a local thunk that can then be inlined (see example in Note [Exitification])
+ * the parameter of a function, where the demand analyzer then can then
+   see that it is called at most once, and hence improve the function&#8217;s
+   strictness signature
+
+So we only hoist an exit expression out if it mentions at least one free,
+non-imported variable.
+
+Note [Jumps can be interesting]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A jump to a join point can be interesting, if its arguments contain free
+non-exported variables (z in the following example):
+
+  joinrec go 0     x y = jump j (x+z)
+          go (n-1) x y = jump go (n-1) (x+y)
+  in &#8230;
+==&gt;
+  join exit x y = jump j (x+z)
+  joinrec go 0     x y = jump exit x
+          go (n-1) x y = jump go (n-1) (x+y)
+
+
+The join point itself can be interesting, even if none if its
+arguments have free variables free in the joinrec.  For example
+
+  join j p = case p of (x,y) -&gt; x+y
+  joinrec go 0     x y = jump j (x,y)
+          go (n-1) x y = jump go (n-1) (x+y) y
+  in &#8230;
+
+Here, `j` would not be inlined because we do not inline something that looks
+like an exit join point (see Note [Do not inline exit join points]). But
+if we exitify the 'jump j (x,y)' we get
+
+  join j p = case p of (x,y) -&gt; x+y
+  join exit x y = jump j (x,y)
+  joinrec go 0     x y = jump exit x y
+          go (n-1) x y = jump go (n-1) (x+y) y
+  in &#8230;
+
+and now 'j' can inline, and we get rid of the pair. Here's another
+example (assume `g` to be an imported function that, on its own,
+does not make this interesting):
+
+  join j y = map f y
+  joinrec go 0     x y = jump j (map g x)
+          go (n-1) x y = jump go (n-1) (x+y)
+  in &#8230;
+
+Again, `j` would not be inlined because we do not inline something that looks
+like an exit join point (see Note [Do not inline exit join points]).
+
+But after exitification we have
+
+  join j y = map f y
+  join exit x = jump j (map g x)
+  joinrec go 0     x y = jump j (map g x)
+              go (n-1) x y = jump go (n-1) (x+y)
+  in &#8230;
+
+and now we can inline `j` and this will allow `map/map` to fire.
+
+
+Note [Idempotency]
+~~~~~~~~~~~~~~~~~~
+
+We do not want this to happen, where we replace the floated expression with
+essentially the same expression:
+
+  join exit x = t (x*x)
+  joinrec go 0     x y = jump exit x
+          go (n-1) x y = jump go (n-1) (x+y)
+  in &#8230;
+==&gt;
+  join exit x = t (x*x)
+  join exit' x = jump exit x
+  joinrec go 0     x y = jump exit' x
+          go (n-1) x y = jump go (n-1) (x+y)
+  in &#8230;
+
+So when the RHS is a join jump, and all of its arguments are captured variables,
+then we leave it in place.
+
+Note that `jump exit x` in this example looks interesting, as `exit` is a free
+variable. Therefore, idempotency does not simply follow from floating only
+interesting expressions.
+
+Note [Calculating free variables]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+We have two options where to annotate the tree with free variables:
+
+ A) The whole tree.
+ B) Each individual joinrec as we come across it.
+
+Downside of A: We pay the price on the whole module, even outside any joinrecs.
+Downside of B: We pay the price per joinrec, possibly multiple times when
+joinrecs are nested.
+
+Further downside of A: If the exitify function returns annotated expressions,
+it would have to ensure that the annotations are correct.
+
+We therefore choose B, and calculate the free variables in `exitify`.
+
+
+Note [Do not inline exit join points]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+When we have
+
+  let t = foo bar
+  join exit x = t (x*x)
+  joinrec go 0     x y = jump exit x
+          go (n-1) x y = jump go (n-1) (x+y)
+  in &#8230;
+
+we do not want the simplifier to simply inline `exit` back in (which it happily
+would).
+
+To prevent this, we need to recognize exit join points, and then disable
+inlining.
+
+Exit join points, recognizable using `isExitJoinId` are join points with an
+occurrence in a recursive group, and can be recognized (after the occurrence
+analyzer ran!) using `isExitJoinId`.
+This function detects joinpoints with `occ_in_lam (idOccinfo id) == True`,
+because the lambdas of a non-recursive join point are not considered for
+`occ_in_lam`.  For example, in the following code, `j1` is /not/ marked
+occ_in_lam, because `j2` is called only once.
+
+  join j1 x = x+1
+  join j2 y = join j1 (y+2)
+
+To prevent inlining, we check for isExitJoinId
+* In `preInlineUnconditionally` directly.
+* In `simplLetUnfolding` we simply give exit join points no unfolding, which
+  prevents inlining in `postInlineUnconditionally` and call sites.
+
+Note [Placement of the exitification pass]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+I (Joachim) experimented with multiple positions for the Exitification pass in
+the Core2Core pipeline:
+
+ A) Before the `simpl_phases`
+ B) Between the `simpl_phases` and the &quot;main&quot; simplifier pass
+ C) After demand_analyser
+ D) Before the final simplification phase
+
+Here is the table (this is without inlining join exit points in the final
+simplifier run):
+
+        Program |                       Allocs                      |                      Instrs
+                | ABCD.log     A.log     B.log     C.log     D.log  | ABCD.log     A.log     B.log     C.log     D.log
+----------------|---------------------------------------------------|-------------------------------------------------
+ fannkuch-redux |   -99.9%     +0.0%    -99.9%    -99.9%    -99.9%  |    -3.9%     +0.5%     -3.0%     -3.9%     -3.9%
+          fasta |    -0.0%     +0.0%     +0.0%     -0.0%     -0.0%  |    -8.5%     +0.0%     +0.0%     -0.0%     -8.5%
+            fem |     0.0%      0.0%      0.0%      0.0%     +0.0%  |    -2.2%     -0.1%     -0.1%     -2.1%     -2.1%
+           fish |     0.0%      0.0%      0.0%      0.0%     +0.0%  |    -3.1%     +0.0%     -1.1%     -1.1%     -0.0%
+   k-nucleotide |   -91.3%    -91.0%    -91.0%    -91.3%    -91.3%  |    -6.3%    +11.4%    +11.4%     -6.3%     -6.2%
+            scs |    -0.0%     -0.0%     -0.0%     -0.0%     -0.0%  |    -3.4%     -3.0%     -3.1%     -3.3%     -3.3%
+         simple |    -6.0%      0.0%     -6.0%     -6.0%     +0.0%  |    -3.4%     +0.0%     -5.2%     -3.4%     -0.1%
+  spectral-norm |    -0.0%      0.0%      0.0%     -0.0%     +0.0%  |    -2.7%     +0.0%     -2.7%     -5.4%     -5.4%
+----------------|---------------------------------------------------|-------------------------------------------------
+            Min |   -95.0%    -91.0%    -95.0%    -95.0%    -95.0%  |    -8.5%     -3.0%     -5.2%     -6.3%     -8.5%
+            Max |    +0.2%     +0.2%     +0.2%     +0.2%     +1.5%  |    +0.4%    +11.4%    +11.4%     +0.4%     +1.5%
+ Geometric Mean |    -4.7%     -2.1%     -4.7%     -4.7%     -4.6%  |    -0.4%     +0.1%     -0.1%     -0.3%     -0.2%
+
+Position A is disqualified, as it does not get rid of the allocations in
+fannkuch-redux.
+Position A and B are disqualified because it increases instructions in k-nucleotide.
+Positions C and D have their advantages: C decreases allocations in simpl, but D instructions in fasta.
+
+Assuming we have a budget of _one_ run of Exitification, then C wins (but we
+could get more from running it multiple times, as seen in fish).
+
+Note [Picking arguments to abstract over]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When we create an exit join point, so we need to abstract over those of its
+free variables that are be out-of-scope at the destination of the exit join
+point. So we go through the list `captured` and pick those that are actually
+free variables of the join point.
+
+We do not just `filter (`elemVarSet` fvs) captured`, as there might be
+shadowing, and `captured` may contain multiple variables with the same Unique. I
+these cases we want to abstract only over the last occurrence, hence the `foldr`
+(with emphasis on the `r`). This is #15110.
+
+-}</span><span>
+</span><span id="line-500"></span></pre></body></html>

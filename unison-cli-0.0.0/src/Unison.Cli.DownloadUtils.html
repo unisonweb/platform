@@ -1,0 +1,452 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- | Utility functions for downloading remote entities and storing them locally in SQLite.</span><span>
+</span><span id="line-2"></span><span class="hs-comment">--</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- These are shared by commands like `pull` and `clone`.</span><span>
+</span><span id="line-4"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Unison.Cli.DownloadUtils</span><span>
+</span><span id="line-5"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Unison.Cli.DownloadUtils.html#downloadProjectBranchFromShare"><span class="hs-identifier">downloadProjectBranchFromShare</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-6"></span><span>    </span><span class="annot"><a href="Unison.Cli.DownloadUtils.html#downloadLooseCodeFromShare"><span class="hs-identifier">downloadLooseCodeFromShare</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-7"></span><span>    </span><span class="annot"><a href="Unison.Cli.DownloadUtils.html#SyncVersion"><span class="hs-identifier">SyncVersion</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span>
+</span><span id="line-8"></span><span>  </span><span class="hs-special">)</span><span>
+</span><span id="line-9"></span><span class="hs-keyword">where</span><span>
+</span><span id="line-10"></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Concurrent.STM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">atomically</span></span><span class="hs-special">)</span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Concurrent.STM.TVar</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">modifyTVar'</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">newTVarIO</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">readTVar</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">readTVarIO</span></span><span class="hs-special">)</span><span>
+</span><span id="line-13"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.List.NonEmpty</span></span><span> </span><span class="hs-special">(</span><span class="hs-keyword">pattern</span><span> </span><span class="annot"><span class="hs-operator">(:|)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.Console.Regions</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Console.Regions</span></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.IO.Unsafe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unsafePerformIO</span></span><span class="hs-special">)</span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.HashTags</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">CausalHash</span></span><span class="hs-special">)</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">U.Codebase.Sqlite.Queries</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Queries</span></span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Cli.Monad.html"><span class="hs-identifier">Unison.Cli.Monad</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.Cli.Monad.html#Cli"><span class="hs-identifier">Cli</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Cli.Monad.html"><span class="hs-identifier">Unison.Cli.Monad</span></a></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Cli</span></span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Cli.Share.Projects.html"><span class="hs-identifier">Unison.Cli.Share.Projects</span></a></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Share</span></span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Codebase.Editor.HandleInput.AuthLogin.html"><span class="hs-identifier">Unison.Codebase.Editor.HandleInput.AuthLogin</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Unison.Codebase.Editor.HandleInput.AuthLogin.html#ensureAuthenticatedWithCodeserver"><span class="hs-identifier">ensureAuthenticatedWithCodeserver</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Codebase.Editor.Output.html"><span class="hs-identifier">Unison.Codebase.Editor.Output</span></a></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Output</span></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Codebase.Editor.RemoteRepo</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ReadShareLooseCode</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">shareUserHandleToText</span></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Codebase.Editor.RemoteRepo</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">RemoteRepo</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Codebase.Path</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Path</span></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Core.Project</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ProjectAndBranch</span></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.NameSegment.Internal</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">NameSegment</span></span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Prelude</span></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Share.API.Hash</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Share</span></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Share.Codeserver.html"><span class="hs-identifier">Unison.Share.Codeserver</span></a></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Codeserver</span></span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Share.Sync.html"><span class="hs-identifier">Unison.Share.Sync</span></a></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Share</span></span><span>
+</span><span id="line-32"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Share.Sync.Types.html"><span class="hs-identifier">Unison.Share.Sync.Types</span></a></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Share</span></span><span>
+</span><span id="line-33"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Unison.Share.SyncV2.html"><span class="hs-identifier">Unison.Share.SyncV2</span></a></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">SyncV2</span></span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Share.Types</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">codeserverBaseURL</span></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Sync.Common</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Sync.Common</span></span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.Sync.Types</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Share</span></span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Unison.SyncV2.Types</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">SyncV2</span></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">UnliftIO.Environment</span></span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">UnliftIO</span></span><span>
+</span><span id="line-39"></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">data</span><span> </span><span id="SyncVersion"><span class="annot"><a href="Unison.Cli.DownloadUtils.html#SyncVersion"><span class="hs-identifier hs-var">SyncVersion</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="SyncV1"><span class="annot"><a href="Unison.Cli.DownloadUtils.html#SyncV1"><span class="hs-identifier hs-var">SyncV1</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="SyncV2"><span class="annot"><a href="Unison.Cli.DownloadUtils.html#SyncV2"><span class="hs-identifier hs-var">SyncV2</span></a></span></span><span>
+</span><span id="line-41"></span><span>  </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621681078494"><span id="local-6989586621681078496"><span class="annot"><span class="annottext">SyncVersion -&gt; SyncVersion -&gt; Bool
+(SyncVersion -&gt; SyncVersion -&gt; Bool)
+-&gt; (SyncVersion -&gt; SyncVersion -&gt; Bool) -&gt; Eq SyncVersion
+forall a. (a -&gt; a -&gt; Bool) -&gt; (a -&gt; a -&gt; Bool) -&gt; Eq a
+$c== :: SyncVersion -&gt; SyncVersion -&gt; Bool
+== :: SyncVersion -&gt; SyncVersion -&gt; Bool
+$c/= :: SyncVersion -&gt; SyncVersion -&gt; Bool
+/= :: SyncVersion -&gt; SyncVersion -&gt; Bool
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var">Eq</span></span></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681078501"><span id="local-6989586621681078503"><span id="local-6989586621681078507"><span class="annot"><span class="annottext">Int -&gt; SyncVersion -&gt; ShowS
+[SyncVersion] -&gt; ShowS
+SyncVersion -&gt; String
+(Int -&gt; SyncVersion -&gt; ShowS)
+-&gt; (SyncVersion -&gt; String)
+-&gt; ([SyncVersion] -&gt; ShowS)
+-&gt; Show SyncVersion
+forall a.
+(Int -&gt; a -&gt; ShowS) -&gt; (a -&gt; String) -&gt; ([a] -&gt; ShowS) -&gt; Show a
+$cshowsPrec :: Int -&gt; SyncVersion -&gt; ShowS
+showsPrec :: Int -&gt; SyncVersion -&gt; ShowS
+$cshow :: SyncVersion -&gt; String
+show :: SyncVersion -&gt; String
+$cshowList :: [SyncVersion] -&gt; ShowS
+showList :: [SyncVersion] -&gt; ShowS
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">Show</span></span></span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span class="annot"><span class="hs-comment">-- | The version of the sync protocol to use.</span></span><span>
+</span><span id="line-44"></span><span class="annot"><a href="Unison.Cli.DownloadUtils.html#syncVersion"><span class="hs-identifier hs-type">syncVersion</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Unison.Cli.DownloadUtils.html#SyncVersion"><span class="hs-identifier hs-type">SyncVersion</span></a></span><span>
+</span><span id="line-45"></span><span id="syncVersion"><span class="annot"><span class="annottext">syncVersion :: SyncVersion
+</span><a href="Unison.Cli.DownloadUtils.html#syncVersion"><span class="hs-identifier hs-var hs-var">syncVersion</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO SyncVersion -&gt; SyncVersion
+forall a. IO a -&gt; a
+</span><span class="hs-identifier hs-var">unsafePerformIO</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-46"></span><span>  </span><span class="annot"><span class="annottext">String -&gt; IO (Maybe String)
+forall (m :: * -&gt; *). MonadIO m =&gt; String -&gt; m (Maybe String)
+</span><span class="hs-identifier hs-var">UnliftIO.lookupEnv</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;UNISON_SYNC_VERSION&quot;</span></span><span>
+</span><span id="line-47"></span><span>    </span><span class="annot"><span class="annottext">IO (Maybe String)
+-&gt; (Maybe String -&gt; SyncVersion) -&gt; IO SyncVersion
+forall (f :: * -&gt; *) a b. Functor f =&gt; f a -&gt; (a -&gt; b) -&gt; f b
+</span><span class="hs-operator hs-var">&lt;&amp;&gt;</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-48"></span><span>      </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;1&quot;</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SyncVersion
+</span><a href="Unison.Cli.DownloadUtils.html#SyncV1"><span class="hs-identifier hs-var">SyncV1</span></a></span><span>
+</span><span id="line-49"></span><span>      </span><span class="annot"><span class="annottext">Maybe String
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SyncVersion
+</span><a href="Unison.Cli.DownloadUtils.html#SyncV2"><span class="hs-identifier hs-var">SyncV2</span></a></span><span>
+</span><span id="line-50"></span><span>
+</span><span id="line-51"></span><span class="annot"><span class="hs-comment">-- | Download a project/branch from Share.</span></span><span>
+</span><span id="line-52"></span><span class="annot"><a href="Unison.Cli.DownloadUtils.html#downloadProjectBranchFromShare"><span class="hs-identifier hs-type">downloadProjectBranchFromShare</span></a></span><span> </span><span class="hs-glyph">::</span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">HasCallStack</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span>
+</span><span id="line-54"></span><span>  </span><span class="annot"><a href="Unison.Cli.Share.Projects.html#IncludeSquashedHead"><span class="hs-identifier hs-type">Share.IncludeSquashedHead</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-55"></span><span>  </span><span class="annot"><a href="Unison.Cli.Share.Projects.Types.html#RemoteProjectBranch"><span class="hs-identifier hs-type">Share.RemoteProjectBranch</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-56"></span><span>  </span><span class="annot"><a href="Unison.Cli.Monad.html#Cli"><span class="hs-identifier hs-type">Cli</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="annot"><a href="Unison.Codebase.Editor.Output.html#ShareError"><span class="hs-identifier hs-type">Output.ShareError</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">CausalHash</span></span><span class="hs-special">)</span><span>
+</span><span id="line-57"></span><span id="downloadProjectBranchFromShare"><span class="annot"><span class="annottext">downloadProjectBranchFromShare :: HasCallStack =&gt;
+IncludeSquashedHead
+-&gt; RemoteProjectBranch -&gt; Cli (Either ShareError CausalHash)
+</span><a href="Unison.Cli.DownloadUtils.html#downloadProjectBranchFromShare"><span class="hs-identifier hs-var hs-var">downloadProjectBranchFromShare</span></a></span></span><span> </span><span id="local-6989586621681078536"><span class="annot"><span class="annottext">IncludeSquashedHead
+</span><a href="#local-6989586621681078536"><span class="hs-identifier hs-var">useSquashed</span></a></span></span><span> </span><span id="local-6989586621681078537"><span class="annot"><span class="annottext">RemoteProjectBranch
+</span><a href="#local-6989586621681078537"><span class="hs-identifier hs-var">branch</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-58"></span><span>  </span><span class="annot"><span class="annottext">((forall void. ShareError -&gt; Cli void) -&gt; Cli CausalHash)
+-&gt; Cli (Either ShareError CausalHash)
+forall a b.
+((forall void. a -&gt; Cli void) -&gt; Cli b) -&gt; Cli (Either a b)
+</span><a href="Unison.Cli.Monad.html#labelE"><span class="hs-identifier hs-var">Cli.labelE</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681078539"><span class="annot"><span class="annottext">forall void. ShareError -&gt; Cli void
+</span><a href="#local-6989586621681078539"><span class="hs-identifier hs-var">done</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681078540"><span class="annot"><span class="annottext">remoteProjectBranchName :: ProjectBranchName
+</span><a href="#local-6989586621681078540"><span class="hs-identifier hs-var hs-var">remoteProjectBranchName</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RemoteProjectBranch
+</span><a href="#local-6989586621681078537"><span class="hs-identifier hs-var">branch</span></a></span><span class="hs-operator">.</span><span class="hs-identifier">branchName</span><span>
+</span><span id="line-60"></span><span>    </span><span id="local-6989586621681078541"><span class="annot"><span class="annottext">HashJWT
+</span><a href="#local-6989586621681078541"><span class="hs-identifier hs-var">causalHashJwt</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-61"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IncludeSquashedHead
+</span><a href="#local-6989586621681078536"><span class="hs-identifier hs-var">useSquashed</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">RemoteProjectBranch
+</span><a href="#local-6989586621681078537"><span class="hs-identifier hs-var">branch</span></a></span><span class="hs-operator">.</span><span class="hs-identifier">squashedBranchHead</span><span class="hs-special">)</span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-62"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IncludeSquashedHead
+</span><a href="Unison.Cli.Share.Projects.html#IncludeSquashedHead"><span class="hs-identifier hs-var">Share.IncludeSquashedHead</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Maybe HashJWT
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">ShareError -&gt; Cli HashJWT
+forall void. ShareError -&gt; Cli void
+</span><a href="#local-6989586621681078539"><span class="hs-identifier hs-var">done</span></a></span><span> </span><span class="annot"><span class="annottext">ShareError
+</span><a href="Unison.Codebase.Editor.Output.html#ShareExpectedSquashedHead"><span class="hs-identifier hs-var">Output.ShareExpectedSquashedHead</span></a></span><span>
+</span><span id="line-63"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IncludeSquashedHead
+</span><a href="Unison.Cli.Share.Projects.html#IncludeSquashedHead"><span class="hs-identifier hs-var">Share.IncludeSquashedHead</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621681078544"><span class="annot"><span class="annottext">HashJWT
+</span><a href="#local-6989586621681078544"><span class="hs-identifier hs-var">squashedHead</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">HashJWT -&gt; Cli HashJWT
+forall a. a -&gt; Cli a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">HashJWT
+</span><a href="#local-6989586621681078544"><span class="hs-identifier hs-var">squashedHead</span></a></span><span>
+</span><span id="line-64"></span><span>        </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IncludeSquashedHead
+</span><a href="Unison.Cli.Share.Projects.html#NoSquashedHead"><span class="hs-identifier hs-var">Share.NoSquashedHead</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Maybe HashJWT
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">HashJWT -&gt; Cli HashJWT
+forall a. a -&gt; Cli a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">RemoteProjectBranch
+</span><a href="#local-6989586621681078537"><span class="hs-identifier hs-var">branch</span></a></span><span class="hs-operator">.</span><span class="hs-identifier">branchHead</span><span>
+</span><span id="line-65"></span><span>    </span><span id="local-6989586621681078546"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681078546"><span class="hs-identifier hs-var">exists</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Transaction Bool -&gt; Cli Bool
+forall a. Transaction a -&gt; Cli a
+</span><a href="Unison.Cli.Monad.html#runTransaction"><span class="hs-identifier hs-var">Cli.runTransaction</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash32 -&gt; Transaction Bool
+</span><span class="hs-identifier hs-var">Queries.causalExistsByHash32</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HashJWT -&gt; Hash32
+</span><span class="hs-identifier hs-var">Share.hashJWTHash</span></span><span> </span><span class="annot"><span class="annottext">HashJWT
+</span><a href="#local-6989586621681078541"><span class="hs-identifier hs-var">causalHashJwt</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-66"></span><span>    </span><span class="annot"><span class="annottext">Bool -&gt; Cli () -&gt; Cli ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681078546"><span class="hs-identifier hs-var">exists</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-67"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SyncVersion
+</span><a href="Unison.Cli.DownloadUtils.html#syncVersion"><span class="hs-identifier hs-var">syncVersion</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-68"></span><span>        </span><span class="annot"><span class="annottext">SyncVersion
+</span><a href="Unison.Cli.DownloadUtils.html#SyncV1"><span class="hs-identifier hs-var">SyncV1</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-69"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681078552"><span class="annot"><span class="annottext">repoInfo :: RepoInfo
+</span><a href="#local-6989586621681078552"><span class="hs-identifier hs-var hs-var">repoInfo</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; RepoInfo
+</span><span class="hs-identifier hs-var">Share.RepoInfo</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">forall target source. From source target =&gt; source -&gt; target
+</span><span class="hs-identifier hs-var">into</span></span><span> </span><span class="hs-glyph">@</span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ProjectName
+-&gt; ProjectBranchName
+-&gt; ProjectAndBranch ProjectName ProjectBranchName
+forall a b. a -&gt; b -&gt; ProjectAndBranch a b
+</span><span class="hs-identifier hs-var">ProjectAndBranch</span></span><span> </span><span class="annot"><span class="annottext">RemoteProjectBranch
+</span><a href="#local-6989586621681078537"><span class="hs-identifier hs-var">branch</span></a></span><span class="hs-operator">.</span><span class="hs-identifier">projectName</span><span> </span><span class="annot"><span class="annottext">ProjectBranchName
+</span><a href="#local-6989586621681078540"><span class="hs-identifier hs-var">remoteProjectBranchName</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-70"></span><span>          </span><span class="annot"><span class="annottext">(forall x. ((Int -&gt; IO (), IO Int) -&gt; IO x) -&gt; IO x)
+-&gt; ((Int -&gt; IO (), IO Int) -&gt; Cli ()) -&gt; Cli ()
+forall a b.
+(forall x. (a -&gt; IO x) -&gt; IO x) -&gt; (a -&gt; Cli b) -&gt; Cli b
+</span><a href="Unison.Cli.Monad.html#with"><span class="hs-identifier hs-var">Cli.with</span></a></span><span> </span><span class="annot"><span class="annottext">((Int -&gt; IO (), IO Int) -&gt; IO x) -&gt; IO x
+forall x. ((Int -&gt; IO (), IO Int) -&gt; IO x) -&gt; IO x
+</span><a href="Unison.Cli.DownloadUtils.html#withEntitiesDownloadedProgressCallback"><span class="hs-identifier hs-var">withEntitiesDownloadedProgressCallback</span></a></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621681078558"><span class="annot"><span class="annottext">Int -&gt; IO ()
+</span><a href="#local-6989586621681078558"><span class="hs-identifier hs-var">downloadedCallback</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681078559"><span class="annot"><span class="annottext">IO Int
+</span><a href="#local-6989586621681078559"><span class="hs-identifier hs-var">getNumDownloaded</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-71"></span><span>            </span><span id="local-6989586621681078560"><span class="annot"><span class="annottext">Either (SyncError DownloadEntitiesError) ()
+</span><a href="#local-6989586621681078560"><span class="hs-identifier hs-var">result</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">BaseUrl
+-&gt; RepoInfo
+-&gt; HashJWT
+-&gt; (Int -&gt; IO ())
+-&gt; Cli (Either (SyncError DownloadEntitiesError) ())
+</span><a href="Unison.Share.Sync.html#downloadEntities"><span class="hs-identifier hs-var">Share.downloadEntities</span></a></span><span> </span><span class="annot"><span class="annottext">BaseUrl
+</span><a href="Unison.Cli.Share.Projects.html#hardCodedBaseUrl"><span class="hs-identifier hs-var">Share.hardCodedBaseUrl</span></a></span><span> </span><span class="annot"><span class="annottext">RepoInfo
+</span><a href="#local-6989586621681078552"><span class="hs-identifier hs-var">repoInfo</span></a></span><span> </span><span class="annot"><span class="annottext">HashJWT
+</span><a href="#local-6989586621681078541"><span class="hs-identifier hs-var">causalHashJwt</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO ()
+</span><a href="#local-6989586621681078558"><span class="hs-identifier hs-var">downloadedCallback</span></a></span><span>
+</span><span id="line-72"></span><span>            </span><span id="local-6989586621681078563"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681078563"><span class="hs-identifier hs-var">numDownloaded</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO Int -&gt; Cli Int
+forall a. IO a -&gt; Cli a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">IO Int
+</span><a href="#local-6989586621681078559"><span class="hs-identifier hs-var">getNumDownloaded</span></a></span><span>
+</span><span id="line-73"></span><span>            </span><span class="annot"><span class="annottext">Either (SyncError DownloadEntitiesError) ()
+</span><a href="#local-6989586621681078560"><span class="hs-identifier hs-var">result</span></a></span><span> </span><span class="annot"><span class="annottext">Either (SyncError DownloadEntitiesError) ()
+-&gt; (Either (SyncError DownloadEntitiesError) () -&gt; Cli ())
+-&gt; Cli ()
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">(SyncError DownloadEntitiesError -&gt; Cli ())
+-&gt; Either (SyncError DownloadEntitiesError) () -&gt; Cli ()
+forall (m :: * -&gt; *) a b.
+Applicative m =&gt;
+(a -&gt; m b) -&gt; Either a b -&gt; m b
+</span><span class="hs-identifier hs-var">onLeft</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681078567"><span class="annot"><span class="annottext">SyncError DownloadEntitiesError
+</span><a href="#local-6989586621681078567"><span class="hs-identifier hs-var">err0</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-74"></span><span>              </span><span class="annot"><span class="annottext">ShareError -&gt; Cli ()
+forall void. ShareError -&gt; Cli void
+</span><a href="#local-6989586621681078539"><span class="hs-identifier hs-var">done</span></a></span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SyncError DownloadEntitiesError
+</span><a href="#local-6989586621681078567"><span class="hs-identifier hs-var">err0</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-75"></span><span>                </span><span class="annot"><a href="Unison.Share.Sync.Types.html#SyncError"><span class="hs-identifier hs-type">Share.SyncError</span></a></span><span> </span><span id="local-6989586621681078569"><span class="annot"><span class="annottext">DownloadEntitiesError
+</span><a href="#local-6989586621681078569"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">DownloadEntitiesError -&gt; ShareError
+</span><a href="Unison.Codebase.Editor.Output.html#ShareErrorDownloadEntities"><span class="hs-identifier hs-var">Output.ShareErrorDownloadEntities</span></a></span><span> </span><span class="annot"><span class="annottext">DownloadEntitiesError
+</span><a href="#local-6989586621681078569"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-76"></span><span>                </span><span class="annot"><a href="Unison.Share.Sync.Types.html#TransportError"><span class="hs-identifier hs-type">Share.TransportError</span></a></span><span> </span><span id="local-6989586621681078572"><span class="annot"><span class="annottext">CodeserverTransportError
+</span><a href="#local-6989586621681078572"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">CodeserverTransportError -&gt; ShareError
+</span><a href="Unison.Codebase.Editor.Output.html#ShareErrorTransport"><span class="hs-identifier hs-var">Output.ShareErrorTransport</span></a></span><span> </span><span class="annot"><span class="annottext">CodeserverTransportError
+</span><a href="#local-6989586621681078572"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-77"></span><span>            </span><span class="annot"><span class="annottext">Output -&gt; Cli ()
+</span><a href="Unison.Cli.Monad.html#respond"><span class="hs-identifier hs-var">Cli.respond</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Output
+</span><a href="Unison.Codebase.Editor.Output.html#DownloadedEntities"><span class="hs-identifier hs-var">Output.DownloadedEntities</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681078563"><span class="hs-identifier hs-var">numDownloaded</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-78"></span><span>        </span><span class="annot"><span class="annottext">SyncVersion
+</span><a href="Unison.Cli.DownloadUtils.html#SyncV2"><span class="hs-identifier hs-var">SyncV2</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-79"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681078576"><span class="annot"><span class="annottext">branchRef :: BranchRef
+</span><a href="#local-6989586621681078576"><span class="hs-identifier hs-var hs-var">branchRef</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; BranchRef
+</span><span class="hs-identifier hs-var">SyncV2.BranchRef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">forall target source. From source target =&gt; source -&gt; target
+</span><span class="hs-identifier hs-var">into</span></span><span> </span><span class="hs-glyph">@</span><span class="annot"><span class="hs-identifier hs-type">Text</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ProjectName
+-&gt; ProjectBranchName
+-&gt; ProjectAndBranch ProjectName ProjectBranchName
+forall a b. a -&gt; b -&gt; ProjectAndBranch a b
+</span><span class="hs-identifier hs-var">ProjectAndBranch</span></span><span> </span><span class="annot"><span class="annottext">RemoteProjectBranch
+</span><a href="#local-6989586621681078537"><span class="hs-identifier hs-var">branch</span></a></span><span class="hs-operator">.</span><span class="hs-identifier">projectName</span><span> </span><span class="annot"><span class="annottext">ProjectBranchName
+</span><a href="#local-6989586621681078540"><span class="hs-identifier hs-var">remoteProjectBranchName</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-80"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681078581"><span class="annot"><span class="annottext">downloadedCallback :: p -&gt; IO ()
+</span><a href="#local-6989586621681078581"><span class="hs-identifier hs-var hs-var">downloadedCallback</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-glyph">\</span><span class="annot"><span class="annottext">p
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-81"></span><span>          </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681078582"><span class="annot"><span class="annottext">shouldValidate :: Bool
+</span><a href="#local-6989586621681078582"><span class="hs-identifier hs-var hs-var">shouldValidate</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Bool) -&gt; Bool -&gt; Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">CodeserverURI -&gt; Bool
+</span><a href="Unison.Share.Codeserver.html#isCustomCodeserver"><span class="hs-identifier hs-var">Codeserver.isCustomCodeserver</span></a></span><span> </span><span class="annot"><span class="annottext">CodeserverURI
+</span><a href="Unison.Share.Codeserver.html#defaultCodeserver"><span class="hs-identifier hs-var">Codeserver.defaultCodeserver</span></a></span><span>
+</span><span id="line-82"></span><span>          </span><span id="local-6989586621681078585"><span class="annot"><span class="annottext">Either (SyncError PullError) ()
+</span><a href="#local-6989586621681078585"><span class="hs-identifier hs-var">result</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Bool
+-&gt; BaseUrl
+-&gt; BranchRef
+-&gt; HashJWT
+-&gt; (Int -&gt; IO ())
+-&gt; Cli (Either (SyncError PullError) ())
+</span><a href="Unison.Share.SyncV2.html#syncFromCodeserver"><span class="hs-identifier hs-var">SyncV2.syncFromCodeserver</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621681078582"><span class="hs-identifier hs-var">shouldValidate</span></a></span><span> </span><span class="annot"><span class="annottext">BaseUrl
+</span><a href="Unison.Cli.Share.Projects.html#hardCodedBaseUrl"><span class="hs-identifier hs-var">Share.hardCodedBaseUrl</span></a></span><span> </span><span class="annot"><span class="annottext">BranchRef
+</span><a href="#local-6989586621681078576"><span class="hs-identifier hs-var">branchRef</span></a></span><span> </span><span class="annot"><span class="annottext">HashJWT
+</span><a href="#local-6989586621681078541"><span class="hs-identifier hs-var">causalHashJwt</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO ()
+forall {p}. p -&gt; IO ()
+</span><a href="#local-6989586621681078581"><span class="hs-identifier hs-var">downloadedCallback</span></a></span><span>
+</span><span id="line-83"></span><span>          </span><span class="annot"><span class="annottext">Either (SyncError PullError) ()
+</span><a href="#local-6989586621681078585"><span class="hs-identifier hs-var">result</span></a></span><span> </span><span class="annot"><span class="annottext">Either (SyncError PullError) ()
+-&gt; (Either (SyncError PullError) () -&gt; Cli ()) -&gt; Cli ()
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">(SyncError PullError -&gt; Cli ())
+-&gt; Either (SyncError PullError) () -&gt; Cli ()
+forall (m :: * -&gt; *) a b.
+Applicative m =&gt;
+(a -&gt; m b) -&gt; Either a b -&gt; m b
+</span><span class="hs-identifier hs-var">onLeft</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681078587"><span class="annot"><span class="annottext">SyncError PullError
+</span><a href="#local-6989586621681078587"><span class="hs-identifier hs-var">err0</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-84"></span><span>            </span><span class="annot"><span class="annottext">ShareError -&gt; Cli ()
+forall void. ShareError -&gt; Cli void
+</span><a href="#local-6989586621681078539"><span class="hs-identifier hs-var">done</span></a></span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SyncError PullError
+</span><a href="#local-6989586621681078587"><span class="hs-identifier hs-var">err0</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-85"></span><span>              </span><span class="annot"><a href="Unison.Share.Sync.Types.html#SyncError"><span class="hs-identifier hs-type">Share.SyncError</span></a></span><span> </span><span id="local-6989586621681078588"><span class="annot"><span class="annottext">PullError
+</span><a href="#local-6989586621681078588"><span class="hs-identifier hs-var">pullErr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-86"></span><span>                </span><span class="annot"><span class="annottext">PullError -&gt; ShareError
+</span><a href="Unison.Codebase.Editor.Output.html#ShareErrorPullV2"><span class="hs-identifier hs-var">Output.ShareErrorPullV2</span></a></span><span> </span><span class="annot"><span class="annottext">PullError
+</span><a href="#local-6989586621681078588"><span class="hs-identifier hs-var">pullErr</span></a></span><span>
+</span><span id="line-87"></span><span>              </span><span class="annot"><a href="Unison.Share.Sync.Types.html#TransportError"><span class="hs-identifier hs-type">Share.TransportError</span></a></span><span> </span><span id="local-6989586621681078590"><span class="annot"><span class="annottext">CodeserverTransportError
+</span><a href="#local-6989586621681078590"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">CodeserverTransportError -&gt; ShareError
+</span><a href="Unison.Codebase.Editor.Output.html#ShareErrorTransport"><span class="hs-identifier hs-var">Output.ShareErrorTransport</span></a></span><span> </span><span class="annot"><span class="annottext">CodeserverTransportError
+</span><a href="#local-6989586621681078590"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-88"></span><span>    </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Hash32 -&gt; CausalHash
+</span><span class="hs-identifier hs-var">Sync.Common.hash32ToCausalHash</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">HashJWT -&gt; Hash32
+</span><span class="hs-identifier hs-var">Share.hashJWTHash</span></span><span> </span><span class="annot"><span class="annottext">HashJWT
+</span><a href="#local-6989586621681078541"><span class="hs-identifier hs-var">causalHashJwt</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-89"></span><span>
+</span><span id="line-90"></span><span class="annot"><span class="hs-comment">-- | Download loose code from Share.</span></span><span>
+</span><span id="line-91"></span><span class="annot"><a href="Unison.Cli.DownloadUtils.html#downloadLooseCodeFromShare"><span class="hs-identifier hs-type">downloadLooseCodeFromShare</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ReadShareLooseCode</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Unison.Cli.Monad.html#Cli"><span class="hs-identifier hs-type">Cli</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Either</span></span><span> </span><span class="annot"><a href="Unison.Codebase.Editor.Output.html#ShareError"><span class="hs-identifier hs-type">Output.ShareError</span></a></span><span> </span><span class="annot"><span class="hs-identifier hs-type">CausalHash</span></span><span class="hs-special">)</span><span>
+</span><span id="line-92"></span><span id="downloadLooseCodeFromShare"><span class="annot"><span class="annottext">downloadLooseCodeFromShare :: ReadShareLooseCode -&gt; Cli (Either ShareError CausalHash)
+</span><a href="Unison.Cli.DownloadUtils.html#downloadLooseCodeFromShare"><span class="hs-identifier hs-var hs-var">downloadLooseCodeFromShare</span></a></span></span><span> </span><span id="local-6989586621681078592"><span class="annot"><span class="annottext">ReadShareLooseCode
+</span><a href="#local-6989586621681078592"><span class="hs-identifier hs-var">namespace</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-93"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681078593"><span class="annot"><span class="annottext">codeserver :: CodeserverURI
+</span><a href="#local-6989586621681078593"><span class="hs-identifier hs-var hs-var">codeserver</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ShareCodeserver -&gt; CodeserverURI
+</span><a href="Unison.Share.Codeserver.html#resolveCodeserver"><span class="hs-identifier hs-var">Codeserver.resolveCodeserver</span></a></span><span> </span><span class="annot"><span class="annottext">ReadShareLooseCode
+</span><a href="#local-6989586621681078592"><span class="hs-identifier hs-var">namespace</span></a></span><span class="hs-operator">.</span><span class="hs-identifier">server</span><span>
+</span><span id="line-94"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681078595"><span class="annot"><span class="annottext">baseURL :: BaseUrl
+</span><a href="#local-6989586621681078595"><span class="hs-identifier hs-var hs-var">baseURL</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CodeserverURI -&gt; BaseUrl
+</span><span class="hs-identifier hs-var">codeserverBaseURL</span></span><span> </span><span class="annot"><span class="annottext">CodeserverURI
+</span><a href="#local-6989586621681078593"><span class="hs-identifier hs-var">codeserver</span></a></span><span>
+</span><span id="line-95"></span><span>
+</span><span id="line-96"></span><span>  </span><span class="hs-comment">-- Auto-login to share if pulling from a non-public path</span><span>
+</span><span id="line-97"></span><span>  </span><span class="annot"><span class="annottext">Bool -&gt; Cli () -&gt; Cli ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">when</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><span class="hs-identifier hs-var">not</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ReadShareLooseCode -&gt; Bool
+</span><span class="hs-identifier hs-var">RemoteRepo.isPublic</span></span><span> </span><span class="annot"><span class="annottext">ReadShareLooseCode
+</span><a href="#local-6989586621681078592"><span class="hs-identifier hs-var">namespace</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-98"></span><span>    </span><span id="local-6989586621681078597"><span class="annot"><span class="annottext">UserInfo
+</span><a href="#local-6989586621681078597"><span class="hs-identifier hs-var">_userInfo</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">CodeserverURI -&gt; Cli UserInfo
+</span><a href="Unison.Codebase.Editor.HandleInput.AuthLogin.html#ensureAuthenticatedWithCodeserver"><span class="hs-identifier hs-var">ensureAuthenticatedWithCodeserver</span></a></span><span> </span><span class="annot"><span class="annottext">CodeserverURI
+</span><a href="#local-6989586621681078593"><span class="hs-identifier hs-var">codeserver</span></a></span><span>
+</span><span id="line-99"></span><span>    </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-100"></span><span>
+</span><span id="line-101"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621681078598"><span class="annot"><span class="annottext">shareFlavoredPath :: Path
+</span><a href="#local-6989586621681078598"><span class="hs-identifier hs-var hs-var">shareFlavoredPath</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-102"></span><span>        </span><span class="annot"><span class="annottext">NonEmpty Text -&gt; Path
+</span><span class="hs-identifier hs-var">Share.Path</span></span><span> </span><span class="annot"><span class="annottext">(NonEmpty Text -&gt; Path) -&gt; NonEmpty Text -&gt; Path
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-103"></span><span>          </span><span class="annot"><span class="annottext">ShareUserHandle -&gt; Text
+</span><span class="hs-identifier hs-var">shareUserHandleToText</span></span><span> </span><span class="annot"><span class="annottext">ReadShareLooseCode
+</span><a href="#local-6989586621681078592"><span class="hs-identifier hs-var">namespace</span></a></span><span class="hs-operator">.</span><span class="hs-identifier">repo</span><span>
+</span><span id="line-104"></span><span>            </span><span class="annot"><span class="annottext">Text -&gt; [Text] -&gt; NonEmpty Text
+forall a. a -&gt; [a] -&gt; NonEmpty a
+</span><span class="hs-operator hs-var">:|</span></span><span> </span><span class="annot"><span class="annottext">(NameSegment -&gt; Text) -&gt; [NameSegment] -&gt; [Text]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">NameSegment -&gt; Text
+</span><span class="hs-identifier hs-var">NameSegment.toUnescapedText</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Path -&gt; [NameSegment]
+</span><span class="hs-identifier hs-var">Path.toList</span></span><span> </span><span class="annot"><span class="annottext">ReadShareLooseCode
+</span><a href="#local-6989586621681078592"><span class="hs-identifier hs-var">namespace</span></a></span><span class="hs-operator">.</span><span class="hs-identifier">path</span><span class="hs-special">)</span><span>
+</span><span id="line-105"></span><span>
+</span><span id="line-106"></span><span>  </span><span class="annot"><span class="annottext">((forall void. ShareError -&gt; Cli void) -&gt; Cli CausalHash)
+-&gt; Cli (Either ShareError CausalHash)
+forall a b.
+((forall void. a -&gt; Cli void) -&gt; Cli b) -&gt; Cli (Either a b)
+</span><a href="Unison.Cli.Monad.html#labelE"><span class="hs-identifier hs-var">Cli.labelE</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681078602"><span class="annot"><span class="annottext">forall void. ShareError -&gt; Cli void
+</span><a href="#local-6989586621681078602"><span class="hs-identifier hs-var">done</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-107"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621681078603"><span class="annot"><span class="annottext">CausalHash
+</span><a href="#local-6989586621681078603"><span class="hs-identifier hs-var">causalHash</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681078604"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681078604"><span class="hs-identifier hs-var">numDownloaded</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-108"></span><span>      </span><span class="annot"><span class="annottext">(forall x. ((Int -&gt; IO (), IO Int) -&gt; IO x) -&gt; IO x)
+-&gt; ((Int -&gt; IO (), IO Int) -&gt; Cli (CausalHash, Int))
+-&gt; Cli (CausalHash, Int)
+forall a b.
+(forall x. (a -&gt; IO x) -&gt; IO x) -&gt; (a -&gt; Cli b) -&gt; Cli b
+</span><a href="Unison.Cli.Monad.html#with"><span class="hs-identifier hs-var">Cli.with</span></a></span><span> </span><span class="annot"><span class="annottext">((Int -&gt; IO (), IO Int) -&gt; IO x) -&gt; IO x
+forall x. ((Int -&gt; IO (), IO Int) -&gt; IO x) -&gt; IO x
+</span><a href="Unison.Cli.DownloadUtils.html#withEntitiesDownloadedProgressCallback"><span class="hs-identifier hs-var">withEntitiesDownloadedProgressCallback</span></a></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span id="local-6989586621681078605"><span class="annot"><span class="annottext">Int -&gt; IO ()
+</span><a href="#local-6989586621681078605"><span class="hs-identifier hs-var">downloadedCallback</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621681078606"><span class="annot"><span class="annottext">IO Int
+</span><a href="#local-6989586621681078606"><span class="hs-identifier hs-var">getNumDownloaded</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-109"></span><span>        </span><span id="local-6989586621681078607"><span class="annot"><span class="annottext">CausalHash
+</span><a href="#local-6989586621681078607"><span class="hs-identifier hs-var">causalHash</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span>
+</span><span id="line-110"></span><span>          </span><span class="annot"><span class="annottext">BaseUrl
+-&gt; Path
+-&gt; (Int -&gt; IO ())
+-&gt; Cli (Either (SyncError PullError) CausalHash)
+</span><a href="Unison.Share.Sync.html#pull"><span class="hs-identifier hs-var">Share.pull</span></a></span><span> </span><span class="annot"><span class="annottext">BaseUrl
+</span><a href="#local-6989586621681078595"><span class="hs-identifier hs-var">baseURL</span></a></span><span> </span><span class="annot"><span class="annottext">Path
+</span><a href="#local-6989586621681078598"><span class="hs-identifier hs-var">shareFlavoredPath</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO ()
+</span><a href="#local-6989586621681078605"><span class="hs-identifier hs-var">downloadedCallback</span></a></span><span> </span><span class="annot"><span class="annottext">Cli (Either (SyncError PullError) CausalHash)
+-&gt; (Cli (Either (SyncError PullError) CausalHash)
+    -&gt; Cli CausalHash)
+-&gt; Cli CausalHash
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">(SyncError PullError -&gt; Cli CausalHash)
+-&gt; Cli (Either (SyncError PullError) CausalHash) -&gt; Cli CausalHash
+forall (m :: * -&gt; *) a b.
+Monad m =&gt;
+(a -&gt; m b) -&gt; m (Either a b) -&gt; m b
+</span><span class="hs-identifier hs-var">onLeftM</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681078610"><span class="annot"><span class="annottext">SyncError PullError
+</span><a href="#local-6989586621681078610"><span class="hs-identifier hs-var">err0</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-111"></span><span>            </span><span class="annot"><span class="annottext">ShareError -&gt; Cli CausalHash
+forall void. ShareError -&gt; Cli void
+</span><a href="#local-6989586621681078602"><span class="hs-identifier hs-var">done</span></a></span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">SyncError PullError
+</span><a href="#local-6989586621681078610"><span class="hs-identifier hs-var">err0</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-112"></span><span>              </span><span class="annot"><a href="Unison.Share.Sync.Types.html#SyncError"><span class="hs-identifier hs-type">Share.SyncError</span></a></span><span> </span><span id="local-6989586621681078611"><span class="annot"><span class="annottext">PullError
+</span><a href="#local-6989586621681078611"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">PullError -&gt; ShareError
+</span><a href="Unison.Codebase.Editor.Output.html#ShareErrorPull"><span class="hs-identifier hs-var">Output.ShareErrorPull</span></a></span><span> </span><span class="annot"><span class="annottext">PullError
+</span><a href="#local-6989586621681078611"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-113"></span><span>              </span><span class="annot"><a href="Unison.Share.Sync.Types.html#TransportError"><span class="hs-identifier hs-type">Share.TransportError</span></a></span><span> </span><span id="local-6989586621681078613"><span class="annot"><span class="annottext">CodeserverTransportError
+</span><a href="#local-6989586621681078613"><span class="hs-identifier hs-var">err</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">CodeserverTransportError -&gt; ShareError
+</span><a href="Unison.Codebase.Editor.Output.html#ShareErrorTransport"><span class="hs-identifier hs-var">Output.ShareErrorTransport</span></a></span><span> </span><span class="annot"><span class="annottext">CodeserverTransportError
+</span><a href="#local-6989586621681078613"><span class="hs-identifier hs-var">err</span></a></span><span>
+</span><span id="line-114"></span><span>        </span><span id="local-6989586621681078614"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681078614"><span class="hs-identifier hs-var">numDownloaded</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO Int -&gt; Cli Int
+forall a. IO a -&gt; Cli a
+forall (m :: * -&gt; *) a. MonadIO m =&gt; IO a -&gt; m a
+</span><span class="hs-identifier hs-var">liftIO</span></span><span> </span><span class="annot"><span class="annottext">IO Int
+</span><a href="#local-6989586621681078606"><span class="hs-identifier hs-var">getNumDownloaded</span></a></span><span>
+</span><span id="line-115"></span><span>        </span><span class="hs-identifier">pure</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">CausalHash
+</span><a href="#local-6989586621681078607"><span class="hs-identifier hs-var">causalHash</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681078614"><span class="hs-identifier hs-var">numDownloaded</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span>    </span><span class="annot"><span class="annottext">Output -&gt; Cli ()
+</span><a href="Unison.Cli.Monad.html#respond"><span class="hs-identifier hs-var">Cli.respond</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Output
+</span><a href="Unison.Codebase.Editor.Output.html#DownloadedEntities"><span class="hs-identifier hs-var">Output.DownloadedEntities</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681078604"><span class="hs-identifier hs-var">numDownloaded</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-117"></span><span>    </span><span class="hs-identifier">pure</span><span> </span><span class="annot"><span class="annottext">CausalHash
+</span><a href="#local-6989586621681078603"><span class="hs-identifier hs-var">causalHash</span></a></span><span>
+</span><span id="line-118"></span><span>
+</span><span id="line-119"></span><span class="hs-comment">-- Provide the given action a callback that display to the terminal.</span><span>
+</span><span id="line-120"></span><span id="local-6989586621681078615"><span class="annot"><a href="Unison.Cli.DownloadUtils.html#withEntitiesDownloadedProgressCallback"><span class="hs-identifier hs-type">withEntitiesDownloadedProgressCallback</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621681078615"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621681078615"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-121"></span><span id="withEntitiesDownloadedProgressCallback"><span class="annot"><span class="annottext">withEntitiesDownloadedProgressCallback :: forall x. ((Int -&gt; IO (), IO Int) -&gt; IO x) -&gt; IO x
+</span><a href="Unison.Cli.DownloadUtils.html#withEntitiesDownloadedProgressCallback"><span class="hs-identifier hs-var hs-var">withEntitiesDownloadedProgressCallback</span></a></span></span><span> </span><span id="local-6989586621681078641"><span class="annot"><span class="annottext">(Int -&gt; IO (), IO Int) -&gt; IO a
+</span><a href="#local-6989586621681078641"><span class="hs-identifier hs-var">action</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-122"></span><span>  </span><span id="local-6989586621681078642"><span class="annot"><span class="annottext">TVar Int
+</span><a href="#local-6989586621681078642"><span class="hs-identifier hs-var">entitiesDownloadedVar</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; IO (TVar Int)
+forall a. a -&gt; IO (TVar a)
+</span><span class="hs-identifier hs-var">newTVarIO</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span>
+</span><span id="line-123"></span><span>  </span><span class="annot"><span class="annottext">IO a -&gt; IO a
+forall (m :: * -&gt; *) a. (MonadIO m, MonadMask m) =&gt; m a -&gt; m a
+</span><span class="hs-identifier hs-var">Console.Regions.displayConsoleRegions</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-124"></span><span>    </span><span class="annot"><span class="annottext">RegionLayout -&gt; (ConsoleRegion -&gt; IO a) -&gt; IO a
+forall (m :: * -&gt; *) a.
+(MonadIO m, MonadMask m) =&gt;
+RegionLayout -&gt; (ConsoleRegion -&gt; m a) -&gt; m a
+</span><span class="hs-identifier hs-var">Console.Regions.withConsoleRegion</span></span><span> </span><span class="annot"><span class="annottext">RegionLayout
+</span><span class="hs-identifier hs-var">Console.Regions.Linear</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621681078646"><span class="annot"><span class="annottext">ConsoleRegion
+</span><a href="#local-6989586621681078646"><span class="hs-identifier hs-var">region</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-125"></span><span>      </span><span class="annot"><span class="annottext">ConsoleRegion -&gt; STM Text -&gt; IO ()
+forall v (m :: * -&gt; *).
+(ToRegionContent v, LiftRegion m) =&gt;
+ConsoleRegion -&gt; v -&gt; m ()
+</span><span class="hs-identifier hs-var">Console.Regions.setConsoleRegion</span></span><span> </span><span class="annot"><span class="annottext">ConsoleRegion
+</span><a href="#local-6989586621681078646"><span class="hs-identifier hs-var">region</span></a></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-126"></span><span>        </span><span id="local-6989586621681078648"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681078648"><span class="hs-identifier hs-var">entitiesDownloaded</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TVar Int -&gt; STM Int
+forall a. TVar a -&gt; STM a
+</span><span class="hs-identifier hs-var">readTVar</span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><a href="#local-6989586621681078642"><span class="hs-identifier hs-var">entitiesDownloadedVar</span></a></span><span>
+</span><span id="line-127"></span><span>        </span><span class="hs-identifier">pure</span><span> </span><span class="hs-operator">$</span><span>
+</span><span id="line-128"></span><span>          </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot;\n  Downloaded &quot;</span></span><span>
+</span><span id="line-129"></span><span>            </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Text
+forall a. Show a =&gt; a -&gt; Text
+</span><span class="hs-identifier hs-var">tShow</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681078648"><span class="hs-identifier hs-var">entitiesDownloaded</span></a></span><span>
+</span><span id="line-130"></span><span>            </span><span class="annot"><span class="annottext">Text -&gt; Text -&gt; Text
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">Text
+</span><span class="hs-string">&quot; entities...\n\n&quot;</span></span><span>
+</span><span id="line-131"></span><span>      </span><span class="annot"><span class="annottext">(Int -&gt; IO (), IO Int) -&gt; IO a
+</span><a href="#local-6989586621681078641"><span class="hs-identifier hs-var">action</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="hs-glyph">\</span><span id="local-6989586621681078650"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681078650"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">STM () -&gt; IO ()
+forall a. STM a -&gt; IO a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TVar Int -&gt; (Int -&gt; Int) -&gt; STM ()
+forall a. TVar a -&gt; (a -&gt; a) -&gt; STM ()
+</span><span class="hs-identifier hs-var">modifyTVar'</span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><a href="#local-6989586621681078642"><span class="hs-identifier hs-var">entitiesDownloadedVar</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621681078650"><span class="hs-identifier hs-var">n</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">TVar Int -&gt; IO Int
+forall a. TVar a -&gt; IO a
+</span><span class="hs-identifier hs-var">readTVarIO</span></span><span> </span><span class="annot"><span class="annottext">TVar Int
+</span><a href="#local-6989586621681078642"><span class="hs-identifier hs-var">entitiesDownloadedVar</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-132"></span></pre></body></html>

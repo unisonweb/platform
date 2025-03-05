@@ -1,0 +1,842 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE BangPatterns, RecordWildCards #-}</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- |</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- Module      : Data.Text.Internal.IO</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Copyright   : (c) 2009, 2010 Bryan O'Sullivan,</span><span>
+</span><span id="line-5"></span><span class="hs-comment">--               (c) 2009 Simon Marlow</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- License     : BSD-style</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- Maintainer  : bos@serpentine.com</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Stability   : experimental</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- Portability : GHC</span><span>
+</span><span id="line-10"></span><span class="hs-comment">--</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- /Warning/: this is an internal module, and does not have a stable</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- API or name. Functions in this module may not check or enforce</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- preconditions expected by public modules. Use at your own risk!</span><span>
+</span><span id="line-14"></span><span class="hs-comment">--</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- Low-level support for text I\/O.</span><span>
+</span><span id="line-16"></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Data.Text.Internal.IO</span><span>
+</span><span id="line-18"></span><span>    </span><span class="hs-special">(</span><span>
+</span><span id="line-19"></span><span>      </span><span class="annot"><a href="Data.Text.Internal.IO.html#hGetLineWith"><span class="hs-identifier">hGetLineWith</span></a></span><span>
+</span><span id="line-20"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Text.Internal.IO.html#readChunk"><span class="hs-identifier">readChunk</span></a></span><span>
+</span><span id="line-21"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-22"></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Control.Exception.html#/Control.Exception.html"><span class="hs-identifier">Control.Exception</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">E</span></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Data.IORef.html#/Data.IORef.html"><span class="hs-identifier">Data.IORef</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IORef.html#readIORef/GHC.IORef.html#readIORef"><span class="hs-identifier">readIORef</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IORef.html#writeIORef/GHC.IORef.html#writeIORef"><span class="hs-identifier">writeIORef</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Text.html"><span class="hs-identifier">Data.Text</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Text.Internal.html#Text"><span class="hs-identifier">Text</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.html"><span class="hs-identifier">Data.Text.Internal.Fusion</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Text.Internal.Fusion.html#unstream"><span class="hs-identifier">unstream</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html"><span class="hs-identifier">Data.Text.Internal.Fusion.Types</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Step"><span class="hs-identifier">Step</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Types.html#Stream"><span class="hs-identifier">Stream</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-28"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Size.html"><span class="hs-identifier">Data.Text.Internal.Fusion.Size</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Text.Internal.Fusion.Size.html#exactSize"><span class="hs-identifier">exactSize</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.Text.Internal.Fusion.Size.html#maxSize"><span class="hs-identifier">maxSize</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Data.Text.Unsafe.html"><span class="hs-identifier">Data.Text.Unsafe</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Text.Internal.Unsafe.html#inlinePerformIO"><span class="hs-identifier">inlinePerformIO</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/Foreign.Storable.html#/Foreign.Storable.html"><span class="hs-identifier">Foreign.Storable</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/Foreign.Storable.html#peekElemOff/Foreign.Storable.html#peekElemOff"><span class="hs-identifier">peekElemOff</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-31"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#/GHC.IO.Buffer.html"><span class="hs-identifier">GHC.IO.Buffer</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#Buffer/GHC.IO.Buffer.html#Buffer"><span class="hs-identifier">Buffer</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#CharBuffer/GHC.IO.Buffer.html#CharBuffer"><span class="hs-identifier">CharBuffer</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#RawCharBuffer/GHC.IO.Buffer.html#RawCharBuffer"><span class="hs-identifier">RawCharBuffer</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufferAdjustL/GHC.IO.Buffer.html#bufferAdjustL"><span class="hs-identifier">bufferAdjustL</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-32"></span><span>                      </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufferElems/GHC.IO.Buffer.html#bufferElems"><span class="hs-identifier">bufferElems</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#charSize/GHC.IO.Buffer.html#charSize"><span class="hs-identifier">charSize</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#isEmptyBuffer/GHC.IO.Buffer.html#isEmptyBuffer"><span class="hs-identifier">isEmptyBuffer</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#readCharBuf/GHC.IO.Buffer.html#readCharBuf"><span class="hs-identifier">readCharBuf</span></a></span><span class="hs-special">,</span><span>
+</span><span id="line-33"></span><span>                      </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#withRawBuffer/GHC.IO.Buffer.html#withRawBuffer"><span class="hs-identifier">withRawBuffer</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#writeCharBuf/GHC.IO.Buffer.html#writeCharBuf"><span class="hs-identifier">writeCharBuf</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Internals.html#/GHC.IO.Handle.Internals.html"><span class="hs-identifier">GHC.IO.Handle.Internals</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Internals.html#ioe_EOF/GHC.IO.Handle.Internals.html#ioe_EOF"><span class="hs-identifier">ioe_EOF</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Internals.html#readTextDevice/GHC.IO.Handle.Internals.html#readTextDevice"><span class="hs-identifier">readTextDevice</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Internals.html#wantReadableHandle_/GHC.IO.Handle.Internals.html#wantReadableHandle_"><span class="hs-identifier">wantReadableHandle_</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#/GHC.IO.Handle.Types.html"><span class="hs-identifier">GHC.IO.Handle.Types</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle__/GHC.IO.Handle.Types.html#Handle__"><span class="hs-identifier">Handle__</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Newline/GHC.IO.Handle.Types.html#Newline"><span class="hs-identifier">Newline</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-36"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/System.IO.html#/System.IO.html"><span class="hs-identifier">System.IO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle/GHC.IO.Handle.Types.html#Handle"><span class="hs-identifier">Handle</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-37"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/System.IO.Error.html#/System.IO.Error.html"><span class="hs-identifier">System.IO.Error</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/System.IO.Error.html#isEOFError/System.IO.Error.html#isEOFError"><span class="hs-identifier">isEOFError</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Data.Text.html"><span class="hs-identifier">Data.Text</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">T</span></span><span>
+</span><span id="line-39"></span><span>
+</span><span id="line-40"></span><span class="hs-comment">-- | Read a single line of input from a handle, constructing a list of</span><span>
+</span><span id="line-41"></span><span class="hs-comment">-- decoded chunks as we go.  When we're done, transform them into the</span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- destination type.</span><span>
+</span><span id="line-43"></span><span id="local-6989586621679134524"><span class="annot"><a href="Data.Text.Internal.IO.html#hGetLineWith"><span class="hs-identifier hs-type">hGetLineWith</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="hs-special">[</span><span class="annot"><a href="Data.Text.Internal.html#Text"><span class="hs-identifier hs-type">Text</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679134524"><span class="hs-identifier hs-type">t</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle/GHC.IO.Handle.Types.html#Handle"><span class="hs-identifier hs-type">Handle</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679134524"><span class="hs-identifier hs-type">t</span></a></span></span><span>
+</span><span id="line-44"></span><span id="hGetLineWith"><span class="annot"><span class="annottext">hGetLineWith :: forall t. ([Text] -&gt; t) -&gt; Handle -&gt; IO t
+</span><a href="Data.Text.Internal.IO.html#hGetLineWith"><span class="hs-identifier hs-var hs-var">hGetLineWith</span></a></span></span><span> </span><span id="local-6989586621679134652"><span class="annot"><span class="annottext">[Text] -&gt; t
+</span><a href="#local-6989586621679134652"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679134653"><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679134653"><span class="hs-identifier hs-var">h</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; Handle -&gt; (Handle__ -&gt; IO t) -&gt; IO t
+forall a. String -&gt; Handle -&gt; (Handle__ -&gt; IO a) -&gt; IO a
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Internals.html#wantReadableHandle_/GHC.IO.Handle.Internals.html#wantReadableHandle_"><span class="hs-identifier hs-var">wantReadableHandle_</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;hGetLine&quot;</span></span><span> </span><span class="annot"><span class="annottext">Handle
+</span><a href="#local-6989586621679134653"><span class="hs-identifier hs-var">h</span></a></span><span> </span><span class="annot"><span class="annottext">Handle__ -&gt; IO t
+</span><a href="#local-6989586621679134654"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-45"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-46"></span><span>    </span><span id="local-6989586621679134654"><span class="annot"><span class="annottext">go :: Handle__ -&gt; IO t
+</span><a href="#local-6989586621679134654"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679134655"><span class="annot"><span class="annottext">hh :: Handle__
+</span><a href="#local-6989586621679134655"><span class="hs-identifier hs-var">hh</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle__/GHC.IO.Handle.Types.html#Handle__"><span class="hs-identifier hs-type">Handle__</span></a></span><span class="hs-special">{</span><span id="local-6989586621679134663"><span id="local-6989586621679134664"><span id="local-6989586621679134665"><span id="local-6989586621679134666"><span id="local-6989586621679134667"><span id="local-6989586621679134668"><span id="local-6989586621679134669"><span id="local-6989586621679134670"><span id="local-6989586621679134671"><span id="local-6989586621679134672"><span id="local-6989586621679134673"><span id="local-6989586621679134674"><span id="local-6989586621679134675"><span class="annot"><span class="annottext">dev
+Maybe (MVar Handle__)
+Maybe TextEncoding
+Maybe (TextEncoder enc_state)
+Maybe (TextDecoder dec_state)
+IORef (dec_state, Buffer Word8)
+IORef (Buffer CharBufElem)
+IORef (Buffer Word8)
+IORef (BufferList CharBufElem)
+Newline
+BufferMode
+HandleType
+haDevice :: dev
+haType :: HandleType
+haByteBuffer :: IORef (Buffer Word8)
+haBufferMode :: BufferMode
+haLastDecode :: IORef (dec_state, Buffer Word8)
+haCharBuffer :: IORef (Buffer CharBufElem)
+haBuffers :: IORef (BufferList CharBufElem)
+haEncoder :: Maybe (TextEncoder enc_state)
+haDecoder :: Maybe (TextDecoder dec_state)
+haCodec :: Maybe TextEncoding
+haInputNL :: Newline
+haOutputNL :: Newline
+haOtherSide :: Maybe (MVar Handle__)
+haDevice :: ()
+haType :: Handle__ -&gt; HandleType
+haByteBuffer :: Handle__ -&gt; IORef (Buffer Word8)
+haBufferMode :: Handle__ -&gt; BufferMode
+haLastDecode :: ()
+haCharBuffer :: Handle__ -&gt; IORef (Buffer CharBufElem)
+haBuffers :: Handle__ -&gt; IORef (BufferList CharBufElem)
+haEncoder :: ()
+haDecoder :: ()
+haCodec :: Handle__ -&gt; Maybe TextEncoding
+haInputNL :: Handle__ -&gt; Newline
+haOutputNL :: Handle__ -&gt; Newline
+haOtherSide :: Handle__ -&gt; Maybe (MVar Handle__)
+</span><a href="#local-6989586621679134663"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef (Buffer CharBufElem) -&gt; IO (Buffer CharBufElem)
+forall a. IORef a -&gt; IO a
+</span><a href="../../base-4.18.2.1/src/GHC.IORef.html#readIORef/GHC.IORef.html#readIORef"><span class="hs-identifier hs-var">readIORef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (Buffer CharBufElem)
+</span><a href="#local-6989586621679134668"><span class="hs-identifier hs-var">haCharBuffer</span></a></span><span> </span><span class="annot"><span class="annottext">IO (Buffer CharBufElem) -&gt; (Buffer CharBufElem -&gt; IO t) -&gt; IO t
+forall a b. IO a -&gt; (a -&gt; IO b) -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%3E%3E%3D/GHC.Base.html#%3E%3E%3D"><span class="hs-operator hs-var">&gt;&gt;=</span></a></span><span> </span><span class="annot"><span class="annottext">([Text] -&gt; t) -&gt; IO [Text] -&gt; IO t
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#fmap/GHC.Base.html#fmap"><span class="hs-identifier hs-var">fmap</span></a></span><span> </span><span class="annot"><span class="annottext">[Text] -&gt; t
+</span><a href="#local-6989586621679134652"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">(IO [Text] -&gt; IO t)
+-&gt; (Buffer CharBufElem -&gt; IO [Text]) -&gt; Buffer CharBufElem -&gt; IO t
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Handle__ -&gt; [Text] -&gt; Buffer CharBufElem -&gt; IO [Text]
+</span><a href="Data.Text.Internal.IO.html#hGetLineLoop"><span class="hs-identifier hs-var">hGetLineLoop</span></a></span><span> </span><span class="annot"><span class="annottext">Handle__
+</span><a href="#local-6989586621679134655"><span class="hs-identifier hs-var">hh</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span class="annot"><a href="Data.Text.Internal.IO.html#hGetLineLoop"><span class="hs-identifier hs-type">hGetLineLoop</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle__/GHC.IO.Handle.Types.html#Handle__"><span class="hs-identifier hs-type">Handle__</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Data.Text.Internal.html#Text"><span class="hs-identifier hs-type">Text</span></a></span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#CharBuffer/GHC.IO.Buffer.html#CharBuffer"><span class="hs-identifier hs-type">CharBuffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">[</span><span class="annot"><a href="Data.Text.Internal.html#Text"><span class="hs-identifier hs-type">Text</span></a></span><span class="hs-special">]</span><span>
+</span><span id="line-49"></span><span id="hGetLineLoop"><span class="annot"><span class="annottext">hGetLineLoop :: Handle__ -&gt; [Text] -&gt; Buffer CharBufElem -&gt; IO [Text]
+</span><a href="Data.Text.Internal.IO.html#hGetLineLoop"><span class="hs-identifier hs-var hs-var">hGetLineLoop</span></a></span></span><span> </span><span id="local-6989586621679134691"><span class="annot"><span class="annottext">hh :: Handle__
+</span><a href="#local-6989586621679134691"><span class="hs-identifier hs-var">hh</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle__/GHC.IO.Handle.Types.html#Handle__"><span class="hs-identifier hs-type">Handle__</span></a></span><span class="hs-special">{</span><span id="local-6989586621679134696"><span id="local-6989586621679134697"><span id="local-6989586621679134698"><span id="local-6989586621679134699"><span id="local-6989586621679134700"><span id="local-6989586621679134701"><span id="local-6989586621679134702"><span id="local-6989586621679134703"><span id="local-6989586621679134704"><span id="local-6989586621679134705"><span id="local-6989586621679134706"><span id="local-6989586621679134707"><span id="local-6989586621679134708"><span class="annot"><span class="annottext">dev
+Maybe (MVar Handle__)
+Maybe TextEncoding
+Maybe (TextEncoder enc_state)
+Maybe (TextDecoder dec_state)
+IORef (dec_state, Buffer Word8)
+IORef (Buffer CharBufElem)
+IORef (Buffer Word8)
+IORef (BufferList CharBufElem)
+Newline
+BufferMode
+HandleType
+haDevice :: ()
+haType :: Handle__ -&gt; HandleType
+haByteBuffer :: Handle__ -&gt; IORef (Buffer Word8)
+haBufferMode :: Handle__ -&gt; BufferMode
+haLastDecode :: ()
+haCharBuffer :: Handle__ -&gt; IORef (Buffer CharBufElem)
+haBuffers :: Handle__ -&gt; IORef (BufferList CharBufElem)
+haEncoder :: ()
+haDecoder :: ()
+haCodec :: Handle__ -&gt; Maybe TextEncoding
+haInputNL :: Handle__ -&gt; Newline
+haOutputNL :: Handle__ -&gt; Newline
+haOtherSide :: Handle__ -&gt; Maybe (MVar Handle__)
+haDevice :: dev
+haType :: HandleType
+haByteBuffer :: IORef (Buffer Word8)
+haBufferMode :: BufferMode
+haLastDecode :: IORef (dec_state, Buffer Word8)
+haCharBuffer :: IORef (Buffer CharBufElem)
+haBuffers :: IORef (BufferList CharBufElem)
+haEncoder :: Maybe (TextEncoder enc_state)
+haDecoder :: Maybe (TextDecoder dec_state)
+haCodec :: Maybe TextEncoding
+haInputNL :: Newline
+haOutputNL :: Newline
+haOtherSide :: Maybe (MVar Handle__)
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#haDevice/GHC.IO.Handle.Types.html#haDevice"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Text] -&gt; Buffer CharBufElem -&gt; IO [Text]
+</span><a href="#local-6989586621679134709"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-50"></span><span> </span><span id="local-6989586621679134709"><span class="annot"><span class="annottext">go :: [Text] -&gt; Buffer CharBufElem -&gt; IO [Text]
+</span><a href="#local-6989586621679134709"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679134725"><span class="annot"><span class="annottext">[Text]
+</span><a href="#local-6989586621679134725"><span class="hs-identifier hs-var">ts</span></a></span></span><span> </span><span id="local-6989586621679134726"><span class="annot"><span class="annottext">buf :: Buffer CharBufElem
+</span><a href="#local-6989586621679134726"><span class="hs-identifier hs-var">buf</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#Buffer/GHC.IO.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">bufL :: forall e. Buffer e -&gt; Int
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufL/GHC.IO.Buffer.html#bufL"><span class="hs-identifier hs-var">bufL</span></a></span><span class="hs-glyph">=</span><span id="local-6989586621679134729"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134729"><span class="hs-identifier hs-var">r0</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">bufR :: forall e. Buffer e -&gt; Int
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufR/GHC.IO.Buffer.html#bufR"><span class="hs-identifier hs-var">bufR</span></a></span><span class="hs-glyph">=</span><span id="local-6989586621679134731"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134731"><span class="hs-identifier hs-var">w</span></a></span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">bufRaw :: forall e. Buffer e -&gt; RawBuffer e
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufRaw/GHC.IO.Buffer.html#bufRaw"><span class="hs-identifier hs-var">bufRaw</span></a></span><span class="hs-glyph">=</span><span id="local-6989586621679134733"><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134733"><span class="hs-identifier hs-var">raw0</span></a></span></span><span> </span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-51"></span><span>  </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679134740"><span class="annot"><span class="annottext">findEOL :: RawBuffer CharBufElem -&gt; Int -&gt; IO (Bool, Int)
+</span><a href="#local-6989586621679134740"><span class="hs-identifier hs-var hs-var">findEOL</span></a></span></span><span> </span><span id="local-6989586621679134741"><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134741"><span class="hs-identifier hs-var">raw</span></a></span></span><span> </span><span id="local-6989586621679134742"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134742"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134742"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134731"><span class="hs-identifier hs-var">w</span></a></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Bool, Int) -&gt; IO (Bool, Int)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#False/GHC.Types.html#False"><span class="hs-identifier hs-var">False</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134731"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span>                    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-53"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621679134743"><span class="annot"><span class="annottext">CharBufElem
+</span><a href="#local-6989586621679134743"><span class="hs-identifier hs-var">c</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679134744"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134744"><span class="hs-identifier hs-var">r'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem -&gt; Int -&gt; IO (CharBufElem, Int)
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#readCharBuf/GHC.IO.Buffer.html#readCharBuf"><span class="hs-identifier hs-var">readCharBuf</span></a></span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134741"><span class="hs-identifier hs-var">raw</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134742"><span class="hs-identifier hs-var">r</span></a></span><span>
+</span><span id="line-54"></span><span>        </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><a href="#local-6989586621679134743"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem -&gt; CharBufElem -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><span class="hs-char">'\n'</span></span><span>
+</span><span id="line-55"></span><span>          </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">(Bool, Int) -&gt; IO (Bool, Int)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#True/GHC.Types.html#True"><span class="hs-identifier hs-var">True</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134742"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-56"></span><span>          </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem -&gt; Int -&gt; IO (Bool, Int)
+</span><a href="#local-6989586621679134740"><span class="hs-identifier hs-var">findEOL</span></a></span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134741"><span class="hs-identifier hs-var">raw</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134744"><span class="hs-identifier hs-var">r'</span></a></span><span>
+</span><span id="line-57"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621679134745"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679134745"><span class="hs-identifier hs-var">eol</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679134746"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134746"><span class="hs-identifier hs-var">off</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem -&gt; Int -&gt; IO (Bool, Int)
+</span><a href="#local-6989586621679134740"><span class="hs-identifier hs-var">findEOL</span></a></span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134733"><span class="hs-identifier hs-var">raw0</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134729"><span class="hs-identifier hs-var">r0</span></a></span><span>
+</span><span id="line-58"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621679134747"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134747"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679134748"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134748"><span class="hs-identifier hs-var">r'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Newline
+</span><a href="#local-6989586621679134706"><span class="hs-identifier hs-var">haInputNL</span></a></span><span> </span><span class="annot"><span class="annottext">Newline -&gt; Newline -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Newline
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#CRLF/GHC.IO.Handle.Types.html#CRLF"><span class="hs-identifier hs-var">CRLF</span></a></span><span>
+</span><span id="line-59"></span><span>            </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem -&gt; Int -&gt; Int -&gt; IO (Text, Int)
+</span><a href="Data.Text.Internal.IO.html#unpack_nl"><span class="hs-identifier hs-var">unpack_nl</span></a></span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134733"><span class="hs-identifier hs-var">raw0</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134729"><span class="hs-identifier hs-var">r0</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134746"><span class="hs-identifier hs-var">off</span></a></span><span>
+</span><span id="line-60"></span><span>            </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621679134751"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134751"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem -&gt; Int -&gt; Int -&gt; IO Text
+</span><a href="Data.Text.Internal.IO.html#unpack"><span class="hs-identifier hs-var">unpack</span></a></span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134733"><span class="hs-identifier hs-var">raw0</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134729"><span class="hs-identifier hs-var">r0</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134746"><span class="hs-identifier hs-var">off</span></a></span><span>
+</span><span id="line-61"></span><span>                    </span><span class="annot"><span class="annottext">(Text, Int) -&gt; IO (Text, Int)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134751"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134746"><span class="hs-identifier hs-var">off</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-62"></span><span>  </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679134745"><span class="hs-identifier hs-var">eol</span></a></span><span>
+</span><span id="line-63"></span><span>    </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="annot"><span class="annottext">IORef (Buffer CharBufElem) -&gt; Buffer CharBufElem -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IORef.html#writeIORef/GHC.IORef.html#writeIORef"><span class="hs-identifier hs-var">writeIORef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (Buffer CharBufElem)
+</span><a href="#local-6989586621679134701"><span class="hs-identifier hs-var">haCharBuffer</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Buffer CharBufElem -&gt; Buffer CharBufElem
+forall e. Int -&gt; Buffer e -&gt; Buffer e
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufferAdjustL/GHC.IO.Buffer.html#bufferAdjustL"><span class="hs-identifier hs-var">bufferAdjustL</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134746"><span class="hs-identifier hs-var">off</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134726"><span class="hs-identifier hs-var">buf</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span><span>            </span><span class="annot"><span class="annottext">[Text] -&gt; IO [Text]
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">([Text] -&gt; IO [Text]) -&gt; [Text] -&gt; IO [Text]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">[Text] -&gt; [Text]
+forall a. [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#reverse/GHC.List.html#reverse"><span class="hs-identifier hs-var">reverse</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134747"><span class="hs-identifier hs-var">t</span></a></span><span class="annot"><span class="annottext">Text -&gt; [Text] -&gt; [Text]
+forall a. a -&gt; [a] -&gt; [a]
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#%3A/GHC.Types.html#%3A"><span class="hs-glyph hs-var">:</span></a></span><span class="annot"><span class="annottext">[Text]
+</span><a href="#local-6989586621679134725"><span class="hs-identifier hs-var">ts</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-65"></span><span>    </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-66"></span><span>      </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679134755"><span class="annot"><span class="annottext">buf1 :: Buffer CharBufElem
+</span><a href="#local-6989586621679134755"><span class="hs-identifier hs-var hs-var">buf1</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Buffer CharBufElem -&gt; Buffer CharBufElem
+forall e. Int -&gt; Buffer e -&gt; Buffer e
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufferAdjustL/GHC.IO.Buffer.html#bufferAdjustL"><span class="hs-identifier hs-var">bufferAdjustL</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134748"><span class="hs-identifier hs-var">r'</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134726"><span class="hs-identifier hs-var">buf</span></a></span><span>
+</span><span id="line-67"></span><span>      </span><span id="local-6989586621679134756"><span class="annot"><span class="annottext">Maybe (Buffer CharBufElem)
+</span><a href="#local-6989586621679134756"><span class="hs-identifier hs-var">maybe_buf</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Handle__ -&gt; Buffer CharBufElem -&gt; IO (Maybe (Buffer CharBufElem))
+</span><a href="Data.Text.Internal.IO.html#maybeFillReadBuffer"><span class="hs-identifier hs-var">maybeFillReadBuffer</span></a></span><span> </span><span class="annot"><span class="annottext">Handle__
+</span><a href="#local-6989586621679134691"><span class="hs-identifier hs-var">hh</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134755"><span class="hs-identifier hs-var">buf1</span></a></span><span>
+</span><span id="line-68"></span><span>      </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Maybe (Buffer CharBufElem)
+</span><a href="#local-6989586621679134756"><span class="hs-identifier hs-var">maybe_buf</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-69"></span><span>         </span><span class="hs-comment">-- Nothing indicates we caught an EOF, and we may have a</span><span>
+</span><span id="line-70"></span><span>         </span><span class="hs-comment">-- partial line to return.</span><span>
+</span><span id="line-71"></span><span>         </span><span class="annot"><span class="annottext">Maybe (Buffer CharBufElem)
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-72"></span><span>              </span><span class="hs-comment">-- we reached EOF.  There might be a lone \r left</span><span>
+</span><span id="line-73"></span><span>              </span><span class="hs-comment">-- in the buffer, so check for that and</span><span>
+</span><span id="line-74"></span><span>              </span><span class="hs-comment">-- append it to the line if necessary.</span><span>
+</span><span id="line-75"></span><span>              </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679134758"><span class="annot"><span class="annottext">pre :: Text
+</span><a href="#local-6989586621679134758"><span class="hs-identifier hs-var hs-var">pre</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem -&gt; Bool
+forall e. Buffer e -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#isEmptyBuffer/GHC.IO.Buffer.html#isEmptyBuffer"><span class="hs-identifier hs-var">isEmptyBuffer</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134755"><span class="hs-identifier hs-var">buf1</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="Data.Text.Internal.html#empty"><span class="hs-identifier hs-var">T.empty</span></a></span><span>
+</span><span id="line-76"></span><span>                      </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>          </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CharBufElem -&gt; Text
+</span><a href="Data.Text.Show.html#singleton"><span class="hs-identifier hs-var">T.singleton</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><span class="hs-char">'\r'</span></span><span>
+</span><span id="line-77"></span><span>              </span><span class="annot"><span class="annottext">IORef (Buffer CharBufElem) -&gt; Buffer CharBufElem -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IORef.html#writeIORef/GHC.IORef.html#writeIORef"><span class="hs-identifier hs-var">writeIORef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (Buffer CharBufElem)
+</span><a href="#local-6989586621679134701"><span class="hs-identifier hs-var">haCharBuffer</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134755"><span class="hs-identifier hs-var">buf1</span></a></span><span class="hs-special">{</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufL/GHC.IO.Buffer.html#bufL"><span class="hs-identifier hs-var">bufL</span></a></span><span class="hs-glyph">=</span><span class="annot"><span class="hs-number">0</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufR/GHC.IO.Buffer.html#bufR"><span class="hs-identifier hs-var">bufR</span></a></span><span class="hs-glyph">=</span><span class="annot"><span class="hs-number">0</span></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-78"></span><span>              </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679134761"><span class="annot"><span class="annottext">str :: [Text]
+</span><a href="#local-6989586621679134761"><span class="hs-identifier hs-var hs-var">str</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Text] -&gt; [Text]
+forall a. [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#reverse/GHC.List.html#reverse"><span class="hs-identifier hs-var">reverse</span></a></span><span> </span><span class="annot"><span class="annottext">([Text] -&gt; [Text]) -&gt; ([Text] -&gt; [Text]) -&gt; [Text] -&gt; [Text]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; Bool) -&gt; [Text] -&gt; [Text]
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.List.html#filter/GHC.List.html#filter"><span class="hs-identifier hs-var">filter</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#not/GHC.Classes.html#not"><span class="hs-identifier hs-var">not</span></a></span><span> </span><span class="annot"><span class="annottext">(Bool -&gt; Bool) -&gt; (Text -&gt; Bool) -&gt; Text -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#./GHC.Base.html#."><span class="hs-operator hs-var">.</span></a></span><span> </span><span class="annot"><span class="annottext">Text -&gt; Bool
+</span><a href="Data.Text.html#null"><span class="hs-identifier hs-var">T.null</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([Text] -&gt; [Text]) -&gt; [Text] -&gt; [Text]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134758"><span class="hs-identifier hs-var">pre</span></a></span><span class="annot"><span class="annottext">Text -&gt; [Text] -&gt; [Text]
+forall a. a -&gt; [a] -&gt; [a]
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#%3A/GHC.Types.html#%3A"><span class="hs-glyph hs-var">:</span></a></span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134747"><span class="hs-identifier hs-var">t</span></a></span><span class="annot"><span class="annottext">Text -&gt; [Text] -&gt; [Text]
+forall a. a -&gt; [a] -&gt; [a]
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#%3A/GHC.Types.html#%3A"><span class="hs-glyph hs-var">:</span></a></span><span class="annot"><span class="annottext">[Text]
+</span><a href="#local-6989586621679134725"><span class="hs-identifier hs-var">ts</span></a></span><span>
+</span><span id="line-79"></span><span>              </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">[Text] -&gt; Bool
+forall a. [a] -&gt; Bool
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/Data.Foldable.html#null/Data.Foldable.html#null"><span class="hs-identifier hs-var">null</span></a></span><span> </span><span class="annot"><span class="annottext">[Text]
+</span><a href="#local-6989586621679134761"><span class="hs-identifier hs-var">str</span></a></span><span>
+</span><span id="line-80"></span><span>                </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">IO [Text]
+forall a. IO a
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Internals.html#ioe_EOF/GHC.IO.Handle.Internals.html#ioe_EOF"><span class="hs-identifier hs-var">ioe_EOF</span></a></span><span>
+</span><span id="line-81"></span><span>                </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">[Text] -&gt; IO [Text]
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">[Text]
+</span><a href="#local-6989586621679134761"><span class="hs-identifier hs-var">str</span></a></span><span>
+</span><span id="line-82"></span><span>         </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-type">Just</span></a></span><span> </span><span id="local-6989586621679134765"><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134765"><span class="hs-identifier hs-var">new_buf</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[Text] -&gt; Buffer CharBufElem -&gt; IO [Text]
+</span><a href="#local-6989586621679134709"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134747"><span class="hs-identifier hs-var">t</span></a></span><span class="annot"><span class="annottext">Text -&gt; [Text] -&gt; [Text]
+forall a. a -&gt; [a] -&gt; [a]
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#%3A/GHC.Types.html#%3A"><span class="hs-glyph hs-var">:</span></a></span><span class="annot"><span class="annottext">[Text]
+</span><a href="#local-6989586621679134725"><span class="hs-identifier hs-var">ts</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134765"><span class="hs-identifier hs-var">new_buf</span></a></span><span>
+</span><span id="line-83"></span><span>
+</span><span id="line-84"></span><span class="hs-comment">-- This function is lifted almost verbatim from GHC.IO.Handle.Text.</span><span>
+</span><span id="line-85"></span><span class="annot"><a href="Data.Text.Internal.IO.html#maybeFillReadBuffer"><span class="hs-identifier hs-type">maybeFillReadBuffer</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle__/GHC.IO.Handle.Types.html#Handle__"><span class="hs-identifier hs-type">Handle__</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#CharBuffer/GHC.IO.Buffer.html#CharBuffer"><span class="hs-identifier hs-type">CharBuffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Maybe/GHC.Maybe.html#Maybe"><span class="hs-identifier hs-type">Maybe</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#CharBuffer/GHC.IO.Buffer.html#CharBuffer"><span class="hs-identifier hs-type">CharBuffer</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-86"></span><span id="maybeFillReadBuffer"><span class="annot"><span class="annottext">maybeFillReadBuffer :: Handle__ -&gt; Buffer CharBufElem -&gt; IO (Maybe (Buffer CharBufElem))
+</span><a href="Data.Text.Internal.IO.html#maybeFillReadBuffer"><span class="hs-identifier hs-var hs-var">maybeFillReadBuffer</span></a></span></span><span> </span><span id="local-6989586621679134766"><span class="annot"><span class="annottext">Handle__
+</span><a href="#local-6989586621679134766"><span class="hs-identifier hs-var">handle_</span></a></span></span><span> </span><span id="local-6989586621679134767"><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134767"><span class="hs-identifier hs-var">buf</span></a></span></span><span>
+</span><span id="line-87"></span><span>  </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (Maybe (Buffer CharBufElem))
+-&gt; (IOError -&gt; IO (Maybe (Buffer CharBufElem)))
+-&gt; IO (Maybe (Buffer CharBufElem))
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><a href="../../base-4.18.2.1/src/GHC.IO.html#catch/GHC.IO.html#catch"><span class="hs-identifier hs-var">E.catch</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Buffer CharBufElem -&gt; Maybe (Buffer CharBufElem)
+forall a. a -&gt; Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Just/GHC.Maybe.html#Just"><span class="hs-identifier hs-var">Just</span></a></span><span> </span><span class="annot"><span class="annottext">(Buffer CharBufElem -&gt; Maybe (Buffer CharBufElem))
+-&gt; IO (Buffer CharBufElem) -&gt; IO (Maybe (Buffer CharBufElem))
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#fmap/GHC.Base.html#fmap"><span class="hs-operator hs-var">`fmap`</span></a></span><span> </span><span class="annot"><span class="annottext">Handle__ -&gt; Buffer CharBufElem -&gt; IO (Buffer CharBufElem)
+</span><a href="Data.Text.Internal.IO.html#getSomeCharacters"><span class="hs-identifier hs-var">getSomeCharacters</span></a></span><span> </span><span class="annot"><span class="annottext">Handle__
+</span><a href="#local-6989586621679134766"><span class="hs-identifier hs-var">handle_</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134767"><span class="hs-identifier hs-var">buf</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">((IOError -&gt; IO (Maybe (Buffer CharBufElem)))
+ -&gt; IO (Maybe (Buffer CharBufElem)))
+-&gt; (IOError -&gt; IO (Maybe (Buffer CharBufElem)))
+-&gt; IO (Maybe (Buffer CharBufElem))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679134770"><span class="annot"><span class="annottext">IOError
+</span><a href="#local-6989586621679134770"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-88"></span><span>      </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">IOError -&gt; Bool
+</span><a href="../../base-4.18.2.1/src/System.IO.Error.html#isEOFError/System.IO.Error.html#isEOFError"><span class="hs-identifier hs-var">isEOFError</span></a></span><span> </span><span class="annot"><span class="annottext">IOError
+</span><a href="#local-6989586621679134770"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-89"></span><span>      </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Maybe (Buffer CharBufElem) -&gt; IO (Maybe (Buffer CharBufElem))
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">Maybe (Buffer CharBufElem)
+forall a. Maybe a
+</span><a href="../../base-4.18.2.1/src/GHC.Maybe.html#Nothing/GHC.Maybe.html#Nothing"><span class="hs-identifier hs-var">Nothing</span></a></span><span>
+</span><span id="line-90"></span><span>      </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">IOError -&gt; IO (Maybe (Buffer CharBufElem))
+forall a. IOError -&gt; IO a
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Exception.html#ioError/GHC.IO.Exception.html#ioError"><span class="hs-identifier hs-var">ioError</span></a></span><span> </span><span class="annot"><span class="annottext">IOError
+</span><a href="#local-6989586621679134770"><span class="hs-identifier hs-var">e</span></a></span><span>
+</span><span id="line-91"></span><span>
+</span><span id="line-92"></span><span class="annot"><a href="Data.Text.Internal.IO.html#unpack"><span class="hs-identifier hs-type">unpack</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#RawCharBuffer/GHC.IO.Buffer.html#RawCharBuffer"><span class="hs-identifier hs-type">RawCharBuffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="Data.Text.Internal.html#Text"><span class="hs-identifier hs-type">Text</span></a></span><span>
+</span><span id="line-93"></span><span id="unpack"><span class="annot"><span class="annottext">unpack :: RawBuffer CharBufElem -&gt; Int -&gt; Int -&gt; IO Text
+</span><a href="Data.Text.Internal.IO.html#unpack"><span class="hs-identifier hs-var hs-var">unpack</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679134772"><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134772"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679134773"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134773"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679134774"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134774"><span class="hs-identifier hs-var">w</span></a></span></span><span>
+</span><span id="line-94"></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#charSize/GHC.IO.Buffer.html#charSize"><span class="hs-identifier hs-var">charSize</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%2F%3D/GHC.Classes.html#%2F%3D"><span class="hs-operator hs-var">/=</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO Text
+forall a. String -&gt; a
+</span><a href="Data.Text.Internal.IO.html#sizeError"><span class="hs-identifier hs-var">sizeError</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;unpack&quot;</span></span><span>
+</span><span id="line-95"></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134773"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3E%3D/GHC.Classes.html#%3E%3D"><span class="hs-operator hs-var">&gt;=</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134774"><span class="hs-identifier hs-var">w</span></a></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; IO Text
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="Data.Text.Internal.html#empty"><span class="hs-identifier hs-var">T.empty</span></a></span><span>
+</span><span id="line-96"></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem -&gt; (Ptr CharBufElem -&gt; IO Text) -&gt; IO Text
+forall e a. RawBuffer e -&gt; (Ptr e -&gt; IO a) -&gt; IO a
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#withRawBuffer/GHC.IO.Buffer.html#withRawBuffer"><span class="hs-identifier hs-var">withRawBuffer</span></a></span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134772"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CharBufElem -&gt; IO Text
+forall {m :: * -&gt; *}. Monad m =&gt; Ptr CharBufElem -&gt; m Text
+</span><a href="#local-6989586621679134777"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-97"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-98"></span><span>  </span><span id="local-6989586621679134777"><span class="annot"><span class="annottext">go :: Ptr CharBufElem -&gt; m Text
+</span><a href="#local-6989586621679134777"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679134787"><span class="annot"><span class="annottext">Ptr CharBufElem
+</span><a href="#local-6989586621679134787"><span class="hs-identifier hs-var">pbuf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Text -&gt; m Text
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">(Text -&gt; m Text) -&gt; Text -&gt; m Text
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24%21/GHC.Base.html#%24%21"><span class="hs-operator hs-var">$!</span></a></span><span> </span><span class="annot"><span class="annottext">Stream CharBufElem -&gt; Text
+</span><a href="Data.Text.Internal.Fusion.html#unstream"><span class="hs-identifier hs-var">unstream</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Int -&gt; Step Int CharBufElem) -&gt; Int -&gt; Size -&gt; Stream CharBufElem
+forall a s. (s -&gt; Step s a) -&gt; s -&gt; Size -&gt; Stream a
+</span><a href="Data.Text.Internal.Fusion.Types.html#Stream"><span class="hs-identifier hs-var">Stream</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Step Int CharBufElem
+</span><a href="#local-6989586621679134790"><span class="hs-identifier hs-var">next</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134773"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Size
+</span><a href="Data.Text.Internal.Fusion.Size.html#exactSize"><span class="hs-identifier hs-var">exactSize</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134774"><span class="hs-identifier hs-var">w</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#-/GHC.Num.html#-"><span class="hs-glyph hs-var">-</span></a></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134773"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-99"></span><span>   </span><span class="hs-keyword">where</span><span>
+</span><span id="line-100"></span><span>    </span><span id="local-6989586621679134790"><span class="annot"><span class="annottext">next :: Int -&gt; Step Int CharBufElem
+</span><a href="#local-6989586621679134790"><span class="hs-identifier hs-var hs-var">next</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679134794"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134794"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134794"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3E%3D/GHC.Classes.html#%3E%3D"><span class="hs-operator hs-var">&gt;=</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134774"><span class="hs-identifier hs-var">w</span></a></span><span>    </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Step Int CharBufElem
+forall s a. Step s a
+</span><a href="Data.Text.Internal.Fusion.Types.html#Done"><span class="hs-identifier hs-var">Done</span></a></span><span>
+</span><span id="line-101"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CharBufElem -&gt; Int -&gt; Step Int CharBufElem
+forall s a. a -&gt; s -&gt; Step s a
+</span><a href="Data.Text.Internal.Fusion.Types.html#Yield"><span class="hs-identifier hs-var">Yield</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; CharBufElem
+</span><a href="#local-6989586621679134797"><span class="hs-identifier hs-var">ix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134794"><span class="hs-identifier hs-var">i</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134794"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-102"></span><span>    </span><span id="local-6989586621679134797"><span class="annot"><span class="annottext">ix :: Int -&gt; CharBufElem
+</span><a href="#local-6989586621679134797"><span class="hs-identifier hs-var hs-var">ix</span></a></span></span><span> </span><span id="local-6989586621679134800"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134800"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO CharBufElem -&gt; CharBufElem
+forall a. IO a -&gt; a
+</span><a href="Data.Text.Internal.Unsafe.html#inlinePerformIO"><span class="hs-identifier hs-var">inlinePerformIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO CharBufElem -&gt; CharBufElem) -&gt; IO CharBufElem -&gt; CharBufElem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CharBufElem -&gt; Int -&gt; IO CharBufElem
+forall a. Storable a =&gt; Ptr a -&gt; Int -&gt; IO a
+</span><a href="../../base-4.18.2.1/src/Foreign.Storable.html#peekElemOff/Foreign.Storable.html#peekElemOff"><span class="hs-identifier hs-var">peekElemOff</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CharBufElem
+</span><a href="#local-6989586621679134787"><span class="hs-identifier hs-var">pbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134800"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-103"></span><span>
+</span><span id="line-104"></span><span class="annot"><a href="Data.Text.Internal.IO.html#unpack_nl"><span class="hs-identifier hs-type">unpack_nl</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#RawCharBuffer/GHC.IO.Buffer.html#RawCharBuffer"><span class="hs-identifier hs-type">RawCharBuffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.Text.Internal.html#Text"><span class="hs-identifier hs-type">Text</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#Int/GHC.Types.html#Int"><span class="hs-identifier hs-type">Int</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-105"></span><span id="unpack_nl"><span class="annot"><span class="annottext">unpack_nl :: RawBuffer CharBufElem -&gt; Int -&gt; Int -&gt; IO (Text, Int)
+</span><a href="Data.Text.Internal.IO.html#unpack_nl"><span class="hs-identifier hs-var hs-var">unpack_nl</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679134801"><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134801"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679134802"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134802"><span class="hs-identifier hs-var">r</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679134803"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134803"><span class="hs-identifier hs-var">w</span></a></span></span><span>
+</span><span id="line-106"></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#charSize/GHC.IO.Buffer.html#charSize"><span class="hs-identifier hs-var">charSize</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%2F%3D/GHC.Classes.html#%2F%3D"><span class="hs-operator hs-var">/=</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">4</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; IO (Text, Int)
+forall a. String -&gt; a
+</span><a href="Data.Text.Internal.IO.html#sizeError"><span class="hs-identifier hs-var">sizeError</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;unpack_nl&quot;</span></span><span>
+</span><span id="line-107"></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134802"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3E%3D/GHC.Classes.html#%3E%3D"><span class="hs-operator hs-var">&gt;=</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134803"><span class="hs-identifier hs-var">w</span></a></span><span>        </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(Text, Int) -&gt; IO (Text, Int)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><a href="Data.Text.Internal.html#empty"><span class="hs-identifier hs-var">T.empty</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span>
+</span><span id="line-108"></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem
+-&gt; (Ptr CharBufElem -&gt; IO (Text, Int)) -&gt; IO (Text, Int)
+forall e a. RawBuffer e -&gt; (Ptr e -&gt; IO a) -&gt; IO a
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#withRawBuffer/GHC.IO.Buffer.html#withRawBuffer"><span class="hs-identifier hs-var">withRawBuffer</span></a></span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134801"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr CharBufElem -&gt; IO (Text, Int)) -&gt; IO (Text, Int))
+-&gt; (Ptr CharBufElem -&gt; IO (Text, Int)) -&gt; IO (Text, Int)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CharBufElem -&gt; IO (Text, Int)
+forall {m :: * -&gt; *}. Monad m =&gt; Ptr CharBufElem -&gt; m (Text, Int)
+</span><a href="#local-6989586621679134804"><span class="hs-identifier hs-var">go</span></a></span><span>
+</span><span id="line-109"></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-110"></span><span>  </span><span id="local-6989586621679134804"><span class="annot"><span class="annottext">go :: Ptr CharBufElem -&gt; m (Text, Int)
+</span><a href="#local-6989586621679134804"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span id="local-6989586621679134812"><span class="annot"><span class="annottext">Ptr CharBufElem
+</span><a href="#local-6989586621679134812"><span class="hs-identifier hs-var">pbuf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-111"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679134814"><span class="annot"><span class="annottext">t :: Text
+</span><a href="#local-6989586621679134814"><span class="hs-identifier hs-var hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Stream CharBufElem -&gt; Text
+</span><a href="Data.Text.Internal.Fusion.html#unstream"><span class="hs-identifier hs-var">unstream</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(Int -&gt; Step Int CharBufElem) -&gt; Int -&gt; Size -&gt; Stream CharBufElem
+forall a s. (s -&gt; Step s a) -&gt; s -&gt; Size -&gt; Stream a
+</span><a href="Data.Text.Internal.Fusion.Types.html#Stream"><span class="hs-identifier hs-var">Stream</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Step Int CharBufElem
+</span><a href="#local-6989586621679134815"><span class="hs-identifier hs-var">next</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134802"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Size
+</span><a href="Data.Text.Internal.Fusion.Size.html#maxSize"><span class="hs-identifier hs-var">maxSize</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134803"><span class="hs-identifier hs-var">w</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#-/GHC.Num.html#-"><span class="hs-glyph hs-var">-</span></a></span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134802"><span class="hs-identifier hs-var">r</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-112"></span><span>        </span><span id="local-6989586621679134818"><span class="annot"><span class="annottext">w' :: Int
+</span><a href="#local-6989586621679134818"><span class="hs-identifier hs-var hs-var">w'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134803"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#-/GHC.Num.html#-"><span class="hs-glyph hs-var">-</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-113"></span><span>    </span><span class="annot"><span class="annottext">(Text, Int) -&gt; m (Text, Int)
+forall a. a -&gt; m a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">((Text, Int) -&gt; m (Text, Int)) -&gt; (Text, Int) -&gt; m (Text, Int)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int -&gt; CharBufElem
+</span><a href="#local-6989586621679134819"><span class="hs-identifier hs-var">ix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134818"><span class="hs-identifier hs-var">w'</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem -&gt; CharBufElem -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><span class="hs-char">'\r'</span></span><span>
+</span><span id="line-114"></span><span>             </span><span class="hs-keyword">then</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134814"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134818"><span class="hs-identifier hs-var">w'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-115"></span><span>             </span><span class="hs-keyword">else</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134814"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134803"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-116"></span><span>   </span><span class="hs-keyword">where</span><span>
+</span><span id="line-117"></span><span>    </span><span id="local-6989586621679134815"><span class="annot"><span class="annottext">next :: Int -&gt; Step Int CharBufElem
+</span><a href="#local-6989586621679134815"><span class="hs-identifier hs-var hs-var">next</span></a></span></span><span> </span><span class="hs-glyph">!</span><span id="local-6989586621679134828"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134828"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134828"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3E%3D/GHC.Classes.html#%3E%3D"><span class="hs-operator hs-var">&gt;=</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134803"><span class="hs-identifier hs-var">w</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Step Int CharBufElem
+forall s a. Step s a
+</span><a href="Data.Text.Internal.Fusion.Types.html#Done"><span class="hs-identifier hs-var">Done</span></a></span><span>
+</span><span id="line-118"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><a href="#local-6989586621679134829"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem -&gt; CharBufElem -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><span class="hs-char">'\r'</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679134832"><span class="annot"><span class="annottext">i' :: Int
+</span><a href="#local-6989586621679134832"><span class="hs-identifier hs-var hs-var">i'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134828"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-119"></span><span>                          </span><span class="hs-keyword">in</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134832"><span class="hs-identifier hs-var">i'</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3C/GHC.Classes.html#%3C"><span class="hs-operator hs-var">&lt;</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134803"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-120"></span><span>                             </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int -&gt; CharBufElem
+</span><a href="#local-6989586621679134819"><span class="hs-identifier hs-var">ix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134832"><span class="hs-identifier hs-var">i'</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem -&gt; CharBufElem -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><span class="hs-char">'\n'</span></span><span>
+</span><span id="line-121"></span><span>                                  </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">CharBufElem -&gt; Int -&gt; Step Int CharBufElem
+forall s a. a -&gt; s -&gt; Step s a
+</span><a href="Data.Text.Internal.Fusion.Types.html#Yield"><span class="hs-identifier hs-var">Yield</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><span class="hs-char">'\n'</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134828"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span class="hs-special">)</span><span>
+</span><span id="line-122"></span><span>                                  </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">CharBufElem -&gt; Int -&gt; Step Int CharBufElem
+forall s a. a -&gt; s -&gt; Step s a
+</span><a href="Data.Text.Internal.Fusion.Types.html#Yield"><span class="hs-identifier hs-var">Yield</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><span class="hs-char">'\n'</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134832"><span class="hs-identifier hs-var">i'</span></a></span><span>
+</span><span id="line-123"></span><span>                             </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">Step Int CharBufElem
+forall s a. Step s a
+</span><a href="Data.Text.Internal.Fusion.Types.html#Done"><span class="hs-identifier hs-var">Done</span></a></span><span>
+</span><span id="line-124"></span><span>            </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#otherwise/GHC.Base.html#otherwise"><span class="hs-identifier hs-var">otherwise</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">CharBufElem -&gt; Int -&gt; Step Int CharBufElem
+forall s a. a -&gt; s -&gt; Step s a
+</span><a href="Data.Text.Internal.Fusion.Types.html#Yield"><span class="hs-identifier hs-var">Yield</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><a href="#local-6989586621679134829"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134828"><span class="hs-identifier hs-var">i</span></a></span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Num.html#%2B/GHC.Num.html#%2B"><span class="hs-operator hs-var">+</span></a></span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span>
+</span><span id="line-125"></span><span>            </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679134829"><span class="annot"><span class="annottext">c :: CharBufElem
+</span><a href="#local-6989586621679134829"><span class="hs-identifier hs-var hs-var">c</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; CharBufElem
+</span><a href="#local-6989586621679134819"><span class="hs-identifier hs-var">ix</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134828"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-126"></span><span>    </span><span id="local-6989586621679134819"><span class="annot"><span class="annottext">ix :: Int -&gt; CharBufElem
+</span><a href="#local-6989586621679134819"><span class="hs-identifier hs-var hs-var">ix</span></a></span></span><span> </span><span id="local-6989586621679134835"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134835"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO CharBufElem -&gt; CharBufElem
+forall a. IO a -&gt; a
+</span><a href="Data.Text.Internal.Unsafe.html#inlinePerformIO"><span class="hs-identifier hs-var">inlinePerformIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO CharBufElem -&gt; CharBufElem) -&gt; IO CharBufElem -&gt; CharBufElem
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CharBufElem -&gt; Int -&gt; IO CharBufElem
+forall a. Storable a =&gt; Ptr a -&gt; Int -&gt; IO a
+</span><a href="../../base-4.18.2.1/src/Foreign.Storable.html#peekElemOff/Foreign.Storable.html#peekElemOff"><span class="hs-identifier hs-var">peekElemOff</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr CharBufElem
+</span><a href="#local-6989586621679134812"><span class="hs-identifier hs-var">pbuf</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134835"><span class="hs-identifier hs-var">i</span></a></span><span>
+</span><span id="line-127"></span><span>
+</span><span id="line-128"></span><span class="hs-comment">-- This function is completely lifted from GHC.IO.Handle.Text.</span><span>
+</span><span id="line-129"></span><span class="annot"><a href="Data.Text.Internal.IO.html#getSomeCharacters"><span class="hs-identifier hs-type">getSomeCharacters</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle__/GHC.IO.Handle.Types.html#Handle__"><span class="hs-identifier hs-type">Handle__</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#CharBuffer/GHC.IO.Buffer.html#CharBuffer"><span class="hs-identifier hs-type">CharBuffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#CharBuffer/GHC.IO.Buffer.html#CharBuffer"><span class="hs-identifier hs-type">CharBuffer</span></a></span><span>
+</span><span id="line-130"></span><span id="getSomeCharacters"><span class="annot"><span class="annottext">getSomeCharacters :: Handle__ -&gt; Buffer CharBufElem -&gt; IO (Buffer CharBufElem)
+</span><a href="Data.Text.Internal.IO.html#getSomeCharacters"><span class="hs-identifier hs-var hs-var">getSomeCharacters</span></a></span></span><span> </span><span id="local-6989586621679134836"><span class="annot"><span class="annottext">handle_ :: Handle__
+</span><a href="#local-6989586621679134836"><span class="hs-identifier hs-var">handle_</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle__/GHC.IO.Handle.Types.html#Handle__"><span class="hs-identifier hs-type">Handle__</span></a></span><span class="hs-special">{</span><span id="local-6989586621679134851"><span id="local-6989586621679134852"><span id="local-6989586621679134853"><span id="local-6989586621679134854"><span id="local-6989586621679134855"><span id="local-6989586621679134856"><span id="local-6989586621679134857"><span id="local-6989586621679134858"><span id="local-6989586621679134859"><span id="local-6989586621679134860"><span id="local-6989586621679134861"><span id="local-6989586621679134862"><span id="local-6989586621679134863"><span class="annot"><span class="annottext">dev
+Maybe (MVar Handle__)
+Maybe TextEncoding
+Maybe (TextEncoder enc_state)
+Maybe (TextDecoder dec_state)
+IORef (dec_state, Buffer Word8)
+IORef (Buffer CharBufElem)
+IORef (Buffer Word8)
+IORef (BufferList CharBufElem)
+Newline
+BufferMode
+HandleType
+haDevice :: ()
+haType :: Handle__ -&gt; HandleType
+haByteBuffer :: Handle__ -&gt; IORef (Buffer Word8)
+haBufferMode :: Handle__ -&gt; BufferMode
+haLastDecode :: ()
+haCharBuffer :: Handle__ -&gt; IORef (Buffer CharBufElem)
+haBuffers :: Handle__ -&gt; IORef (BufferList CharBufElem)
+haEncoder :: ()
+haDecoder :: ()
+haCodec :: Handle__ -&gt; Maybe TextEncoding
+haInputNL :: Handle__ -&gt; Newline
+haOutputNL :: Handle__ -&gt; Newline
+haOtherSide :: Handle__ -&gt; Maybe (MVar Handle__)
+haDevice :: dev
+haType :: HandleType
+haByteBuffer :: IORef (Buffer Word8)
+haBufferMode :: BufferMode
+haLastDecode :: IORef (dec_state, Buffer Word8)
+haCharBuffer :: IORef (Buffer CharBufElem)
+haBuffers :: IORef (BufferList CharBufElem)
+haEncoder :: Maybe (TextEncoder enc_state)
+haDecoder :: Maybe (TextDecoder dec_state)
+haCodec :: Maybe TextEncoding
+haInputNL :: Newline
+haOutputNL :: Newline
+haOtherSide :: Maybe (MVar Handle__)
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#haDevice/GHC.IO.Handle.Types.html#haDevice"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679134864"><span class="annot"><span class="annottext">buf :: Buffer CharBufElem
+</span><a href="#local-6989586621679134864"><span class="hs-identifier hs-var">buf</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#Buffer/GHC.IO.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span class="hs-special">{</span><span id="local-6989586621679134865"><span id="local-6989586621679134866"><span id="local-6989586621679134867"><span id="local-6989586621679134868"><span id="local-6989586621679134869"><span id="local-6989586621679134870"><span class="annot"><span class="annottext">Int
+Word64
+RawBuffer CharBufElem
+BufferState
+bufL :: forall e. Buffer e -&gt; Int
+bufR :: forall e. Buffer e -&gt; Int
+bufRaw :: forall e. Buffer e -&gt; RawBuffer e
+bufRaw :: RawBuffer CharBufElem
+bufState :: BufferState
+bufSize :: Int
+bufOffset :: Word64
+bufL :: Int
+bufR :: Int
+bufState :: forall e. Buffer e -&gt; BufferState
+bufSize :: forall e. Buffer e -&gt; Int
+bufOffset :: forall e. Buffer e -&gt; Word64
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufL/GHC.IO.Buffer.html#bufL"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-131"></span><span>  </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem -&gt; Int
+forall e. Buffer e -&gt; Int
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufferElems/GHC.IO.Buffer.html#bufferElems"><span class="hs-identifier hs-var">bufferElems</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134864"><span class="hs-identifier hs-var">buf</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-132"></span><span>    </span><span class="hs-comment">-- buffer empty: read some more</span><span>
+</span><span id="line-133"></span><span>    </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-pragma">{-# SCC</span><span> </span><span class="hs-pragma">&quot;readTextDevice&quot;</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="annot"><span class="annottext">Handle__ -&gt; Buffer CharBufElem -&gt; IO (Buffer CharBufElem)
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Internals.html#readTextDevice/GHC.IO.Handle.Internals.html#readTextDevice"><span class="hs-identifier hs-var">readTextDevice</span></a></span><span> </span><span class="annot"><span class="annottext">Handle__
+</span><a href="#local-6989586621679134836"><span class="hs-identifier hs-var">handle_</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134864"><span class="hs-identifier hs-var">buf</span></a></span><span>
+</span><span id="line-134"></span><span>
+</span><span id="line-135"></span><span>    </span><span class="hs-comment">-- if the buffer has a single '\r' in it and we're doing newline</span><span>
+</span><span id="line-136"></span><span>    </span><span class="hs-comment">-- translation: read some more</span><span>
+</span><span id="line-137"></span><span>    </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Newline
+</span><a href="#local-6989586621679134861"><span class="hs-identifier hs-var">haInputNL</span></a></span><span> </span><span class="annot"><span class="annottext">Newline -&gt; Newline -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Newline
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#CRLF/GHC.IO.Handle.Types.html#CRLF"><span class="hs-identifier hs-var">CRLF</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-138"></span><span>      </span><span class="hs-special">(</span><span id="local-6989586621679134874"><span class="annot"><span class="annottext">CharBufElem
+</span><a href="#local-6989586621679134874"><span class="hs-identifier hs-var">c</span></a></span></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem -&gt; Int -&gt; IO (CharBufElem, Int)
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#readCharBuf/GHC.IO.Buffer.html#readCharBuf"><span class="hs-identifier hs-var">readCharBuf</span></a></span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134865"><span class="hs-identifier hs-var">bufRaw</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134869"><span class="hs-identifier hs-var">bufL</span></a></span><span>
+</span><span id="line-139"></span><span>      </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><a href="#local-6989586621679134874"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem -&gt; CharBufElem -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><span class="hs-char">'\r'</span></span><span>
+</span><span id="line-140"></span><span>         </span><span class="hs-keyword">then</span><span> </span><span class="hs-keyword">do</span><span> </span><span class="hs-comment">-- shuffle the '\r' to the beginning.  This is only safe</span><span>
+</span><span id="line-141"></span><span>                 </span><span class="hs-comment">-- if we're about to call readTextDevice, otherwise it</span><span>
+</span><span id="line-142"></span><span>                 </span><span class="hs-comment">-- would mess up flushCharBuffer.</span><span>
+</span><span id="line-143"></span><span>                 </span><span class="hs-comment">-- See [note Buffer Flushing], GHC.IO.Handle.Types</span><span>
+</span><span id="line-144"></span><span>                 </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem -&gt; Int -&gt; CharBufElem -&gt; IO Int
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#writeCharBuf/GHC.IO.Buffer.html#writeCharBuf"><span class="hs-identifier hs-var">writeCharBuf</span></a></span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134865"><span class="hs-identifier hs-var">bufRaw</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">CharBufElem
+</span><span class="hs-char">'\r'</span></span><span>
+</span><span id="line-145"></span><span>                 </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679134875"><span class="annot"><span class="annottext">buf' :: Buffer CharBufElem
+</span><a href="#local-6989586621679134875"><span class="hs-identifier hs-var hs-var">buf'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134864"><span class="hs-identifier hs-var">buf</span></a></span><span class="hs-special">{</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufL/GHC.IO.Buffer.html#bufL"><span class="hs-identifier hs-var">bufL</span></a></span><span class="hs-glyph">=</span><span class="annot"><span class="hs-number">0</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufR/GHC.IO.Buffer.html#bufR"><span class="hs-identifier hs-var">bufR</span></a></span><span class="hs-glyph">=</span><span class="annot"><span class="hs-number">1</span></span><span> </span><span class="hs-special">}</span><span>
+</span><span id="line-146"></span><span>                 </span><span class="annot"><span class="annottext">Handle__ -&gt; Buffer CharBufElem -&gt; IO (Buffer CharBufElem)
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Internals.html#readTextDevice/GHC.IO.Handle.Internals.html#readTextDevice"><span class="hs-identifier hs-var">readTextDevice</span></a></span><span> </span><span class="annot"><span class="annottext">Handle__
+</span><a href="#local-6989586621679134836"><span class="hs-identifier hs-var">handle_</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134875"><span class="hs-identifier hs-var">buf'</span></a></span><span>
+</span><span id="line-147"></span><span>         </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-148"></span><span>                 </span><span class="annot"><span class="annottext">Buffer CharBufElem -&gt; IO (Buffer CharBufElem)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134864"><span class="hs-identifier hs-var">buf</span></a></span><span>
+</span><span id="line-149"></span><span>
+</span><span id="line-150"></span><span>    </span><span class="hs-comment">-- buffer has some chars in it already: just return it</span><span>
+</span><span id="line-151"></span><span>    </span><span id="local-6989586621679134876"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134876"><span class="hs-identifier hs-var">_otherwise</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-pragma">{-# SCC</span><span> </span><span class="hs-pragma">&quot;otherwise&quot;</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem -&gt; IO (Buffer CharBufElem)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134864"><span class="hs-identifier hs-var">buf</span></a></span><span>
+</span><span id="line-152"></span><span>
+</span><span id="line-153"></span><span class="hs-comment">-- | Read a single chunk of strict text from a buffer. Used by both</span><span>
+</span><span id="line-154"></span><span class="hs-comment">-- the strict and lazy implementations of hGetContents.</span><span>
+</span><span id="line-155"></span><span class="annot"><a href="Data.Text.Internal.IO.html#readChunk"><span class="hs-identifier hs-type">readChunk</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle__/GHC.IO.Handle.Types.html#Handle__"><span class="hs-identifier hs-type">Handle__</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#CharBuffer/GHC.IO.Buffer.html#CharBuffer"><span class="hs-identifier hs-type">CharBuffer</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="../../ghc-prim-0.10.0/src/GHC.Types.html#IO/GHC.Types.html#IO"><span class="hs-identifier hs-type">IO</span></a></span><span> </span><span class="annot"><a href="Data.Text.Internal.html#Text"><span class="hs-identifier hs-type">Text</span></a></span><span>
+</span><span id="line-156"></span><span id="readChunk"><span class="annot"><span class="annottext">readChunk :: Handle__ -&gt; Buffer CharBufElem -&gt; IO Text
+</span><a href="Data.Text.Internal.IO.html#readChunk"><span class="hs-identifier hs-var hs-var">readChunk</span></a></span></span><span> </span><span id="local-6989586621679134877"><span class="annot"><span class="annottext">hh :: Handle__
+</span><a href="#local-6989586621679134877"><span class="hs-identifier hs-var">hh</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#Handle__/GHC.IO.Handle.Types.html#Handle__"><span class="hs-identifier hs-type">Handle__</span></a></span><span class="hs-special">{</span><span id="local-6989586621679134889"><span id="local-6989586621679134890"><span id="local-6989586621679134891"><span id="local-6989586621679134892"><span id="local-6989586621679134893"><span id="local-6989586621679134894"><span id="local-6989586621679134895"><span id="local-6989586621679134896"><span id="local-6989586621679134897"><span id="local-6989586621679134898"><span id="local-6989586621679134899"><span id="local-6989586621679134900"><span id="local-6989586621679134901"><span class="annot"><span class="annottext">dev
+Maybe (MVar Handle__)
+Maybe TextEncoding
+Maybe (TextEncoder enc_state)
+Maybe (TextDecoder dec_state)
+IORef (dec_state, Buffer Word8)
+IORef (Buffer CharBufElem)
+IORef (Buffer Word8)
+IORef (BufferList CharBufElem)
+Newline
+BufferMode
+HandleType
+haDevice :: ()
+haType :: Handle__ -&gt; HandleType
+haByteBuffer :: Handle__ -&gt; IORef (Buffer Word8)
+haBufferMode :: Handle__ -&gt; BufferMode
+haLastDecode :: ()
+haCharBuffer :: Handle__ -&gt; IORef (Buffer CharBufElem)
+haBuffers :: Handle__ -&gt; IORef (BufferList CharBufElem)
+haEncoder :: ()
+haDecoder :: ()
+haCodec :: Handle__ -&gt; Maybe TextEncoding
+haInputNL :: Handle__ -&gt; Newline
+haOutputNL :: Handle__ -&gt; Newline
+haOtherSide :: Handle__ -&gt; Maybe (MVar Handle__)
+haDevice :: dev
+haType :: HandleType
+haByteBuffer :: IORef (Buffer Word8)
+haBufferMode :: BufferMode
+haLastDecode :: IORef (dec_state, Buffer Word8)
+haCharBuffer :: IORef (Buffer CharBufElem)
+haBuffers :: IORef (BufferList CharBufElem)
+haEncoder :: Maybe (TextEncoder enc_state)
+haDecoder :: Maybe (TextDecoder dec_state)
+haCodec :: Maybe TextEncoding
+haInputNL :: Newline
+haOutputNL :: Newline
+haOtherSide :: Maybe (MVar Handle__)
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#haDevice/GHC.IO.Handle.Types.html#haDevice"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span id="local-6989586621679134902"><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134902"><span class="hs-identifier hs-var">buf</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-157"></span><span>  </span><span id="local-6989586621679134903"><span class="annot"><span class="annottext">buf' :: Buffer CharBufElem
+</span><a href="#local-6989586621679134903"><span class="hs-identifier hs-var">buf'</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#Buffer/GHC.IO.Buffer.html#Buffer"><span class="hs-identifier hs-type">Buffer</span></a></span><span class="hs-special">{</span><span id="local-6989586621679134904"><span id="local-6989586621679134905"><span id="local-6989586621679134906"><span id="local-6989586621679134907"><span id="local-6989586621679134908"><span id="local-6989586621679134909"><span class="annot"><span class="annottext">Int
+Word64
+RawBuffer CharBufElem
+BufferState
+bufL :: forall e. Buffer e -&gt; Int
+bufR :: forall e. Buffer e -&gt; Int
+bufRaw :: forall e. Buffer e -&gt; RawBuffer e
+bufState :: forall e. Buffer e -&gt; BufferState
+bufSize :: forall e. Buffer e -&gt; Int
+bufOffset :: forall e. Buffer e -&gt; Word64
+bufRaw :: RawBuffer CharBufElem
+bufState :: BufferState
+bufSize :: Int
+bufOffset :: Word64
+bufL :: Int
+bufR :: Int
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufL/GHC.IO.Buffer.html#bufL"><span class="hs-glyph hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">..</span></a></span></span></span></span></span></span></span><span class="hs-special">}</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Handle__ -&gt; Buffer CharBufElem -&gt; IO (Buffer CharBufElem)
+</span><a href="Data.Text.Internal.IO.html#getSomeCharacters"><span class="hs-identifier hs-var">getSomeCharacters</span></a></span><span> </span><span class="annot"><span class="annottext">Handle__
+</span><a href="#local-6989586621679134877"><span class="hs-identifier hs-var">hh</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134902"><span class="hs-identifier hs-var">buf</span></a></span><span>
+</span><span id="line-158"></span><span>  </span><span class="hs-special">(</span><span id="local-6989586621679134910"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134910"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">,</span><span id="local-6989586621679134911"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134911"><span class="hs-identifier hs-var">r</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Newline
+</span><a href="#local-6989586621679134899"><span class="hs-identifier hs-var">haInputNL</span></a></span><span> </span><span class="annot"><span class="annottext">Newline -&gt; Newline -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><a href="../../ghc-prim-0.10.0/src/GHC.Classes.html#%3D%3D/GHC.Classes.html#%3D%3D"><span class="hs-operator hs-var">==</span></a></span><span> </span><span class="annot"><span class="annottext">Newline
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Handle.Types.html#CRLF/GHC.IO.Handle.Types.html#CRLF"><span class="hs-identifier hs-var">CRLF</span></a></span><span>
+</span><span id="line-159"></span><span>           </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem -&gt; Int -&gt; Int -&gt; IO (Text, Int)
+</span><a href="Data.Text.Internal.IO.html#unpack_nl"><span class="hs-identifier hs-var">unpack_nl</span></a></span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134904"><span class="hs-identifier hs-var">bufRaw</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134908"><span class="hs-identifier hs-var">bufL</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134909"><span class="hs-identifier hs-var">bufR</span></a></span><span>
+</span><span id="line-160"></span><span>           </span><span class="hs-keyword">else</span><span> </span><span class="hs-keyword">do</span><span> </span><span id="local-6989586621679134912"><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134912"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem -&gt; Int -&gt; Int -&gt; IO Text
+</span><a href="Data.Text.Internal.IO.html#unpack"><span class="hs-identifier hs-var">unpack</span></a></span><span> </span><span class="annot"><span class="annottext">RawBuffer CharBufElem
+</span><a href="#local-6989586621679134904"><span class="hs-identifier hs-var">bufRaw</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134908"><span class="hs-identifier hs-var">bufL</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134909"><span class="hs-identifier hs-var">bufR</span></a></span><span>
+</span><span id="line-161"></span><span>                   </span><span class="annot"><span class="annottext">(Text, Int) -&gt; IO (Text, Int)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134912"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">,</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134909"><span class="hs-identifier hs-var">bufR</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-162"></span><span>  </span><span class="annot"><span class="annottext">IORef (Buffer CharBufElem) -&gt; Buffer CharBufElem -&gt; IO ()
+forall a. IORef a -&gt; a -&gt; IO ()
+</span><a href="../../base-4.18.2.1/src/GHC.IORef.html#writeIORef/GHC.IORef.html#writeIORef"><span class="hs-identifier hs-var">writeIORef</span></a></span><span> </span><span class="annot"><span class="annottext">IORef (Buffer CharBufElem)
+</span><a href="#local-6989586621679134894"><span class="hs-identifier hs-var">haCharBuffer</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Buffer CharBufElem -&gt; Buffer CharBufElem
+forall e. Int -&gt; Buffer e -&gt; Buffer e
+</span><a href="../../base-4.18.2.1/src/GHC.IO.Buffer.html#bufferAdjustL/GHC.IO.Buffer.html#bufferAdjustL"><span class="hs-identifier hs-var">bufferAdjustL</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679134911"><span class="hs-identifier hs-var">r</span></a></span><span> </span><span class="annot"><span class="annottext">Buffer CharBufElem
+</span><a href="#local-6989586621679134903"><span class="hs-identifier hs-var">buf'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-163"></span><span>  </span><span class="annot"><span class="annottext">Text -&gt; IO Text
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#return/GHC.Base.html#return"><span class="hs-identifier hs-var">return</span></a></span><span> </span><span class="annot"><span class="annottext">Text
+</span><a href="#local-6989586621679134910"><span class="hs-identifier hs-var">t</span></a></span><span>
+</span><span id="line-164"></span><span>
+</span><span id="line-165"></span><span id="local-6989586621679134580"><span class="annot"><a href="Data.Text.Internal.IO.html#sizeError"><span class="hs-identifier hs-type">sizeError</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="../../base-4.18.2.1/src/GHC.Base.html#String/GHC.Base.html#String"><span class="hs-identifier hs-type">String</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679134580"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-166"></span><span id="sizeError"><span class="annot"><span class="annottext">sizeError :: forall a. String -&gt; a
+</span><a href="Data.Text.Internal.IO.html#sizeError"><span class="hs-identifier hs-var hs-var">sizeError</span></a></span></span><span> </span><span id="local-6989586621679134915"><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679134915"><span class="hs-identifier hs-var">loc</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">String -&gt; a
+forall a. HasCallStack =&gt; String -&gt; a
+</span><a href="../../base-4.18.2.1/src/GHC.Err.html#error/GHC.Err.html#error"><span class="hs-identifier hs-var">error</span></a></span><span> </span><span class="annot"><span class="annottext">(String -&gt; a) -&gt; String -&gt; a
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%24/GHC.Base.html#%24"><span class="hs-operator hs-var">$</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;Data.Text.IO.&quot;</span></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><a href="#local-6989586621679134915"><span class="hs-identifier hs-var">loc</span></a></span><span> </span><span class="annot"><span class="annottext">String -&gt; String -&gt; String
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><a href="../../base-4.18.2.1/src/GHC.Base.html#%2B%2B/GHC.Base.html#%2B%2B"><span class="hs-operator hs-var">++</span></a></span><span> </span><span class="annot"><span class="annottext">String
+</span><span class="hs-string">&quot;: bad internal buffer size&quot;</span></span><span>
+</span><span id="line-167"></span></pre></body></html>

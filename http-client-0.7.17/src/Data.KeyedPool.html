@@ -1,0 +1,1324 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE DeriveFoldable #-}</span><span>
+</span><span id="line-2"></span><span class="hs-pragma">{-# LANGUAGE ScopedTypeVariables #-}</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | Similar to Data.Pool from resource-pool, but resources are</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- identified by some key. To clarify semantics of this module:</span><span>
+</span><span id="line-5"></span><span class="hs-comment">--</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- * The pool holds onto and tracks idle resources. Active resources</span><span>
+</span><span id="line-7"></span><span class="hs-comment">-- (those checked out via 'takeKeyedPool') are not tracked at all by</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- 'KeyedPool' itself.</span><span>
+</span><span id="line-9"></span><span class="hs-comment">--</span><span>
+</span><span id="line-10"></span><span class="hs-comment">-- * The pool limits the number of idle resources per key and the</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- total number of idle resources.</span><span>
+</span><span id="line-12"></span><span class="hs-comment">--</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- * There is no limit placed on /active/ resources. As such: there</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- will be no delay when calling 'takeKeyedPool': it will either use</span><span>
+</span><span id="line-15"></span><span class="hs-comment">-- an idle resource already present, or create a new one</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- immediately.</span><span>
+</span><span id="line-17"></span><span class="hs-comment">--</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- * Once the garbage collector cleans up the 'kpAlive' value, the</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- pool will be shut down, by placing a 'PoolClosed' into the</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- 'kpVar' and destroying all existing idle connection.</span><span>
+</span><span id="line-21"></span><span class="hs-comment">--</span><span>
+</span><span id="line-22"></span><span class="hs-comment">-- * A reaper thread will destroy unused idle resources regularly. It</span><span>
+</span><span id="line-23"></span><span class="hs-comment">-- will stop running once 'kpVar' contains a 'PoolClosed' value.</span><span>
+</span><span id="line-24"></span><span class="hs-comment">--</span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- * 'takeKeyedPool' is async exception safe, but relies on the</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- /caller/ to ensure prompt cleanup. See its comment for more</span><span>
+</span><span id="line-27"></span><span class="hs-comment">-- information.</span><span>
+</span><span id="line-28"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Data.KeyedPool</span><span>
+</span><span id="line-29"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#KeyedPool"><span class="hs-identifier">KeyedPool</span></a></span><span>
+</span><span id="line-30"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#createKeyedPool"><span class="hs-identifier">createKeyedPool</span></a></span><span>
+</span><span id="line-31"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#takeKeyedPool"><span class="hs-identifier">takeKeyedPool</span></a></span><span>
+</span><span id="line-32"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#Managed"><span class="hs-identifier">Managed</span></a></span><span>
+</span><span id="line-33"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#managedResource"><span class="hs-identifier">managedResource</span></a></span><span>
+</span><span id="line-34"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#managedReused"><span class="hs-identifier">managedReused</span></a></span><span>
+</span><span id="line-35"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#managedRelease"><span class="hs-identifier">managedRelease</span></a></span><span>
+</span><span id="line-36"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#keepAlive"><span class="hs-identifier">keepAlive</span></a></span><span>
+</span><span id="line-37"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#Reuse"><span class="hs-identifier">Reuse</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-38"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#dummyManaged"><span class="hs-identifier">dummyManaged</span></a></span><span>
+</span><span id="line-39"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Concurrent</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">forkIOWithUnmask</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">threadDelay</span></span><span class="hs-special">)</span><span>
+</span><span id="line-42"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Concurrent.STM</span></span><span>
+</span><span id="line-43"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">mask_</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">catch</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">SomeException</span></span><span class="hs-special">)</span><span>
+</span><span id="line-44"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">join</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">unless</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">void</span></span><span class="hs-special">)</span><span>
+</span><span id="line-45"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Map</span></span><span class="hs-special">)</span><span>
+</span><span id="line-46"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">isJust</span></span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Map.Strict</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">Map</span></span><span>
+</span><span id="line-48"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Time</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">UTCTime</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">getCurrentTime</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">addUTCTime</span></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.IORef</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">IORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">newIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">mkWeakIORef</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">readIORef</span></span><span class="hs-special">)</span><span>
+</span><span id="line-50"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.Foldable</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">F</span></span><span>
+</span><span id="line-51"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">GHC.Conc</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unsafeIOToSTM</span></span><span class="hs-special">)</span><span>
+</span><span id="line-52"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">System.IO.Unsafe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unsafePerformIO</span></span><span class="hs-special">)</span><span>
+</span><span id="line-53"></span><span>
+</span><span id="line-54"></span><span class="hs-keyword">data</span><span> </span><span id="KeyedPool"><span class="annot"><a href="Data.KeyedPool.html#KeyedPool"><span class="hs-identifier hs-var">KeyedPool</span></a></span></span><span> </span><span id="local-6989586621679102538"><span class="annot"><a href="#local-6989586621679102538"><span class="hs-identifier hs-type">key</span></a></span></span><span> </span><span id="local-6989586621679102539"><span class="annot"><a href="#local-6989586621679102539"><span class="hs-identifier hs-type">resource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="KeyedPool"><span class="annot"><a href="Data.KeyedPool.html#KeyedPool"><span class="hs-identifier hs-var">KeyedPool</span></a></span></span><span>
+</span><span id="line-55"></span><span>    </span><span class="hs-special">{</span><span> </span><span id="kpCreate"><span class="annot"><span class="annottext">forall key resource. KeyedPool key resource -&gt; key -&gt; IO resource
+</span><a href="Data.KeyedPool.html#kpCreate"><span class="hs-identifier hs-var hs-var">kpCreate</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679102538"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679102539"><span class="hs-identifier hs-type">resource</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-56"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="kpDestroy"><span class="annot"><span class="annottext">forall key resource. KeyedPool key resource -&gt; resource -&gt; IO ()
+</span><a href="Data.KeyedPool.html#kpDestroy"><span class="hs-identifier hs-var hs-var">kpDestroy</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679102539"><span class="hs-identifier hs-type">resource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-57"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="kpMaxPerKey"><span class="annot"><span class="annottext">forall key resource. KeyedPool key resource -&gt; Int
+</span><a href="Data.KeyedPool.html#kpMaxPerKey"><span class="hs-identifier hs-var hs-var">kpMaxPerKey</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-58"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="kpMaxTotal"><span class="annot"><span class="annottext">forall key resource. KeyedPool key resource -&gt; Int
+</span><a href="Data.KeyedPool.html#kpMaxTotal"><span class="hs-identifier hs-var hs-var">kpMaxTotal</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-59"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="kpVar"><span class="annot"><span class="annottext">forall key resource.
+KeyedPool key resource -&gt; TVar (PoolMap key resource)
+</span><a href="Data.KeyedPool.html#kpVar"><span class="hs-identifier hs-var hs-var">kpVar</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">TVar</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#PoolMap"><span class="hs-identifier hs-type">PoolMap</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102538"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102539"><span class="hs-identifier hs-type">resource</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-60"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="kpAlive"><span class="annot"><span class="annottext">forall key resource. KeyedPool key resource -&gt; IORef ()
+</span><a href="Data.KeyedPool.html#kpAlive"><span class="hs-identifier hs-var hs-var">kpAlive</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">IORef</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-61"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-62"></span><span>
+</span><span id="line-63"></span><span class="hs-keyword">data</span><span> </span><span id="PoolMap"><span class="annot"><a href="Data.KeyedPool.html#PoolMap"><span class="hs-identifier hs-var">PoolMap</span></a></span></span><span> </span><span id="local-6989586621679102619"><span class="annot"><a href="#local-6989586621679102619"><span class="hs-identifier hs-type">key</span></a></span></span><span> </span><span id="local-6989586621679102620"><span class="annot"><a href="#local-6989586621679102620"><span class="hs-identifier hs-type">resource</span></a></span></span><span>
+</span><span id="line-64"></span><span>    </span><span class="hs-glyph">=</span><span> </span><span id="PoolClosed"><span class="annot"><a href="Data.KeyedPool.html#PoolClosed"><span class="hs-identifier hs-var">PoolClosed</span></a></span></span><span>
+</span><span id="line-65"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span id="PoolOpen"><span class="annot"><a href="Data.KeyedPool.html#PoolOpen"><span class="hs-identifier hs-var">PoolOpen</span></a></span></span><span>
+</span><span id="line-66"></span><span>        </span><span class="hs-comment">-- Total number of resources in the pool</span><span>
+</span><span id="line-67"></span><span>        </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-68"></span><span>        </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">Map</span></span><span> </span><span class="annot"><a href="#local-6989586621679102619"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#PoolList"><span class="hs-identifier hs-type">PoolList</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102620"><span class="hs-identifier hs-type">resource</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-69"></span><span>    </span><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679102755"><span id="local-6989586621679102761"><span id="local-6989586621679102771"><span id="local-6989586621679102776"><span id="local-6989586621679102780"><span id="local-6989586621679102783"><span id="local-6989586621679102786"><span id="local-6989586621679102789"><span id="local-6989586621679102792"><span id="local-6989586621679102795"><span id="local-6989586621679102798"><span id="local-6989586621679102802"><span id="local-6989586621679102805"><span id="local-6989586621679102810"><span id="local-6989586621679102815"><span id="local-6989586621679102820"><span id="local-6989586621679102825"><span class="annot"><span class="annottext">(forall m. Monoid m =&gt; PoolMap key m -&gt; m)
+-&gt; (forall m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolMap key a -&gt; m)
+-&gt; (forall m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolMap key a -&gt; m)
+-&gt; (forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b)
+-&gt; (forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b)
+-&gt; (forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b)
+-&gt; (forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b)
+-&gt; (forall a. (a -&gt; a -&gt; a) -&gt; PoolMap key a -&gt; a)
+-&gt; (forall a. (a -&gt; a -&gt; a) -&gt; PoolMap key a -&gt; a)
+-&gt; (forall a. PoolMap key a -&gt; [a])
+-&gt; (forall a. PoolMap key a -&gt; Bool)
+-&gt; (forall a. PoolMap key a -&gt; Int)
+-&gt; (forall a. Eq a =&gt; a -&gt; PoolMap key a -&gt; Bool)
+-&gt; (forall a. Ord a =&gt; PoolMap key a -&gt; a)
+-&gt; (forall a. Ord a =&gt; PoolMap key a -&gt; a)
+-&gt; (forall a. Num a =&gt; PoolMap key a -&gt; a)
+-&gt; (forall a. Num a =&gt; PoolMap key a -&gt; a)
+-&gt; Foldable (PoolMap key)
+forall a. Eq a =&gt; a -&gt; PoolMap key a -&gt; Bool
+forall a. Num a =&gt; PoolMap key a -&gt; a
+forall a. Ord a =&gt; PoolMap key a -&gt; a
+forall m. Monoid m =&gt; PoolMap key m -&gt; m
+forall a. PoolMap key a -&gt; Bool
+forall a. PoolMap key a -&gt; Int
+forall a. PoolMap key a -&gt; [a]
+forall a. (a -&gt; a -&gt; a) -&gt; PoolMap key a -&gt; a
+forall key a. Eq a =&gt; a -&gt; PoolMap key a -&gt; Bool
+forall key a. Num a =&gt; PoolMap key a -&gt; a
+forall key a. Ord a =&gt; PoolMap key a -&gt; a
+forall m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolMap key a -&gt; m
+forall key m. Monoid m =&gt; PoolMap key m -&gt; m
+forall key a. PoolMap key a -&gt; Bool
+forall key a. PoolMap key a -&gt; Int
+forall key a. PoolMap key a -&gt; [a]
+forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b
+forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b
+forall key a. (a -&gt; a -&gt; a) -&gt; PoolMap key a -&gt; a
+forall key m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolMap key a -&gt; m
+forall key b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b
+forall key a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b
+forall (t :: * -&gt; *).
+(forall m. Monoid m =&gt; t m -&gt; m)
+-&gt; (forall m a. Monoid m =&gt; (a -&gt; m) -&gt; t a -&gt; m)
+-&gt; (forall m a. Monoid m =&gt; (a -&gt; m) -&gt; t a -&gt; m)
+-&gt; (forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b)
+-&gt; (forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b)
+-&gt; (forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b)
+-&gt; (forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b)
+-&gt; (forall a. (a -&gt; a -&gt; a) -&gt; t a -&gt; a)
+-&gt; (forall a. (a -&gt; a -&gt; a) -&gt; t a -&gt; a)
+-&gt; (forall a. t a -&gt; [a])
+-&gt; (forall a. t a -&gt; Bool)
+-&gt; (forall a. t a -&gt; Int)
+-&gt; (forall a. Eq a =&gt; a -&gt; t a -&gt; Bool)
+-&gt; (forall a. Ord a =&gt; t a -&gt; a)
+-&gt; (forall a. Ord a =&gt; t a -&gt; a)
+-&gt; (forall a. Num a =&gt; t a -&gt; a)
+-&gt; (forall a. Num a =&gt; t a -&gt; a)
+-&gt; Foldable t
+$cfold :: forall key m. Monoid m =&gt; PoolMap key m -&gt; m
+fold :: forall m. Monoid m =&gt; PoolMap key m -&gt; m
+$cfoldMap :: forall key m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolMap key a -&gt; m
+foldMap :: forall m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolMap key a -&gt; m
+$cfoldMap' :: forall key m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolMap key a -&gt; m
+foldMap' :: forall m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolMap key a -&gt; m
+$cfoldr :: forall key a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b
+foldr :: forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b
+$cfoldr' :: forall key a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b
+foldr' :: forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b
+$cfoldl :: forall key b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b
+foldl :: forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b
+$cfoldl' :: forall key b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b
+foldl' :: forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolMap key a -&gt; b
+$cfoldr1 :: forall key a. (a -&gt; a -&gt; a) -&gt; PoolMap key a -&gt; a
+foldr1 :: forall a. (a -&gt; a -&gt; a) -&gt; PoolMap key a -&gt; a
+$cfoldl1 :: forall key a. (a -&gt; a -&gt; a) -&gt; PoolMap key a -&gt; a
+foldl1 :: forall a. (a -&gt; a -&gt; a) -&gt; PoolMap key a -&gt; a
+$ctoList :: forall key a. PoolMap key a -&gt; [a]
+toList :: forall a. PoolMap key a -&gt; [a]
+$cnull :: forall key a. PoolMap key a -&gt; Bool
+null :: forall a. PoolMap key a -&gt; Bool
+$clength :: forall key a. PoolMap key a -&gt; Int
+length :: forall a. PoolMap key a -&gt; Int
+$celem :: forall key a. Eq a =&gt; a -&gt; PoolMap key a -&gt; Bool
+elem :: forall a. Eq a =&gt; a -&gt; PoolMap key a -&gt; Bool
+$cmaximum :: forall key a. Ord a =&gt; PoolMap key a -&gt; a
+maximum :: forall a. Ord a =&gt; PoolMap key a -&gt; a
+$cminimum :: forall key a. Ord a =&gt; PoolMap key a -&gt; a
+minimum :: forall a. Ord a =&gt; PoolMap key a -&gt; a
+$csum :: forall key a. Num a =&gt; PoolMap key a -&gt; a
+sum :: forall a. Num a =&gt; PoolMap key a -&gt; a
+$cproduct :: forall key a. Num a =&gt; PoolMap key a -&gt; a
+product :: forall a. Num a =&gt; PoolMap key a -&gt; a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">F.Foldable</span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span><span>
+</span><span id="line-70"></span><span>
+</span><span id="line-71"></span><span class="hs-comment">-- | A non-empty list which keeps track of its own length and when</span><span>
+</span><span id="line-72"></span><span class="hs-comment">-- each resource was created.</span><span>
+</span><span id="line-73"></span><span class="hs-keyword">data</span><span> </span><span id="PoolList"><span class="annot"><a href="Data.KeyedPool.html#PoolList"><span class="hs-identifier hs-var">PoolList</span></a></span></span><span> </span><span id="local-6989586621679102598"><span class="annot"><a href="#local-6989586621679102598"><span class="hs-identifier hs-type">a</span></a></span></span><span>
+</span><span id="line-74"></span><span>    </span><span class="hs-glyph">=</span><span> </span><span id="One"><span class="annot"><a href="Data.KeyedPool.html#One"><span class="hs-identifier hs-var">One</span></a></span></span><span> </span><span class="annot"><a href="#local-6989586621679102598"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">UTCTime</span></span><span>
+</span><span id="line-75"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span id="Cons"><span class="annot"><a href="Data.KeyedPool.html#Cons"><span class="hs-identifier hs-var">Cons</span></a></span></span><span>
+</span><span id="line-76"></span><span>        </span><span class="annot"><a href="#local-6989586621679102598"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-77"></span><span>
+</span><span id="line-78"></span><span>        </span><span class="hs-comment">-- size of the list from this point and on</span><span>
+</span><span id="line-79"></span><span>        </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-80"></span><span>
+</span><span id="line-81"></span><span>        </span><span class="hs-pragma">{-# UNPACK</span><span> </span><span class="hs-pragma">#-}</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">UTCTime</span></span><span>
+</span><span id="line-82"></span><span>        </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#PoolList"><span class="hs-identifier hs-type">PoolList</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102598"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-83"></span><span>    </span><span class="hs-keyword">deriving</span><span> </span><span id="local-6989586621679102833"><span id="local-6989586621679102838"><span id="local-6989586621679102844"><span id="local-6989586621679102849"><span id="local-6989586621679102852"><span id="local-6989586621679102855"><span id="local-6989586621679102858"><span id="local-6989586621679102861"><span id="local-6989586621679102864"><span id="local-6989586621679102867"><span id="local-6989586621679102870"><span id="local-6989586621679102872"><span id="local-6989586621679102875"><span id="local-6989586621679102880"><span id="local-6989586621679102885"><span id="local-6989586621679102890"><span id="local-6989586621679102895"><span class="annot"><span class="annottext">(forall m. Monoid m =&gt; PoolList m -&gt; m)
+-&gt; (forall m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolList a -&gt; m)
+-&gt; (forall m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolList a -&gt; m)
+-&gt; (forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolList a -&gt; b)
+-&gt; (forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolList a -&gt; b)
+-&gt; (forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolList a -&gt; b)
+-&gt; (forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolList a -&gt; b)
+-&gt; (forall a. (a -&gt; a -&gt; a) -&gt; PoolList a -&gt; a)
+-&gt; (forall a. (a -&gt; a -&gt; a) -&gt; PoolList a -&gt; a)
+-&gt; (forall a. PoolList a -&gt; [a])
+-&gt; (forall a. PoolList a -&gt; Bool)
+-&gt; (forall a. PoolList a -&gt; Int)
+-&gt; (forall a. Eq a =&gt; a -&gt; PoolList a -&gt; Bool)
+-&gt; (forall a. Ord a =&gt; PoolList a -&gt; a)
+-&gt; (forall a. Ord a =&gt; PoolList a -&gt; a)
+-&gt; (forall a. Num a =&gt; PoolList a -&gt; a)
+-&gt; (forall a. Num a =&gt; PoolList a -&gt; a)
+-&gt; Foldable PoolList
+forall a. Eq a =&gt; a -&gt; PoolList a -&gt; Bool
+forall a. Num a =&gt; PoolList a -&gt; a
+forall a. Ord a =&gt; PoolList a -&gt; a
+forall m. Monoid m =&gt; PoolList m -&gt; m
+forall a. PoolList a -&gt; Bool
+forall a. PoolList a -&gt; Int
+forall a. PoolList a -&gt; [a]
+forall a. (a -&gt; a -&gt; a) -&gt; PoolList a -&gt; a
+forall m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolList a -&gt; m
+forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolList a -&gt; b
+forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolList a -&gt; b
+forall (t :: * -&gt; *).
+(forall m. Monoid m =&gt; t m -&gt; m)
+-&gt; (forall m a. Monoid m =&gt; (a -&gt; m) -&gt; t a -&gt; m)
+-&gt; (forall m a. Monoid m =&gt; (a -&gt; m) -&gt; t a -&gt; m)
+-&gt; (forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b)
+-&gt; (forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; t a -&gt; b)
+-&gt; (forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b)
+-&gt; (forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; t a -&gt; b)
+-&gt; (forall a. (a -&gt; a -&gt; a) -&gt; t a -&gt; a)
+-&gt; (forall a. (a -&gt; a -&gt; a) -&gt; t a -&gt; a)
+-&gt; (forall a. t a -&gt; [a])
+-&gt; (forall a. t a -&gt; Bool)
+-&gt; (forall a. t a -&gt; Int)
+-&gt; (forall a. Eq a =&gt; a -&gt; t a -&gt; Bool)
+-&gt; (forall a. Ord a =&gt; t a -&gt; a)
+-&gt; (forall a. Ord a =&gt; t a -&gt; a)
+-&gt; (forall a. Num a =&gt; t a -&gt; a)
+-&gt; (forall a. Num a =&gt; t a -&gt; a)
+-&gt; Foldable t
+$cfold :: forall m. Monoid m =&gt; PoolList m -&gt; m
+fold :: forall m. Monoid m =&gt; PoolList m -&gt; m
+$cfoldMap :: forall m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolList a -&gt; m
+foldMap :: forall m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolList a -&gt; m
+$cfoldMap' :: forall m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolList a -&gt; m
+foldMap' :: forall m a. Monoid m =&gt; (a -&gt; m) -&gt; PoolList a -&gt; m
+$cfoldr :: forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolList a -&gt; b
+foldr :: forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolList a -&gt; b
+$cfoldr' :: forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolList a -&gt; b
+foldr' :: forall a b. (a -&gt; b -&gt; b) -&gt; b -&gt; PoolList a -&gt; b
+$cfoldl :: forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolList a -&gt; b
+foldl :: forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolList a -&gt; b
+$cfoldl' :: forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolList a -&gt; b
+foldl' :: forall b a. (b -&gt; a -&gt; b) -&gt; b -&gt; PoolList a -&gt; b
+$cfoldr1 :: forall a. (a -&gt; a -&gt; a) -&gt; PoolList a -&gt; a
+foldr1 :: forall a. (a -&gt; a -&gt; a) -&gt; PoolList a -&gt; a
+$cfoldl1 :: forall a. (a -&gt; a -&gt; a) -&gt; PoolList a -&gt; a
+foldl1 :: forall a. (a -&gt; a -&gt; a) -&gt; PoolList a -&gt; a
+$ctoList :: forall a. PoolList a -&gt; [a]
+toList :: forall a. PoolList a -&gt; [a]
+$cnull :: forall a. PoolList a -&gt; Bool
+null :: forall a. PoolList a -&gt; Bool
+$clength :: forall a. PoolList a -&gt; Int
+length :: forall a. PoolList a -&gt; Int
+$celem :: forall a. Eq a =&gt; a -&gt; PoolList a -&gt; Bool
+elem :: forall a. Eq a =&gt; a -&gt; PoolList a -&gt; Bool
+$cmaximum :: forall a. Ord a =&gt; PoolList a -&gt; a
+maximum :: forall a. Ord a =&gt; PoolList a -&gt; a
+$cminimum :: forall a. Ord a =&gt; PoolList a -&gt; a
+minimum :: forall a. Ord a =&gt; PoolList a -&gt; a
+$csum :: forall a. Num a =&gt; PoolList a -&gt; a
+sum :: forall a. Num a =&gt; PoolList a -&gt; a
+$cproduct :: forall a. Num a =&gt; PoolList a -&gt; a
+product :: forall a. Num a =&gt; PoolList a -&gt; a
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">F.Foldable</span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span><span>
+</span><span id="line-84"></span><span>
+</span><span id="line-85"></span><span id="local-6989586621679102592"><span class="annot"><a href="Data.KeyedPool.html#plistToList"><span class="hs-identifier hs-type">plistToList</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#PoolList"><span class="hs-identifier hs-type">PoolList</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102592"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">UTCTime</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621679102592"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span></span><span>
+</span><span id="line-86"></span><span id="plistToList"><span class="annot"><span class="annottext">plistToList :: forall a. PoolList a -&gt; [(UTCTime, a)]
+</span><a href="Data.KeyedPool.html#plistToList"><span class="hs-identifier hs-var hs-var">plistToList</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#One"><span class="hs-identifier hs-type">One</span></a></span><span> </span><span id="local-6989586621679102900"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679102900"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span id="local-6989586621679102901"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679102901"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679102901"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679102900"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span>
+</span><span id="line-87"></span><span class="annot"><a href="Data.KeyedPool.html#plistToList"><span class="hs-identifier hs-var">plistToList</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#Cons"><span class="hs-identifier hs-type">Cons</span></a></span><span> </span><span id="local-6989586621679102902"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679102902"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679102903"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679102903"><span class="hs-identifier hs-var">t</span></a></span></span><span> </span><span id="local-6989586621679102904"><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679102904"><span class="hs-identifier hs-var">plist</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679102903"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679102902"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(UTCTime, a) -&gt; [(UTCTime, a)] -&gt; [(UTCTime, a)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span> </span><span class="annot"><span class="annottext">PoolList a -&gt; [(UTCTime, a)]
+forall a. PoolList a -&gt; [(UTCTime, a)]
+</span><a href="Data.KeyedPool.html#plistToList"><span class="hs-identifier hs-var">plistToList</span></a></span><span> </span><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679102904"><span class="hs-identifier hs-var">plist</span></a></span><span>
+</span><span id="line-88"></span><span>
+</span><span id="line-89"></span><span id="local-6989586621679102596"><span class="annot"><a href="Data.KeyedPool.html#plistFromList"><span class="hs-identifier hs-type">plistFromList</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">UTCTime</span></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621679102596"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#PoolList"><span class="hs-identifier hs-type">PoolList</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102596"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-90"></span><span id="plistFromList"><span class="annot"><span class="annottext">plistFromList :: forall a. [(UTCTime, a)] -&gt; Maybe (PoolList a)
+</span><a href="Data.KeyedPool.html#plistFromList"><span class="hs-identifier hs-var hs-var">plistFromList</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe (PoolList a)
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span>
+</span><span id="line-91"></span><span class="annot"><a href="Data.KeyedPool.html#plistFromList"><span class="hs-identifier hs-var">plistFromList</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span id="local-6989586621679102906"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679102906"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679102907"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679102907"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">PoolList a -&gt; Maybe (PoolList a)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; UTCTime -&gt; PoolList a
+forall a. a -&gt; UTCTime -&gt; PoolList a
+</span><a href="Data.KeyedPool.html#One"><span class="hs-identifier hs-var">One</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679102907"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679102906"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-92"></span><span class="annot"><a href="Data.KeyedPool.html#plistFromList"><span class="hs-identifier hs-var">plistFromList</span></a></span><span> </span><span id="local-6989586621679102908"><span class="annot"><span class="annottext">[(UTCTime, a)]
+</span><a href="#local-6989586621679102908"><span class="hs-identifier hs-var">xs</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-93"></span><span>    </span><span class="annot"><span class="annottext">PoolList a -&gt; Maybe (PoolList a)
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">(PoolList a -&gt; Maybe (PoolList a))
+-&gt; ([(UTCTime, a)] -&gt; PoolList a)
+-&gt; [(UTCTime, a)]
+-&gt; Maybe (PoolList a)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(Int, PoolList a) -&gt; PoolList a
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">((Int, PoolList a) -&gt; PoolList a)
+-&gt; ([(UTCTime, a)] -&gt; (Int, PoolList a))
+-&gt; [(UTCTime, a)]
+-&gt; PoolList a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">[(UTCTime, a)] -&gt; (Int, PoolList a)
+forall {a}. [(UTCTime, a)] -&gt; (Int, PoolList a)
+</span><a href="#local-6989586621679102911"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">([(UTCTime, a)] -&gt; Maybe (PoolList a))
+-&gt; [(UTCTime, a)] -&gt; Maybe (PoolList a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">[(UTCTime, a)]
+</span><a href="#local-6989586621679102908"><span class="hs-identifier hs-var">xs</span></a></span><span>
+</span><span id="line-94"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-95"></span><span>    </span><span id="local-6989586621679102911"><span class="annot"><span class="annottext">go :: [(UTCTime, a)] -&gt; (Int, PoolList a)
+</span><a href="#local-6989586621679102911"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; (Int, PoolList a)
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;plistFromList.go []&quot;</span></span><span>
+</span><span id="line-96"></span><span>    </span><span class="annot"><a href="#local-6989586621679102911"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">(</span><span id="local-6989586621679102917"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679102917"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679102918"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679102918"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a -&gt; UTCTime -&gt; PoolList a
+forall a. a -&gt; UTCTime -&gt; PoolList a
+</span><a href="Data.KeyedPool.html#One"><span class="hs-identifier hs-var">One</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679102918"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679102917"><span class="hs-identifier hs-var">t</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-97"></span><span>    </span><span class="annot"><a href="#local-6989586621679102911"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621679102919"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679102919"><span class="hs-identifier hs-var">t</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679102920"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679102920"><span class="hs-identifier hs-var">a</span></a></span></span><span class="hs-special">)</span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621679102921"><span class="annot"><span class="annottext">[(UTCTime, a)]
+</span><a href="#local-6989586621679102921"><span class="hs-identifier hs-var">rest</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-98"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679102922"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679102922"><span class="hs-identifier hs-var">i</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679102923"><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679102923"><span class="hs-identifier hs-var">rest'</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[(UTCTime, a)] -&gt; (Int, PoolList a)
+</span><a href="#local-6989586621679102911"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">[(UTCTime, a)]
+</span><a href="#local-6989586621679102921"><span class="hs-identifier hs-var">rest</span></a></span><span>
+</span><span id="line-99"></span><span>            </span><span id="local-6989586621679102926"><span class="annot"><span class="annottext">i' :: Int
+</span><a href="#local-6989586621679102926"><span class="hs-identifier hs-var hs-var">i'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679102922"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-100"></span><span>         </span><span class="hs-keyword">in</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679102926"><span class="hs-identifier hs-var">i'</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Int, PoolList a) -&gt; (Int, PoolList a)
+forall a b. a -&gt; b -&gt; b
+</span><span class="hs-operator hs-var">`seq`</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679102926"><span class="hs-identifier hs-var">i'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a -&gt; Int -&gt; UTCTime -&gt; PoolList a -&gt; PoolList a
+forall a. a -&gt; Int -&gt; UTCTime -&gt; PoolList a -&gt; PoolList a
+</span><a href="Data.KeyedPool.html#Cons"><span class="hs-identifier hs-var">Cons</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679102920"><span class="hs-identifier hs-var">a</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679102922"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679102919"><span class="hs-identifier hs-var">t</span></a></span><span> </span><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679102923"><span class="hs-identifier hs-var">rest'</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-101"></span><span>
+</span><span id="line-102"></span><span class="hs-comment">-- | Create a new 'KeyedPool' which will automatically clean up after</span><span>
+</span><span id="line-103"></span><span class="hs-comment">-- itself when all referenced to the 'KeyedPool' are gone. It will</span><span>
+</span><span id="line-104"></span><span class="hs-comment">-- also fork a reaper thread to regularly kill off unused resource.</span><span>
+</span><span id="line-105"></span><span id="local-6989586621679102614"><span id="local-6989586621679102615"><span class="annot"><a href="Data.KeyedPool.html#createKeyedPool"><span class="hs-identifier hs-type">createKeyedPool</span></a></span><span>
+</span><span id="line-106"></span><span>    </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ord</span></span><span> </span><span class="annot"><a href="#local-6989586621679102614"><span class="hs-identifier hs-type">key</span></a></span><span>
+</span><span id="line-107"></span><span>    </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679102614"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="#local-6989586621679102615"><span class="hs-identifier hs-type">resource</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-comment">-- ^ create a new resource</span></span><span>
+</span><span id="line-108"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679102615"><span class="hs-identifier hs-type">resource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-109"></span><span>       </span><span class="hs-comment">-- ^ Destroy a resource. Note that exceptions thrown by this will be</span><span>
+</span><span id="line-110"></span><span>       </span><span class="hs-comment">-- silently discarded. If you want reporting, please install an</span><span>
+</span><span id="line-111"></span><span>       </span><span class="hs-comment">-- exception handler yourself.</span><span>
+</span><span id="line-112"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ number of resources per key to allow in the pool</span></span><span>
+</span><span id="line-113"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ number of resources to allow in the pool across all keys</span></span><span>
+</span><span id="line-114"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">SomeException</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="annot"><span class="hs-comment">-- ^ what to do if the reaper throws an exception</span></span><span>
+</span><span id="line-115"></span><span>    </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#KeyedPool"><span class="hs-identifier hs-type">KeyedPool</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102614"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102615"><span class="hs-identifier hs-type">resource</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-116"></span><span id="createKeyedPool"><span class="annot"><span class="annottext">createKeyedPool :: forall key resource.
+Ord key =&gt;
+(key -&gt; IO resource)
+-&gt; (resource -&gt; IO ())
+-&gt; Int
+-&gt; Int
+-&gt; (SomeException -&gt; IO ())
+-&gt; IO (KeyedPool key resource)
+</span><a href="Data.KeyedPool.html#createKeyedPool"><span class="hs-identifier hs-var hs-var">createKeyedPool</span></a></span></span><span> </span><span id="local-6989586621679102937"><span class="annot"><span class="annottext">key -&gt; IO resource
+</span><a href="#local-6989586621679102937"><span class="hs-identifier hs-var">create</span></a></span></span><span> </span><span id="local-6989586621679102938"><span class="annot"><span class="annottext">resource -&gt; IO ()
+</span><a href="#local-6989586621679102938"><span class="hs-identifier hs-var">destroy</span></a></span></span><span> </span><span id="local-6989586621679102939"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679102939"><span class="hs-identifier hs-var">maxPerKey</span></a></span></span><span> </span><span id="local-6989586621679102940"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679102940"><span class="hs-identifier hs-var">maxTotal</span></a></span></span><span> </span><span id="local-6989586621679102941"><span class="annot"><span class="annottext">SomeException -&gt; IO ()
+</span><a href="#local-6989586621679102941"><span class="hs-identifier hs-var">onReaperException</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-117"></span><span>    </span><span id="local-6989586621679102942"><span class="annot"><span class="annottext">TVar (PoolMap key resource)
+</span><a href="#local-6989586621679102942"><span class="hs-identifier hs-var">var</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">PoolMap key resource -&gt; IO (TVar (PoolMap key resource))
+forall a. a -&gt; IO (TVar a)
+</span><span class="hs-identifier hs-var">newTVarIO</span></span><span> </span><span class="annot"><span class="annottext">(PoolMap key resource -&gt; IO (TVar (PoolMap key resource)))
+-&gt; PoolMap key resource -&gt; IO (TVar (PoolMap key resource))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Map key (PoolList resource) -&gt; PoolMap key resource
+forall key resource.
+Int -&gt; Map key (PoolList resource) -&gt; PoolMap key resource
+</span><a href="Data.KeyedPool.html#PoolOpen"><span class="hs-identifier hs-var">PoolOpen</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Map key (PoolList resource)
+forall k a. Map k a
+</span><span class="hs-identifier hs-var">Map.empty</span></span><span>
+</span><span id="line-118"></span><span>
+</span><span id="line-119"></span><span>    </span><span class="hs-comment">-- We use a different IORef for the weak ref instead of the var</span><span>
+</span><span id="line-120"></span><span>    </span><span class="hs-comment">-- above since the reaper thread will always be holding onto a</span><span>
+</span><span id="line-121"></span><span>    </span><span class="hs-comment">-- reference.</span><span>
+</span><span id="line-122"></span><span>    </span><span id="local-6989586621679102945"><span class="annot"><span class="annottext">IORef ()
+</span><a href="#local-6989586621679102945"><span class="hs-identifier hs-var">alive</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO (IORef ())
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-123"></span><span>    </span><span class="annot"><span class="annottext">IO (Weak (IORef ())) -&gt; IO ()
+forall (f :: * -&gt; *) a. Functor f =&gt; f a -&gt; f ()
+</span><span class="hs-identifier hs-var">void</span></span><span> </span><span class="annot"><span class="annottext">(IO (Weak (IORef ())) -&gt; IO ()) -&gt; IO (Weak (IORef ())) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IORef () -&gt; IO () -&gt; IO (Weak (IORef ()))
+forall a. IORef a -&gt; IO () -&gt; IO (Weak (IORef a))
+</span><span class="hs-identifier hs-var">mkWeakIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef ()
+</span><a href="#local-6989586621679102945"><span class="hs-identifier hs-var">alive</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO (Weak (IORef ()))) -&gt; IO () -&gt; IO (Weak (IORef ()))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(resource -&gt; IO ()) -&gt; TVar (PoolMap key resource) -&gt; IO ()
+forall resource key.
+(resource -&gt; IO ()) -&gt; TVar (PoolMap key resource) -&gt; IO ()
+</span><a href="Data.KeyedPool.html#destroyKeyedPool%27"><span class="hs-identifier hs-var">destroyKeyedPool'</span></a></span><span> </span><span class="annot"><span class="annottext">resource -&gt; IO ()
+</span><a href="#local-6989586621679102938"><span class="hs-identifier hs-var">destroy</span></a></span><span> </span><span class="annot"><span class="annottext">TVar (PoolMap key resource)
+</span><a href="#local-6989586621679102942"><span class="hs-identifier hs-var">var</span></a></span><span>
+</span><span id="line-124"></span><span>
+</span><span id="line-125"></span><span>    </span><span class="hs-comment">-- Make sure to fork _after_ we've established the mkWeakIORef. If</span><span>
+</span><span id="line-126"></span><span>    </span><span class="hs-comment">-- we did it the other way around, it would be possible for an</span><span>
+</span><span id="line-127"></span><span>    </span><span class="hs-comment">-- async exception to happen before our destroyKeyedPool' handler</span><span>
+</span><span id="line-128"></span><span>    </span><span class="hs-comment">-- was installed, and then reap would have to rely on detecting an</span><span>
+</span><span id="line-129"></span><span>    </span><span class="hs-comment">-- STM deadlock before it could ever exit. This way, the reap</span><span>
+</span><span id="line-130"></span><span>    </span><span class="hs-comment">-- function will only start running when we're guaranteed that</span><span>
+</span><span id="line-131"></span><span>    </span><span class="hs-comment">-- cleanup will be triggered.</span><span>
+</span><span id="line-132"></span><span>
+</span><span id="line-133"></span><span>    </span><span class="hs-comment">-- Ensure that we have a normal masking state in the new thread.</span><span>
+</span><span id="line-134"></span><span>    </span><span class="annot"><span class="annottext">ThreadId
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">((forall a. IO a -&gt; IO a) -&gt; IO ()) -&gt; IO ThreadId
+</span><span class="hs-identifier hs-var">forkIOWithUnmask</span></span><span> </span><span class="annot"><span class="annottext">(((forall a. IO a -&gt; IO a) -&gt; IO ()) -&gt; IO ThreadId)
+-&gt; ((forall a. IO a -&gt; IO a) -&gt; IO ()) -&gt; IO ThreadId
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679102947"><span class="annot"><span class="annottext">forall a. IO a -&gt; IO a
+</span><a href="#local-6989586621679102947"><span class="hs-identifier hs-var">restore</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+forall a. IO a -&gt; IO a
+</span><a href="#local-6989586621679102948"><span class="hs-identifier hs-var">keepRunning</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+forall a. IO a -&gt; IO a
+</span><a href="#local-6989586621679102947"><span class="hs-identifier hs-var">restore</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(resource -&gt; IO ()) -&gt; TVar (PoolMap key resource) -&gt; IO ()
+forall key resource.
+Ord key =&gt;
+(resource -&gt; IO ()) -&gt; TVar (PoolMap key resource) -&gt; IO ()
+</span><a href="Data.KeyedPool.html#reap"><span class="hs-identifier hs-var">reap</span></a></span><span> </span><span class="annot"><span class="annottext">resource -&gt; IO ()
+</span><a href="#local-6989586621679102938"><span class="hs-identifier hs-var">destroy</span></a></span><span> </span><span class="annot"><span class="annottext">TVar (PoolMap key resource)
+</span><a href="#local-6989586621679102942"><span class="hs-identifier hs-var">var</span></a></span><span>
+</span><span id="line-135"></span><span>    </span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; IO (KeyedPool key resource)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><a href="Data.KeyedPool.html#KeyedPool"><span class="hs-identifier hs-type">KeyedPool</span></a></span><span>
+</span><span id="line-136"></span><span>        </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">kpCreate :: key -&gt; IO resource
+</span><a href="Data.KeyedPool.html#kpCreate"><span class="hs-identifier hs-var">kpCreate</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">key -&gt; IO resource
+</span><a href="#local-6989586621679102937"><span class="hs-identifier hs-var">create</span></a></span><span>
+</span><span id="line-137"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">kpDestroy :: resource -&gt; IO ()
+</span><a href="Data.KeyedPool.html#kpDestroy"><span class="hs-identifier hs-var">kpDestroy</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">resource -&gt; IO ()
+</span><a href="#local-6989586621679102938"><span class="hs-identifier hs-var">destroy</span></a></span><span>
+</span><span id="line-138"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">kpMaxPerKey :: Int
+</span><a href="Data.KeyedPool.html#kpMaxPerKey"><span class="hs-identifier hs-var">kpMaxPerKey</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679102939"><span class="hs-identifier hs-var">maxPerKey</span></a></span><span>
+</span><span id="line-139"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">kpMaxTotal :: Int
+</span><a href="Data.KeyedPool.html#kpMaxTotal"><span class="hs-identifier hs-var">kpMaxTotal</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679102940"><span class="hs-identifier hs-var">maxTotal</span></a></span><span>
+</span><span id="line-140"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">kpVar :: TVar (PoolMap key resource)
+</span><a href="Data.KeyedPool.html#kpVar"><span class="hs-identifier hs-var">kpVar</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">TVar (PoolMap key resource)
+</span><a href="#local-6989586621679102942"><span class="hs-identifier hs-var">var</span></a></span><span>
+</span><span id="line-141"></span><span>        </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">kpAlive :: IORef ()
+</span><a href="Data.KeyedPool.html#kpAlive"><span class="hs-identifier hs-var">kpAlive</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef ()
+</span><a href="#local-6989586621679102945"><span class="hs-identifier hs-var">alive</span></a></span><span>
+</span><span id="line-142"></span><span>        </span><span class="hs-special">}</span><span>
+</span><span id="line-143"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-144"></span><span>    </span><span id="local-6989586621679102948"><span class="annot"><span class="annottext">keepRunning :: IO a -&gt; IO a
+</span><a href="#local-6989586621679102948"><span class="hs-identifier hs-var hs-var">keepRunning</span></a></span></span><span> </span><span id="local-6989586621679102950"><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679102950"><span class="hs-identifier hs-var">action</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-145"></span><span>        </span><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679102951"><span class="hs-identifier hs-var">loop</span></a></span><span>
+</span><span id="line-146"></span><span>      </span><span class="hs-keyword">where</span><span>
+</span><span id="line-147"></span><span>        </span><span id="local-6989586621679102951"><span class="annot"><span class="annottext">loop :: IO a
+</span><a href="#local-6989586621679102951"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679102950"><span class="hs-identifier hs-var">action</span></a></span><span> </span><span class="annot"><span class="annottext">IO a -&gt; (SomeException -&gt; IO a) -&gt; IO a
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><span class="hs-operator hs-var">`catch`</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679102954"><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679102954"><span class="hs-identifier hs-var">e</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">SomeException -&gt; IO ()
+</span><a href="#local-6989586621679102941"><span class="hs-identifier hs-var">onReaperException</span></a></span><span> </span><span class="annot"><span class="annottext">SomeException
+</span><a href="#local-6989586621679102954"><span class="hs-identifier hs-var">e</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO a -&gt; IO a
+forall a b. IO a -&gt; IO b -&gt; IO b
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; m b -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">IO a
+</span><a href="#local-6989586621679102951"><span class="hs-identifier hs-var">loop</span></a></span><span>
+</span><span id="line-148"></span><span>
+</span><span id="line-149"></span><span class="annot"><span class="hs-comment">-- | Make a 'KeyedPool' inactive and destroy all idle resources.</span></span><span>
+</span><span id="line-150"></span><span id="local-6989586621679102628"><span id="local-6989586621679102629"><span class="annot"><a href="Data.KeyedPool.html#destroyKeyedPool%27"><span class="hs-identifier hs-type">destroyKeyedPool'</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679102628"><span class="hs-identifier hs-type">resource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-151"></span><span>                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">TVar</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#PoolMap"><span class="hs-identifier hs-type">PoolMap</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102629"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102628"><span class="hs-identifier hs-type">resource</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-152"></span><span>                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-153"></span><span id="destroyKeyedPool%27"><span class="annot"><span class="annottext">destroyKeyedPool' :: forall resource key.
+(resource -&gt; IO ()) -&gt; TVar (PoolMap key resource) -&gt; IO ()
+</span><a href="Data.KeyedPool.html#destroyKeyedPool%27"><span class="hs-identifier hs-var hs-var">destroyKeyedPool'</span></a></span></span><span> </span><span id="local-6989586621679102958"><span class="annot"><span class="annottext">resource -&gt; IO ()
+</span><a href="#local-6989586621679102958"><span class="hs-identifier hs-var">destroy</span></a></span></span><span> </span><span id="local-6989586621679102959"><span class="annot"><span class="annottext">TVar (PoolMap key resource)
+</span><a href="#local-6989586621679102959"><span class="hs-identifier hs-var">var</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-154"></span><span>    </span><span id="local-6989586621679102960"><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679102960"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">STM (PoolMap key resource) -&gt; IO (PoolMap key resource)
+forall a. STM a -&gt; IO a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM (PoolMap key resource) -&gt; IO (PoolMap key resource))
+-&gt; STM (PoolMap key resource) -&gt; IO (PoolMap key resource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TVar (PoolMap key resource)
+-&gt; PoolMap key resource -&gt; STM (PoolMap key resource)
+forall a. TVar a -&gt; a -&gt; STM a
+</span><span class="hs-identifier hs-var">swapTVar</span></span><span> </span><span class="annot"><span class="annottext">TVar (PoolMap key resource)
+</span><a href="#local-6989586621679102959"><span class="hs-identifier hs-var">var</span></a></span><span> </span><span class="annot"><span class="annottext">PoolMap key resource
+forall key resource. PoolMap key resource
+</span><a href="Data.KeyedPool.html#PoolClosed"><span class="hs-identifier hs-var">PoolClosed</span></a></span><span>
+</span><span id="line-155"></span><span>    </span><span class="annot"><span class="annottext">(resource -&gt; IO ()) -&gt; PoolMap key resource -&gt; IO ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">F.mapM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+</span><a href="Data.KeyedPool.html#ignoreExceptions"><span class="hs-identifier hs-var">ignoreExceptions</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; (resource -&gt; IO ()) -&gt; resource -&gt; IO ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">resource -&gt; IO ()
+</span><a href="#local-6989586621679102958"><span class="hs-identifier hs-var">destroy</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679102960"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-156"></span><span>
+</span><span id="line-157"></span><span class="hs-comment">-- | Run a reaper thread, which will destroy old resources. It will</span><span>
+</span><span id="line-158"></span><span class="hs-comment">-- stop running once our pool switches to PoolClosed, which is handled</span><span>
+</span><span id="line-159"></span><span class="hs-comment">-- via the mkWeakIORef in the creation of the pool.</span><span>
+</span><span id="line-160"></span><span class="annot"><a href="Data.KeyedPool.html#reap"><span class="hs-identifier hs-type">reap</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679102632"><span class="annot"><a href="#local-6989586621679102632"><span class="hs-identifier hs-type">key</span></a></span></span><span> </span><span id="local-6989586621679102633"><span class="annot"><a href="#local-6989586621679102633"><span class="hs-identifier hs-type">resource</span></a></span></span><span class="hs-operator">.</span><span>
+</span><span id="line-161"></span><span>        </span><span class="annot"><span class="hs-identifier hs-type">Ord</span></span><span> </span><span class="annot"><a href="#local-6989586621679102632"><span class="hs-identifier hs-type">key</span></a></span><span>
+</span><span id="line-162"></span><span>     </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679102633"><span class="hs-identifier hs-type">resource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-163"></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">TVar</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#PoolMap"><span class="hs-identifier hs-type">PoolMap</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102632"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102633"><span class="hs-identifier hs-type">resource</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-164"></span><span>     </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-165"></span><span id="reap"><span class="annot"><span class="annottext">reap :: forall key resource.
+Ord key =&gt;
+(resource -&gt; IO ()) -&gt; TVar (PoolMap key resource) -&gt; IO ()
+</span><a href="Data.KeyedPool.html#reap"><span class="hs-identifier hs-var hs-var">reap</span></a></span></span><span> </span><span id="local-6989586621679102971"><span class="annot"><span class="annottext">resource -&gt; IO ()
+</span><a href="#local-6989586621679102971"><span class="hs-identifier hs-var">destroy</span></a></span></span><span> </span><span id="local-6989586621679102972"><span class="annot"><span class="annottext">TVar (PoolMap key resource)
+</span><a href="#local-6989586621679102972"><span class="hs-identifier hs-var">var</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-166"></span><span>    </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679102973"><span class="hs-identifier hs-var">loop</span></a></span><span>
+</span><span id="line-167"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-168"></span><span>    </span><span id="local-6989586621679102973"><span class="annot"><span class="annottext">loop :: IO ()
+</span><a href="#local-6989586621679102973"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-169"></span><span>        </span><span class="annot"><span class="annottext">Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">threadDelay</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">5</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1000</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">*</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1000</span></span><span class="hs-special">)</span><span>
+</span><span id="line-170"></span><span>        </span><span class="annot"><span class="annottext">IO (IO ()) -&gt; IO ()
+forall (m :: * -&gt; *) a. Monad m =&gt; m (m a) -&gt; m a
+</span><span class="hs-identifier hs-var">join</span></span><span> </span><span class="annot"><span class="annottext">(IO (IO ()) -&gt; IO ()) -&gt; IO (IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">STM (IO ()) -&gt; IO (IO ())
+forall a. STM a -&gt; IO a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM (IO ()) -&gt; IO (IO ())) -&gt; STM (IO ()) -&gt; IO (IO ())
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-171"></span><span>            </span><span id="local-6989586621679102992"><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679102992"><span class="hs-identifier hs-var">m''</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">TVar (PoolMap key resource) -&gt; STM (PoolMap key resource)
+forall a. TVar a -&gt; STM a
+</span><span class="hs-identifier hs-var">readTVar</span></span><span> </span><span class="annot"><span class="annottext">TVar (PoolMap key resource)
+</span><a href="#local-6989586621679102972"><span class="hs-identifier hs-var">var</span></a></span><span>
+</span><span id="line-172"></span><span>            </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679102992"><span class="hs-identifier hs-var">m''</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-173"></span><span>                </span><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="Data.KeyedPool.html#PoolClosed"><span class="hs-identifier hs-var">PoolClosed</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; STM (IO ())
+forall a. a -&gt; STM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-174"></span><span>                </span><span class="annot"><a href="Data.KeyedPool.html#PoolOpen"><span class="hs-identifier hs-type">PoolOpen</span></a></span><span> </span><span id="local-6989586621679102994"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679102994"><span class="hs-identifier hs-var">idleCount</span></a></span></span><span> </span><span id="local-6989586621679102995"><span class="annot"><span class="annottext">Map key (PoolList resource)
+</span><a href="#local-6989586621679102995"><span class="hs-identifier hs-var">m</span></a></span></span><span>
+</span><span id="line-175"></span><span>                    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Map key (PoolList resource) -&gt; Bool
+forall k a. Map k a -&gt; Bool
+</span><span class="hs-identifier hs-var">Map.null</span></span><span> </span><span class="annot"><span class="annottext">Map key (PoolList resource)
+</span><a href="#local-6989586621679102995"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">STM (IO ())
+forall a. STM a
+</span><span class="hs-identifier hs-var">retry</span></span><span>
+</span><span id="line-176"></span><span>                    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-177"></span><span>                        </span><span class="hs-special">(</span><span id="local-6989586621679102998"><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679102998"><span class="hs-identifier hs-var">m'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679102999"><span class="annot"><span class="annottext">[resource]
+</span><a href="#local-6989586621679102999"><span class="hs-identifier hs-var">toDestroy</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int
+-&gt; Map key (PoolList resource)
+-&gt; STM (PoolMap key resource, [resource])
+</span><a href="#local-6989586621679103000"><span class="hs-identifier hs-var">findStale</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679102994"><span class="hs-identifier hs-var">idleCount</span></a></span><span> </span><span class="annot"><span class="annottext">Map key (PoolList resource)
+</span><a href="#local-6989586621679102995"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-178"></span><span>                        </span><span class="annot"><span class="annottext">TVar (PoolMap key resource) -&gt; PoolMap key resource -&gt; STM ()
+forall a. TVar a -&gt; a -&gt; STM ()
+</span><span class="hs-identifier hs-var">writeTVar</span></span><span> </span><span class="annot"><span class="annottext">TVar (PoolMap key resource)
+</span><a href="#local-6989586621679102972"><span class="hs-identifier hs-var">var</span></a></span><span> </span><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679102998"><span class="hs-identifier hs-var">m'</span></a></span><span>
+</span><span id="line-179"></span><span>                        </span><span class="annot"><span class="annottext">IO () -&gt; STM (IO ())
+forall a. a -&gt; STM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; STM (IO ())) -&gt; IO () -&gt; STM (IO ())
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-180"></span><span>                            </span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+forall a. IO a -&gt; IO a
+</span><span class="hs-identifier hs-var">mask_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">(resource -&gt; IO ()) -&gt; [resource] -&gt; IO ()
+forall (t :: * -&gt; *) (m :: * -&gt; *) a b.
+(Foldable t, Monad m) =&gt;
+(a -&gt; m b) -&gt; t a -&gt; m ()
+</span><span class="hs-identifier hs-var">mapM_</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+</span><a href="Data.KeyedPool.html#ignoreExceptions"><span class="hs-identifier hs-var">ignoreExceptions</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; (resource -&gt; IO ()) -&gt; resource -&gt; IO ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">resource -&gt; IO ()
+</span><a href="#local-6989586621679102971"><span class="hs-identifier hs-var">destroy</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">[resource]
+</span><a href="#local-6989586621679102999"><span class="hs-identifier hs-var">toDestroy</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-181"></span><span>                            </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679102973"><span class="hs-identifier hs-var">loop</span></a></span><span>
+</span><span id="line-182"></span><span>
+</span><span id="line-183"></span><span>    </span><span class="annot"><a href="#local-6989586621679103000"><span class="hs-identifier hs-type">findStale</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-184"></span><span>              </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Map</span></span><span> </span><span class="annot"><a href="#local-6989586621679102632"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#PoolList"><span class="hs-identifier hs-type">PoolList</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102633"><span class="hs-identifier hs-type">resource</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-185"></span><span>              </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">STM</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#PoolMap"><span class="hs-identifier hs-type">PoolMap</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102632"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102633"><span class="hs-identifier hs-type">resource</span></a></span><span class="hs-special">,</span><span> </span><span class="hs-special">[</span><span class="annot"><a href="#local-6989586621679102633"><span class="hs-identifier hs-type">resource</span></a></span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-186"></span><span>    </span><span id="local-6989586621679103000"><span class="annot"><span class="annottext">findStale :: Int
+-&gt; Map key (PoolList resource)
+-&gt; STM (PoolMap key resource, [resource])
+</span><a href="#local-6989586621679103000"><span class="hs-identifier hs-var hs-var">findStale</span></a></span></span><span> </span><span id="local-6989586621679103002"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103002"><span class="hs-identifier hs-var">idleCount</span></a></span></span><span> </span><span id="local-6989586621679103003"><span class="annot"><span class="annottext">Map key (PoolList resource)
+</span><a href="#local-6989586621679103003"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-187"></span><span>        </span><span class="hs-comment">-- We want to make sure to get the time _after_ any delays</span><span>
+</span><span id="line-188"></span><span>        </span><span class="hs-comment">-- occur due to the retry call above. Since getCurrentTime has</span><span>
+</span><span id="line-189"></span><span>        </span><span class="hs-comment">-- no side effects outside of the STM block, this is a safe</span><span>
+</span><span id="line-190"></span><span>        </span><span class="hs-comment">-- usage.</span><span>
+</span><span id="line-191"></span><span>        </span><span id="local-6989586621679103004"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103004"><span class="hs-identifier hs-var">now</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO UTCTime -&gt; STM UTCTime
+forall a. IO a -&gt; STM a
+</span><span class="hs-identifier hs-var">unsafeIOToSTM</span></span><span> </span><span class="annot"><span class="annottext">IO UTCTime
+</span><span class="hs-identifier hs-var">getCurrentTime</span></span><span>
+</span><span id="line-192"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679103009"><span class="annot"><span class="annottext">isNotStale :: UTCTime -&gt; Bool
+</span><a href="#local-6989586621679103009"><span class="hs-identifier hs-var hs-var">isNotStale</span></a></span></span><span> </span><span id="local-6989586621679103010"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103010"><span class="hs-identifier hs-var">time</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">NominalDiffTime
+</span><span class="hs-number">30</span></span><span> </span><span class="annot"><span class="annottext">NominalDiffTime -&gt; UTCTime -&gt; UTCTime
+</span><span class="hs-operator hs-var">`addUTCTime`</span></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103010"><span class="hs-identifier hs-var">time</span></a></span><span> </span><span class="annot"><span class="annottext">UTCTime -&gt; UTCTime -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103004"><span class="hs-identifier hs-var">now</span></a></span><span>
+</span><span id="line-193"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679103015"><span class="annot"><span class="annottext">findStale' :: ([(a, PoolList a)] -&gt; [(k, a)])
+-&gt; ([a] -&gt; b) -&gt; [(a, PoolList a)] -&gt; (Map k a, b)
+</span><a href="#local-6989586621679103015"><span class="hs-identifier hs-var hs-var">findStale'</span></a></span></span><span> </span><span id="local-6989586621679103016"><span class="annot"><span class="annottext">[(a, PoolList a)] -&gt; [(k, a)]
+</span><a href="#local-6989586621679103016"><span class="hs-identifier hs-var">toKeep</span></a></span></span><span> </span><span id="local-6989586621679103017"><span class="annot"><span class="annottext">[a] -&gt; b
+</span><a href="#local-6989586621679103017"><span class="hs-identifier hs-var">toDestroy</span></a></span></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-194"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(k, a)] -&gt; Map k a
+forall k a. Ord k =&gt; [(k, a)] -&gt; Map k a
+</span><span class="hs-identifier hs-var">Map.fromList</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">[(a, PoolList a)] -&gt; [(k, a)]
+</span><a href="#local-6989586621679103016"><span class="hs-identifier hs-var">toKeep</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[a] -&gt; b
+</span><a href="#local-6989586621679103017"><span class="hs-identifier hs-var">toDestroy</span></a></span><span> </span><span class="hs-special">[</span><span class="hs-special">]</span><span class="hs-special">)</span><span>
+</span><span id="line-195"></span><span>            </span><span class="annot"><a href="#local-6989586621679103015"><span class="hs-identifier hs-var">findStale'</span></a></span><span> </span><span id="local-6989586621679103019"><span class="annot"><span class="annottext">[(a, PoolList a)] -&gt; [(k, a)]
+</span><a href="#local-6989586621679103019"><span class="hs-identifier hs-var">toKeep</span></a></span></span><span> </span><span id="local-6989586621679103020"><span class="annot"><span class="annottext">[a] -&gt; b
+</span><a href="#local-6989586621679103020"><span class="hs-identifier hs-var">toDestroy</span></a></span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span id="local-6989586621679103021"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103021"><span class="hs-identifier hs-var">key</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679103022"><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679103022"><span class="hs-identifier hs-var">plist</span></a></span></span><span class="hs-special">)</span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621679103023"><span class="annot"><span class="annottext">[(a, PoolList a)]
+</span><a href="#local-6989586621679103023"><span class="hs-identifier hs-var">rest</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-196"></span><span>                </span><span class="annot"><span class="annottext">([(a, PoolList a)] -&gt; [(k, a)])
+-&gt; ([a] -&gt; b) -&gt; [(a, PoolList a)] -&gt; (Map k a, b)
+</span><a href="#local-6989586621679103015"><span class="hs-identifier hs-var">findStale'</span></a></span><span> </span><span class="annot"><span class="annottext">[(a, PoolList a)] -&gt; [(k, a)]
+</span><a href="#local-6989586621679103024"><span class="hs-identifier hs-var">toKeep'</span></a></span><span> </span><span class="annot"><span class="annottext">[a] -&gt; b
+</span><a href="#local-6989586621679103025"><span class="hs-identifier hs-var">toDestroy'</span></a></span><span> </span><span class="annot"><span class="annottext">[(a, PoolList a)]
+</span><a href="#local-6989586621679103023"><span class="hs-identifier hs-var">rest</span></a></span><span>
+</span><span id="line-197"></span><span>              </span><span class="hs-keyword">where</span><span>
+</span><span id="line-198"></span><span>                </span><span class="hs-comment">-- Note: By definition, the timestamps must be in</span><span>
+</span><span id="line-199"></span><span>                </span><span class="hs-comment">-- descending order, so we don't need to traverse the</span><span>
+</span><span id="line-200"></span><span>                </span><span class="hs-comment">-- whole list.</span><span>
+</span><span id="line-201"></span><span>                </span><span class="hs-special">(</span><span id="local-6989586621679103026"><span class="annot"><span class="annottext">[(UTCTime, a)]
+</span><a href="#local-6989586621679103026"><span class="hs-identifier hs-var">notStale</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679103027"><span class="annot"><span class="annottext">[(UTCTime, a)]
+</span><a href="#local-6989586621679103027"><span class="hs-identifier hs-var">stale</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((UTCTime, a) -&gt; Bool)
+-&gt; [(UTCTime, a)] -&gt; ([(UTCTime, a)], [(UTCTime, a)])
+forall a. (a -&gt; Bool) -&gt; [a] -&gt; ([a], [a])
+</span><span class="hs-identifier hs-var">span</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UTCTime -&gt; Bool
+</span><a href="#local-6989586621679103009"><span class="hs-identifier hs-var">isNotStale</span></a></span><span> </span><span class="annot"><span class="annottext">(UTCTime -&gt; Bool)
+-&gt; ((UTCTime, a) -&gt; UTCTime) -&gt; (UTCTime, a) -&gt; Bool
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">(UTCTime, a) -&gt; UTCTime
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">([(UTCTime, a)] -&gt; ([(UTCTime, a)], [(UTCTime, a)]))
+-&gt; [(UTCTime, a)] -&gt; ([(UTCTime, a)], [(UTCTime, a)])
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">PoolList a -&gt; [(UTCTime, a)]
+forall a. PoolList a -&gt; [(UTCTime, a)]
+</span><a href="Data.KeyedPool.html#plistToList"><span class="hs-identifier hs-var">plistToList</span></a></span><span> </span><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679103022"><span class="hs-identifier hs-var">plist</span></a></span><span>
+</span><span id="line-202"></span><span>                </span><span id="local-6989586621679103025"><span class="annot"><span class="annottext">toDestroy' :: [a] -&gt; b
+</span><a href="#local-6989586621679103025"><span class="hs-identifier hs-var hs-var">toDestroy'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[a] -&gt; b
+</span><a href="#local-6989586621679103020"><span class="hs-identifier hs-var">toDestroy</span></a></span><span> </span><span class="annot"><span class="annottext">([a] -&gt; b) -&gt; ([a] -&gt; [a]) -&gt; [a] -&gt; b
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">((UTCTime, a) -&gt; a) -&gt; [(UTCTime, a)] -&gt; [a]
+forall a b. (a -&gt; b) -&gt; [a] -&gt; [b]
+</span><span class="hs-identifier hs-var">map</span></span><span> </span><span class="annot"><span class="annottext">(UTCTime, a) -&gt; a
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">[(UTCTime, a)]
+</span><a href="#local-6989586621679103027"><span class="hs-identifier hs-var">stale</span></a></span><span class="annot"><span class="annottext">[a] -&gt; [a] -&gt; [a]
+forall a. [a] -&gt; [a] -&gt; [a]
+</span><span class="hs-operator hs-var">++</span></span><span class="hs-special">)</span><span>
+</span><span id="line-203"></span><span>                </span><span id="local-6989586621679103024"><span class="annot"><span class="annottext">toKeep' :: [(a, PoolList a)] -&gt; [(k, a)]
+</span><a href="#local-6989586621679103024"><span class="hs-identifier hs-var hs-var">toKeep'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-204"></span><span>                    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">[(UTCTime, a)] -&gt; Maybe (PoolList a)
+forall a. [(UTCTime, a)] -&gt; Maybe (PoolList a)
+</span><a href="Data.KeyedPool.html#plistFromList"><span class="hs-identifier hs-var">plistFromList</span></a></span><span> </span><span class="annot"><span class="annottext">[(UTCTime, a)]
+</span><a href="#local-6989586621679103026"><span class="hs-identifier hs-var">notStale</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-205"></span><span>                        </span><span class="annot"><span class="annottext">Maybe (PoolList a)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[(a, PoolList a)] -&gt; [(k, a)]
+</span><a href="#local-6989586621679103019"><span class="hs-identifier hs-var">toKeep</span></a></span><span>
+</span><span id="line-206"></span><span>                        </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679103030"><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679103030"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">[(a, PoolList a)] -&gt; [(k, a)]
+</span><a href="#local-6989586621679103019"><span class="hs-identifier hs-var">toKeep</span></a></span><span> </span><span class="annot"><span class="annottext">([(a, PoolList a)] -&gt; [(k, a)])
+-&gt; ([(a, PoolList a)] -&gt; [(a, PoolList a)])
+-&gt; [(a, PoolList a)]
+-&gt; [(k, a)]
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">(</span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103021"><span class="hs-identifier hs-var">key</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679103030"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span class="annot"><span class="annottext">(a, PoolList a) -&gt; [(a, PoolList a)] -&gt; [(a, PoolList a)]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="hs-special">)</span><span>
+</span><span id="line-207"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679103033"><span class="annot"><span class="annottext">Map key (PoolList resource)
+</span><a href="#local-6989586621679103033"><span class="hs-identifier hs-var">toKeep</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679103034"><span class="annot"><span class="annottext">[resource]
+</span><a href="#local-6989586621679103034"><span class="hs-identifier hs-var">toDestroy</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">([(key, PoolList resource)] -&gt; [(key, PoolList resource)])
+-&gt; ([resource] -&gt; [resource])
+-&gt; [(key, PoolList resource)]
+-&gt; (Map key (PoolList resource), [resource])
+forall {k} {a} {a} {a} {b}.
+Ord k =&gt;
+([(a, PoolList a)] -&gt; [(k, a)])
+-&gt; ([a] -&gt; b) -&gt; [(a, PoolList a)] -&gt; (Map k a, b)
+</span><a href="#local-6989586621679103015"><span class="hs-identifier hs-var">findStale'</span></a></span><span> </span><span class="annot"><span class="annottext">[(key, PoolList resource)] -&gt; [(key, PoolList resource)]
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="annot"><span class="annottext">[resource] -&gt; [resource]
+forall a. a -&gt; a
+</span><span class="hs-identifier hs-var">id</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Map key (PoolList resource) -&gt; [(key, PoolList resource)]
+forall k a. Map k a -&gt; [(k, a)]
+</span><span class="hs-identifier hs-var">Map.toList</span></span><span> </span><span class="annot"><span class="annottext">Map key (PoolList resource)
+</span><a href="#local-6989586621679103003"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-208"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679103039"><span class="annot"><span class="annottext">idleCount' :: Int
+</span><a href="#local-6989586621679103039"><span class="hs-identifier hs-var hs-var">idleCount'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103002"><span class="hs-identifier hs-var">idleCount</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">[resource] -&gt; Int
+forall a. [a] -&gt; Int
+forall (t :: * -&gt; *) a. Foldable t =&gt; t a -&gt; Int
+</span><span class="hs-identifier hs-var">length</span></span><span> </span><span class="annot"><span class="annottext">[resource]
+</span><a href="#local-6989586621679103034"><span class="hs-identifier hs-var">toDestroy</span></a></span><span>
+</span><span id="line-209"></span><span>        </span><span class="annot"><span class="annottext">(PoolMap key resource, [resource])
+-&gt; STM (PoolMap key resource, [resource])
+forall a. a -&gt; STM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Map key (PoolList resource) -&gt; PoolMap key resource
+forall key resource.
+Int -&gt; Map key (PoolList resource) -&gt; PoolMap key resource
+</span><a href="Data.KeyedPool.html#PoolOpen"><span class="hs-identifier hs-var">PoolOpen</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103039"><span class="hs-identifier hs-var">idleCount'</span></a></span><span> </span><span class="annot"><span class="annottext">Map key (PoolList resource)
+</span><a href="#local-6989586621679103033"><span class="hs-identifier hs-var">toKeep</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">[resource]
+</span><a href="#local-6989586621679103034"><span class="hs-identifier hs-var">toDestroy</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-210"></span><span>
+</span><span id="line-211"></span><span class="hs-comment">-- | Check out a value from the 'KeyedPool' with the given key.</span><span>
+</span><span id="line-212"></span><span class="hs-comment">--</span><span>
+</span><span id="line-213"></span><span class="hs-comment">-- This function will internally call 'mask_' to ensure async safety,</span><span>
+</span><span id="line-214"></span><span class="hs-comment">-- and will return a value which uses weak references to ensure that</span><span>
+</span><span id="line-215"></span><span class="hs-comment">-- the value is cleaned up. However, if you want to ensure timely</span><span>
+</span><span id="line-216"></span><span class="hs-comment">-- resource cleanup, you should bracket this operation together with</span><span>
+</span><span id="line-217"></span><span class="hs-comment">-- 'managedRelease'.</span><span>
+</span><span id="line-218"></span><span id="local-6989586621679102678"><span id="local-6989586621679102679"><span class="annot"><a href="Data.KeyedPool.html#takeKeyedPool"><span class="hs-identifier hs-type">takeKeyedPool</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ord</span></span><span> </span><span class="annot"><a href="#local-6989586621679102678"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#KeyedPool"><span class="hs-identifier hs-type">KeyedPool</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102678"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102679"><span class="hs-identifier hs-type">resource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102678"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#Managed"><span class="hs-identifier hs-type">Managed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102679"><span class="hs-identifier hs-type">resource</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-219"></span><span id="takeKeyedPool"><span class="annot"><span class="annottext">takeKeyedPool :: forall key resource.
+Ord key =&gt;
+KeyedPool key resource -&gt; key -&gt; IO (Managed resource)
+</span><a href="Data.KeyedPool.html#takeKeyedPool"><span class="hs-identifier hs-var hs-var">takeKeyedPool</span></a></span></span><span> </span><span id="local-6989586621679103055"><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103055"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span id="local-6989586621679103056"><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679103056"><span class="hs-identifier hs-var">key</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (Managed resource) -&gt; IO (Managed resource)
+forall a. IO a -&gt; IO a
+</span><span class="hs-identifier hs-var">mask_</span></span><span> </span><span class="annot"><span class="annottext">(IO (Managed resource) -&gt; IO (Managed resource))
+-&gt; IO (Managed resource) -&gt; IO (Managed resource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IO (IO (Managed resource)) -&gt; IO (Managed resource)
+forall (m :: * -&gt; *) a. Monad m =&gt; m (m a) -&gt; m a
+</span><span class="hs-identifier hs-var">join</span></span><span> </span><span class="annot"><span class="annottext">(IO (IO (Managed resource)) -&gt; IO (Managed resource))
+-&gt; IO (IO (Managed resource)) -&gt; IO (Managed resource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">STM (IO (Managed resource)) -&gt; IO (IO (Managed resource))
+forall a. STM a -&gt; IO a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM (IO (Managed resource)) -&gt; IO (IO (Managed resource)))
+-&gt; STM (IO (Managed resource)) -&gt; IO (IO (Managed resource))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-220"></span><span>    </span><span class="hs-special">(</span><span id="local-6989586621679103057"><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679103057"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679103058"><span class="annot"><span class="annottext">Maybe resource
+</span><a href="#local-6989586621679103058"><span class="hs-identifier hs-var">mresource</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(PoolMap key resource -&gt; (PoolMap key resource, Maybe resource))
+-&gt; STM (PoolMap key resource)
+-&gt; STM (PoolMap key resource, Maybe resource)
+forall a b. (a -&gt; b) -&gt; STM a -&gt; STM b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">PoolMap key resource -&gt; (PoolMap key resource, Maybe resource)
+forall {a}. PoolMap key a -&gt; (PoolMap key a, Maybe a)
+</span><a href="#local-6989586621679103059"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">(STM (PoolMap key resource)
+ -&gt; STM (PoolMap key resource, Maybe resource))
+-&gt; STM (PoolMap key resource)
+-&gt; STM (PoolMap key resource, Maybe resource)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TVar (PoolMap key resource) -&gt; STM (PoolMap key resource)
+forall a. TVar a -&gt; STM a
+</span><span class="hs-identifier hs-var">readTVar</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; TVar (PoolMap key resource)
+forall key resource.
+KeyedPool key resource -&gt; TVar (PoolMap key resource)
+</span><a href="Data.KeyedPool.html#kpVar"><span class="hs-identifier hs-var">kpVar</span></a></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103055"><span class="hs-identifier hs-var">kp</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-221"></span><span>    </span><span class="annot"><span class="annottext">TVar (PoolMap key resource) -&gt; PoolMap key resource -&gt; STM ()
+forall a. TVar a -&gt; a -&gt; STM ()
+</span><span class="hs-identifier hs-var">writeTVar</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; TVar (PoolMap key resource)
+forall key resource.
+KeyedPool key resource -&gt; TVar (PoolMap key resource)
+</span><a href="Data.KeyedPool.html#kpVar"><span class="hs-identifier hs-var">kpVar</span></a></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103055"><span class="hs-identifier hs-var">kp</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PoolMap key resource -&gt; STM ()) -&gt; PoolMap key resource -&gt; STM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679103057"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-222"></span><span>    </span><span class="annot"><span class="annottext">IO (Managed resource) -&gt; STM (IO (Managed resource))
+forall a. a -&gt; STM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(IO (Managed resource) -&gt; STM (IO (Managed resource)))
+-&gt; IO (Managed resource) -&gt; STM (IO (Managed resource))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-223"></span><span>        </span><span id="local-6989586621679103061"><span class="annot"><span class="annottext">resource
+</span><a href="#local-6989586621679103061"><span class="hs-identifier hs-var">resource</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO resource
+-&gt; (resource -&gt; IO resource) -&gt; Maybe resource -&gt; IO resource
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; key -&gt; IO resource
+forall key resource. KeyedPool key resource -&gt; key -&gt; IO resource
+</span><a href="Data.KeyedPool.html#kpCreate"><span class="hs-identifier hs-var">kpCreate</span></a></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103055"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679103056"><span class="hs-identifier hs-var">key</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">resource -&gt; IO resource
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">Maybe resource
+</span><a href="#local-6989586621679103058"><span class="hs-identifier hs-var">mresource</span></a></span><span>
+</span><span id="line-224"></span><span>        </span><span id="local-6989586621679103063"><span class="annot"><span class="annottext">IORef ()
+</span><a href="#local-6989586621679103063"><span class="hs-identifier hs-var">alive</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO (IORef ())
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-225"></span><span>        </span><span id="local-6989586621679103064"><span class="annot"><span class="annottext">TVar Bool
+</span><a href="#local-6989586621679103064"><span class="hs-identifier hs-var">isReleasedVar</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; IO (TVar Bool)
+forall a. a -&gt; IO (TVar a)
+</span><span class="hs-identifier hs-var">newTVarIO</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-226"></span><span>
+</span><span id="line-227"></span><span>        </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679103070"><span class="annot"><span class="annottext">release :: Reuse -&gt; IO ()
+</span><a href="#local-6989586621679103070"><span class="hs-identifier hs-var hs-var">release</span></a></span></span><span> </span><span id="local-6989586621679103071"><span class="annot"><span class="annottext">Reuse
+</span><a href="#local-6989586621679103071"><span class="hs-identifier hs-var">action</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+forall a. IO a -&gt; IO a
+</span><span class="hs-identifier hs-var">mask_</span></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-228"></span><span>                </span><span id="local-6989586621679103072"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679103072"><span class="hs-identifier hs-var">isReleased</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">STM Bool -&gt; IO Bool
+forall a. STM a -&gt; IO a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM Bool -&gt; IO Bool) -&gt; STM Bool -&gt; IO Bool
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">TVar Bool -&gt; Bool -&gt; STM Bool
+forall a. TVar a -&gt; a -&gt; STM a
+</span><span class="hs-identifier hs-var">swapTVar</span></span><span> </span><span class="annot"><span class="annottext">TVar Bool
+</span><a href="#local-6989586621679103064"><span class="hs-identifier hs-var">isReleasedVar</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span>
+</span><span id="line-229"></span><span>                </span><span class="annot"><span class="annottext">Bool -&gt; IO () -&gt; IO ()
+forall (f :: * -&gt; *). Applicative f =&gt; Bool -&gt; f () -&gt; f ()
+</span><span class="hs-identifier hs-var">unless</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679103072"><span class="hs-identifier hs-var">isReleased</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-230"></span><span>                    </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">Reuse
+</span><a href="#local-6989586621679103071"><span class="hs-identifier hs-var">action</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-231"></span><span>                        </span><span class="annot"><span class="annottext">Reuse
+</span><a href="Data.KeyedPool.html#Reuse"><span class="hs-identifier hs-var">Reuse</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; key -&gt; resource -&gt; IO ()
+forall key resource.
+Ord key =&gt;
+KeyedPool key resource -&gt; key -&gt; resource -&gt; IO ()
+</span><a href="Data.KeyedPool.html#putResource"><span class="hs-identifier hs-var">putResource</span></a></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103055"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679103056"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">resource
+</span><a href="#local-6989586621679103061"><span class="hs-identifier hs-var">resource</span></a></span><span>
+</span><span id="line-232"></span><span>                        </span><span class="annot"><span class="annottext">Reuse
+</span><a href="Data.KeyedPool.html#DontReuse"><span class="hs-identifier hs-var">DontReuse</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; IO ()
+</span><a href="Data.KeyedPool.html#ignoreExceptions"><span class="hs-identifier hs-var">ignoreExceptions</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO ()) -&gt; IO () -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; resource -&gt; IO ()
+forall key resource. KeyedPool key resource -&gt; resource -&gt; IO ()
+</span><a href="Data.KeyedPool.html#kpDestroy"><span class="hs-identifier hs-var">kpDestroy</span></a></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103055"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">resource
+</span><a href="#local-6989586621679103061"><span class="hs-identifier hs-var">resource</span></a></span><span>
+</span><span id="line-233"></span><span>
+</span><span id="line-234"></span><span>        </span><span class="annot"><span class="annottext">Weak (IORef ())
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IORef () -&gt; IO () -&gt; IO (Weak (IORef ()))
+forall a. IORef a -&gt; IO () -&gt; IO (Weak (IORef a))
+</span><span class="hs-identifier hs-var">mkWeakIORef</span></span><span> </span><span class="annot"><span class="annottext">IORef ()
+</span><a href="#local-6989586621679103063"><span class="hs-identifier hs-var">alive</span></a></span><span> </span><span class="annot"><span class="annottext">(IO () -&gt; IO (Weak (IORef ()))) -&gt; IO () -&gt; IO (Weak (IORef ()))
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Reuse -&gt; IO ()
+</span><a href="#local-6989586621679103070"><span class="hs-identifier hs-var">release</span></a></span><span> </span><span class="annot"><span class="annottext">Reuse
+</span><a href="Data.KeyedPool.html#DontReuse"><span class="hs-identifier hs-var">DontReuse</span></a></span><span>
+</span><span id="line-235"></span><span>        </span><span class="annot"><span class="annottext">Managed resource -&gt; IO (Managed resource)
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><a href="Data.KeyedPool.html#Managed"><span class="hs-identifier hs-type">Managed</span></a></span><span>
+</span><span id="line-236"></span><span>            </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">_managedResource :: resource
+</span><a href="Data.KeyedPool.html#_managedResource"><span class="hs-identifier hs-var">_managedResource</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">resource
+</span><a href="#local-6989586621679103061"><span class="hs-identifier hs-var">resource</span></a></span><span>
+</span><span id="line-237"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">_managedReused :: Bool
+</span><a href="Data.KeyedPool.html#_managedReused"><span class="hs-identifier hs-var">_managedReused</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Maybe resource -&gt; Bool
+forall a. Maybe a -&gt; Bool
+</span><span class="hs-identifier hs-var">isJust</span></span><span> </span><span class="annot"><span class="annottext">Maybe resource
+</span><a href="#local-6989586621679103058"><span class="hs-identifier hs-var">mresource</span></a></span><span>
+</span><span id="line-238"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">_managedRelease :: Reuse -&gt; IO ()
+</span><a href="Data.KeyedPool.html#_managedRelease"><span class="hs-identifier hs-var">_managedRelease</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Reuse -&gt; IO ()
+</span><a href="#local-6989586621679103070"><span class="hs-identifier hs-var">release</span></a></span><span>
+</span><span id="line-239"></span><span>            </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">_managedAlive :: IORef ()
+</span><a href="Data.KeyedPool.html#_managedAlive"><span class="hs-identifier hs-var">_managedAlive</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef ()
+</span><a href="#local-6989586621679103063"><span class="hs-identifier hs-var">alive</span></a></span><span>
+</span><span id="line-240"></span><span>            </span><span class="hs-special">}</span><span>
+</span><span id="line-241"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-242"></span><span>    </span><span id="local-6989586621679103059"><span class="annot"><span class="annottext">go :: PoolMap key a -&gt; (PoolMap key a, Maybe a)
+</span><a href="#local-6989586621679103059"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="annot"><span class="annottext">PoolMap key a
+</span><a href="Data.KeyedPool.html#PoolClosed"><span class="hs-identifier hs-var">PoolClosed</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PoolMap key a
+forall key resource. PoolMap key resource
+</span><a href="Data.KeyedPool.html#PoolClosed"><span class="hs-identifier hs-var">PoolClosed</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">)</span><span>
+</span><span id="line-243"></span><span>    </span><span class="annot"><a href="#local-6989586621679103059"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621679103089"><span class="annot"><span class="annottext">pcOrig :: PoolMap key a
+</span><a href="#local-6989586621679103089"><span class="hs-identifier hs-var">pcOrig</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#PoolOpen"><span class="hs-identifier hs-type">PoolOpen</span></a></span><span> </span><span id="local-6989586621679103090"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103090"><span class="hs-identifier hs-var">idleCount</span></a></span></span><span> </span><span id="local-6989586621679103091"><span class="annot"><span class="annottext">Map key (PoolList a)
+</span><a href="#local-6989586621679103091"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span>
+</span><span id="line-244"></span><span>        </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">key -&gt; Map key (PoolList a) -&gt; Maybe (PoolList a)
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Map.lookup</span></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679103056"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">Map key (PoolList a)
+</span><a href="#local-6989586621679103091"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-245"></span><span>            </span><span class="annot"><span class="annottext">Maybe (PoolList a)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PoolMap key a
+</span><a href="#local-6989586621679103089"><span class="hs-identifier hs-var">pcOrig</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">)</span><span>
+</span><span id="line-246"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#One"><span class="hs-identifier hs-type">One</span></a></span><span> </span><span id="local-6989586621679103093"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103093"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-247"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Map key (PoolList a) -&gt; PoolMap key a
+forall key resource.
+Int -&gt; Map key (PoolList resource) -&gt; PoolMap key resource
+</span><a href="Data.KeyedPool.html#PoolOpen"><span class="hs-identifier hs-var">PoolOpen</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103090"><span class="hs-identifier hs-var">idleCount</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">key -&gt; Map key (PoolList a) -&gt; Map key (PoolList a)
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">Map.delete</span></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679103056"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">Map key (PoolList a)
+</span><a href="#local-6989586621679103091"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a -&gt; Maybe a
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103093"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-248"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#Cons"><span class="hs-identifier hs-type">Cons</span></a></span><span> </span><span id="local-6989586621679103095"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103095"><span class="hs-identifier hs-var">a</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679103096"><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679103096"><span class="hs-identifier hs-var">rest</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-249"></span><span>                </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Map key (PoolList a) -&gt; PoolMap key a
+forall key resource.
+Int -&gt; Map key (PoolList resource) -&gt; PoolMap key resource
+</span><a href="Data.KeyedPool.html#PoolOpen"><span class="hs-identifier hs-var">PoolOpen</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103090"><span class="hs-identifier hs-var">idleCount</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">key -&gt; PoolList a -&gt; Map key (PoolList a) -&gt; Map key (PoolList a)
+forall k a. Ord k =&gt; k -&gt; a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">Map.insert</span></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679103056"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679103096"><span class="hs-identifier hs-var">rest</span></a></span><span> </span><span class="annot"><span class="annottext">Map key (PoolList a)
+</span><a href="#local-6989586621679103091"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a -&gt; Maybe a
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103095"><span class="hs-identifier hs-var">a</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-250"></span><span>
+</span><span id="line-251"></span><span class="hs-comment">-- | Try to return a resource to the pool. If too many resources</span><span>
+</span><span id="line-252"></span><span class="hs-comment">-- already exist, then just destroy it.</span><span>
+</span><span id="line-253"></span><span id="local-6989586621679102691"><span id="local-6989586621679102692"><span class="annot"><a href="Data.KeyedPool.html#putResource"><span class="hs-identifier hs-type">putResource</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ord</span></span><span> </span><span class="annot"><a href="#local-6989586621679102691"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#KeyedPool"><span class="hs-identifier hs-type">KeyedPool</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102691"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102692"><span class="hs-identifier hs-type">resource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102691"><span class="hs-identifier hs-type">key</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102692"><span class="hs-identifier hs-type">resource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-254"></span><span id="putResource"><span class="annot"><span class="annottext">putResource :: forall key resource.
+Ord key =&gt;
+KeyedPool key resource -&gt; key -&gt; resource -&gt; IO ()
+</span><a href="Data.KeyedPool.html#putResource"><span class="hs-identifier hs-var hs-var">putResource</span></a></span></span><span> </span><span id="local-6989586621679103106"><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103106"><span class="hs-identifier hs-var">kp</span></a></span></span><span> </span><span id="local-6989586621679103107"><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679103107"><span class="hs-identifier hs-var">key</span></a></span></span><span> </span><span id="local-6989586621679103108"><span class="annot"><span class="annottext">resource
+</span><a href="#local-6989586621679103108"><span class="hs-identifier hs-var">resource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-255"></span><span>    </span><span id="local-6989586621679103109"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103109"><span class="hs-identifier hs-var">now</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO UTCTime
+</span><span class="hs-identifier hs-var">getCurrentTime</span></span><span>
+</span><span id="line-256"></span><span>    </span><span class="annot"><span class="annottext">IO (IO ()) -&gt; IO ()
+forall (m :: * -&gt; *) a. Monad m =&gt; m (m a) -&gt; m a
+</span><span class="hs-identifier hs-var">join</span></span><span> </span><span class="annot"><span class="annottext">(IO (IO ()) -&gt; IO ()) -&gt; IO (IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">STM (IO ()) -&gt; IO (IO ())
+forall a. STM a -&gt; IO a
+</span><span class="hs-identifier hs-var">atomically</span></span><span> </span><span class="annot"><span class="annottext">(STM (IO ()) -&gt; IO (IO ())) -&gt; STM (IO ()) -&gt; IO (IO ())
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-257"></span><span>        </span><span class="hs-special">(</span><span id="local-6989586621679103110"><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679103110"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679103111"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679103111"><span class="hs-identifier hs-var">action</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">(PoolMap key resource -&gt; (PoolMap key resource, IO ()))
+-&gt; STM (PoolMap key resource) -&gt; STM (PoolMap key resource, IO ())
+forall a b. (a -&gt; b) -&gt; STM a -&gt; STM b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">UTCTime -&gt; PoolMap key resource -&gt; (PoolMap key resource, IO ())
+</span><a href="#local-6989586621679103112"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103109"><span class="hs-identifier hs-var">now</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">TVar (PoolMap key resource) -&gt; STM (PoolMap key resource)
+forall a. TVar a -&gt; STM a
+</span><span class="hs-identifier hs-var">readTVar</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; TVar (PoolMap key resource)
+forall key resource.
+KeyedPool key resource -&gt; TVar (PoolMap key resource)
+</span><a href="Data.KeyedPool.html#kpVar"><span class="hs-identifier hs-var">kpVar</span></a></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103106"><span class="hs-identifier hs-var">kp</span></a></span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-258"></span><span>        </span><span class="annot"><span class="annottext">TVar (PoolMap key resource) -&gt; PoolMap key resource -&gt; STM ()
+forall a. TVar a -&gt; a -&gt; STM ()
+</span><span class="hs-identifier hs-var">writeTVar</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; TVar (PoolMap key resource)
+forall key resource.
+KeyedPool key resource -&gt; TVar (PoolMap key resource)
+</span><a href="Data.KeyedPool.html#kpVar"><span class="hs-identifier hs-var">kpVar</span></a></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103106"><span class="hs-identifier hs-var">kp</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">(PoolMap key resource -&gt; STM ()) -&gt; PoolMap key resource -&gt; STM ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679103110"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-259"></span><span>        </span><span class="annot"><span class="annottext">IO () -&gt; STM (IO ())
+forall a. a -&gt; STM a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679103111"><span class="hs-identifier hs-var">action</span></a></span><span>
+</span><span id="line-260"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-261"></span><span>    </span><span id="local-6989586621679103112"><span class="annot"><span class="annottext">go :: UTCTime -&gt; PoolMap key resource -&gt; (PoolMap key resource, IO ())
+</span><a href="#local-6989586621679103112"><span class="hs-identifier hs-var hs-var">go</span></a></span></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="Data.KeyedPool.html#PoolClosed"><span class="hs-identifier hs-var">PoolClosed</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PoolMap key resource
+forall key resource. PoolMap key resource
+</span><a href="Data.KeyedPool.html#PoolClosed"><span class="hs-identifier hs-var">PoolClosed</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; resource -&gt; IO ()
+forall key resource. KeyedPool key resource -&gt; resource -&gt; IO ()
+</span><a href="Data.KeyedPool.html#kpDestroy"><span class="hs-identifier hs-var">kpDestroy</span></a></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103106"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">resource
+</span><a href="#local-6989586621679103108"><span class="hs-identifier hs-var">resource</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-262"></span><span>    </span><span class="annot"><a href="#local-6989586621679103112"><span class="hs-identifier hs-var">go</span></a></span><span> </span><span id="local-6989586621679103119"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103119"><span class="hs-identifier hs-var">now</span></a></span></span><span> </span><span id="local-6989586621679103120"><span class="annot"><span class="annottext">pc :: PoolMap key resource
+</span><a href="#local-6989586621679103120"><span class="hs-identifier hs-var">pc</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#PoolOpen"><span class="hs-identifier hs-type">PoolOpen</span></a></span><span> </span><span id="local-6989586621679103121"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103121"><span class="hs-identifier hs-var">idleCount</span></a></span></span><span> </span><span id="local-6989586621679103122"><span class="annot"><span class="annottext">Map key (PoolList resource)
+</span><a href="#local-6989586621679103122"><span class="hs-identifier hs-var">m</span></a></span></span><span class="hs-special">)</span><span>
+</span><span id="line-263"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103121"><span class="hs-identifier hs-var">idleCount</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;=</span></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; Int
+forall key resource. KeyedPool key resource -&gt; Int
+</span><a href="Data.KeyedPool.html#kpMaxTotal"><span class="hs-identifier hs-var">kpMaxTotal</span></a></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103106"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679103120"><span class="hs-identifier hs-var">pc</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; resource -&gt; IO ()
+forall key resource. KeyedPool key resource -&gt; resource -&gt; IO ()
+</span><a href="Data.KeyedPool.html#kpDestroy"><span class="hs-identifier hs-var">kpDestroy</span></a></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103106"><span class="hs-identifier hs-var">kp</span></a></span><span> </span><span class="annot"><span class="annottext">resource
+</span><a href="#local-6989586621679103108"><span class="hs-identifier hs-var">resource</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-264"></span><span>        </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">case</span><span> </span><span class="annot"><span class="annottext">key -&gt; Map key (PoolList resource) -&gt; Maybe (PoolList resource)
+forall k a. Ord k =&gt; k -&gt; Map k a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Map.lookup</span></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679103107"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">Map key (PoolList resource)
+</span><a href="#local-6989586621679103122"><span class="hs-identifier hs-var">m</span></a></span><span> </span><span class="hs-keyword">of</span><span>
+</span><span id="line-265"></span><span>            </span><span class="annot"><span class="annottext">Maybe (PoolList resource)
+</span><span class="hs-identifier hs-var">Nothing</span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-266"></span><span>                </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679103125"><span class="annot"><span class="annottext">cnt' :: Int
+</span><a href="#local-6989586621679103125"><span class="hs-identifier hs-var hs-var">cnt'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103121"><span class="hs-identifier hs-var">idleCount</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span>
+</span><span id="line-267"></span><span>                    </span><span id="local-6989586621679103128"><span class="annot"><span class="annottext">m' :: PoolMap key resource
+</span><a href="#local-6989586621679103128"><span class="hs-identifier hs-var hs-var">m'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Map key (PoolList resource) -&gt; PoolMap key resource
+forall key resource.
+Int -&gt; Map key (PoolList resource) -&gt; PoolMap key resource
+</span><a href="Data.KeyedPool.html#PoolOpen"><span class="hs-identifier hs-var">PoolOpen</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103125"><span class="hs-identifier hs-var">cnt'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">key
+-&gt; PoolList resource
+-&gt; Map key (PoolList resource)
+-&gt; Map key (PoolList resource)
+forall k a. Ord k =&gt; k -&gt; a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">Map.insert</span></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679103107"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">resource -&gt; UTCTime -&gt; PoolList resource
+forall a. a -&gt; UTCTime -&gt; PoolList a
+</span><a href="Data.KeyedPool.html#One"><span class="hs-identifier hs-var">One</span></a></span><span> </span><span class="annot"><span class="annottext">resource
+</span><a href="#local-6989586621679103108"><span class="hs-identifier hs-var">resource</span></a></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103119"><span class="hs-identifier hs-var">now</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Map key (PoolList resource)
+</span><a href="#local-6989586621679103122"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-268"></span><span>                 </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679103128"><span class="hs-identifier hs-var">m'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-269"></span><span>            </span><span class="annot"><span class="hs-identifier hs-type">Just</span></span><span> </span><span id="local-6989586621679103129"><span class="annot"><span class="annottext">PoolList resource
+</span><a href="#local-6989586621679103129"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-270"></span><span>                </span><span class="hs-keyword">let</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679103130"><span class="annot"><span class="annottext">PoolList resource
+</span><a href="#local-6989586621679103130"><span class="hs-identifier hs-var">l'</span></a></span></span><span class="hs-special">,</span><span> </span><span id="local-6989586621679103131"><span class="annot"><span class="annottext">Maybe resource
+</span><a href="#local-6989586621679103131"><span class="hs-identifier hs-var">mx</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">UTCTime
+-&gt; Int
+-&gt; resource
+-&gt; PoolList resource
+-&gt; (PoolList resource, Maybe resource)
+forall a.
+UTCTime -&gt; Int -&gt; a -&gt; PoolList a -&gt; (PoolList a, Maybe a)
+</span><a href="Data.KeyedPool.html#addToList"><span class="hs-identifier hs-var">addToList</span></a></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103119"><span class="hs-identifier hs-var">now</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; Int
+forall key resource. KeyedPool key resource -&gt; Int
+</span><a href="Data.KeyedPool.html#kpMaxPerKey"><span class="hs-identifier hs-var">kpMaxPerKey</span></a></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103106"><span class="hs-identifier hs-var">kp</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">resource
+</span><a href="#local-6989586621679103108"><span class="hs-identifier hs-var">resource</span></a></span><span> </span><span class="annot"><span class="annottext">PoolList resource
+</span><a href="#local-6989586621679103129"><span class="hs-identifier hs-var">l</span></a></span><span>
+</span><span id="line-271"></span><span>                    </span><span id="local-6989586621679103136"><span class="annot"><span class="annottext">cnt' :: Int
+</span><a href="#local-6989586621679103136"><span class="hs-identifier hs-var hs-var">cnt'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103121"><span class="hs-identifier hs-var">idleCount</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (resource -&gt; Int) -&gt; Maybe resource -&gt; Int
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; resource -&gt; Int
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Maybe resource
+</span><a href="#local-6989586621679103131"><span class="hs-identifier hs-var">mx</span></a></span><span>
+</span><span id="line-272"></span><span>                    </span><span id="local-6989586621679103140"><span class="annot"><span class="annottext">m' :: PoolMap key resource
+</span><a href="#local-6989586621679103140"><span class="hs-identifier hs-var hs-var">m'</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Map key (PoolList resource) -&gt; PoolMap key resource
+forall key resource.
+Int -&gt; Map key (PoolList resource) -&gt; PoolMap key resource
+</span><a href="Data.KeyedPool.html#PoolOpen"><span class="hs-identifier hs-var">PoolOpen</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103136"><span class="hs-identifier hs-var">cnt'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">key
+-&gt; PoolList resource
+-&gt; Map key (PoolList resource)
+-&gt; Map key (PoolList resource)
+forall k a. Ord k =&gt; k -&gt; a -&gt; Map k a -&gt; Map k a
+</span><span class="hs-identifier hs-var">Map.insert</span></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679103107"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">PoolList resource
+</span><a href="#local-6989586621679103130"><span class="hs-identifier hs-var">l'</span></a></span><span> </span><span class="annot"><span class="annottext">Map key (PoolList resource)
+</span><a href="#local-6989586621679103122"><span class="hs-identifier hs-var">m</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-273"></span><span>                 </span><span class="hs-keyword">in</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PoolMap key resource
+</span><a href="#local-6989586621679103140"><span class="hs-identifier hs-var">m'</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; (resource -&gt; IO ()) -&gt; Maybe resource -&gt; IO ()
+forall b a. b -&gt; (a -&gt; b) -&gt; Maybe a -&gt; b
+</span><span class="hs-identifier hs-var">maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">KeyedPool key resource -&gt; resource -&gt; IO ()
+forall key resource. KeyedPool key resource -&gt; resource -&gt; IO ()
+</span><a href="Data.KeyedPool.html#kpDestroy"><span class="hs-identifier hs-var">kpDestroy</span></a></span><span> </span><span class="annot"><span class="annottext">KeyedPool key resource
+</span><a href="#local-6989586621679103106"><span class="hs-identifier hs-var">kp</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Maybe resource
+</span><a href="#local-6989586621679103131"><span class="hs-identifier hs-var">mx</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-274"></span><span>
+</span><span id="line-275"></span><span class="hs-comment">-- | Add a new element to the list, up to the given maximum number. If we're</span><span>
+</span><span id="line-276"></span><span class="hs-comment">-- already at the maximum, return the new value as leftover.</span><span>
+</span><span id="line-277"></span><span id="local-6989586621679102702"><span class="annot"><a href="Data.KeyedPool.html#addToList"><span class="hs-identifier hs-type">addToList</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">UTCTime</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679102702"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#PoolList"><span class="hs-identifier hs-type">PoolList</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102702"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#PoolList"><span class="hs-identifier hs-type">PoolList</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102702"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Maybe</span></span><span> </span><span class="annot"><a href="#local-6989586621679102702"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-278"></span><span id="addToList"><span class="annot"><span class="annottext">addToList :: forall a.
+UTCTime -&gt; Int -&gt; a -&gt; PoolList a -&gt; (PoolList a, Maybe a)
+</span><a href="Data.KeyedPool.html#addToList"><span class="hs-identifier hs-var hs-var">addToList</span></a></span></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679103146"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103146"><span class="hs-identifier hs-var">i</span></a></span></span><span> </span><span id="local-6989586621679103147"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103147"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679103148"><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679103148"><span class="hs-identifier hs-var">l</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103146"><span class="hs-identifier hs-var">i</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&lt;=</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679103148"><span class="hs-identifier hs-var">l</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a -&gt; Maybe a
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103147"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-279"></span><span class="annot"><a href="Data.KeyedPool.html#addToList"><span class="hs-identifier hs-var">addToList</span></a></span><span> </span><span id="local-6989586621679103150"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103150"><span class="hs-identifier hs-var">now</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679103151"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103151"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679103152"><span class="annot"><span class="annottext">l :: PoolList a
+</span><a href="#local-6989586621679103152"><span class="hs-identifier hs-var">l</span></a></span></span><span class="hs-glyph">@</span><span class="annot"><a href="Data.KeyedPool.html#One"><span class="hs-identifier hs-type">One</span></a></span><span class="hs-special">{</span><span class="hs-special">}</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Int -&gt; UTCTime -&gt; PoolList a -&gt; PoolList a
+forall a. a -&gt; Int -&gt; UTCTime -&gt; PoolList a -&gt; PoolList a
+</span><a href="Data.KeyedPool.html#Cons"><span class="hs-identifier hs-var">Cons</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103151"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">2</span></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103150"><span class="hs-identifier hs-var">now</span></a></span><span> </span><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679103152"><span class="hs-identifier hs-var">l</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">)</span><span>
+</span><span id="line-280"></span><span class="annot"><a href="Data.KeyedPool.html#addToList"><span class="hs-identifier hs-var">addToList</span></a></span><span> </span><span id="local-6989586621679103153"><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103153"><span class="hs-identifier hs-var">now</span></a></span></span><span> </span><span id="local-6989586621679103154"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103154"><span class="hs-identifier hs-var">maxCount</span></a></span></span><span> </span><span id="local-6989586621679103155"><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103155"><span class="hs-identifier hs-var">x</span></a></span></span><span> </span><span id="local-6989586621679103156"><span class="annot"><span class="annottext">l :: PoolList a
+</span><a href="#local-6989586621679103156"><span class="hs-identifier hs-var">l</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#Cons"><span class="hs-identifier hs-type">Cons</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><span class="hs-identifier">_</span></span><span> </span><span id="local-6989586621679103157"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103157"><span class="hs-identifier hs-var">currCount</span></a></span></span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">PoolList a
+</span><span class="hs-identifier">_</span></span><span class="hs-special">)</span><span>
+</span><span id="line-281"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103154"><span class="hs-identifier hs-var">maxCount</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Ord a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">&gt;</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103157"><span class="hs-identifier hs-var">currCount</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">a -&gt; Int -&gt; UTCTime -&gt; PoolList a -&gt; PoolList a
+forall a. a -&gt; Int -&gt; UTCTime -&gt; PoolList a -&gt; PoolList a
+</span><a href="Data.KeyedPool.html#Cons"><span class="hs-identifier hs-var">Cons</span></a></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103155"><span class="hs-identifier hs-var">x</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679103157"><span class="hs-identifier hs-var">currCount</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">1</span></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">UTCTime
+</span><a href="#local-6989586621679103153"><span class="hs-identifier hs-var">now</span></a></span><span> </span><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679103156"><span class="hs-identifier hs-var">l</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">Maybe a
+forall a. Maybe a
+</span><span class="hs-identifier hs-var">Nothing</span></span><span class="hs-special">)</span><span>
+</span><span id="line-282"></span><span>    </span><span class="hs-glyph">|</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">otherwise</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">PoolList a
+</span><a href="#local-6989586621679103156"><span class="hs-identifier hs-var">l</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">a -&gt; Maybe a
+forall a. a -&gt; Maybe a
+</span><span class="hs-identifier hs-var">Just</span></span><span> </span><span class="annot"><span class="annottext">a
+</span><a href="#local-6989586621679103155"><span class="hs-identifier hs-var">x</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-283"></span><span>
+</span><span id="line-284"></span><span class="hs-comment">-- | A managed resource, which can be returned to the 'KeyedPool' when</span><span>
+</span><span id="line-285"></span><span class="hs-comment">-- work with it is complete. Using garbage collection, it will default</span><span>
+</span><span id="line-286"></span><span class="hs-comment">-- to destroying the resource if the caller does not explicitly use</span><span>
+</span><span id="line-287"></span><span class="hs-comment">-- 'managedRelease'.</span><span>
+</span><span id="line-288"></span><span class="hs-keyword">data</span><span> </span><span id="Managed"><span class="annot"><a href="Data.KeyedPool.html#Managed"><span class="hs-identifier hs-var">Managed</span></a></span></span><span> </span><span id="local-6989586621679102706"><span class="annot"><a href="#local-6989586621679102706"><span class="hs-identifier hs-type">resource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Managed"><span class="annot"><a href="Data.KeyedPool.html#Managed"><span class="hs-identifier hs-var">Managed</span></a></span></span><span>
+</span><span id="line-289"></span><span>    </span><span class="hs-special">{</span><span> </span><span id="_managedResource"><span class="annot"><span class="annottext">forall resource. Managed resource -&gt; resource
+</span><a href="Data.KeyedPool.html#_managedResource"><span class="hs-identifier hs-var hs-var">_managedResource</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="annot"><a href="#local-6989586621679102706"><span class="hs-identifier hs-type">resource</span></a></span><span>
+</span><span id="line-290"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="_managedReused"><span class="annot"><span class="annottext">forall resource. Managed resource -&gt; Bool
+</span><a href="Data.KeyedPool.html#_managedReused"><span class="hs-identifier hs-var hs-var">_managedReused</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span>
+</span><span id="line-291"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="_managedRelease"><span class="annot"><span class="annottext">forall resource. Managed resource -&gt; Reuse -&gt; IO ()
+</span><a href="Data.KeyedPool.html#_managedRelease"><span class="hs-identifier hs-var hs-var">_managedRelease</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><a href="Data.KeyedPool.html#Reuse"><span class="hs-identifier hs-type">Reuse</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-292"></span><span>    </span><span class="hs-special">,</span><span> </span><span id="_managedAlive"><span class="annot"><span class="annottext">forall resource. Managed resource -&gt; IORef ()
+</span><a href="Data.KeyedPool.html#_managedAlive"><span class="hs-identifier hs-var hs-var">_managedAlive</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-glyph">!</span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier hs-type">IORef</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-293"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-294"></span><span>
+</span><span id="line-295"></span><span class="annot"><span class="hs-comment">-- | Get the raw resource from the 'Managed' value.</span></span><span>
+</span><span id="line-296"></span><span id="local-6989586621679103159"><span class="annot"><a href="Data.KeyedPool.html#managedResource"><span class="hs-identifier hs-type">managedResource</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#Managed"><span class="hs-identifier hs-type">Managed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679103159"><span class="hs-identifier hs-type">resource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679103159"><span class="hs-identifier hs-type">resource</span></a></span></span><span>
+</span><span id="line-297"></span><span id="managedResource"><span class="annot"><span class="annottext">managedResource :: forall resource. Managed resource -&gt; resource
+</span><a href="Data.KeyedPool.html#managedResource"><span class="hs-identifier hs-var hs-var">managedResource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Managed resource -&gt; resource
+forall resource. Managed resource -&gt; resource
+</span><a href="Data.KeyedPool.html#_managedResource"><span class="hs-identifier hs-var">_managedResource</span></a></span><span>
+</span><span id="line-298"></span><span>
+</span><span id="line-299"></span><span class="annot"><span class="hs-comment">-- | Was this value taken from the pool?</span></span><span>
+</span><span id="line-300"></span><span id="local-6989586621679103160"><span class="annot"><a href="Data.KeyedPool.html#managedReused"><span class="hs-identifier hs-type">managedReused</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#Managed"><span class="hs-identifier hs-type">Managed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679103160"><span class="hs-identifier hs-type">resource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span></span><span>
+</span><span id="line-301"></span><span id="managedReused"><span class="annot"><span class="annottext">managedReused :: forall resource. Managed resource -&gt; Bool
+</span><a href="Data.KeyedPool.html#managedReused"><span class="hs-identifier hs-var hs-var">managedReused</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Managed resource -&gt; Bool
+forall resource. Managed resource -&gt; Bool
+</span><a href="Data.KeyedPool.html#_managedReused"><span class="hs-identifier hs-var">_managedReused</span></a></span><span>
+</span><span id="line-302"></span><span>
+</span><span id="line-303"></span><span class="hs-comment">-- | Release the resource, after which it is invalid to use the</span><span>
+</span><span id="line-304"></span><span class="hs-comment">-- 'managedResource' value. 'Reuse' returns the resource to the</span><span>
+</span><span id="line-305"></span><span class="hs-comment">-- pool; 'DontReuse' destroys it.</span><span>
+</span><span id="line-306"></span><span id="local-6989586621679103161"><span class="annot"><a href="Data.KeyedPool.html#managedRelease"><span class="hs-identifier hs-type">managedRelease</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#Managed"><span class="hs-identifier hs-type">Managed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679103161"><span class="hs-identifier hs-type">resource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#Reuse"><span class="hs-identifier hs-type">Reuse</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-307"></span><span id="managedRelease"><span class="annot"><span class="annottext">managedRelease :: forall resource. Managed resource -&gt; Reuse -&gt; IO ()
+</span><a href="Data.KeyedPool.html#managedRelease"><span class="hs-identifier hs-var hs-var">managedRelease</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Managed resource -&gt; Reuse -&gt; IO ()
+forall resource. Managed resource -&gt; Reuse -&gt; IO ()
+</span><a href="Data.KeyedPool.html#_managedRelease"><span class="hs-identifier hs-var">_managedRelease</span></a></span><span>
+</span><span id="line-308"></span><span>
+</span><span id="line-309"></span><span class="hs-keyword">data</span><span> </span><span id="Reuse"><span class="annot"><a href="Data.KeyedPool.html#Reuse"><span class="hs-identifier hs-var">Reuse</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="Reuse"><span class="annot"><a href="Data.KeyedPool.html#Reuse"><span class="hs-identifier hs-var">Reuse</span></a></span></span><span> </span><span class="hs-glyph">|</span><span> </span><span id="DontReuse"><span class="annot"><a href="Data.KeyedPool.html#DontReuse"><span class="hs-identifier hs-var">DontReuse</span></a></span></span><span>
+</span><span id="line-310"></span><span>
+</span><span id="line-311"></span><span class="annot"><span class="hs-comment">-- | For testing purposes only: create a dummy Managed wrapper</span></span><span>
+</span><span id="line-312"></span><span id="local-6989586621679102714"><span class="annot"><a href="Data.KeyedPool.html#dummyManaged"><span class="hs-identifier hs-type">dummyManaged</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="#local-6989586621679102714"><span class="hs-identifier hs-type">resource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#Managed"><span class="hs-identifier hs-type">Managed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102714"><span class="hs-identifier hs-type">resource</span></a></span></span><span>
+</span><span id="line-313"></span><span id="dummyManaged"><span class="annot"><span class="annottext">dummyManaged :: forall resource. resource -&gt; Managed resource
+</span><a href="Data.KeyedPool.html#dummyManaged"><span class="hs-identifier hs-var hs-var">dummyManaged</span></a></span></span><span> </span><span id="local-6989586621679103163"><span class="annot"><span class="annottext">resource
+</span><a href="#local-6989586621679103163"><span class="hs-identifier hs-var">resource</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#Managed"><span class="hs-identifier hs-type">Managed</span></a></span><span>
+</span><span id="line-314"></span><span>    </span><span class="hs-special">{</span><span> </span><span class="annot"><span class="annottext">_managedResource :: resource
+</span><a href="Data.KeyedPool.html#_managedResource"><span class="hs-identifier hs-var">_managedResource</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">resource
+</span><a href="#local-6989586621679103163"><span class="hs-identifier hs-var">resource</span></a></span><span>
+</span><span id="line-315"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">_managedReused :: Bool
+</span><a href="Data.KeyedPool.html#_managedReused"><span class="hs-identifier hs-var">_managedReused</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span>
+</span><span id="line-316"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">_managedRelease :: Reuse -&gt; IO ()
+</span><a href="Data.KeyedPool.html#_managedRelease"><span class="hs-identifier hs-var">_managedRelease</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO () -&gt; Reuse -&gt; IO ()
+forall a b. a -&gt; b -&gt; a
+</span><span class="hs-identifier hs-var">const</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-317"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="annottext">_managedAlive :: IORef ()
+</span><a href="Data.KeyedPool.html#_managedAlive"><span class="hs-identifier hs-var">_managedAlive</span></a></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (IORef ()) -&gt; IORef ()
+forall a. IO a -&gt; a
+</span><span class="hs-identifier hs-var">unsafePerformIO</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">() -&gt; IO (IORef ())
+forall a. a -&gt; IO (IORef a)
+</span><span class="hs-identifier hs-var">newIORef</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-318"></span><span>    </span><span class="hs-special">}</span><span>
+</span><span id="line-319"></span><span>
+</span><span id="line-320"></span><span class="annot"><a href="Data.KeyedPool.html#ignoreExceptions"><span class="hs-identifier hs-type">ignoreExceptions</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-321"></span><span id="ignoreExceptions"><span class="annot"><span class="annottext">ignoreExceptions :: IO () -&gt; IO ()
+</span><a href="Data.KeyedPool.html#ignoreExceptions"><span class="hs-identifier hs-var hs-var">ignoreExceptions</span></a></span></span><span> </span><span id="local-6989586621679103164"><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679103164"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO ()
+</span><a href="#local-6989586621679103164"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">IO () -&gt; (SomeException -&gt; IO ()) -&gt; IO ()
+forall e a. Exception e =&gt; IO a -&gt; (e -&gt; IO a) -&gt; IO a
+</span><span class="hs-operator hs-var">`catch`</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-special">(</span><span class="annot"><span class="annottext">SomeException
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">SomeException</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">() -&gt; IO ()
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-322"></span><span>
+</span><span id="line-323"></span><span class="annot"><span class="hs-comment">-- | Prevent the managed resource from getting released before you want to use.</span></span><span>
+</span><span id="line-324"></span><span id="local-6989586621679102717"><span class="annot"><a href="Data.KeyedPool.html#keepAlive"><span class="hs-identifier hs-type">keepAlive</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Data.KeyedPool.html#Managed"><span class="hs-identifier hs-type">Managed</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679102717"><span class="hs-identifier hs-type">resource</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-325"></span><span id="keepAlive"><span class="annot"><span class="annottext">keepAlive :: forall resource. Managed resource -&gt; IO ()
+</span><a href="Data.KeyedPool.html#keepAlive"><span class="hs-identifier hs-var hs-var">keepAlive</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IORef () -&gt; IO ()
+forall a. IORef a -&gt; IO a
+</span><span class="hs-identifier hs-var">readIORef</span></span><span> </span><span class="annot"><span class="annottext">(IORef () -&gt; IO ())
+-&gt; (Managed resource -&gt; IORef ()) -&gt; Managed resource -&gt; IO ()
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Managed resource -&gt; IORef ()
+forall resource. Managed resource -&gt; IORef ()
+</span><a href="Data.KeyedPool.html#_managedAlive"><span class="hs-identifier hs-var">_managedAlive</span></a></span><span>
+</span><span id="line-326"></span></pre></body></html>

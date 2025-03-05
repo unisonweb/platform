@@ -1,0 +1,210 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- |</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- Module      : Crypto.Cipher.RC4</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- License     : BSD-style</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Maintainer  : Vincent Hanquez &lt;vincent@snarc.org&gt;</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Stability   : stable</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Portability : Good</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-comment">-- Simple implementation of the RC4 stream cipher.</span><span>
+</span><span id="line-9"></span><span class="hs-comment">-- http://en.wikipedia.org/wiki/RC4</span><span>
+</span><span id="line-10"></span><span class="hs-comment">--</span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- Initial FFI implementation by Peter White &lt;peter@janrain.com&gt;</span><span>
+</span><span id="line-12"></span><span class="hs-comment">--</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- Reorganized and simplified to have an opaque context.</span><span>
+</span><span id="line-14"></span><span class="hs-comment">--</span><span>
+</span><span id="line-15"></span><span class="hs-pragma">{-# LANGUAGE ForeignFunctionInterface #-}</span><span>
+</span><span id="line-16"></span><span class="hs-pragma">{-# LANGUAGE GeneralizedNewtypeDeriving #-}</span><span>
+</span><span id="line-17"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Crypto.Cipher.RC4</span><span>
+</span><span id="line-18"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Crypto.Cipher.RC4.html#initialize"><span class="hs-identifier">initialize</span></a></span><span>
+</span><span id="line-19"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.RC4.html#combine"><span class="hs-identifier">combine</span></a></span><span>
+</span><span id="line-20"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.RC4.html#generate"><span class="hs-identifier">generate</span></a></span><span>
+</span><span id="line-21"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier">State</span></a></span><span>
+</span><span id="line-22"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-23"></span><span>
+</span><span id="line-24"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Word</span></span><span>
+</span><span id="line-25"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span>
+</span><span id="line-26"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.ByteArray.html"><span class="hs-identifier">Crypto.Internal.ByteArray</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ScrubbedBytes</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">ByteArray</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">ByteArrayAccess</span></span><span class="hs-special">)</span><span>
+</span><span id="line-27"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><a href="Crypto.Internal.ByteArray.html"><span class="hs-identifier">Crypto.Internal.ByteArray</span></a></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-28"></span><span>
+</span><span id="line-29"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.Compat.html"><span class="hs-identifier">Crypto.Internal.Compat</span></a></span><span>
+</span><span id="line-30"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.Imports.html"><span class="hs-identifier">Crypto.Internal.Imports</span></a></span><span>
+</span><span id="line-31"></span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- | The encryption state for RC4</span><span>
+</span><span id="line-33"></span><span class="hs-comment">--</span><span>
+</span><span id="line-34"></span><span class="hs-comment">-- This type is an instance of 'ByteArrayAccess' for debugging purpose. Internal</span><span>
+</span><span id="line-35"></span><span class="hs-comment">-- layout is architecture dependent, may contain uninitialized data fragments,</span><span>
+</span><span id="line-36"></span><span class="hs-comment">-- and change in future versions.  The bytearray should not be used as input to</span><span>
+</span><span id="line-37"></span><span class="hs-comment">-- cryptographic algorithms.</span><span>
+</span><span id="line-38"></span><span class="hs-keyword">newtype</span><span> </span><span id="State"><span class="annot"><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier hs-var">State</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="State"><span class="annot"><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier hs-var">State</span></a></span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">ScrubbedBytes</span></span><span>
+</span><span id="line-39"></span><span>    </span><span class="hs-keyword">deriving</span><span> </span><span class="hs-special">(</span><span id="local-6989586621679221454"><span id="local-6989586621679221459"><span id="local-6989586621679221463"><span class="annot"><span class="annottext">State -&gt; Int
+(State -&gt; Int)
+-&gt; (forall p a. State -&gt; (Ptr p -&gt; IO a) -&gt; IO a)
+-&gt; (forall p. State -&gt; Ptr p -&gt; IO ())
+-&gt; ByteArrayAccess State
+forall p. State -&gt; Ptr p -&gt; IO ()
+forall ba.
+(ba -&gt; Int)
+-&gt; (forall p a. ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a)
+-&gt; (forall p. ba -&gt; Ptr p -&gt; IO ())
+-&gt; ByteArrayAccess ba
+forall p a. State -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+$clength :: State -&gt; Int
+length :: State -&gt; Int
+$cwithByteArray :: forall p a. State -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+withByteArray :: forall p a. State -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+$ccopyByteArrayToPtr :: forall p. State -&gt; Ptr p -&gt; IO ()
+copyByteArrayToPtr :: forall p. State -&gt; Ptr p -&gt; IO ()
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var hs-var hs-var hs-var hs-var">ByteArrayAccess</span></span></span></span></span><span class="hs-special">,</span><span id="local-6989586621679221469"><span class="annot"><span class="annottext">State -&gt; ()
+(State -&gt; ()) -&gt; NFData State
+forall a. (a -&gt; ()) -&gt; NFData a
+$crnf :: State -&gt; ()
+rnf :: State -&gt; ()
+</span><span class="hs-identifier hs-var hs-var hs-var hs-var">NFData</span></span></span><span class="hs-special">)</span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="annot"><span class="hs-comment">-- | C Call for initializing the encryptor</span></span><span>
+</span><span id="line-42"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_rc4.h crypton_rc4_init&quot;</span></span><span>
+</span><span id="line-43"></span><span>    </span><span id="c_rc4_init"><span class="annot"><a href="Crypto.Cipher.RC4.html#c_rc4_init"><span class="hs-identifier hs-var">c_rc4_init</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ The rc4 key</span></span><span>
+</span><span id="line-44"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word32</span></span><span>    </span><span class="annot"><span class="hs-comment">-- ^ The key length</span></span><span>
+</span><span id="line-45"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="annot"><span class="hs-comment">-- ^ The context</span></span><span>
+</span><span id="line-46"></span><span>               </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span>
+</span><span id="line-48"></span><span class="hs-keyword">foreign</span><span> </span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-keyword">ccall</span></span><span> </span><span class="annot"><span class="hs-keyword">unsafe</span></span><span> </span><span class="annot"><span class="hs-string">&quot;crypton_rc4.h crypton_rc4_combine&quot;</span></span><span>
+</span><span id="line-49"></span><span>    </span><span id="c_rc4_combine"><span class="annot"><a href="Crypto.Cipher.RC4.html#c_rc4_combine"><span class="hs-identifier hs-var">c_rc4_combine</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier hs-type">State</span></a></span><span>        </span><span class="annot"><span class="hs-comment">-- ^ Pointer to the permutation</span></span><span>
+</span><span id="line-50"></span><span>                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span>      </span><span class="annot"><span class="hs-comment">-- ^ Pointer to the clear text</span></span><span>
+</span><span id="line-51"></span><span>                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word32</span></span><span>         </span><span class="annot"><span class="hs-comment">-- ^ Length of the clear text</span></span><span>
+</span><span id="line-52"></span><span>                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Ptr</span></span><span> </span><span class="annot"><span class="hs-identifier hs-type">Word8</span></span><span>      </span><span class="annot"><span class="hs-comment">-- ^ Output buffer</span></span><span>
+</span><span id="line-53"></span><span>                  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-54"></span><span>
+</span><span id="line-55"></span><span class="hs-comment">-- | RC4 context initialization.</span><span>
+</span><span id="line-56"></span><span class="hs-comment">--</span><span>
+</span><span id="line-57"></span><span class="hs-comment">-- seed the context with an initial key. the key size need to be</span><span>
+</span><span id="line-58"></span><span class="hs-comment">-- adequate otherwise security takes a hit.</span><span>
+</span><span id="line-59"></span><span id="local-6989586621679221423"><span class="annot"><a href="Crypto.Cipher.RC4.html#initialize"><span class="hs-identifier hs-type">initialize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArrayAccess</span></span><span> </span><span class="annot"><a href="#local-6989586621679221423"><span class="hs-identifier hs-type">key</span></a></span><span>
+</span><span id="line-60"></span><span>           </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679221423"><span class="hs-identifier hs-type">key</span></a></span><span>   </span><span class="annot"><span class="hs-comment">-- ^ The key</span></span><span>
+</span><span id="line-61"></span><span>           </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier hs-type">State</span></a></span></span><span> </span><span class="annot"><span class="hs-comment">-- ^ The RC4 context with the key mixed in</span></span><span>
+</span><span id="line-62"></span><span id="initialize"><span class="annot"><span class="annottext">initialize :: forall key. ByteArrayAccess key =&gt; key -&gt; State
+</span><a href="Crypto.Cipher.RC4.html#initialize"><span class="hs-identifier hs-var hs-var">initialize</span></a></span></span><span> </span><span id="local-6989586621679221489"><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679221489"><span class="hs-identifier hs-var">key</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO State -&gt; State
+forall a. IO a -&gt; a
+</span><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier hs-var">unsafeDoIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO State -&gt; State) -&gt; IO State -&gt; State
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-63"></span><span>    </span><span id="local-6989586621679221491"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679221491"><span class="hs-identifier hs-var">st</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Any -&gt; IO ()) -&gt; IO ScrubbedBytes
+forall ba p. ByteArray ba =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; IO ba
+</span><span class="hs-identifier hs-var">B.alloc</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">264</span></span><span> </span><span class="annot"><span class="annottext">((Ptr Any -&gt; IO ()) -&gt; IO ScrubbedBytes)
+-&gt; (Ptr Any -&gt; IO ()) -&gt; IO ScrubbedBytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679221493"><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679221493"><span class="hs-identifier hs-var">stPtr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-64"></span><span>        </span><span class="annot"><span class="annottext">key -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. key -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679221489"><span class="hs-identifier hs-var">key</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679221495"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679221495"><span class="hs-identifier hs-var">keyPtr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Word32 -&gt; Ptr State -&gt; IO ()
+</span><a href="Crypto.Cipher.RC4.html#c_rc4_init"><span class="hs-identifier hs-var">c_rc4_init</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679221495"><span class="hs-identifier hs-var">keyPtr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">(Int -&gt; Word32) -&gt; Int -&gt; Word32
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">key -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">key
+</span><a href="#local-6989586621679221489"><span class="hs-identifier hs-var">key</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Any -&gt; Ptr State
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679221493"><span class="hs-identifier hs-var">stPtr</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-65"></span><span>    </span><span class="annot"><span class="annottext">State -&gt; IO State
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(State -&gt; IO State) -&gt; State -&gt; IO State
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; State
+</span><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier hs-var">State</span></a></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679221491"><span class="hs-identifier hs-var">st</span></a></span><span>
+</span><span id="line-66"></span><span>
+</span><span id="line-67"></span><span class="hs-comment">-- | generate the next len bytes of the rc4 stream without combining</span><span>
+</span><span id="line-68"></span><span class="hs-comment">-- it to anything.</span><span>
+</span><span id="line-69"></span><span id="local-6989586621679221438"><span class="annot"><a href="Crypto.Cipher.RC4.html#generate"><span class="hs-identifier hs-type">generate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679221438"><span class="hs-identifier hs-type">ba</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier hs-type">State</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621679221438"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-70"></span><span id="generate"><span class="annot"><span class="annottext">generate :: forall ba. ByteArray ba =&gt; State -&gt; Int -&gt; (State, ba)
+</span><a href="Crypto.Cipher.RC4.html#generate"><span class="hs-identifier hs-var hs-var">generate</span></a></span></span><span> </span><span id="local-6989586621679221501"><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679221501"><span class="hs-identifier hs-var">ctx</span></a></span></span><span> </span><span id="local-6989586621679221502"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679221502"><span class="hs-identifier hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">State -&gt; ba -&gt; (State, ba)
+forall ba. ByteArray ba =&gt; State -&gt; ba -&gt; (State, ba)
+</span><a href="Crypto.Cipher.RC4.html#combine"><span class="hs-identifier hs-var">combine</span></a></span><span> </span><span class="annot"><span class="annottext">State
+</span><a href="#local-6989586621679221501"><span class="hs-identifier hs-var">ctx</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; ba
+forall ba. ByteArray ba =&gt; Int -&gt; ba
+</span><span class="hs-identifier hs-var">B.zero</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679221502"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-71"></span><span>
+</span><span id="line-72"></span><span class="annot"><span class="hs-comment">-- | RC4 xor combination of the rc4 stream with an input</span></span><span>
+</span><span id="line-73"></span><span id="local-6989586621679221440"><span class="annot"><a href="Crypto.Cipher.RC4.html#combine"><span class="hs-identifier hs-type">combine</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679221440"><span class="hs-identifier hs-type">ba</span></a></span><span>
+</span><span id="line-74"></span><span>        </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier hs-type">State</span></a></span><span>               </span><span class="annot"><span class="hs-comment">-- ^ rc4 context</span></span><span>
+</span><span id="line-75"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679221440"><span class="hs-identifier hs-type">ba</span></a></span><span>                  </span><span class="annot"><span class="hs-comment">-- ^ input</span></span><span>
+</span><span id="line-76"></span><span>        </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier hs-type">State</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621679221440"><span class="hs-identifier hs-type">ba</span></a></span><span class="hs-special">)</span></span><span>         </span><span class="annot"><span class="hs-comment">-- ^ new rc4 context, and the output</span></span><span>
+</span><span id="line-77"></span><span id="combine"><span class="annot"><span class="annottext">combine :: forall ba. ByteArray ba =&gt; State -&gt; ba -&gt; (State, ba)
+</span><a href="Crypto.Cipher.RC4.html#combine"><span class="hs-identifier hs-var hs-var">combine</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span id="local-6989586621679221515"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679221515"><span class="hs-identifier hs-var">prevSt</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679221516"><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679221516"><span class="hs-identifier hs-var">clearText</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO (State, ba) -&gt; (State, ba)
+forall a. IO a -&gt; a
+</span><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier hs-var">unsafeDoIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO (State, ba) -&gt; (State, ba)) -&gt; IO (State, ba) -&gt; (State, ba)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span>
+</span><span id="line-78"></span><span>    </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO State) -&gt; IO (State, ba)
+forall ba p a. ByteArray ba =&gt; Int -&gt; (Ptr p -&gt; IO a) -&gt; IO (a, ba)
+forall p a. Int -&gt; (Ptr p -&gt; IO a) -&gt; IO (a, ba)
+</span><span class="hs-identifier hs-var">B.allocRet</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679221518"><span class="hs-identifier hs-var">len</span></a></span><span>            </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO State) -&gt; IO (State, ba))
+-&gt; (Ptr Word8 -&gt; IO State) -&gt; IO (State, ba)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679221519"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679221519"><span class="hs-identifier hs-var">outptr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-79"></span><span>    </span><span class="annot"><span class="annottext">ba -&gt; (Ptr Word8 -&gt; IO State) -&gt; IO State
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679221516"><span class="hs-identifier hs-var">clearText</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO State) -&gt; IO State)
+-&gt; (Ptr Word8 -&gt; IO State) -&gt; IO State
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679221520"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679221520"><span class="hs-identifier hs-var">clearPtr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-80"></span><span>        </span><span id="local-6989586621679221521"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679221521"><span class="hs-identifier hs-var">st</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Any -&gt; IO ()) -&gt; IO ScrubbedBytes
+forall bs1 bs2 p.
+(ByteArrayAccess bs1, ByteArray bs2) =&gt;
+bs1 -&gt; (Ptr p -&gt; IO ()) -&gt; IO bs2
+</span><span class="hs-identifier hs-var">B.copy</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679221515"><span class="hs-identifier hs-var">prevSt</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Any -&gt; IO ()) -&gt; IO ScrubbedBytes)
+-&gt; (Ptr Any -&gt; IO ()) -&gt; IO ScrubbedBytes
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679221523"><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679221523"><span class="hs-identifier hs-var">stPtr</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span>
+</span><span id="line-81"></span><span>                </span><span class="annot"><span class="annottext">Ptr State -&gt; Ptr Word8 -&gt; Word32 -&gt; Ptr Word8 -&gt; IO ()
+</span><a href="Crypto.Cipher.RC4.html#c_rc4_combine"><span class="hs-identifier hs-var">c_rc4_combine</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Any -&gt; Ptr State
+forall a b. Ptr a -&gt; Ptr b
+</span><span class="hs-identifier hs-var">castPtr</span></span><span> </span><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679221523"><span class="hs-identifier hs-var">stPtr</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679221520"><span class="hs-identifier hs-var">clearPtr</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; Word32
+forall a b. (Integral a, Num b) =&gt; a -&gt; b
+</span><span class="hs-identifier hs-var">fromIntegral</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679221518"><span class="hs-identifier hs-var">len</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679221519"><span class="hs-identifier hs-var">outptr</span></a></span><span>
+</span><span id="line-82"></span><span>        </span><span class="annot"><span class="annottext">State -&gt; IO State
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(State -&gt; IO State) -&gt; State -&gt; IO State
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; State
+</span><a href="Crypto.Cipher.RC4.html#State"><span class="hs-identifier hs-var">State</span></a></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679221521"><span class="hs-identifier hs-var">st</span></a></span><span>
+</span><span id="line-83"></span><span>    </span><span class="hs-comment">--return $! (State st, B.PS outfptr 0 len)</span><span>
+</span><span id="line-84"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679221518"><span class="annot"><span class="annottext">len :: Int
+</span><a href="#local-6989586621679221518"><span class="hs-identifier hs-var hs-var">len</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ba -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ba
+</span><a href="#local-6989586621679221516"><span class="hs-identifier hs-var">clearText</span></a></span><span>
+</span><span id="line-85"></span></pre></body></html>

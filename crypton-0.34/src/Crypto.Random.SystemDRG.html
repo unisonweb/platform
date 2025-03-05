@@ -1,0 +1,225 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-comment">-- |</span><span>
+</span><span id="line-2"></span><span class="hs-comment">-- Module      : Crypto.Random.SystemDRG</span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- License     : BSD-style</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- Maintainer  : Vincent Hanquez &lt;vincent@snarc.org&gt;</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- Stability   : experimental</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- Portability : Good</span><span>
+</span><span id="line-7"></span><span class="hs-comment">--</span><span>
+</span><span id="line-8"></span><span class="hs-pragma">{-# LANGUAGE BangPatterns #-}</span><span>
+</span><span id="line-9"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Crypto.Random.SystemDRG</span><span>
+</span><span id="line-10"></span><span>    </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Crypto.Random.SystemDRG.html#SystemDRG"><span class="hs-identifier">SystemDRG</span></a></span><span>
+</span><span id="line-11"></span><span>    </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Random.SystemDRG.html#getSystemDRG"><span class="hs-identifier">getSystemDRG</span></a></span><span>
+</span><span id="line-12"></span><span>    </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-13"></span><span>
+</span><span id="line-14"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Random.Types.html"><span class="hs-identifier">Crypto.Random.Types</span></a></span><span>
+</span><span id="line-15"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Random.Entropy.Unsafe.html"><span class="hs-identifier">Crypto.Random.Entropy.Unsafe</span></a></span><span>
+</span><span id="line-16"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><a href="Crypto.Internal.Compat.html"><span class="hs-identifier">Crypto.Internal.Compat</span></a></span><span>
+</span><span id="line-17"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.ByteArray</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">ScrubbedBytes</span></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">ByteArray</span></span><span class="hs-special">)</span><span>
+</span><span id="line-18"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Memory.PtrMethods</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">memCopy</span></span><span class="hs-special">)</span><span>
+</span><span id="line-19"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Maybe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">catMaybes</span></span><span class="hs-special">)</span><span>
+</span><span id="line-20"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Data.Tuple</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">swap</span></span><span class="hs-special">)</span><span>
+</span><span id="line-21"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">Foreign.Ptr</span></span><span>
+</span><span id="line-22"></span><span class="hs-keyword">import</span><span> </span><span class="hs-keyword">qualified</span><span> </span><span class="annot"><span class="hs-identifier">Data.ByteArray</span></span><span> </span><span class="hs-keyword">as</span><span> </span><span class="annot"><span class="hs-identifier">B</span></span><span>
+</span><span id="line-23"></span><span class="hs-keyword">import</span><span>           </span><span class="annot"><span class="hs-identifier">System.IO.Unsafe</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">unsafeInterleaveIO</span></span><span class="hs-special">)</span><span>
+</span><span id="line-24"></span><span>
+</span><span id="line-25"></span><span class="hs-comment">-- | A referentially transparent System representation of</span><span>
+</span><span id="line-26"></span><span class="hs-comment">-- the random evaluated out of the system.</span><span>
+</span><span id="line-27"></span><span class="hs-comment">--</span><span>
+</span><span id="line-28"></span><span class="hs-comment">-- Holding onto a specific DRG means that all the already</span><span>
+</span><span id="line-29"></span><span class="hs-comment">-- evaluated bytes will be consistently replayed.</span><span>
+</span><span id="line-30"></span><span class="hs-comment">--</span><span>
+</span><span id="line-31"></span><span class="hs-comment">-- There's no need to reseed this DRG, as only pure</span><span>
+</span><span id="line-32"></span><span class="hs-comment">-- entropy is represented here.</span><span>
+</span><span id="line-33"></span><span class="hs-keyword">data</span><span> </span><span id="SystemDRG"><span class="annot"><a href="Crypto.Random.SystemDRG.html#SystemDRG"><span class="hs-identifier hs-var">SystemDRG</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span id="SystemDRG"><span class="annot"><a href="Crypto.Random.SystemDRG.html#SystemDRG"><span class="hs-identifier hs-var">SystemDRG</span></a></span></span><span> </span><span class="hs-glyph">!</span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-special">[</span><span class="annot"><span class="hs-identifier hs-type">ScrubbedBytes</span></span><span class="hs-special">]</span><span>
+</span><span id="line-34"></span><span>
+</span><span id="line-35"></span><span class="hs-keyword">instance</span><span> </span><span class="annot"><a href="Crypto.Random.Types.html#DRG"><span class="hs-identifier hs-type">DRG</span></a></span><span> </span><span class="annot"><a href="Crypto.Random.SystemDRG.html#SystemDRG"><span class="hs-identifier hs-type">SystemDRG</span></a></span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-36"></span><span>    </span><span id="local-6989586621679239641"><span class="annot"><span class="annottext">randomBytesGenerate :: forall byteArray.
+ByteArray byteArray =&gt;
+Int -&gt; SystemDRG -&gt; (byteArray, SystemDRG)
+</span><a href="#local-6989586621679239641"><span class="hs-identifier hs-var hs-var hs-var hs-var">randomBytesGenerate</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; SystemDRG -&gt; (byteArray, SystemDRG)
+forall byteArray.
+ByteArray byteArray =&gt;
+Int -&gt; SystemDRG -&gt; (byteArray, SystemDRG)
+</span><a href="Crypto.Random.SystemDRG.html#generate"><span class="hs-identifier hs-var">generate</span></a></span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="annot"><a href="Crypto.Random.SystemDRG.html#systemChunkSize"><span class="hs-identifier hs-type">systemChunkSize</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span>
+</span><span id="line-39"></span><span id="systemChunkSize"><span class="annot"><span class="annottext">systemChunkSize :: Int
+</span><a href="Crypto.Random.SystemDRG.html#systemChunkSize"><span class="hs-identifier hs-var hs-var">systemChunkSize</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">256</span></span><span>
+</span><span id="line-40"></span><span>
+</span><span id="line-41"></span><span class="annot"><span class="hs-comment">-- | Grab one instance of the System DRG</span></span><span>
+</span><span id="line-42"></span><span class="annot"><a href="Crypto.Random.SystemDRG.html#getSystemDRG"><span class="hs-identifier hs-type">getSystemDRG</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">IO</span></span><span> </span><span class="annot"><a href="Crypto.Random.SystemDRG.html#SystemDRG"><span class="hs-identifier hs-type">SystemDRG</span></a></span><span>
+</span><span id="line-43"></span><span id="getSystemDRG"><span class="annot"><span class="annottext">getSystemDRG :: IO SystemDRG
+</span><a href="Crypto.Random.SystemDRG.html#getSystemDRG"><span class="hs-identifier hs-var hs-var">getSystemDRG</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-44"></span><span>    </span><span id="local-6989586621679239645"><span class="annot"><span class="annottext">[EntropyBackend]
+</span><a href="#local-6989586621679239645"><span class="hs-identifier hs-var">backends</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">[Maybe EntropyBackend] -&gt; [EntropyBackend]
+forall a. [Maybe a] -&gt; [a]
+</span><span class="hs-identifier hs-var">catMaybes</span></span><span> </span><span class="annot"><span class="annottext">([Maybe EntropyBackend] -&gt; [EntropyBackend])
+-&gt; IO [Maybe EntropyBackend] -&gt; IO [EntropyBackend]
+forall a b. (a -&gt; b) -&gt; IO a -&gt; IO b
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">`fmap`</span></span><span> </span><span class="annot"><span class="annottext">[IO (Maybe EntropyBackend)] -&gt; IO [Maybe EntropyBackend]
+forall (t :: * -&gt; *) (m :: * -&gt; *) a.
+(Traversable t, Monad m) =&gt;
+t (m a) -&gt; m (t a)
+forall (m :: * -&gt; *) a. Monad m =&gt; [m a] -&gt; m [a]
+</span><span class="hs-identifier hs-var">sequence</span></span><span> </span><span class="annot"><span class="annottext">[IO (Maybe EntropyBackend)]
+</span><a href="Crypto.Random.Entropy.Backend.html#supportedBackends"><span class="hs-identifier hs-var">supportedBackends</span></a></span><span>
+</span><span id="line-45"></span><span>    </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679239664"><span class="annot"><span class="annottext">getNext :: IO [ScrubbedBytes]
+</span><a href="#local-6989586621679239664"><span class="hs-identifier hs-var hs-var">getNext</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">IO [ScrubbedBytes] -&gt; IO [ScrubbedBytes]
+forall a. IO a -&gt; IO a
+</span><span class="hs-identifier hs-var">unsafeInterleaveIO</span></span><span> </span><span class="annot"><span class="annottext">(IO [ScrubbedBytes] -&gt; IO [ScrubbedBytes])
+-&gt; IO [ScrubbedBytes] -&gt; IO [ScrubbedBytes]
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-46"></span><span>            </span><span id="local-6989586621679239665"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679239665"><span class="hs-identifier hs-var">bs</span></a></span></span><span>   </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO ()) -&gt; IO ScrubbedBytes
+forall ba p. ByteArray ba =&gt; Int -&gt; (Ptr p -&gt; IO ()) -&gt; IO ba
+</span><span class="hs-identifier hs-var">B.alloc</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.Random.SystemDRG.html#systemChunkSize"><span class="hs-identifier hs-var">systemChunkSize</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Int -&gt; [EntropyBackend] -&gt; Ptr Word8 -&gt; IO ()
+</span><a href="Crypto.Random.Entropy.Unsafe.html#replenish"><span class="hs-identifier hs-var">replenish</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="Crypto.Random.SystemDRG.html#systemChunkSize"><span class="hs-identifier hs-var">systemChunkSize</span></a></span><span> </span><span class="annot"><span class="annottext">[EntropyBackend]
+</span><a href="#local-6989586621679239645"><span class="hs-identifier hs-var">backends</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-47"></span><span>            </span><span id="local-6989586621679239668"><span class="annot"><span class="annottext">[ScrubbedBytes]
+</span><a href="#local-6989586621679239668"><span class="hs-identifier hs-var">more</span></a></span></span><span> </span><span class="hs-glyph">&lt;-</span><span> </span><span class="annot"><span class="annottext">IO [ScrubbedBytes]
+</span><a href="#local-6989586621679239664"><span class="hs-identifier hs-var">getNext</span></a></span><span>
+</span><span id="line-48"></span><span>            </span><span class="annot"><span class="annottext">[ScrubbedBytes] -&gt; IO [ScrubbedBytes]
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679239665"><span class="hs-identifier hs-var">bs</span></a></span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; [ScrubbedBytes] -&gt; [ScrubbedBytes]
+forall a. a -&gt; [a] -&gt; [a]
+</span><span class="hs-glyph hs-var">:</span></span><span class="annot"><span class="annottext">[ScrubbedBytes]
+</span><a href="#local-6989586621679239668"><span class="hs-identifier hs-var">more</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-49"></span><span>    </span><span class="annot"><span class="annottext">Int -&gt; [ScrubbedBytes] -&gt; SystemDRG
+</span><a href="Crypto.Random.SystemDRG.html#SystemDRG"><span class="hs-identifier hs-var">SystemDRG</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">([ScrubbedBytes] -&gt; SystemDRG)
+-&gt; IO [ScrubbedBytes] -&gt; IO SystemDRG
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-operator hs-var">&lt;$&gt;</span></span><span> </span><span class="annot"><span class="annottext">IO [ScrubbedBytes]
+</span><a href="#local-6989586621679239664"><span class="hs-identifier hs-var">getNext</span></a></span><span>
+</span><span id="line-50"></span><span>
+</span><span id="line-51"></span><span id="local-6989586621679239670"><span class="annot"><a href="Crypto.Random.SystemDRG.html#generate"><span class="hs-identifier hs-type">generate</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">ByteArray</span></span><span> </span><span class="annot"><a href="#local-6989586621679239670"><span class="hs-identifier hs-type">output</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Int</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Crypto.Random.SystemDRG.html#SystemDRG"><span class="hs-identifier hs-type">SystemDRG</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679239670"><span class="hs-identifier hs-type">output</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Crypto.Random.SystemDRG.html#SystemDRG"><span class="hs-identifier hs-type">SystemDRG</span></a></span><span class="hs-special">)</span></span><span>
+</span><span id="line-52"></span><span id="generate"><span class="annot"><span class="annottext">generate :: forall byteArray.
+ByteArray byteArray =&gt;
+Int -&gt; SystemDRG -&gt; (byteArray, SystemDRG)
+</span><a href="Crypto.Random.SystemDRG.html#generate"><span class="hs-identifier hs-var hs-var">generate</span></a></span></span><span> </span><span id="local-6989586621679239673"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239673"><span class="hs-identifier hs-var">nbBytes</span></a></span></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Crypto.Random.SystemDRG.html#SystemDRG"><span class="hs-identifier hs-type">SystemDRG</span></a></span><span> </span><span id="local-6989586621679239674"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239674"><span class="hs-identifier hs-var">ofs</span></a></span></span><span> </span><span id="local-6989586621679239675"><span class="annot"><span class="annottext">[ScrubbedBytes]
+</span><a href="#local-6989586621679239675"><span class="hs-identifier hs-var">sysChunks</span></a></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(SystemDRG, output) -&gt; (output, SystemDRG)
+forall a b. (a, b) -&gt; (b, a)
+</span><span class="hs-identifier hs-var">swap</span></span><span> </span><span class="annot"><span class="annottext">((SystemDRG, output) -&gt; (output, SystemDRG))
+-&gt; (SystemDRG, output) -&gt; (output, SystemDRG)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">IO (SystemDRG, output) -&gt; (SystemDRG, output)
+forall a. IO a -&gt; a
+</span><a href="Crypto.Internal.Compat.html#unsafeDoIO"><span class="hs-identifier hs-var">unsafeDoIO</span></a></span><span> </span><span class="annot"><span class="annottext">(IO (SystemDRG, output) -&gt; (SystemDRG, output))
+-&gt; IO (SystemDRG, output) -&gt; (SystemDRG, output)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; (Ptr Word8 -&gt; IO SystemDRG) -&gt; IO (SystemDRG, output)
+forall ba p a. ByteArray ba =&gt; Int -&gt; (Ptr p -&gt; IO a) -&gt; IO (a, ba)
+forall p a. Int -&gt; (Ptr p -&gt; IO a) -&gt; IO (a, output)
+</span><span class="hs-identifier hs-var">B.allocRet</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239673"><span class="hs-identifier hs-var">nbBytes</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Word8 -&gt; IO SystemDRG) -&gt; IO (SystemDRG, output))
+-&gt; (Ptr Word8 -&gt; IO SystemDRG) -&gt; IO (SystemDRG, output)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; [ScrubbedBytes] -&gt; Int -&gt; Ptr Word8 -&gt; IO SystemDRG
+</span><a href="#local-6989586621679239678"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239674"><span class="hs-identifier hs-var">ofs</span></a></span><span> </span><span class="annot"><span class="annottext">[ScrubbedBytes]
+</span><a href="#local-6989586621679239675"><span class="hs-identifier hs-var">sysChunks</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239673"><span class="hs-identifier hs-var">nbBytes</span></a></span><span>
+</span><span id="line-53"></span><span>  </span><span class="hs-keyword">where</span><span> </span><span id="local-6989586621679239678"><span class="annot"><span class="annottext">loop :: Int -&gt; [ScrubbedBytes] -&gt; Int -&gt; Ptr Word8 -&gt; IO SystemDRG
+</span><a href="#local-6989586621679239678"><span class="hs-identifier hs-var hs-var">loop</span></a></span></span><span> </span><span id="local-6989586621679239691"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239691"><span class="hs-identifier hs-var">currentOfs</span></a></span></span><span> </span><span id="local-6989586621679239692"><span class="annot"><span class="annottext">[ScrubbedBytes]
+</span><a href="#local-6989586621679239692"><span class="hs-identifier hs-var">chunks</span></a></span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">SystemDRG -&gt; IO SystemDRG
+forall a. a -&gt; IO a
+forall (m :: * -&gt; *) a. Monad m =&gt; a -&gt; m a
+</span><span class="hs-identifier hs-var">return</span></span><span> </span><span class="annot"><span class="annottext">(SystemDRG -&gt; IO SystemDRG) -&gt; SystemDRG -&gt; IO SystemDRG
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">Int -&gt; [ScrubbedBytes] -&gt; SystemDRG
+</span><a href="Crypto.Random.SystemDRG.html#SystemDRG"><span class="hs-identifier hs-var">SystemDRG</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239691"><span class="hs-identifier hs-var">currentOfs</span></a></span><span> </span><span class="annot"><span class="annottext">[ScrubbedBytes]
+</span><a href="#local-6989586621679239692"><span class="hs-identifier hs-var">chunks</span></a></span><span>
+</span><span id="line-54"></span><span>        </span><span class="annot"><a href="#local-6989586621679239678"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span>          </span><span class="hs-special">[</span><span class="hs-special">]</span><span>     </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-identifier">_</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><span class="hs-identifier">_</span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">[Char] -&gt; IO SystemDRG
+forall a. HasCallStack =&gt; [Char] -&gt; a
+</span><span class="hs-identifier hs-var">error</span></span><span> </span><span class="annot"><span class="annottext">[Char]
+</span><span class="hs-string">&quot;SystemDRG: the impossible happened: empty chunk&quot;</span></span><span>
+</span><span id="line-55"></span><span>        </span><span class="annot"><a href="#local-6989586621679239678"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span id="local-6989586621679239695"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239695"><span class="hs-identifier hs-var">currentOfs</span></a></span></span><span> </span><span id="local-6989586621679239696"><span class="annot"><span class="annottext">oChunks :: [ScrubbedBytes]
+</span><a href="#local-6989586621679239696"><span class="hs-identifier hs-var">oChunks</span></a></span></span><span class="hs-glyph">@</span><span class="hs-special">(</span><span id="local-6989586621679239697"><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679239697"><span class="hs-identifier hs-var">c</span></a></span></span><span class="annot"><span class="hs-glyph hs-type">:</span></span><span id="local-6989586621679239698"><span class="annot"><span class="annottext">[ScrubbedBytes]
+</span><a href="#local-6989586621679239698"><span class="hs-identifier hs-var">cs</span></a></span></span><span class="hs-special">)</span><span> </span><span id="local-6989586621679239699"><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239699"><span class="hs-identifier hs-var">n</span></a></span></span><span> </span><span id="local-6989586621679239700"><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679239700"><span class="hs-identifier hs-var">d</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-56"></span><span>            </span><span class="hs-keyword">let</span><span> </span><span id="local-6989586621679239703"><span class="annot"><span class="annottext">currentLeft :: Int
+</span><a href="#local-6989586621679239703"><span class="hs-identifier hs-var hs-var">currentLeft</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679239697"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239695"><span class="hs-identifier hs-var">currentOfs</span></a></span><span>
+</span><span id="line-57"></span><span>                </span><span id="local-6989586621679239707"><span class="annot"><span class="annottext">toCopy :: Int
+</span><a href="#local-6989586621679239707"><span class="hs-identifier hs-var hs-var">toCopy</span></a></span></span><span>      </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Ord a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var">min</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239699"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239703"><span class="hs-identifier hs-var">currentLeft</span></a></span><span>
+</span><span id="line-58"></span><span>                </span><span id="local-6989586621679239710"><span class="annot"><span class="annottext">nextOfs :: Int
+</span><a href="#local-6989586621679239710"><span class="hs-identifier hs-var hs-var">nextOfs</span></a></span></span><span>     </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239695"><span class="hs-identifier hs-var">currentOfs</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">+</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239707"><span class="hs-identifier hs-var">toCopy</span></a></span><span>
+</span><span id="line-59"></span><span>                </span><span id="local-6989586621679239713"><span class="annot"><span class="annottext">n' :: Int
+</span><a href="#local-6989586621679239713"><span class="hs-identifier hs-var hs-var">n'</span></a></span></span><span>          </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239699"><span class="hs-identifier hs-var">n</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Int
+forall a. Num a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-glyph hs-var">-</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239707"><span class="hs-identifier hs-var">toCopy</span></a></span><span>
+</span><span id="line-60"></span><span>            </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; (Ptr Any -&gt; IO ()) -&gt; IO ()
+forall ba p a. ByteArrayAccess ba =&gt; ba -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+forall p a. ScrubbedBytes -&gt; (Ptr p -&gt; IO a) -&gt; IO a
+</span><span class="hs-identifier hs-var">B.withByteArray</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679239697"><span class="hs-identifier hs-var">c</span></a></span><span> </span><span class="annot"><span class="annottext">((Ptr Any -&gt; IO ()) -&gt; IO ()) -&gt; (Ptr Any -&gt; IO ()) -&gt; IO ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679239715"><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679239715"><span class="hs-identifier hs-var">src</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Ptr Word8 -&gt; Int -&gt; IO ()
+</span><span class="hs-identifier hs-var">B.memCopy</span></span><span> </span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679239700"><span class="hs-identifier hs-var">d</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Any
+</span><a href="#local-6989586621679239715"><span class="hs-identifier hs-var">src</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Any -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239695"><span class="hs-identifier hs-var">currentOfs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239707"><span class="hs-identifier hs-var">toCopy</span></a></span><span>
+</span><span id="line-61"></span><span>            </span><span class="hs-keyword">if</span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239710"><span class="hs-identifier hs-var">nextOfs</span></a></span><span> </span><span class="annot"><span class="annottext">Int -&gt; Int -&gt; Bool
+forall a. Eq a =&gt; a -&gt; a -&gt; Bool
+</span><span class="hs-operator hs-var">==</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes -&gt; Int
+forall ba. ByteArrayAccess ba =&gt; ba -&gt; Int
+</span><span class="hs-identifier hs-var">B.length</span></span><span> </span><span class="annot"><span class="annottext">ScrubbedBytes
+</span><a href="#local-6989586621679239697"><span class="hs-identifier hs-var">c</span></a></span><span>
+</span><span id="line-62"></span><span>                </span><span class="hs-keyword">then</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [ScrubbedBytes] -&gt; Int -&gt; Ptr Word8 -&gt; IO SystemDRG
+</span><a href="#local-6989586621679239678"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><span class="hs-number">0</span></span><span> </span><span class="annot"><span class="annottext">[ScrubbedBytes]
+</span><a href="#local-6989586621679239698"><span class="hs-identifier hs-var">cs</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239713"><span class="hs-identifier hs-var">n'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679239700"><span class="hs-identifier hs-var">d</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239707"><span class="hs-identifier hs-var">toCopy</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span><span>                </span><span class="hs-keyword">else</span><span> </span><span class="annot"><span class="annottext">Int -&gt; [ScrubbedBytes] -&gt; Int -&gt; Ptr Word8 -&gt; IO SystemDRG
+</span><a href="#local-6989586621679239678"><span class="hs-identifier hs-var">loop</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239710"><span class="hs-identifier hs-var">nextOfs</span></a></span><span> </span><span class="annot"><span class="annottext">[ScrubbedBytes]
+</span><a href="#local-6989586621679239696"><span class="hs-identifier hs-var">oChunks</span></a></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239713"><span class="hs-identifier hs-var">n'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Ptr Word8
+</span><a href="#local-6989586621679239700"><span class="hs-identifier hs-var">d</span></a></span><span> </span><span class="annot"><span class="annottext">Ptr Word8 -&gt; Int -&gt; Ptr Word8
+forall a b. Ptr a -&gt; Int -&gt; Ptr b
+</span><span class="hs-operator hs-var">`plusPtr`</span></span><span> </span><span class="annot"><span class="annottext">Int
+</span><a href="#local-6989586621679239707"><span class="hs-identifier hs-var">toCopy</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-64"></span></pre></body></html>
