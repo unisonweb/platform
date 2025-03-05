@@ -32,6 +32,7 @@ module Unison.UnisonFile
     lookupDecl,
     nonEmpty,
     termSignatureExternalLabeledDependencies,
+    externalTypeDependencies,
     topLevelComponents,
     typecheckedToTypeLookup,
     typecheckedUnisonFile,
@@ -323,7 +324,7 @@ topLevelComponents file =
 termSignatureExternalLabeledDependencies ::
   (Ord v) => TypecheckedUnisonFile v a -> Set LabeledDependency
 termSignatureExternalLabeledDependencies
-  (TypecheckedUnisonFile dataDeclarations' effectDeclarations' _ _ hashTerms) =
+  tuf@(TypecheckedUnisonFile _ _ _ _ hashTerms) =
     Set.difference
       ( Set.map LD.typeRef
           . foldMap Type.dependencies
@@ -332,10 +333,28 @@ termSignatureExternalLabeledDependencies
           $ hashTerms
       )
       -- exclude any references that are defined in this file
-      ( Set.fromList $
-          (map (LD.typeRef . fst) . toList) dataDeclarations'
-            <> (map (LD.typeRef . fst) . toList) effectDeclarations'
-      )
+      (Set.map LD.typeRef $ localDeclRefs tuf)
+
+typeReferences :: Ord v => TypecheckedUnisonFile v a -> Set Reference
+typeReferences (TypecheckedUnisonFile datas effs _ _ hterms) =
+  Set.unions
+    [ foldMap Type.dependencies
+        . fmap (\(_a, _r, _wk, _e, t) -> t)
+        . toList
+        $ hterms,
+      foldMap (DD.typeDependencies . snd) datas,
+      foldMap (DD.typeDependencies . toDataDecl . snd) effs
+    ]
+
+externalTypeDependencies ::
+  (Ord v) => TypecheckedUnisonFile v a -> Set Reference
+externalTypeDependencies tuf =
+  Set.difference (typeReferences tuf) (localDeclRefs tuf)
+
+localDeclRefs :: (Ord v) => TypecheckedUnisonFile v a -> Set Reference
+localDeclRefs (TypecheckedUnisonFile datas effs _ _ _) =
+  Set.fromList $
+    (fst <$> toList datas) <> (fst <$> toList effs)
 
 -- Returns the dependencies of the `UnisonFile` input. Needed so we can
 -- load information about these dependencies before starting typechecking.
