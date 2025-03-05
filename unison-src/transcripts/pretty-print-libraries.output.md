@@ -5,8 +5,6 @@ We clone releases and not dev branches to avoid external changes, and also to re
 ``` ucm
 scratch/main> clone @unison/base/releases/3.19.0
 
-  Downloaded 13100 entities.
-
   Cloned @unison/base/releases/3.19.0.
 
 @unison/base/releases/3.19.0> edit.namespace
@@ -83201,8 +83199,6 @@ Void.doc =
 
 ``` ucm
 scratch/main> clone @unison/http/releases/3.3.2
-
-  Downloaded 10829 entities.
 
   Cloned @unison/http/releases/3.3.2.
 
