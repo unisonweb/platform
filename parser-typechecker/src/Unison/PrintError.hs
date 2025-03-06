@@ -1105,7 +1105,7 @@ renderCompilerBug env _src bug = mconcat $ case bug of
 
 renderContext ::
   (Var v, Ord loc) => Env -> C.Context v loc -> Pretty (AnnotatedText a)
-renderContext env ctx@(C.Context es) =
+renderContext env ctx@(C.Context es _) =
   "  Γ\n    "
     <> intercalateMap "\n    " (showElem ctx . fst) (reverse es)
   where
