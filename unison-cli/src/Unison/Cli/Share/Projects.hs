@@ -49,9 +49,11 @@ import Unison.Codebase.Editor.Output qualified as Output
 import Unison.Hash32 (Hash32)
 import Unison.Prelude
 import Unison.Project (ProjectAndBranch (..), ProjectBranchName, ProjectName)
+import Unison.Share.API.Hash qualified as HashJWT
 import Unison.Share.API.Projects qualified as Share.API
 import Unison.Share.Codeserver (defaultCodeserver)
 import Unison.Share.Types (codeserverBaseURL)
+import Unison.Sync.Common qualified as Sync
 
 -- | Get a project by id.
 --
@@ -193,14 +195,17 @@ onGotProjectBranch :: Share.API.ProjectBranch -> Cli RemoteProjectBranch
 onGotProjectBranch branch = do
   let projectId = RemoteProjectId (branch ^. #projectId)
   let branchId = RemoteProjectBranchId (branch ^. #branchId)
+  let causalHash = Sync.hash32ToCausalHash $ HashJWT.hashJWTHash (branch ^. #branchHead)
   projectName <- validateProjectName (branch ^. #projectName)
   branchName <- validateBranchName (branch ^. #branchName)
   Cli.runTransaction do
+    causalHashId <- Queries.saveCausalHash causalHash
     Queries.ensureRemoteProjectBranch
       projectId
       hardCodedUri
       branchId
       branchName
+      (Just causalHashId)
   pure
     RemoteProjectBranch
       { projectId,
