@@ -567,16 +567,19 @@ negotiateKnownCausals ::
   -- | The hash to download.
   Share.HashJWT ->
   Cli (Either (SyncError SyncV2.PullError) (Set Hash32))
-negotiateKnownCausals unisonShareUrl branchRef hashJwt = do
+negotiateKnownCausals unisonShareUrl branchRef hashJwt = Timing.time "Causal Negotiation" $ do
   Cli.Env {authHTTPClient, codebase} <- ask
-  liftIO $ Text.hPutStrLn IO.stderr $ "  🔎 Identifying missing entities..."
-  Timing.time "Causal Negotiation" $ do
-    liftIO . C.runResourceT . runExceptT $ httpStreamCausalDependencies
-      authHTTPClient
-      unisonShareUrl
-      SyncV2.CausalDependenciesRequest {branchRef, rootCausal = hashJwt}
-      \stream -> do
-        Set.fromList <$> C.runConduit (stream C..| C.map unpack C..| findKnownDeps codebase C..| C.sinkList)
+  liftIO $ Console.Regions.displayConsoleRegions do
+    Console.Regions.withConsoleRegion Console.Regions.Linear \region -> do
+      Console.Regions.setConsoleRegion @Text @IO region $ "  🔎 Identifying missing entities..."
+      C.runResourceT
+        . runExceptT
+        $ httpStreamCausalDependencies
+          authHTTPClient
+          unisonShareUrl
+          SyncV2.CausalDependenciesRequest {branchRef, rootCausal = hashJwt}
+          \stream -> do
+            Set.fromList <$> C.runConduit (stream C..| C.map unpack C..| findKnownDeps codebase C..| C.sinkList)
   where
     -- Go through the dependencies of the remote root from top-down, yielding all causal hashes that we already
     -- have until we find one in the causal spine we already have, then yield that one and stop since we'll implicitly

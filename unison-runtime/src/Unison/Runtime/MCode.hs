@@ -28,10 +28,8 @@ module Unison.Runtime.MCode
     GRef (..),
     RRef,
     Ref,
-    UPrim1 (..),
-    UPrim2 (..),
-    BPrim1 (..),
-    BPrim2 (..),
+    Prim1 (..),
+    Prim2 (..),
     GBranch (..),
     Branch,
     RBranch,
@@ -296,9 +294,9 @@ countArgs (VArgN us) = sizeofPrimArray us
 countArgs (VArgV {}) = internalBug "countArgs: DArgV"
 {-# INLINEABLE countArgs #-}
 
-data UPrim1
-  = -- integral
-    DECI -- decrement
+data Prim1
+  -- integral
+  = DECI -- decrement
   | DECN
   | INCI -- increment
   | INCN
@@ -335,11 +333,47 @@ data UPrim1
   | TRNC -- truncate
   -- Bools
   | NOTB -- not
+  -- text
+  | SIZT -- size
+  | USNC -- unsnoc
+  | UCNS -- uncons
+  | ITOT -- intToText
+  | NTOT -- natToText
+  | FTOT -- floatToText
+  | TTOI -- textToInt
+  | TTON -- textToNat
+  | TTOF -- textToFloat
+  | PAKT -- pack
+  | UPKT -- unpack
+  -- sequence
+  | VWLS -- viewl
+  | VWRS -- viewr
+  | SIZS -- size
+  | PAKB -- pack
+  | UPKB -- unpack
+  | SIZB -- size
+  | FLTB -- flatten
+  -- code
+  | MISS -- isMissing
+  | CACH -- cache
+  | LKUP -- lookup
+  | LOAD -- load
+  | CVLD -- validate
+  | VALU -- value
+  | TLTT --  Term.Link.toText
+  -- debug
+  | DBTX -- debug text
+  | SDBL -- sandbox link list
+  | -- Refs
+    REFN -- Ref.new
+  | REFR -- Ref.read
+  | RRFC
+  | TIKR
   deriving (Show, Eq, Ord, Enum, Bounded)
 
-data UPrim2
-  = -- integral
-    ADDI -- +
+data Prim2
+  -- integral
+  = ADDI -- +
   | ADDN
   | SUBI -- -
   | SUBN
@@ -388,50 +422,8 @@ data UPrim2
   -- Bools
   | ANDB -- and
   | IORB -- or
-  deriving (Show, Eq, Ord, Enum, Bounded)
-
-data BPrim1
-  = -- text
-    SIZT -- size
-  | USNC -- unsnoc
-  | UCNS -- uncons
-  | ITOT -- intToText
-  | NTOT -- natToText
-  | FTOT -- floatToText
-  | TTOI -- textToInt
-  | TTON -- textToNat
-  | TTOF -- textToFloat
-  | PAKT -- pack
-  | UPKT -- unpack
-  -- sequence
-  | VWLS -- viewl
-  | VWRS -- viewr
-  | SIZS -- size
-  | PAKB -- pack
-  | UPKB -- unpack
-  | SIZB -- size
-  | FLTB -- flatten
-  -- code
-  | MISS -- isMissing
-  | CACH -- cache
-  | LKUP -- lookup
-  | LOAD -- load
-  | CVLD -- validate
-  | VALU -- value
-  | TLTT --  Term.Link.toText
-  -- debug
-  | DBTX -- debug text
-  | SDBL -- sandbox link list
-  | -- Refs
-    REFN -- Ref.new
-  | REFR -- Ref.read
-  | RRFC
-  | TIKR
-  deriving (Show, Eq, Ord, Enum, Bounded)
-
-data BPrim2
-  = -- universal
-    EQLU -- ==
+  -- universal
+  | EQLU -- ==
   | CMPU -- compare
   | LEQU -- <=
   | LESU -- <
@@ -485,24 +477,15 @@ type RInstr val = GInstr (RComb val)
 -- Instructions for manipulating the data stack in the main portion of
 -- a block
 data GInstr comb
-  = -- 1-argument unboxed primitive operations
-    UPrim1
-      !UPrim1 -- primitive instruction
+  = -- 1-argument primitive operations
+    Prim1
+      !Prim1 -- primitive instruction
       !Int -- index of prim argument
   | -- 2-argument unboxed primitive operations
-    UPrim2
-      !UPrim2 -- primitive instruction
+    Prim2
+      !Prim2 -- primitive instruction
       !Int -- index of first prim argument
       !Int -- index of second prim argument
-  | -- 1-argument primitive operations that may involve boxed values
-    BPrim1
-      !BPrim1
-      !Int
-  | -- 2-argument primitive operations that may involve boxed values
-    BPrim2
-      !BPrim2
-      !Int
-      !Int
   | -- Use a check-and-set ticket to update a reference
     -- (ref stack index, ticket stack index, new value stack index)
     RefCAS !Int !Int !Int
@@ -1324,74 +1307,74 @@ emitPOp ANF.ATN2 = emitP2 ATN2
 -- conversions
 emitPOp ANF.ITOF = emitP1 ITOF
 emitPOp ANF.NTOF = emitP1 NTOF
-emitPOp ANF.ITOT = emitBP1 ITOT
-emitPOp ANF.NTOT = emitBP1 NTOT
-emitPOp ANF.FTOT = emitBP1 FTOT
-emitPOp ANF.TTON = emitBP1 TTON
-emitPOp ANF.TTOI = emitBP1 TTOI
-emitPOp ANF.TTOF = emitBP1 TTOF
+emitPOp ANF.ITOT = emitP1 ITOT
+emitPOp ANF.NTOT = emitP1 NTOT
+emitPOp ANF.FTOT = emitP1 FTOT
+emitPOp ANF.TTON = emitP1 TTON
+emitPOp ANF.TTOI = emitP1 TTOI
+emitPOp ANF.TTOF = emitP1 TTOF
 emitPOp ANF.CAST = emitP2 CAST
 -- text
-emitPOp ANF.CATT = emitBP2 CATT
-emitPOp ANF.TAKT = emitBP2 TAKT
-emitPOp ANF.DRPT = emitBP2 DRPT
-emitPOp ANF.IXOT = emitBP2 IXOT
-emitPOp ANF.SIZT = emitBP1 SIZT
-emitPOp ANF.UCNS = emitBP1 UCNS
-emitPOp ANF.USNC = emitBP1 USNC
-emitPOp ANF.EQLT = emitBP2 EQLT
-emitPOp ANF.LEQT = emitBP2 LEQT
-emitPOp ANF.PAKT = emitBP1 PAKT
-emitPOp ANF.UPKT = emitBP1 UPKT
+emitPOp ANF.CATT = emitP2 CATT
+emitPOp ANF.TAKT = emitP2 TAKT
+emitPOp ANF.DRPT = emitP2 DRPT
+emitPOp ANF.IXOT = emitP2 IXOT
+emitPOp ANF.SIZT = emitP1 SIZT
+emitPOp ANF.UCNS = emitP1 UCNS
+emitPOp ANF.USNC = emitP1 USNC
+emitPOp ANF.EQLT = emitP2 EQLT
+emitPOp ANF.LEQT = emitP2 LEQT
+emitPOp ANF.PAKT = emitP1 PAKT
+emitPOp ANF.UPKT = emitP1 UPKT
 -- sequence
-emitPOp ANF.CATS = emitBP2 CATS
-emitPOp ANF.TAKS = emitBP2 TAKS
-emitPOp ANF.DRPS = emitBP2 DRPS
-emitPOp ANF.SIZS = emitBP1 SIZS
-emitPOp ANF.CONS = emitBP2 CONS
-emitPOp ANF.SNOC = emitBP2 SNOC
-emitPOp ANF.IDXS = emitBP2 IDXS
-emitPOp ANF.VWLS = emitBP1 VWLS
-emitPOp ANF.VWRS = emitBP1 VWRS
-emitPOp ANF.SPLL = emitBP2 SPLL
-emitPOp ANF.SPLR = emitBP2 SPLR
+emitPOp ANF.CATS = emitP2 CATS
+emitPOp ANF.TAKS = emitP2 TAKS
+emitPOp ANF.DRPS = emitP2 DRPS
+emitPOp ANF.SIZS = emitP1 SIZS
+emitPOp ANF.CONS = emitP2 CONS
+emitPOp ANF.SNOC = emitP2 SNOC
+emitPOp ANF.IDXS = emitP2 IDXS
+emitPOp ANF.VWLS = emitP1 VWLS
+emitPOp ANF.VWRS = emitP1 VWRS
+emitPOp ANF.SPLL = emitP2 SPLL
+emitPOp ANF.SPLR = emitP2 SPLR
 -- bytes
-emitPOp ANF.PAKB = emitBP1 PAKB
-emitPOp ANF.UPKB = emitBP1 UPKB
-emitPOp ANF.TAKB = emitBP2 TAKB
-emitPOp ANF.DRPB = emitBP2 DRPB
-emitPOp ANF.IXOB = emitBP2 IXOB
-emitPOp ANF.IDXB = emitBP2 IDXB
-emitPOp ANF.SIZB = emitBP1 SIZB
-emitPOp ANF.FLTB = emitBP1 FLTB
-emitPOp ANF.CATB = emitBP2 CATB
+emitPOp ANF.PAKB = emitP1 PAKB
+emitPOp ANF.UPKB = emitP1 UPKB
+emitPOp ANF.TAKB = emitP2 TAKB
+emitPOp ANF.DRPB = emitP2 DRPB
+emitPOp ANF.IXOB = emitP2 IXOB
+emitPOp ANF.IDXB = emitP2 IDXB
+emitPOp ANF.SIZB = emitP1 SIZB
+emitPOp ANF.FLTB = emitP1 FLTB
+emitPOp ANF.CATB = emitP2 CATB
 -- universal comparison
-emitPOp ANF.EQLU = emitBP2 EQLU
-emitPOp ANF.LEQU = emitBP2 LEQU
-emitPOp ANF.LESU = emitBP2 LESU
-emitPOp ANF.CMPU = emitBP2 CMPU
+emitPOp ANF.EQLU = emitP2 EQLU
+emitPOp ANF.LEQU = emitP2 LEQU
+emitPOp ANF.LESU = emitP2 LESU
+emitPOp ANF.CMPU = emitP2 CMPU
 -- code operations
-emitPOp ANF.MISS = emitBP1 MISS
-emitPOp ANF.CACH = emitBP1 CACH
-emitPOp ANF.LKUP = emitBP1 LKUP
-emitPOp ANF.TLTT = emitBP1 TLTT
-emitPOp ANF.CVLD = emitBP1 CVLD
-emitPOp ANF.LOAD = emitBP1 LOAD
-emitPOp ANF.VALU = emitBP1 VALU
-emitPOp ANF.SDBX = emitBP2 SDBX
-emitPOp ANF.SDBL = emitBP1 SDBL
-emitPOp ANF.SDBV = emitBP2 SDBV
+emitPOp ANF.MISS = emitP1 MISS
+emitPOp ANF.CACH = emitP1 CACH
+emitPOp ANF.LKUP = emitP1 LKUP
+emitPOp ANF.TLTT = emitP1 TLTT
+emitPOp ANF.CVLD = emitP1 CVLD
+emitPOp ANF.LOAD = emitP1 LOAD
+emitPOp ANF.VALU = emitP1 VALU
+emitPOp ANF.SDBX = emitP2 SDBX
+emitPOp ANF.SDBL = emitP1 SDBL
+emitPOp ANF.SDBV = emitP2 SDBV
 -- error call
-emitPOp ANF.EROR = emitBP2 THRO
-emitPOp ANF.TRCE = emitBP2 TRCE
-emitPOp ANF.DBTX = emitBP1 DBTX
+emitPOp ANF.EROR = emitP2 THRO
+emitPOp ANF.TRCE = emitP2 TRCE
+emitPOp ANF.DBTX = emitP1 DBTX
 -- Refs
-emitPOp ANF.REFN = emitBP1 REFN
-emitPOp ANF.REFR = emitBP1 REFR
-emitPOp ANF.REFW = emitBP2 REFW
+emitPOp ANF.REFN = emitP1 REFN
+emitPOp ANF.REFR = emitP1 REFR
+emitPOp ANF.REFW = emitP2 REFW
 emitPOp ANF.RCAS = refCAS
-emitPOp ANF.RRFC = emitBP1 RRFC
-emitPOp ANF.TIKR = emitBP1 TIKR
+emitPOp ANF.RRFC = emitP1 RRFC
+emitPOp ANF.TIKR = emitP1 TIKR
 -- non-prim translations
 emitPOp ANF.BLDS = Seq
 -- Bools
@@ -1425,32 +1408,18 @@ emitFOp fop = ForeignCall True fop
 
 -- Helper functions for packing the variable argument representation
 -- into the indexes stored in prim op instructions
-emitP1 :: UPrim1 -> Args -> Instr
-emitP1 p (VArg1 i) = UPrim1 p i
+emitP1 :: Prim1 -> Args -> Instr
+emitP1 p (VArg1 i) = Prim1 p i
 emitP1 p a =
   internalBug $
     "wrong number of args for unary unboxed primop: "
       ++ show (p, a)
 
-emitP2 :: UPrim2 -> Args -> Instr
-emitP2 p (VArg2 i j) = UPrim2 p i j
+emitP2 :: Prim2 -> Args -> Instr
+emitP2 p (VArg2 i j) = Prim2 p i j
 emitP2 p a =
   internalBug $
     "wrong number of args for binary unboxed primop: "
-      ++ show (p, a)
-
-emitBP1 :: BPrim1 -> Args -> Instr
-emitBP1 p (VArg1 i) = BPrim1 p i
-emitBP1 p a =
-  internalBug $
-    "wrong number of args for unary boxed primop: "
-      ++ show (p, a)
-
-emitBP2 :: BPrim2 -> Args -> Instr
-emitBP2 p (VArg2 i j) = BPrim2 p i j
-emitBP2 p a =
-  internalBug $
-    "wrong number of args for binary boxed primop: "
       ++ show (p, a)
 
 refCAS :: Args -> Instr

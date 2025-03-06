@@ -271,17 +271,15 @@ pretty0
               -- we only use this syntax if we're not wrapped in something else,
               -- to avoid possible round trip issues if the text ends at an odd column
               useRaw _ | p >= Annotation = Nothing
-              useRaw s | Text.find (== '\n') s == Just '\n' && Text.all ok s = n 3
+              useRaw s | Text.elem '\n' s && Text.all ok s = Just quotes
               useRaw _ = Nothing
-              ok ch = isPrint ch || ch == '\n' || ch == '\r'
+              ok ch = isPrint ch || ch == '\n'
               -- Picks smallest number of surrounding """ to be unique
-              n 10 = Nothing -- bail at 10, avoiding quadratic behavior in weird cases
-              n cur =
-                if null (Text.breakOnAll quotes s)
-                  then Just quotes
-                  else n (cur + 1)
-                where
-                  quotes = Text.pack (replicate cur '"')
+              quotes = Text.pack (replicate numQuotes '"')
+              numQuotes = max 3 $ longestRun '"' s + 1
+              longestRun :: Char -> Text -> Int
+              longestRun c = maximum . (0 :) . map Text.length . filter ((== c) . Text.head) . Text.group
+
           Text' s -> pure . fmt S.TextLiteral $ l $ U.ushow s
           Char' c -> pure
             . fmt S.CharLiteral

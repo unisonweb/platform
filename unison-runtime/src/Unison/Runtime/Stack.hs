@@ -23,6 +23,7 @@ module Unison.Runtime.Stack
         UnboxedTypeTag
       ),
     closureTag,
+    unitClosure,
     UnboxedTypeTag (..),
     unboxedTypeTagToInt,
     unboxedTypeTagFromInt,
@@ -166,6 +167,7 @@ import GHC.Base
 import GHC.Exts as L (IsList (..))
 import Language.Haskell.TH qualified as TH
 import Test.Inspection qualified as TI
+import Unison.Builtin.Decls as Ty
 import Unison.Prelude
 import Unison.Reference (Reference)
 import Unison.Runtime.ANF (PackedTag)
@@ -1311,3 +1313,7 @@ contTermRefs _ _ = mempty
 
 hasNoAllocations :: TH.Name -> TI.Obligation
 hasNoAllocations n = TI.mkObligation n TI.NoAllocation
+
+unitClosure :: Closure
+unitClosure = Enum Ty.unitRef TT.unitTag
+{-# NOINLINE unitClosure #-}

@@ -1102,14 +1102,15 @@ causalHashesByPrefix (ShortCausalHash b32prefix) = do
   pure $ Set.fromList . map CausalHash $ hashes
 
 directDependenciesOfScope ::
+  (C.Reference -> Bool) ->
   DefnsF Set C.TermReferenceId C.TypeReferenceId ->
   Transaction (DefnsF Set C.TermReference C.TypeReference)
-directDependenciesOfScope scope0 = do
+directDependenciesOfScope isBuiltinType scope0 = do
   -- Convert C -> S
   scope1 <- bitraverse (Set.traverse c2sReferenceId) (Set.traverse c2sReferenceId) scope0
 
   -- Do the query
-  dependencies0 <- Q.getDirectDependenciesOfScope scope1
+  dependencies0 <- Q.getDirectDependenciesOfScope (fmap isBuiltinType . s2cReference) scope1
 
   -- Convert S -> C
   dependencies1 <- bitraverse (Set.traverse s2cReference) (Set.traverse s2cReference) dependencies0

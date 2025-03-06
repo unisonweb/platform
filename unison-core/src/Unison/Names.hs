@@ -233,9 +233,9 @@ preferring :: Names -> Names -> Names
 preferring xs ys =
   Names (preferring1 xs.terms ys.terms) (preferring1 xs.types ys.types)
   where
-    preferring1 :: (Ord a, Ord b) => Relation a b -> Relation a b -> Relation a b
+    preferring1 :: (Ord ref) => Relation Name ref -> Relation Name ref -> Relation Name ref
     preferring1 =
-      Relation.unionRangeWith (\_ x _ -> x)
+      Relation.unionRangeWith (\_ref xs _ys -> xs)
 
 -- | TODO: get this from database. For now it's a constant.
 numHashChars :: Int

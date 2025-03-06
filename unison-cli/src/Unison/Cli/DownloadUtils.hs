@@ -45,8 +45,8 @@ syncVersion :: SyncVersion
 syncVersion = unsafePerformIO do
   UnliftIO.lookupEnv "UNISON_SYNC_VERSION"
     <&> \case
-      Just "2" -> SyncV2
-      _ -> SyncV1
+      Just "1" -> SyncV1
+      _ -> SyncV2
 
 -- | Download a project/branch from Share.
 downloadProjectBranchFromShare ::

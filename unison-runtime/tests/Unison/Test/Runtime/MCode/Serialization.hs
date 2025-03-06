@@ -15,7 +15,7 @@ import Hedgehog.Range qualified as Range
 import Unison.Prelude
 import Unison.Runtime.Foreign.Function.Type (ForeignFunc)
 import Unison.Runtime.Interface
-import Unison.Runtime.MCode (Args (..), BPrim1, BPrim2, Branch, Comb, CombIx (..), GBranch (..), GComb (..), GCombInfo (..), GInstr (..), GRef (..), GSection (..), Instr, MLit (..), Ref, Section, UPrim1, UPrim2)
+import Unison.Runtime.MCode (Args (..), Prim1, Prim2, Branch, Comb, CombIx (..), GBranch (..), GComb (..), GCombInfo (..), GInstr (..), GRef (..), GSection (..), Instr, MLit (..), Ref, Section)
 import Unison.Runtime.Machine (Combs)
 import Unison.Runtime.TypeTags (PackedTag (..))
 import Unison.Test.Gen
@@ -88,17 +88,11 @@ genBranch =
       TestT <$> genSection <*> Gen.map (Range.linear 0 10) ((,) <$> genUText <*> genSection)
     ]
 
-genUPrim1 :: Gen UPrim1
-genUPrim1 = Gen.enumBounded
+genPrim1 :: Gen Prim1
+genPrim1 = Gen.enumBounded
 
-genUPrim2 :: Gen UPrim2
-genUPrim2 = Gen.enumBounded
-
-genBPrim1 :: Gen BPrim1
-genBPrim1 = Gen.enumBounded
-
-genBPrim2 :: Gen BPrim2
-genBPrim2 = Gen.enumBounded
+genPrim2 :: Gen Prim2
+genPrim2 = Gen.enumBounded
 
 genMLit :: Gen MLit
 genMLit =
@@ -116,10 +110,8 @@ genPackedTag = PackedTag <$> genSmallWord64
 genInstr :: Gen Instr
 genInstr =
   Gen.choice
-    [ UPrim1 <$> genUPrim1 <*> genSmallInt,
-      UPrim2 <$> genUPrim2 <*> genSmallInt <*> genSmallInt,
-      BPrim1 <$> genBPrim1 <*> genSmallInt,
-      BPrim2 <$> genBPrim2 <*> genSmallInt <*> genSmallInt,
+    [ Prim1 <$> genPrim1 <*> genSmallInt,
+      Prim2 <$> genPrim2 <*> genSmallInt <*> genSmallInt,
       ForeignCall <$> Gen.bool <*> genForeignCall <*> genArgs,
       SetDyn <$> genSmallWord64 <*> genSmallInt,
       Capture <$> genSmallWord64,
