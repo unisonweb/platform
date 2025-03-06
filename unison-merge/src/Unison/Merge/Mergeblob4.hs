@@ -36,6 +36,7 @@ makeMergeblob4 blob = do
             -- cover all name in the merged file we're about to parse and typecheck. So, this might be more correct as a
             -- call to `error`.
             uniqueNames = Parser.UniqueName \_ _ -> Nothing,
+            -- FIXME we don't need this, right? After the switch to always render unique type guids? Guess it doesn't hurt.
             uniqueTypeGuid = \name -> Identity (Map.lookup name blob.uniqueTypeGuids),
             names = stageOneNames,
             maybeNamespace = Nothing,

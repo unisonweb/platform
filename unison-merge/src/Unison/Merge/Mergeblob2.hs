@@ -54,7 +54,6 @@ data Mergeblob2 libdep = Mergeblob2
     lcaDeclNameLookup :: PartialDeclNameLookup,
     lcaLibdeps :: Map NameSegment libdep,
     libdeps :: Map NameSegment libdep,
-    soloUpdatesAndDeletes :: TwoWay (DefnsF Set Name Name),
     unconflicts :: DefnsF Unconflicts Referent TypeReference
   }
 
@@ -71,16 +70,12 @@ makeMergeblob2 blob = do
 
   conflicts <- narrowConflictsToNonBuiltins blob.conflicts & mapLeft Mergeblob2Error'ConflictedBuiltin
 
-  let soloUpdatesAndDeletes :: TwoWay (DefnsF Set Name Name)
-      soloUpdatesAndDeletes =
-        Unconflicts.soloUpdatesAndDeletes blob.unconflicts
-
   let coreDependencies :: TwoWay (DefnsF Set TermReference TypeReference)
       coreDependencies =
         identifyCoreDependencies
           (ThreeWay.forgetLca blob.defns)
           (bimap (Set.fromList . Map.elems) (Set.fromList . Map.elems) <$> conflicts)
-          soloUpdatesAndDeletes
+          (Unconflicts.soloDeletedNames blob.unconflicts <> Unconflicts.soloUpdatedNames blob.unconflicts)
 
   pure
     Mergeblob2
@@ -94,7 +89,6 @@ makeMergeblob2 blob = do
         lcaDeclNameLookup = blob.lcaDeclNameLookup,
         lcaLibdeps = blob.lcaLibdeps,
         libdeps = blob.libdeps,
-        soloUpdatesAndDeletes,
         unconflicts = blob.unconflicts
       }
 
