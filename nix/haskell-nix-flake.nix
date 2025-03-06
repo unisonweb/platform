@@ -34,18 +34,14 @@
           pkgs.cachix
           pkgs.gettext # for envsubst, used by unison-src/builtin-tests/interpreter-tests.sh
           pkgs.hpack
+          pkgs.jq
           pkgs.pkg-config
-          pkgs.stack-wrapped
+          pkgs.stack
         ];
-      # workaround for https://gitlab.haskell.org/ghc/ghc/-/issues/11042
-      shellHook = ''
-        export LD_LIBRARY_PATH=${pkgs.zlib}/lib:$LD_LIBRARY_PATH
-      '';
       tools =
         (args.tools or {})
         // {
-          cabal = {version = versions.cabal;};
-          ormolu = {version = versions.ormolu;};
+          cabal.version = versions.cabal;
           haskell-language-server = {
             version = versions.hls;
             modules = [
@@ -64,6 +60,7 @@
               constraints: ormolu == ${versions.ormolu}
             '';
           };
+          ormolu.version = versions.ormolu;
         };
     };
 
@@ -91,18 +88,8 @@ in
     defaultPackage = haskell-nix-flake.packages."unison-cli-main:exe:unison";
 
     devShells = let
-      mkDevShell = pkg:
-        shellFor {
-          packages = _hpkgs: [pkg];
-          ## Enabling Hoogle causes us to rebuild GHC.
-          withHoogle = false;
-        };
+      mkDevShell = pkg: shellFor {packages = _hpkgs: [pkg];};
     in
-      {
-        local = shellFor {
-          packages = _hpkgs: builtins.attrValues localPackages;
-          withHoogle = false;
-        };
-      }
+      {local = shellFor {packages = _hpkgs: builtins.attrValues localPackages;};}
       // pkgs.lib.mapAttrs (_name: mkDevShell) localPackages;
   }
