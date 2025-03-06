@@ -172,6 +172,7 @@ apply1 callback env threadTracker clo = do
   apply env mempty threadTracker stk k0 True ZArgs $ clo
   where
     k0 = CB $ Hook (\stk -> callback $ packXStack stk)
+{-# inline apply1 #-}
 
 unitValue :: Val
 unitValue = BoxedVal $ unitClosure
