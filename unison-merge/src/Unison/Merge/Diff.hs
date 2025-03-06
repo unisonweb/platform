@@ -4,11 +4,11 @@ module Unison.Merge.Diff
   )
 where
 
-import Data.Either.Combinators (mapRight)
 import Data.List.NonEmpty qualified as NEL
 import Data.List.NonEmpty qualified as NEList
+import Data.Map.Merge.Strict qualified as Map
 import Data.Map.Strict qualified as Map
-import Data.Semialign (Unalign (..), alignWith)
+import Data.Semialign (alignWith)
 import Data.Set qualified as Set
 import Data.Set.NonEmpty qualified as NESet
 import Data.These (These (..))
@@ -20,7 +20,7 @@ import Unison.DataDeclaration qualified as DataDeclaration
 import Unison.DeclNameLookup (DeclNameLookup)
 import Unison.DeclNameLookup qualified as DeclNameLookup
 import Unison.Hash (Hash (Hash))
-import Unison.Merge.DiffOp (DiffOp (..))
+import Unison.Merge.DiffOp (DiffOp (..), DiffOp2 (..))
 import Unison.Merge.HumanDiffOp (HumanDiffOp (..))
 import Unison.Merge.PartialDeclNameLookup (PartialDeclNameLookup (..))
 import Unison.Merge.Synhash qualified as Synhash
@@ -46,7 +46,7 @@ import Unison.Syntax.Name qualified as Name
 import Unison.Term (Term)
 import Unison.Util.BiMultimap (BiMultimap)
 import Unison.Util.BiMultimap qualified as BiMultimap
-import Unison.Util.Defns (Defns (..), DefnsF, DefnsF2, DefnsF3, zipDefnsWith)
+import Unison.Util.Defns (Defns (..), DefnsF2, DefnsF3, unzipDefns, zipDefnsWith)
 import Unison.Util.Defns qualified as Defns
 import Unison.Util.Relation (Relation)
 import Unison.Util.Relation qualified as Rel
@@ -72,11 +72,9 @@ nameBasedNamespaceDiff ::
     TwoWay (DefnsF2 (Map Name) Updated Referent TypeReference)
   )
 nameBasedNamespaceDiff declNameLookups lcaDeclNameLookup ppeds defns hydratedDefns =
-  let lcaHashes = synhashLcaDefns synhashPPE lcaDeclNameLookup defns.lca hydratedDefns
-      aliceHashes = synhashDefns synhashPPE hydratedDefns declNameLookups.alice defns.alice
-      bobHashes = synhashDefns synhashPPE hydratedDefns declNameLookups.bob defns.bob
-   in (diffHashedNamespaceDefns lcaHashes <$> TwoWay {alice = aliceHashes, bob = bobHashes})
-        & Zip.unzip
+  Zip.unzip $
+    diffHashedNamespaceDefns (synhashLcaDefns synhashPPE lcaDeclNameLookup defns.lca hydratedDefns)
+      <$> (synhashDefns synhashPPE hydratedDefns <$> declNameLookups <*> ThreeWay.forgetLca defns)
   where
     synhashPPE :: PPE.PrettyPrintEnv
     synhashPPE =
@@ -84,6 +82,7 @@ nameBasedNamespaceDiff declNameLookups lcaDeclNameLookup ppeds defns hydratedDef
        in alicePPE `PPE.addFallback` bobPPE `PPE.addFallback` lcaPPE
 
 diffHashedNamespaceDefns ::
+  (Eq term, Eq typ) =>
   DefnsF2 (Map Name) Synhashed term typ ->
   DefnsF2 (Map Name) Synhashed term typ ->
   ( -- Core diffs, i.e. adds, deletes, and updates which have different synhashes.
@@ -91,34 +90,45 @@ diffHashedNamespaceDefns ::
     -- Propagated updates, i.e. updates which have the same synhash but different Unison hashes.
     DefnsF2 (Map Name) Updated term typ
   )
-diffHashedNamespaceDefns d1 d2 =
-  zipDefnsWith f f d1 d2
-    & splitPropagated
+diffHashedNamespaceDefns old new =
+  unzipDefns (zipDefnsWith f f old new)
   where
     f ::
+      (Eq ref) =>
       Map Name (Synhashed ref) ->
       Map Name (Synhashed ref) ->
       (Map Name (DiffOp (Synhashed ref)), Map Name (Updated ref))
     f old new =
-      unalign (eitherToThese . mapRight (fmap Synhashed.value) <$> alignWith g old new)
+      partitionPropagated (computeDiff old new)
 
-    g :: (Eq x) => These x x -> Either (DiffOp x) (Updated x)
-    g = \case
-      This old -> Left (DiffOp'Delete old)
-      That new -> Left (DiffOp'Add new)
-      These old new
-        | old == new -> Right Updated {old, new}
-        | otherwise -> Left (DiffOp'Update Updated {old, new})
-
-    splitPropagated ::
-      Defns
-        ( Map Name (DiffOp (Synhashed term)),
-          Map Name (Updated term)
+    -- Compute the diff by comparing old-and-new values, resulting in either an add, delete, update (propagated or not),
+    -- or dropping the thing entirely (because old and new have the same hash).
+    computeDiff ::
+      (Eq ref) =>
+      Map Name (Synhashed ref) ->
+      Map Name (Synhashed ref) ->
+      Map Name (DiffOp2 (Synhashed ref))
+    computeDiff =
+      Map.merge
+        (Map.mapMissing (\_ -> DiffOp2'Delete))
+        (Map.mapMissing (\_ -> DiffOp2'Add))
+        ( let f old new
+                | Synhashed.value old == Synhashed.value new = Nothing
+                | otherwise = Just (DiffOp2'Update Updated {old, new} (old == new))
+           in Map.zipWithMaybeMatched \_ -> f
         )
-        (Map Name (DiffOp (Synhashed typ)), Map Name (Updated typ)) ->
-      (DefnsF3 (Map Name) DiffOp Synhashed term typ, DefnsF2 (Map Name) Updated term typ)
-    splitPropagated Defns {terms, types} =
-      (Defns {terms = fst terms, types = fst types}, Defns {terms = snd terms, types = snd types})
+
+    -- Partition add/delete/update/propagated-update into add/delete/update + propagated-update
+    partitionPropagated ::
+      Map Name (DiffOp2 (Synhashed ref)) ->
+      (Map Name (DiffOp (Synhashed ref)), Map Name (Updated ref))
+    partitionPropagated =
+      Map.mapEither \case
+        DiffOp2'Add ref -> Left (DiffOp'Add ref)
+        DiffOp2'Delete ref -> Left (DiffOp'Delete ref)
+        DiffOp2'Update refs propagated
+          | propagated -> Right (Synhashed.value <$> refs)
+          | otherwise -> Left (DiffOp'Update refs)
 
 -- | Post-process a diff to identify relationships humans might care about, such as whether a given addition could be
 -- interpreted as an alias of an existing definition, or whether an add and deletion could be a rename.
@@ -127,21 +137,15 @@ humanizeDiffs ::
   TwoWay (DefnsF3 (Map Name) DiffOp Synhashed Referent TypeReference) ->
   TwoWay (DefnsF2 (Map Name) Updated Referent TypeReference) ->
   TwoWay (DefnsF2 (Map Name) HumanDiffOp Referent TypeReference)
-humanizeDiffs names3 diffs propagatedUpdates =
-  zipWithF3 nameRelations diffs propagatedUpdates \relation diffOps propagatedUpdates ->
-    Defns.zipDefnsWith4 computeHumanDiffOp computeHumanDiffOp lcaRelation relation diffOps propagatedUpdates
+humanizeDiffs names3 =
+  let names3' = names3 <&> \names -> Defns names.terms names.types
+   in zipWith3
+        (Defns.zipDefnsWith4 computeHumanDiffOp computeHumanDiffOp names3'.lca)
+        (ThreeWay.forgetLca names3')
   where
-    zipWithF3 :: (Zip.Zip f) => f a -> f b -> f c -> (a -> b -> c -> d) -> f d
-    zipWithF3 a b c f = Zip.zipWith (\(x, y) z -> f x y z) (Zip.zip a b) c
-
-    namesToRelations :: Names -> (DefnsF (Relation Name) Referent TypeReference)
-    namesToRelations names = Defns {terms = Names.terms names, types = Names.types names}
-
-    lcaRelation :: DefnsF (Relation Name) Referent TypeReference
-    lcaRelation = namesToRelations names3.lca
-
-    nameRelations :: TwoWay (DefnsF (Relation Name) Referent TypeReference)
-    nameRelations = namesToRelations <$> ThreeWay.forgetLca names3
+    zipWith3 :: (Zip.Zip f) => (a -> b -> c -> d) -> f a -> f b -> f c -> f d
+    zipWith3 f a b =
+      Zip.zipWith (uncurry f) (Zip.zip a b)
 
     computeHumanDiffOp ::
       forall ref.
@@ -151,19 +155,25 @@ humanizeDiffs names3 diffs propagatedUpdates =
       Map Name (DiffOp (Synhashed ref)) ->
       Map Name (Updated ref) ->
       Map Name (HumanDiffOp ref)
-    computeHumanDiffOp oldRelation newRelation diffs propagatedUpdates = alignWith go diffs propagatedUpdates
+    computeHumanDiffOp oldNamespace newNamespace =
+      alignWith \case
+        This diff -> humanizeDiffOp (Synhashed.value <$> diff)
+        That updated -> HumanDiffOp'PropagatedUpdate updated
+        These diff updated ->
+          error $
+            reportBug
+              "E488729"
+              ( "The impossible happened, an update in merge was detected as both a propagated AND core update "
+                  ++ show diff
+                  ++ " and "
+                  ++ show updated
+              )
       where
-        go :: These (DiffOp (Synhashed ref)) (Updated ref) -> (HumanDiffOp ref)
-        go = \case
-          This diff -> humanizeDiffOp (Synhashed.value <$> diff)
-          That updated -> HumanDiffOp'PropagatedUpdate updated
-          These diff updated -> error (reportBug "E488729" ("The impossible happened, an update in merge was detected as both a propagated AND core update " ++ show diff ++ " and " ++ show updated))
-
         humanizeDiffOp :: DiffOp ref -> HumanDiffOp ref
         humanizeDiffOp = \case
           DiffOp'Add ref ->
             -- This name is newly added. We need to check if it's a new definition, an alias, or a rename.
-            case Set.toList (Rel.lookupRan ref oldRelation) of
+            case Set.toList (Rel.lookupRan ref oldNamespace) of
               -- No old names for this ref, so it's a new addition not an alias
               [] -> HumanDiffOp'Add ref
               -- There are old names for this ref, but not old refs for this name, so it's
@@ -171,9 +181,9 @@ humanizeDiffs names3 diffs propagatedUpdates =
               --
               -- If at least one old name for this ref no longer exists, we treat it like a
               -- rename.
-              (n : ns) -> do
+              n : ns -> do
                 let existingNames = NESet.fromList (n NEList.:| ns)
-                case NESet.nonEmptySet (Rel.lookupRan ref newRelation) of
+                case NESet.nonEmptySet (Rel.lookupRan ref newNamespace) of
                   Nothing -> error (reportBug "E458329" ("Expected to find at least one name for ref in new namespace, since we found the ref by the name."))
                   Just allNewNames ->
                     case NESet.nonEmptySet (NESet.difference existingNames allNewNames) of
@@ -183,7 +193,7 @@ humanizeDiffs names3 diffs propagatedUpdates =
                       Just namesWhichDisappeared ->
                         HumanDiffOp'RenamedFrom ref namesWhichDisappeared
           DiffOp'Delete ref ->
-            case NEL.nonEmpty $ Set.toList (Rel.lookupRan ref newRelation) of
+            case NEL.nonEmpty $ Set.toList (Rel.lookupRan ref newNamespace) of
               -- No names for this ref, it was removed.
               Nothing -> HumanDiffOp'Delete ref
               Just newNames -> HumanDiffOp'RenamedTo ref (NESet.fromList newNames)
